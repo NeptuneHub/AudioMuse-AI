@@ -17,6 +17,37 @@
         .map-search-row .map-search-col.button-col { width:auto; }
         .map-search-input { width: calc(100% - 12px); min-width:120px; font-size:13px; }
     }
+    #song-path-btn, #refresh-map { margin-left:6px; }
+    #map-status { margin-left:12px; color:var(--text-muted); }
+    #map_search_btn { margin-top:6px; }
+    #plot { width:100%; height:700px; }
+    .map-touch-tools { display:flex; justify-content:flex-end; margin-bottom:8px; }
+    .map-touch-tools[hidden] { display:none; }
+    @media (max-width: 768px) {
+        .map-controls { gap:8px; }
+        .map-controls > * { margin-right:0; }
+        .map-controls > label,
+        #map_size,
+        #create-playlist,
+        #map-status,
+        .map-controls > .map-search-row { flex:1 1 100%; min-width:0; }
+        #map_size { display:flex; flex-wrap:wrap; gap:6px; }
+        #map_size .btn { flex:1 1 0; min-width:0; padding-left:0.25rem; padding-right:0.25rem; }
+        #song-path-btn, #refresh-map { margin-left:0; flex:1 1 40%; min-width:0; }
+        #map-status { margin-left:0; overflow-wrap:anywhere; }
+        .map-search-row { margin-left:0; flex-wrap:nowrap; align-items:flex-end; gap:8px; }
+        .map-search-row .map-search-col { width:auto; flex:1 1 auto; }
+        .map-search-row .map-search-col.button-col { flex:0 0 auto; }
+        .map-search-row .map-search-col.button-col label { display:none; }
+        .map-search-input { width:100%; min-width:0; font-size:16px; padding:0.5rem; }
+        #map_search_btn { margin-top:0; min-height:40px; }
+        #plot { height:min(700px, max(320px, 100vw)); }
+        #overlay-controls a,
+        #map-projection-label a { display:inline-flex; align-items:center; min-height:32px; }
+        #map-projection-label .genre-item { display:inline-flex; align-items:center; white-space:nowrap; min-height:32px; padding:0 6px; vertical-align:middle; }
+        .map-touch-tools .btn { min-height:36px; }
+        #selection-list .btn { min-height:32px; }
+    }
 </style>
 {% endblock %}
 
@@ -41,11 +72,11 @@
             <button id="btn-pct-100" type="button" class="btn btn-ghost">100%</button>
         </div>
         <button id="create-playlist" class="btn btn-primary">Create playlist</button>
-        <button id="song-path-btn" class="btn btn-primary" disabled style="margin-left:6px;">Song Path</button>
-        <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)" style="margin-left:6px;">Refresh</button>
+        <button id="song-path-btn" class="btn btn-primary" disabled>Song Path</button>
+        <button id="refresh-map" type="button" class="btn btn-ghost" title="Refresh map (clear overlays)">Refresh</button>
 
 
-        <div id="map-status" style="margin-left:12px;color:var(--text-muted)"></div>
+        <div id="map-status"></div>
         <!-- Minimal search UI: unified Song, Artist or Album (autocomplete + highlight) -->
         <div class="map-search-row">
             <div class="map-search-col">
@@ -56,12 +87,15 @@
             </div>
             <div class="map-search-col button-col">
                 <label style="font-size:12px;color:transparent">&nbsp;</label>
-                <button id="map_search_btn" class="btn btn-ghost btn-sm" type="button" style="margin-top:6px;">Search</button>
+                <button id="map_search_btn" class="btn btn-ghost btn-sm" type="button">Search</button>
             </div>
         </div>
     </div>
 
-    <div id="plot" style="width:100%;height:700px;"></div>
+    <div id="map-touch-tools" class="map-touch-tools" hidden>
+        <button id="map-select-toggle" type="button" class="btn btn-ghost btn-sm" aria-pressed="false" title="Drag on the map to select songs">Select area</button>
+    </div>
+    <div id="plot"></div>
     <!-- overlay toggles: small icons (search highlight, path line, path points) placed below the map and above the legend -->
     <div id="overlay-controls" style="text-align:center;margin-top:8px;">
         <span class="overlay-item" style="display:inline-flex;align-items:center;margin-right:12px;">
@@ -109,6 +143,48 @@
 
 {% block bodyAdditions %}
 <script>
+const mapCoarsePointer = window.matchMedia('(pointer: coarse)');
+const mapNarrowScreen = window.matchMedia('(max-width: 768px)');
+window._mapSelectArea = false;
+
+function mapDragMode() {
+    return (mapCoarsePointer.matches && !window._mapSelectArea) ? false : 'lasso';
+}
+
+function mapMargin() {
+    return mapNarrowScreen.matches ? { l: 36, r: 8, t: 8, b: 32 } : { t: 8 };
+}
+
+function updateMapSelectToggle() {
+    const tools = document.getElementById('map-touch-tools');
+    const btn = document.getElementById('map-select-toggle');
+    if (!tools || !btn) return;
+    tools.hidden = !mapCoarsePointer.matches;
+    btn.setAttribute('aria-pressed', window._mapSelectArea ? 'true' : 'false');
+    btn.textContent = window._mapSelectArea ? 'Done selecting' : 'Select area';
+    btn.classList.toggle('btn-primary', window._mapSelectArea);
+    btn.classList.toggle('btn-ghost', !window._mapSelectArea);
+}
+
+function applyMapDragMode() {
+    const gd = document.getElementById('plot');
+    if (!gd || !gd.data) return;
+    const update = { dragmode: mapDragMode() };
+    if (update.dragmode === false) update.selections = [];
+    try { Plotly.relayout(gd, update).catch(() => {}); } catch (e) {}
+}
+
+document.getElementById('map-select-toggle').addEventListener('click', () => {
+    window._mapSelectArea = !window._mapSelectArea;
+    updateMapSelectToggle();
+    applyMapDragMode();
+});
+mapCoarsePointer.addEventListener('change', () => {
+    updateMapSelectToggle();
+    applyMapDragMode();
+});
+updateMapSelectToggle();
+
 async function fetchMapParam(param) {
     // param is a percent string like '25','50','75','100'
     // Always fetch fresh data from the server. Do not persist any map JSON in page memory.
@@ -116,7 +192,10 @@ async function fetchMapParam(param) {
         cache: 'no-store',
         headers: { 'Pragma': 'no-cache' }
     });
-    if (!resp.ok) throw new Error('Failed to fetch map: ' + resp.status);
+    if (!resp.ok) {
+        const body = await resp.json().catch(() => null);
+        throw new Error(apiErrorText(body, 'HTTP ' + resp.status));
+    }
     // If server returned gzipped content, fetch() will transparently decode it in browsers.
     return await resp.json();
 }
@@ -287,9 +366,9 @@ async function loadAndPlot(n_or_pct) {
 
         const layout = {
             hovermode: 'closest',
-            dragmode: 'lasso',
+            dragmode: mapDragMode(),
             legend: { orientation: 'h' },
-            margin: { t: 8 }
+            margin: mapMargin()
         };
 
         // remove any leftover GUI 'selections' state that Plotly.react may choke on
@@ -327,7 +406,7 @@ async function loadAndPlot(n_or_pct) {
             window._plotSelection = [];
             // attach handlers to the freshly rendered plot to ensure events fire
             // ensure dragmode is select/lasso so user can box/lasso select without changing toolbar
-            try { Plotly.relayout(gd, {dragmode: 'lasso'}); } catch(e) {}
+            try { Plotly.relayout(gd, {dragmode: mapDragMode()}); } catch(e) {}
             attachPlotHandlers(gd);
             applyPlotlyTheme();
             // update status with customdata info
@@ -343,7 +422,7 @@ async function loadAndPlot(n_or_pct) {
         document.getElementById('map-status').textContent = `Showing ${items.length} songs`;
     } catch (e) {
         console.error(e);
-        document.getElementById('map-status').textContent = 'Failed to load map';
+        document.getElementById('map-status').textContent = 'Failed to load map: ' + ((e && e.message) || 'check the container logs');
     }
 }
 
@@ -444,7 +523,7 @@ function applyGenreFilterAndRerender() {
             }
         } catch(e) { /* ignore range capture errors */ }
 
-        const baseLayout = Object.assign({ hovermode: 'closest', dragmode: 'lasso', legend:{orientation:'h'}, margin:{t:8} }, keepRanges);
+        const baseLayout = Object.assign({ hovermode: 'closest', dragmode: mapDragMode(), legend:{orientation:'h'}, margin:mapMargin() }, keepRanges);
 
         if (pts.length > LARGE) {
             trace.type = 'scattergl';
@@ -623,6 +702,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
     let acOffset = 0;
     let acQuery = '';
     let acLoading = false;
+    let lastSearchError = '';
     let acActive = -1;   // keyboard-highlighted option
     let acIdSeq = 0;     // unique id sequence for option elements
 
@@ -654,7 +734,13 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
         try{
             const qs = new URLSearchParams(params);
             const resp = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${qs.toString()}`);
-            if (!resp.ok) return [];
+            if (!resp.ok) {
+                const body = await resp.json().catch(() => null);
+                lastSearchError = 'Search failed: ' + apiErrorText(body, `HTTP ${resp.status}`);
+                document.getElementById('map-status').textContent = lastSearchError;
+                return [];
+            }
+            lastSearchError = '';
             return await resp.json();
         } catch(e){ console.debug('searchTracks failed', e); return []; }
     }
@@ -836,7 +922,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
             const searchQ = document.getElementById('search_query_map').value.trim();
             if (searchQ.length < 1) { document.getElementById('map-status').textContent = 'Enter song, artist or album to search'; return; }
             const list = await searchTracks({ search_query: searchQ, n: 20 });
-            if (!list || list.length === 0) { document.getElementById('map-status').textContent = 'No matches found'; return; }
+            if (!list || list.length === 0) { document.getElementById('map-status').textContent = lastSearchError || 'No matches found'; return; }
             const t = list[0];
             // set field and selected id
             selectedItemId = t.item_id;
@@ -1264,12 +1350,12 @@ function clearMapOverlays() {
                 try { json = text ? JSON.parse(text) : null; } catch(e) { json = null; }
                 console.log('create_playlist response', resp.status, text, json);
                 if (resp.ok) document.getElementById('map-status').textContent = (json && (json.message || json.playlist_id)) ? (json.message || `Playlist created (${json.playlist_id})`) : 'Playlist created';
-                else document.getElementById('map-status').textContent = (json && (json.error || json.message)) ? (json.error || json.message) : `Create playlist failed (${resp.status})`;
+                else document.getElementById('map-status').textContent = (json && (json.error || json.message)) ? apiErrorText(json, json.message) : `Create playlist failed (${resp.status})`;
                 // clear selection on success
                 if (resp.ok) window._plotSelection = [];
             } catch (e) {
                 console.error('Create playlist failed', e);
-                document.getElementById('map-status').textContent = 'Create playlist failed';
+                document.getElementById('map-status').textContent = 'Create playlist failed: ' + ((e && e.message) || 'check the container logs');
             }
         };
 
@@ -1285,6 +1371,8 @@ function clearMapOverlays() {
                     // For each consecutive pair, call /api/find_path?start_song_id=A&end_song_id=B&max_steps=25
                     const orderedIds = [String(sel[0])];
                     const seenIds = new Set(orderedIds);
+                    let failedSegments = 0;
+                    let lastSegmentError = '';
                     for (let i = 0; i < sel.length - 1; i++) {
                         const a = sel[i];
                         const b = sel[i+1];
@@ -1298,9 +1386,13 @@ function clearMapOverlays() {
                             } else {
                                 const err = await resp.json().catch(() => ({}));
                                 console.warn('find_path failed for', a, b, err);
+                                failedSegments++;
+                                lastSegmentError = apiErrorText(err, `HTTP ${resp.status}`);
                             }
                         } catch (e) {
                             console.warn('Error fetching path for pair', a, b, e);
+                            failedSegments++;
+                            lastSegmentError = (e && e.message) || 'request failed';
                         }
                         if (segment) {
                             registerSongMetadata(segment);
@@ -1320,11 +1412,14 @@ function clearMapOverlays() {
                         window._plotSelection = orderedIds.slice();
                         renderSelectionPanel();
                     }
-                    document.getElementById('map-status').textContent = `Built path with ${orderedIds.length} songs from ${sel.length-1} segments`;
+                    const builtText = `Built path with ${orderedIds.length} songs from ${sel.length-1} segments`;
+                    document.getElementById('map-status').textContent = failedSegments
+                        ? `${builtText} (${failedSegments} failed: ${lastSegmentError})`
+                        : builtText;
                     updateSongPathButtonState();
                 } catch (e) {
                     console.error('song-path failed', e);
-                    document.getElementById('map-status').textContent = 'Failed to compute song paths';
+                    document.getElementById('map-status').textContent = 'Failed to compute song paths: ' + ((e && e.message) || 'check the container logs');
                 }
             };
 </script>

@@ -41,6 +41,8 @@ from tasks.memory_utils import (
     handle_onnx_memory_error,
     comprehensive_memory_cleanup,
 )
+from error import error_manager
+from error.error_dictionary import ERR_MODEL_INFERENCE
 
 logger = logging.getLogger(__name__)
 
@@ -514,8 +516,12 @@ def analyze_audio_file(audio_path: str, native_audio=None, native_sr=None) -> Tu
 
         return audio_embedding, duration_sec, num_segments
 
-    except Exception:
-        logger.exception(f"CLAP analysis failed for {audio_path}")
+    except Exception as e:
+        error_manager.record(
+            error_manager.classify(e, ERR_MODEL_INFERENCE),
+            f"CLAP analysis failed for {audio_path}",
+            exc=e, logger=logger,
+        )
         comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
         return None, 0, 0
     finally:

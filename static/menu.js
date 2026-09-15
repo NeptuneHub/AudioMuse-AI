@@ -7,6 +7,14 @@ document.addEventListener('DOMContentLoaded', function() {
     // This script handles the open/close classes plus focus/ARIA state so the
     // off-screen sidebar isn't tabbable and screen readers know its state.
 
+    const phoneQuery = window.matchMedia ? window.matchMedia('(max-width: 768px)') : null;
+    const isPhone = () => !!(phoneQuery && phoneQuery.matches);
+
+    const catcher = document.createElement('div');
+    catcher.className = 'sidebar-catcher';
+    catcher.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(catcher);
+
     const focusFirstInSidebar = () => {
         const first = sidebar.querySelector('a, button');
         if (first) first.focus();
@@ -52,7 +60,7 @@ document.addEventListener('DOMContentLoaded', function() {
         sidebar.classList.add('open');
         mainContent.classList.add('sidebar-open');
         document.documentElement.classList.add('sidebar-open');
-        localStorage.setItem('menuOpen', 'true');
+        if (!isPhone()) localStorage.setItem('menuOpen', 'true');
         setSidebarA11y(true);
         syncSidebarToVisualViewport();
         if (focus) focusFirstInSidebar();
@@ -71,7 +79,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Sync classes if menu was opened by FOUC prevention script (don't steal
     // focus on load); otherwise mark the closed sidebar inert.
-    if (document.documentElement.classList.contains('sidebar-open')) {
+    if (document.documentElement.classList.contains('sidebar-open') && isPhone()) {
+        document.documentElement.classList.remove('sidebar-open');
+        setSidebarA11y(false);
+    } else if (document.documentElement.classList.contains('sidebar-open')) {
         sidebar.classList.add('open');
         mainContent.classList.add('sidebar-open');
         setSidebarA11y(true);
@@ -105,6 +116,61 @@ document.addEventListener('DOMContentLoaded', function() {
         if (e.key === 'Escape' && sidebar.classList.contains('open')) {
             closeMenu({ returnFocus: true });
         }
+    });
+
+    catcher.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeMenu();
+    });
+
+    sidebar.addEventListener('click', (e) => {
+        const link = e.target.closest ? e.target.closest('a[href]') : null;
+        if (!link || !isPhone() || !sidebar.classList.contains('open')) return;
+        setTimeout(() => closeMenu(), 0);
+    });
+
+    const closeTooltips = (except) => {
+        document.querySelectorAll('.info-tooltip.is-open').forEach(tip => {
+            if (tip !== except) tip.classList.remove('is-open', 'tip-above');
+        });
+    };
+
+    const toggleTooltip = (tip, { blurOnClose = false } = {}) => {
+        closeTooltips(tip);
+        if (!tip.classList.contains('is-open')) {
+            tip.classList.toggle('tip-above', tip.getBoundingClientRect().top > window.innerHeight / 2);
+            tip.classList.add('is-open');
+            return;
+        }
+        tip.classList.remove('is-open', 'tip-above');
+        if (blurOnClose && document.activeElement === tip) tip.blur();
+    };
+
+    document.querySelectorAll('span.info-tooltip:not([tabindex])').forEach(tip => {
+        tip.setAttribute('tabindex', '0');
+    });
+
+    document.addEventListener('click', (e) => {
+        const tip = e.target.closest ? e.target.closest('.info-tooltip') : null;
+        if (!tip) {
+            closeTooltips(null);
+            return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        toggleTooltip(tip, { blurOnClose: true });
+    }, true);
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeTooltips(null);
+            return;
+        }
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const tip = e.target.closest ? e.target.closest('span.info-tooltip') : null;
+        if (!tip || tip !== e.target) return;
+        e.preventDefault();
+        toggleTooltip(tip);
     });
 
     // --- Submenu accordion toggle ---

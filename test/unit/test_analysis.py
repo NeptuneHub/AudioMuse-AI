@@ -30,6 +30,7 @@ import pytest
 import config
 import taskqueue
 from unittest.mock import Mock, patch
+from error.error_dictionary import ERR_ALBUM_ANALYSIS_FAILED
 from tasks.analysis import (
     sigmoid,
     robust_load_audio_with_fallback,
@@ -858,9 +859,13 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
         if status_calls is not None:
             status_calls.append(kwargs.get('details') or {})
 
-    def _end_child(task_id, parent_task_id, status, message):
+    def _end_child(task_id, parent_task_id, status, message, error_code=None):
         assert status == config.TASK_STATUS_FAILURE
         assert parent_task_id == 'parent-1'
+        assert error_code == ERR_ALBUM_ANALYSIS_FAILED, (
+            'an album the stall valve gave up on must carry a structured error code '
+            'on its row, or the dashboard shows it as an unknown 9999 failure'
+        )
         if status_calls is not None:
             status_calls.append({'message': message})
         if wedged is not None and task_id in wedged:
@@ -2401,6 +2406,76 @@ class TestAnalyzeTrack:
         assert result is not None
         assert np.isclose(result['energy'], expected_energy)
         assert isinstance(result['energy'], float)
+
+
+def _named_session(output_rows):
+    session = Mock()
+    session.get_inputs.return_value = [Mock()]
+    session.get_inputs.return_value[0].name = 'input'
+    session.get_outputs.return_value = [Mock()]
+    session.get_outputs.return_value[0].name = 'output'
+    session.run.return_value = [output_rows]
+    return session
+
+
+def test_a_cuda_out_of_memory_raised_as_fail_still_falls_back_to_cpu():
+    import onnxruntime as ort
+    from tasks import onnx_utils
+
+    gpu = _named_session(None)
+    gpu.run.side_effect = ort.capi.onnxruntime_pybind11_state.Fail(
+        '[ONNXRuntimeError] : 1 : FAIL : CUDA failure 2: out of memory ; GPU=0'
+    )
+    cpu = _named_session(np.ones((2, 3)))
+
+    with patch.object(onnx_utils.ort, 'InferenceSession', return_value=cpu) as make_session, \
+            patch.object(onnx_utils, 'comprehensive_memory_cleanup'):
+        result, session = onnx_utils.run_inference_with_oom_fallback(
+            gpu, {'input': np.zeros((2, 3))}, 'output', '/m.onnx', 'embedding', 'a.flac'
+        )
+
+    assert session is cpu, (
+        'onnxruntime reports a cuDNN out-of-memory as Fail, not RuntimeException; '
+        'catching only the latter let it escape and the track lost its analysis'
+    )
+    assert make_session.call_args.kwargs['providers'] == ['CPUExecutionProvider']
+    assert result.shape == (2, 3)
+
+
+def test_a_non_memory_onnx_failure_is_not_retried_on_cpu():
+    import onnxruntime as ort
+    from tasks import onnx_utils
+
+    gpu = _named_session(None)
+    gpu.run.side_effect = ort.capi.onnxruntime_pybind11_state.InvalidArgument(
+        'Got invalid dimensions for input'
+    )
+
+    with patch.object(onnx_utils.ort, 'InferenceSession') as make_session:
+        with pytest.raises(ort.capi.onnxruntime_pybind11_state.InvalidArgument):
+            onnx_utils.run_inference_with_oom_fallback(
+                gpu, {'input': np.zeros((2, 3))}, 'output', '/m.onnx', 'embedding', 'a.flac'
+            )
+
+    make_session.assert_not_called()
+
+
+def test_host_ram_running_out_does_not_load_a_second_session():
+    from tasks import onnx_utils
+
+    session = _named_session(None)
+    session.run.side_effect = MemoryError()
+
+    with patch.object(onnx_utils.ort, 'InferenceSession') as make_session:
+        with pytest.raises(MemoryError):
+            onnx_utils.run_inference_with_oom_fallback(
+                session, {'input': np.zeros((2, 3))}, 'output', '/m.onnx', 'embedding', 'a.flac'
+            )
+
+    assert make_session.call_count == 0, (
+        'a MemoryError is the host itself out of RAM: nothing the runtime owns is freed, '
+        'so a CPU session would only load into memory that is already exhausted'
+    )
 
 
 class TestOOMFallback:

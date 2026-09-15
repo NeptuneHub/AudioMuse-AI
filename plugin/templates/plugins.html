@@ -1,5 +1,26 @@
 {% extends "includes/layout.html" %}
 
+{% block headAdditions %}
+<style>
+    @media (max-width: 640px) {
+        .plugins-tab-btn,
+        #plugins-catalog-refresh,
+        #plugins-repo-add { min-height: 40px; }
+        #plugins-catalog-list button.btn-sm,
+        #plugins-installed-list button.btn-sm {
+            white-space: nowrap;
+            min-height: 40px;
+        }
+        #plugins-catalog-list select[data-versions] {
+            width: auto;
+            min-height: 40px;
+            font-size: 1rem;
+        }
+        #plugins-catalog-list > div > div:first-child > div:last-child { flex-wrap: wrap; }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div id="main-content-inner">
     <section>
@@ -64,7 +85,10 @@
     async function api(url, opts) {
         const res = await fetch(url, opts);
         const data = await res.json().catch(function () { return {}; });
-        if (!res.ok) { throw new Error(data.error || ('Request failed (' + res.status + ')')); }
+        if (!res.ok) {
+            const fallback = data.error || ('Request failed (' + res.status + ')');
+            throw new Error(typeof apiErrorText === 'function' ? apiErrorText(data, fallback) : fallback);
+        }
         return data;
     }
 
@@ -116,13 +140,13 @@
                 html += '<button type="button" class="btn btn-ghost btn-sm" data-act="settings" data-id="' + esc(p.id) + '"' + (p.settings_url ? ' data-settings-url="' + esc(p.settings_url) + '"' : '') + '>Settings</button>';
                 html += '<button type="button" class="btn btn-danger btn-sm" data-act="uninstall" data-id="' + esc(p.id) + '">Uninstall</button>';
                 html += '</div></div>';
-                if (p.manifest && p.manifest.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.manifest.description) + '</p>'; }
+                if (p.manifest && p.manifest.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;overflow-wrap:anywhere;">' + esc(p.manifest.description) + '</p>'; }
                 const roleErrors = p.load_errors || {};
                 const roles = Object.keys(roleErrors);
                 roles.forEach(function (role) {
-                    html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;">failed on ' + esc(role) + ': ' + esc(roleErrors[role]) + '</pre>';
+                    html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;overflow-wrap:anywhere;">failed on ' + esc(role) + ': ' + esc(roleErrors[role]) + '</pre>';
                 });
-                if (p.error && !roles.length) { html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;">' + esc(p.error) + '</pre>'; }
+                if (p.error && !roles.length) { html += '<pre style="margin:.4rem 0 0;color:#c62828;white-space:pre-wrap;overflow-wrap:anywhere;">' + esc(p.error) + '</pre>'; }
                 div.innerHTML = html;
                 box.appendChild(div);
             });
@@ -184,8 +208,8 @@
             }
             html += '<button type="button" class="btn btn-primary btn-sm" data-act="install" data-id="' + esc(p.id) + '" data-version="' + esc(p.latest_version) + '">' + esc(label) + '</button>';
             html += '</div></div>';
-            if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;">' + esc(p.description) + '</p>'; }
-            if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;">by ' + esc(p.author) + '</p>'; }
+            if (p.description) { html += '<p style="margin:.4rem 0 0;opacity:.85;overflow-wrap:anywhere;">' + esc(p.description) + '</p>'; }
+            if (p.author) { html += '<p style="margin:.2rem 0 0;opacity:.6;font-size:.85rem;overflow-wrap:anywhere;">by ' + esc(p.author) + '</p>'; }
             div.innerHTML = html;
             const sel = div.querySelector('select[data-versions]');
             if (sel) {

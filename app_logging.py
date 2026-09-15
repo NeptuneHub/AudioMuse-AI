@@ -83,6 +83,20 @@ def _sanitize_log_text(text: Any) -> Any:
 sanitize_log_value = _sanitize_log_text
 
 
+LOGGED_MARKER = "_audiomuse_logged"
+
+
+def mark_logged(exc):
+    try:
+        setattr(exc, LOGGED_MARKER, True)
+    except (AttributeError, TypeError):
+        pass
+
+
+def was_logged(exc):
+    return bool(getattr(exc, LOGGED_MARKER, False))
+
+
 class LogSanitizingFilter(logging.Filter):
     """Logging filter that sanitizes ``record.msg`` and ``record.args``.
 
@@ -92,10 +106,14 @@ class LogSanitizingFilter(logging.Filter):
     with ``propagate=False`` (e.g. the Windows supervisor's own log) are not
     affected. The exception traceback added by ``logger.exception`` lives in
     ``record.exc_info`` and is rendered by the formatter after this filter runs,
-    so it is never altered here - the full error always reaches the log.
+    so it is never altered here - the full error always reaches the log. An
+    exception that reached the log this way is marked, so
+    ``error.responses.json_exception`` logs only the ones nobody logged yet.
     """
 
     def filter(self, record):
+        if record.exc_info and record.exc_info[1] is not None:
+            mark_logged(record.exc_info[1])
         if isinstance(record.msg, str):
             record.msg = _sanitize_log_text(record.msg)
         if record.args:

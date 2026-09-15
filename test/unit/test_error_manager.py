@@ -16,10 +16,14 @@ Main Features:
 * Detail appended as a single truncated line; unknown codes suppress caller detail
 * classify maps exception names via MRO; record logs the full trace to the logger
   only, and http_status_for_code maps error classes to HTTP statuses
+* request_code_for_status reads the request code for a status from the registry,
+  lowest code first; detail_text caps a huge detail before folding it
 """
 
 import os
 import sys
+
+import pytest
 
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 if REPO_ROOT not in sys.path:
@@ -194,8 +198,177 @@ class TestClassify:
         wrapper.__cause__ = inner
         assert em.classify(wrapper, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_AUTH
 
-    def test_memory_error_maps_to_model_inference(self):
-        assert em.classify(MemoryError(), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_INFERENCE
+    def test_memory_error_maps_to_the_general_out_of_memory_code(self):
+        assert em.classify(MemoryError(), ed.ERR_ANALYSIS_FAILED) == ed.ERR_OUT_OF_MEMORY
+
+
+def _onnxruntime_exception(name):
+    return type(name, (Exception,), {'__module__': 'onnxruntime.capi.onnxruntime_pybind11_state'})
+
+
+class TestOutOfMemoryIsNotEveryInferenceError:
+    def test_an_onnx_allocation_failure_is_a_model_out_of_memory_error(self):
+        runtime_exception = _onnxruntime_exception('RuntimeException')
+        exc = runtime_exception(
+            '[ONNXRuntimeError] : 6 : RUNTIME_EXCEPTION : BFCArena::AllocateRawInternal '
+            'Failed to allocate memory for requested buffer of size 765249024'
+        )
+
+        assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_OUT_OF_MEMORY
+
+    def test_a_cuda_out_of_memory_from_the_runtime_is_a_model_out_of_memory_error(self):
+        fail = _onnxruntime_exception('Fail')
+        exc = fail('CUDA failure 2: out of memory ; GPU=0')
+
+        assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_OUT_OF_MEMORY
+
+    def test_any_other_onnx_failure_is_the_general_inference_error(self):
+        invalid_argument = _onnxruntime_exception('InvalidArgument')
+        exc = invalid_argument('Got invalid dimensions for input: mel_spectrogram')
+
+        assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_INFERENCE, (
+            'a shape or model-file problem used to be reported like a memory problem; '
+            'it has its own general inference description'
+        )
+
+    def test_the_general_inference_message_says_no_memory_problem_was_recognised(self):
+        message = ed.get_default_message(ed.ERR_MODEL_INFERENCE)
+
+        assert 'not recognised as an out-of-memory' in message, (
+            'the text matching only knows the allocation spellings it lists; the message '
+            'must not flatly deny a memory problem it may simply not have recognised'
+        )
+        assert 'ran out of memory' in ed.get_default_message(ed.ERR_MODEL_OUT_OF_MEMORY)
+
+    @pytest.mark.parametrize('text', [
+        'CUDA error: CUDA_ERROR_OUT_OF_MEMORY while allocating a tensor',
+        'DmlExecutionProvider: 887A0005 E_OUTOFMEMORY',
+        'MIOpen Error: miopenStatusAllocFailed',
+        'CUBLAS_STATUS_ALLOC_FAILED',
+        'CUDA OOM on device 0',
+    ])
+    def test_every_gpu_allocation_spelling_is_a_model_out_of_memory_error(self, text):
+        fail = _onnxruntime_exception('Fail')
+
+        assert em.classify(fail(text), ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_OUT_OF_MEMORY
+        assert em.is_model_out_of_memory(fail(text)) is True
+
+    def test_oom_inside_a_longer_word_is_not_out_of_memory(self):
+        fail = _onnxruntime_exception('Fail')
+
+        assert em.is_out_of_memory(fail('Load model /models/BOOM_v2.onnx failed')) is False
+
+    def test_host_ram_running_out_is_not_a_model_runtime_out_of_memory(self):
+        assert em.is_out_of_memory(MemoryError()) is True
+        assert em.is_model_out_of_memory(MemoryError()) is False, (
+            'the ONNX CPU fallback loads a second session; doing that when the host itself '
+            'is out of RAM only makes the kill worse'
+        )
+
+    def test_a_wrapped_runtime_allocation_failure_is_found_through_the_cause(self):
+        runtime_exception = _onnxruntime_exception('RuntimeException')
+        wrapper = RuntimeError('MusiCNN inference failed for track.flac')
+        wrapper.__cause__ = runtime_exception('Failed to allocate memory')
+
+        assert em.classify(wrapper, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MODEL_OUT_OF_MEMORY
+
+    def test_a_postgres_out_of_memory_is_a_database_error_not_a_worker_one(self):
+        class OperationalError(Exception):
+            pass
+
+        class OutOfMemory(OperationalError):
+            pass
+
+        OperationalError.__module__ = 'psycopg2'
+        OutOfMemory.__module__ = 'psycopg2.errors'
+
+        classified = em.classify(OutOfMemory('out of memory'), ed.ERR_ANALYSIS_FAILED)
+        assert classified == ed.ERR_DB_CONNECTION, (
+            'SQLSTATE 53200 is the database server running out of memory; telling the '
+            'user to give the worker more memory sends them to the wrong machine'
+        )
+
+    def test_an_application_message_quoting_a_song_title_is_not_out_of_memory(self):
+        exc = RuntimeError('CLAP analysis failed for Out Of Memory - Live.flac')
+
+        assert em.classify(exc, ed.ERR_MODEL_INFERENCE) == ed.ERR_MODEL_INFERENCE
+        assert em.is_out_of_memory(exc) is False
+
+
+class TestTheCauseChain:
+    def test_a_wrapper_raised_from_a_database_error_keeps_the_database_code(self):
+        class OperationalError(Exception):
+            pass
+
+        OperationalError.__module__ = 'psycopg2'
+        wrapper = RuntimeError('permanent failure')
+        wrapper.__cause__ = OperationalError('server closed the connection')
+
+        assert em.classify(wrapper, ed.ERR_ANALYSIS_FAILED) == ed.ERR_DB_CONNECTION
+
+    def test_the_outermost_classified_link_wins(self):
+        class ReadTimeout(Exception):
+            pass
+
+        class OperationalError(Exception):
+            pass
+
+        ReadTimeout.__module__ = 'requests.exceptions'
+        OperationalError.__module__ = 'psycopg2'
+        outer = ReadTimeout('slow')
+        outer.__cause__ = OperationalError('down')
+
+        assert em.classify(outer, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
+
+    def test_a_coded_error_inside_the_chain_keeps_its_code(self):
+        wrapper = RuntimeError('wrapped')
+        wrapper.__cause__ = em.AudioMuseError(ed.ERR_MEDIASERVER_LIBRARY, 'no tracks')
+
+        assert em.classify(wrapper, ed.ERR_ANALYSIS_FAILED) == ed.ERR_MEDIASERVER_LIBRARY
+
+    @staticmethod
+    def _read_timeout():
+        read_timeout = type('ReadTimeout', (Exception,), {})
+        read_timeout.__module__ = 'requests.exceptions'
+        return read_timeout
+
+    def test_a_raise_from_none_is_judged_on_its_own(self):
+        read_timeout = self._read_timeout()
+        try:
+            try:
+                raise read_timeout('slow')
+            except read_timeout:
+                raise KeyError('album') from None
+        except KeyError as exc:
+            detached = exc
+
+        assert em.classify(detached, ed.ERR_SEARCH_FAILED) == ed.ERR_SEARCH_FAILED, (
+            'raise ... from None says the handled timeout is not the cause; classifying '
+            'through it sent the user after a media server that answered fine'
+        )
+
+    def test_an_implicit_context_is_still_followed_like_a_traceback_prints_it(self):
+        read_timeout = self._read_timeout()
+        wrapped = RuntimeError('could not fetch the album list')
+        wrapped.__context__ = read_timeout('slow')
+
+        assert em.classify(wrapped, ed.ERR_SEARCH_FAILED) == ed.ERR_MEDIASERVER_TIMEOUT
+
+
+class TestTaskErrorRecord:
+    def test_a_full_record_on_the_row_is_returned_as_is(self):
+        record = em.build(ed.ERR_PROVIDER_MIGRATION_FAILED, 'target refused')
+
+        assert em.task_error_record({'error': record}) == record
+
+    def test_a_code_without_a_message_is_rebuilt(self):
+        rebuilt = em.task_error_record({'error': {'error_code': ed.ERR_WORKER_LOST}})
+
+        assert rebuilt == em.build(ed.ERR_WORKER_LOST)
+
+    def test_a_legacy_string_error_becomes_the_generic_record(self):
+        assert em.task_error_record({'error': 'worker lost'}) == em.build(ed.UNKNOWN_ERROR_CODE)
+        assert em.task_error_record(None) == em.build(ed.UNKNOWN_ERROR_CODE)
 
 
 class TestFromException:
@@ -355,26 +528,75 @@ class TestHttpStatus:
         assert em.http_status_for_code(4100) == 500
 
 
-class TestErrorResponse:
-    def test_returns_dict_and_status(self):
-        payload, status = em.error_response(ed.ERR_DB_CONNECTION)
-        assert status == 503
-        assert payload['error_code'] == ed.ERR_DB_CONNECTION
-        assert payload['error'] == payload['error_message']
+class TestRequestCodeForStatus:
+    def test_every_request_status_maps_to_the_code_that_names_it(self):
+        expected = {
+            400: ed.ERR_INVALID_REQUEST, 401: ed.ERR_UNAUTHORIZED, 403: ed.ERR_FORBIDDEN,
+            404: ed.ERR_NOT_FOUND, 409: ed.ERR_CONFLICT, 410: ed.ERR_GONE,
+            413: ed.ERR_PAYLOAD_TOO_LARGE,
+        }
+        for status, code in expected.items():
+            assert ed.request_code_for_status(status) == code, status
 
-    def test_carries_legacy_error_alias(self):
-        payload, _status = em.error_response(ed.ERR_MEDIASERVER_UNREACHABLE)
-        assert set(payload.keys()) == {'error_code', 'error_class', 'error_message', 'error'}
+    def test_a_status_no_request_code_names_falls_back_to_invalid_request(self):
+        assert ed.request_code_for_status(405) == ed.ERR_INVALID_REQUEST
+        assert ed.request_code_for_status(None) == ed.ERR_INVALID_REQUEST
 
-    def test_unknown_code_maps_to_500_and_generic(self):
-        payload, status = em.error_response(424242)
-        assert status == 500
-        assert payload['error_code'] == ed.UNKNOWN_ERROR_CODE
-        assert 'log' in payload['error'].lower()
+    def test_a_code_outside_the_request_band_is_never_chosen(self, monkeypatch):
+        registry = dict(ed.ERROR_REGISTRY)
+        registry[999] = {'error_class': 'Below', 'default_message': 'x', 'http_status': 418}
+        registry[1100] = {'error_class': 'Above', 'default_message': 'x', 'http_status': 418}
+        monkeypatch.setattr(ed, 'ERROR_REGISTRY', registry)
 
-    def test_detail_is_bounded(self):
-        payload, _status = em.error_response(ed.ERR_ANALYSIS_FAILED, 'y' * 2000)
-        assert len(payload['error_message']) < 600
+        assert ed.request_code_for_status(418) == ed.ERR_INVALID_REQUEST
+
+    def test_two_request_codes_on_one_status_resolve_to_the_lowest(self, monkeypatch):
+        registry = dict(ed.ERROR_REGISTRY)
+        registry[1098] = {'error_class': 'Late', 'default_message': 'x', 'http_status': 409}
+        registry[1000] = {'error_class': 'Early', 'default_message': 'x', 'http_status': 409}
+        monkeypatch.setattr(ed, 'ERROR_REGISTRY', registry)
+
+        assert ed.request_code_for_status(409) == 1000
+
+
+class TestDetailText:
+    def test_a_huge_detail_is_capped_before_it_is_folded(self, monkeypatch):
+        folded = []
+        one_line = em._one_line
+
+        def _recording_one_line(text):
+            folded.append(len(text))
+            return one_line(text)
+
+        monkeypatch.setattr(em, '_one_line', _recording_one_line)
+
+        detail = em.detail_text('word ' * 1_000_000)
+
+        assert folded and max(folded) <= em._DETAIL_SCAN_LIMIT
+        assert len(detail) <= em._MAX_MESSAGE_DETAIL
+        assert detail.endswith('...')
+
+    def test_a_clipped_detail_is_marked_even_when_its_head_folds_short(self):
+        detail = em.detail_text('head' + ' ' * (em._DETAIL_SCAN_LIMIT * 2) + 'tail')
+
+        assert detail == 'head...'
+
+    def test_whitespace_is_folded_to_one_line(self):
+        assert em.detail_text('a\n\t  b   c') == 'a b c'
+
+    def test_an_empty_detail_is_empty(self):
+        assert em.detail_text(None) == ''
+        assert em.detail_text('') == ''
+
+    def test_build_with_detail_matches_build(self):
+        detail = em.detail_text('line one\nline two')
+
+        assert em.build_with_detail(ed.ERR_ANALYSIS_FAILED, detail) == em.build(
+            ed.ERR_ANALYSIS_FAILED, 'line one\nline two'
+        )
+        assert em.build_with_detail(ed.UNKNOWN_ERROR_CODE, 'secret') == em.build(
+            ed.UNKNOWN_ERROR_CODE
+        )
 
 
 class TestTruncationBoundary:
@@ -471,3 +693,12 @@ class TestFromExceptionExtras:
         em.from_exception(exc, logger=test_logger)
         test_logger.removeHandler(cap)
         assert records and records[0].exc_info is not None
+
+
+class TestUnknownServerIsItsOwnCode:
+    def test_an_unknown_server_selection_maps_to_the_code_the_picker_reads(self):
+        unknown = type('UnknownServerError', (ValueError,), {'__module__': 'app_server_context'})
+
+        assert em.classify(unknown("Unknown server 'kitchen'"), ed.ERR_INVALID_REQUEST) == ed.ERR_UNKNOWN_SERVER
+        assert ed.ERR_UNKNOWN_SERVER == 1010, 'static/server_selector.js drops a stale selection on 1010'
+        assert em.classify(ValueError('bad'), ed.ERR_INVALID_REQUEST) == ed.ERR_INVALID_REQUEST

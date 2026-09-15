@@ -287,19 +287,12 @@ def handle_onnx_memory_error(
     fallback_to_cpu: bool = False,
     session_creator: Optional[Callable] = None,
 ) -> Optional[Any]:
-    error_str = str(error)
+    from error.error_manager import is_out_of_memory
 
-    is_memory_error = (
-        "Failed to allocate memory" in error_str
-        or "BFCArena" in error_str
-        or "OOM" in error_str
-        or "out of memory" in error_str.lower()
-    )
-
-    if not is_memory_error:
+    if not is_out_of_memory(error):
         raise error
 
-    logger.warning(f"GPU memory allocation error detected in {context}: {error_str}")
+    logger.warning(f"GPU memory allocation error detected in {context}: {error}")
 
     if cleanup_func:
         try:

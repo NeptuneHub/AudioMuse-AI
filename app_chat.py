@@ -29,12 +29,18 @@ import time
 
 import app_server_context
 from error import error_manager
-from error.error_dictionary import UNKNOWN_ERROR_CODE
+from error.error_dictionary import (
+    ERR_CONFIG_INVALID,
+    ERR_INVALID_REQUEST,
+    ERR_PLAYLIST_REJECTED,
+    UNKNOWN_ERROR_CODE,
+)
 
 
 logger = logging.getLogger(__name__)
 # Import config module - read attributes at call time so runtime updates take effect
 import config
+from error.responses import json_error, json_exception
 
 _SSE_DATA_PREFIX = "data: "
 
@@ -153,7 +159,7 @@ def _reject_missing_user_input(data):
         or not isinstance(data.get('userInput'), str)
         or not data['userInput'].strip()
     ):
-        return jsonify({"error": "Missing userInput in request"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Missing userInput in request")
     return None
 
 
@@ -334,9 +340,12 @@ def chat_playlist_api():
         app_server_context.resolve_request_server_id(data)
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     log_messages = []
     resp_obj, status = _drain_pipeline(_run_chat_pipeline(data, log_messages))
+    if status >= 400:
+        reason = log_messages[-1] if log_messages else None
+        return json_error(ERR_CONFIG_INVALID, reason, http_status=status, response=resp_obj)
     return jsonify({"response": resp_obj}), status
 
 
@@ -363,7 +372,7 @@ def chat_playlist_stream_api():
         app_server_context.resolve_request_server_id(data)
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     @stream_with_context
     def generate():
@@ -398,13 +407,16 @@ def chat_playlist_stream_api():
                 chunk = _flush()
                 if chunk:
                     yield chunk
-        except Exception:  # noqa: BLE001 - keep broad catch to protect streaming endpoint
+        except Exception as exc:  # noqa: BLE001 - keep broad catch to protect streaming endpoint
             logger.exception("Streaming chat pipeline failed")
+            failure = error_manager.build(error_manager.classify(exc, UNKNOWN_ERROR_CODE))
+            if failure["error_code"] == UNKNOWN_ERROR_CODE:
+                failure["error"] = "An internal error has occurred."
+            else:
+                failure["error"] = failure["error_message"]
             yield (
                 _SSE_DATA_PREFIX
-                + json.dumps(
-                    {"type": "error", "error": "An internal error has occurred.", "t": time.time()}
-                )
+                + json.dumps({"type": "error", **failure, "t": time.time()})
                 + "\n\n"
             )
             return
@@ -909,20 +921,23 @@ def create_media_server_playlist_api():
     """
     data = request.get_json()
     if not data or 'playlist_name' not in data or 'item_ids' not in data:
-        return jsonify({"message": "Error: Missing playlist_name or item_ids in request"}), 400
+        reason = "Error: Missing playlist_name or item_ids in request"
+        return json_error(ERR_INVALID_REQUEST, reason, message=reason)
 
     user_playlist_name = data.get('playlist_name')
     item_ids = data.get('item_ids')  # This will be a list of strings
 
     if not user_playlist_name or not str(user_playlist_name).strip():
-        return jsonify({"message": "Error: Playlist name cannot be empty."}), 400
+        reason = "Error: Playlist name cannot be empty."
+        return json_error(ERR_INVALID_REQUEST, reason, message=reason)
     if not item_ids:
-        return jsonify({"message": "Error: No songs provided to create the playlist."}), 400
+        reason = "Error: No songs provided to create the playlist."
+        return json_error(ERR_INVALID_REQUEST, reason, message=reason)
 
     try:
         server_id = app_server_context.resolve_request_server_id(data)
     except ValueError as exc:
-        return jsonify({"message": f"Error: {exc}"}), 400
+        return json_exception(exc, ERR_INVALID_REQUEST, message=None)
 
     # The client posts back the provider ids it got from /api/chatPlaylist;
     # canonicalize them so the dispatcher translates to the target server exactly
@@ -936,7 +951,7 @@ def create_media_server_playlist_api():
                 user_playlist_name, item_ids, server_id
             )
         except ValueError as exc:
-            return jsonify({"message": f"Error: {exc}"}), 400
+            return json_exception(exc, ERR_PLAYLIST_REJECTED, message=None)
         created_playlist_info = info['result']
 
         if not created_playlist_info:
@@ -960,8 +975,5 @@ def create_media_server_playlist_api():
             "Error in create_media_server_playlist_api: %s", error_details_for_server
         )
         # Return generic, structured error to client (traceback stays in the log only).
-        code = error_manager.classify(e, UNKNOWN_ERROR_CODE)
-        payload = error_manager.build(code)
-        payload["message"] = "An internal error occurred while creating the playlist."
-        payload["error"] = payload["message"]
-        return jsonify(payload), error_manager.http_status_for_code(code)
+        failed = "An internal error occurred while creating the playlist."
+        return json_exception(e, UNKNOWN_ERROR_CODE, failed, message=failed)

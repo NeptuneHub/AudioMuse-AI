@@ -473,8 +473,12 @@ def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessi
             for label, score in zip(mood_labels_list, final_mood_predictions)
         }
         return np.mean(embeddings_per_patch, axis=0), moods
-    except Exception:
-        logger.exception(f"Main model inference failed for {name}")
+    except Exception as e:
+        error_manager.record(
+            error_manager.classify(e, ERR_MODEL_INFERENCE),
+            f"MusiCNN inference failed for {name}",
+            exc=e, logger=logger,
+        )
         return None, None
     finally:
         if own_sessions:

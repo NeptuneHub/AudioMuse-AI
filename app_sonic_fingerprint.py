@@ -35,6 +35,11 @@ from config import (
     NAVIDROME_PASSWORD,
 )  # Import configs
 from app_helper import serialize_neighbor_results
+from error.error_dictionary import (
+    ERR_INVALID_REQUEST,
+    ERR_SONIC_FINGERPRINT_FAILED,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +108,7 @@ def get_media_server_defaults():
         server_id = resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({"error": "Invalid server selection."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Invalid server selection.")
 
     try:
         server = (
@@ -195,7 +200,7 @@ def generate_sonic_fingerprint_endpoint():
         if request.method == 'POST':
             data = request.get_json()
             if not data:
-                return jsonify({"error": "Invalid JSON payload"}), 400
+                return json_error(ERR_INVALID_REQUEST, "Invalid JSON payload")
         else:  # GET request
             data = request.args
 
@@ -204,7 +209,7 @@ def generate_sonic_fingerprint_endpoint():
             try:
                 num_results = max(1, int(num_results))
             except (ValueError, TypeError):
-                return jsonify({"error": "Parameter 'n' must be a valid integer."}), 400
+                return json_error(ERR_INVALID_REQUEST, "Parameter 'n' must be a valid integer.")
 
         from app_server_context import resolve_request_server_id, scope_results
         from tasks.mediaserver import context as ms_context, registry as ms_registry
@@ -213,7 +218,7 @@ def generate_sonic_fingerprint_endpoint():
             server_id = resolve_request_server_id(data)
         except ValueError:
             logger.warning("Invalid server selection.", exc_info=True)
-            return jsonify({"error": "Invalid server selection."}), 400
+            return json_error(ERR_INVALID_REQUEST, "Invalid server selection.")
         # Branch the per-user credential collection on the TARGET server's type
         # so per-user listening history works on secondary servers too; the
         # target server's stored creds are the fallback for its own requests.
@@ -231,7 +236,7 @@ def generate_sonic_fingerprint_endpoint():
                 label = 'Jellyfin' if stype == 'jellyfin' else 'Emby'
                 user_identifier = data.get('jellyfin_user_identifier')
                 if not user_identifier and stype == 'jellyfin':
-                    return jsonify({"error": f"{label} User Identifier is required."}), 400
+                    return json_error(ERR_INVALID_REQUEST, f"{label} User Identifier is required.")
 
                 if user_identifier:
                     fallback_token = JELLYFIN_TOKEN if stype == 'jellyfin' else EMBY_TOKEN
@@ -240,18 +245,19 @@ def generate_sonic_fingerprint_endpoint():
                     )
 
                     if not token:
-                        return jsonify(
-                            {
-                                "error": f"{label} API Token is required. Please provide one or set it in the server configuration."
-                            }
-                        ), 400
+                        return json_error(
+                            ERR_INVALID_REQUEST,
+                            f"{label} API Token is required. "
+                            "Please provide one or set it in the server configuration.",
+                        )
 
                     logger.info(f"Resolving {label} user identifier: '{user_identifier}'")
                     resolved_user_id = resolve_emby_jellyfin_user(user_identifier, token)
                     if not resolved_user_id:
-                        return jsonify(
-                            {"error": f"Could not resolve {label} user '{user_identifier}'."}
-                        ), 400
+                        return json_error(
+                            ERR_INVALID_REQUEST,
+                            f"Could not resolve {label} user '{user_identifier}'.",
+                        )
 
                     logger.info(f"Resolved {label} user ID: '{resolved_user_id}'")
                     user_creds['user_id'] = resolved_user_id
@@ -265,11 +271,11 @@ def generate_sonic_fingerprint_endpoint():
                     server_creds.get('password') if server_row else NAVIDROME_PASSWORD
                 )
                 if not user_creds['user'] or not user_creds['password']:
-                    return jsonify(
-                        {
-                            "error": "Navidrome username and password are required. Please provide them or set them in the server configuration."
-                        }
-                    ), 400
+                    return json_error(
+                        ERR_INVALID_REQUEST,
+                        "Navidrome username and password are required. "
+                        "Please provide them or set them in the server configuration.",
+                    )
 
             fingerprint_results = generate_sonic_fingerprint(
                 num_neighbors=num_results, user_creds=user_creds
@@ -283,8 +289,9 @@ def generate_sonic_fingerprint_endpoint():
         )
         final_results = scope_results(final_results, num_results, id_key='item_id')
         return jsonify(final_results)
-    except Exception:
+    except Exception as exc:
         logger.exception("Error in sonic_fingerprint endpoint")
-        return jsonify(
-            {"error": "An unexpected error occurred while generating the sonic fingerprint."}
-        ), 500
+        return json_exception(
+            exc, ERR_SONIC_FINGERPRINT_FAILED,
+            "An unexpected error occurred while generating the sonic fingerprint.",
+        )

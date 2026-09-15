@@ -322,9 +322,9 @@ def execute_mcp_tool(tool_name: str, tool_args: Dict, ai_config: Dict) -> Dict:
 
         return {"error": f"Unknown tool: {tool_name}"}
 
-    except Exception as e:
-        logger.exception("Error executing MCP tool")
-        return {"error": f"Tool execution error: {str(e)}"}
+    except Exception:
+        logger.exception("Error executing MCP tool %s", tool_name)
+        return {"error": f"Tool execution error in {tool_name}. Check the container logs."}
 
 
 def get_mcp_tools() -> List[Dict]:

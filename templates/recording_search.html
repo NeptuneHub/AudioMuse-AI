@@ -137,6 +137,26 @@
     #song-panel .autocomplete-container {
         margin-bottom: 1rem;
     }
+
+    @media (max-width: 768px) {
+        .tabs {
+            flex-wrap: nowrap;
+        }
+
+        .tab-btn {
+            flex: 1 1 0;
+            min-width: 0;
+            padding: 0.5rem 0.4rem;
+            font-size: 0.9rem;
+            line-height: 1.25;
+            text-align: center;
+        }
+
+        .warning-message,
+        .clip-info {
+            overflow-wrap: anywhere;
+        }
+    }
 </style>
 {% endblock %}
 
@@ -370,6 +390,20 @@ document.addEventListener('DOMContentLoaded', function () {
         songQuery.setAttribute('aria-expanded', 'true');
     }
 
+    function showSuggestionError(message) {
+        songSuggestions.innerHTML = '';
+        activeSuggestion = -1;
+        songQuery.removeAttribute('aria-activedescendant');
+        const item = document.createElement('div');
+        item.className = 'autocomplete-item';
+        const em = document.createElement('em');
+        em.textContent = message;
+        item.appendChild(em);
+        songSuggestions.appendChild(item);
+        songSuggestions.classList.remove('hidden');
+        songQuery.setAttribute('aria-expanded', 'true');
+    }
+
     function highlightSuggestion(index) {
         const options = songSuggestions.querySelectorAll('[role="option"]');
         if (!options.length) return;
@@ -393,7 +427,12 @@ document.addEventListener('DOMContentLoaded', function () {
             try {
                 const params = new URLSearchParams({ search_query: query, start: 0, end: SUGGESTIONS, index: 'neural' });
                 const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                showSuggestions(await response.json());
+                const tracks = await readJsonBody(response);
+                if (!response.ok || !Array.isArray(tracks)) {
+                    showSuggestionError(apiErrorText(tracks, `Search failed (HTTP ${response.status})`));
+                    return;
+                }
+                showSuggestions(tracks);
             } catch (error) {
                 console.error('Song search failed:', error);
                 hideSuggestions();
@@ -541,8 +580,8 @@ document.addEventListener('DOMContentLoaded', function () {
         form.append('clip', currentClip.blob, currentClip.name);
         form.append('n_results', String(limit));
         const response = await fetch("{{ url_for('recording_search_bp.recording_search_api') }}", { method: 'POST', body: form });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Search failed');
+        const data = await readJsonBody(response);
+        if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
         return { data, seedId: null, summary: `${(data.results || []).length} songs for a ${data.clip_seconds}s clip` };
     }
 
@@ -552,8 +591,8 @@ document.addEventListener('DOMContentLoaded', function () {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Search failed');
+        const data = await readJsonBody(response);
+        if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
         return { data, seedId: selectedSong.item_id, summary: `${(data.results || []).length} songs for "${selectedSong.title || 'this song'}"` };
     }
 
@@ -611,8 +650,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ playlist_name: playlistName, track_ids: trackIds })
             });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+            const data = await readJsonBody(response);
+            if (!response.ok || data === null) throw new Error(apiErrorText(data, `Server returned an error (HTTP ${response.status})`));
             playlistStatusDiv.textContent = data.message;
             playlistStatusDiv.className = 'status-success';
         } catch (error) {

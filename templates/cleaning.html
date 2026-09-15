@@ -158,7 +158,8 @@
                         displayTaskStatus({ status: 'IDLE', details: { status_message: 'No previous cleaning task found.' } });
                     }
                 } else {
-                    displayTaskStatus({ status: 'IDLE', details: { status_message: 'Could not fetch last task status.' } });
+                    const errorBody = await response.json().catch(() => null);
+                    displayTaskStatus({ status: 'IDLE', details: { status_message: apiErrorText(errorBody, 'Could not fetch last task status.') } });
                 }
             } catch (error) {
                 console.error('Error fetching last task status:', error);
@@ -246,11 +247,11 @@
                     body: JSON.stringify({ clean_catalogue: cleanCatalogue })
                 });
 
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.task_id) {
+                    throw new Error(apiErrorText(data, `HTTP ${response.status}: ${response.statusText}`));
                 }
 
-                const data = await response.json();
                 currentTaskId = data.task_id;
 
                 // Update UI - disable start, enable cancel
@@ -278,7 +279,11 @@
             if (!currentTaskId) return;
 
             try {
-                await fetch("{{ url_for('cancel_task_endpoint', task_id=':currentTaskId:') }}".replace(':currentTaskId:', currentTaskId), { method: 'POST' });
+                const response = await fetch("{{ url_for('cancel_task_endpoint', task_id=':currentTaskId:') }}".replace(':currentTaskId:', currentTaskId), { method: 'POST' });
+                if (!response.ok) {
+                    const errorBody = await response.json().catch(() => null);
+                    throw new Error(apiErrorText(errorBody, `HTTP ${response.status}`));
+                }
                 resetUI();
                 clearTaskStateFromStorage();
             } catch (error) {
@@ -304,6 +309,9 @@
                     const response = await fetch("{{ url_for('get_active_tasks_endpoint') }}");
                     if (!response.ok) {
                         console.log('Active tasks API returned error, stopping polling');
+                        const errorBody = await response.json().catch(() => null);
+                        document.getElementById('status-message').textContent =
+                            'Status polling stopped: ' + apiErrorText(errorBody, `HTTP ${response.status}`);
                         clearInterval(cleanInterval);
                         cleanInterval = null;
                         currentTaskId = null;
@@ -345,9 +353,10 @@
                                 }
                             } else {
                                 console.log('Could not get final status');
+                                const errorBody = await finalStatusResponse.json().catch(() => null);
                                 handleCleaningError({
                                     task_id: currentTaskId,
-                                    details: { error: 'The cleaning task finished but its final status could not be read. Check the container logs.' }
+                                    details: { error: 'The cleaning task finished but its final status could not be read: ' + apiErrorText(errorBody, `HTTP ${finalStatusResponse.status}`) }
                                 });
                             }
                         } catch (e) {
@@ -365,6 +374,8 @@
                     }
                 } catch (error) {
                     console.error('Error polling active tasks:', error);
+                    document.getElementById('status-message').textContent =
+                        'Status polling stopped: ' + ((error && error.message) || 'request failed');
                     // On error, also stop polling
                     clearInterval(cleanInterval);
                     cleanInterval = null;

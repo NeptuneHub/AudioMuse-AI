@@ -55,9 +55,19 @@
     #backup-status {
         margin-top: 0.75rem;
         font-size: 0.95rem;
+        overflow-wrap: anywhere;
+    }
+    #restore-status,
+    #restore-file-name {
+        overflow-wrap: anywhere;
     }
     .size-col {
         white-space: nowrap;
+    }
+    @media (max-width: 768px) {
+        .restore-confirm-area input[type="text"] {
+            font-size: 1rem;
+        }
     }
 </style>
 {% endblock %}
@@ -211,7 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.error || `Chunk ${chunkNum} upload failed`);
+                if (!res.ok) throw new Error(apiErrorText(data, `Chunk ${chunkNum} upload failed`));
 
                 if (data.all_chunks_received) {
                     // Countdown from the instant the upload lands, exactly like the

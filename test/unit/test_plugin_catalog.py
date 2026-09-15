@@ -162,7 +162,8 @@ class TestCatalogResolution:
         _wire(monkeypatch, download)
         plugins, errors = blueprint._fetch_catalog()
         assert plugins == []
-        assert errors and 'boom' in errors[0]['error']
+        assert errors and errors[0]['error_code'] == 6010
+        assert 'boom' not in errors[0]['error']
 
     def test_catalog_download_error_surfaces_clean_message(self, monkeypatch):
         def boom(url, _max):
@@ -173,7 +174,12 @@ class TestCatalogResolution:
         monkeypatch.setattr(database, 'list_plugins', lambda conn=None: [])
         plugins, errors = blueprint._fetch_catalog()
         assert plugins == []
-        assert errors and 'raw.githubusercontent.com' in errors[0]['error']
+        assert errors and errors[0]['repo'] == 'https://raw.githubusercontent.com/m.json'
+        assert errors[0]['error_code'] == 6010
+        assert 'Could not reach' not in errors[0]['error'], (
+            'the catalog is an HTTP answer: the repo it names is enough, the host detail '
+            'is in the container log'
+        )
 
 
 class TestInstallErrorResponse:
@@ -182,7 +188,7 @@ class TestInstallErrorResponse:
         app.register_blueprint(blueprint.plugins_bp)
         return app.test_client()
 
-    def test_download_failure_returns_502_with_real_message(self, monkeypatch):
+    def test_download_failure_returns_502_with_the_registry_message_only(self, monkeypatch):
         monkeypatch.setattr(
             blueprint, '_resolve_install_source',
             lambda pid, version=None: ('https://raw.githubusercontent.com/x/y.zip', 'abc', 'repo', {'id': 'demo'}),
@@ -194,7 +200,34 @@ class TestInstallErrorResponse:
         monkeypatch.setattr(blueprint, '_download', boom)
         resp = self._client().post('/api/plugins/install', json={'id': 'demo'})
         assert resp.status_code == 502
-        assert resp.get_json()['error'] == 'Could not reach raw.githubusercontent.com for the plugin download'
+        assert resp.get_json()['error_code'] == 6010
+        assert 'raw.githubusercontent.com' not in resp.get_data(as_text=True), (
+            'the HTTP body carries only the registry code and message; the host detail is '
+            'in the container log'
+        )
+
+
+    def test_a_download_error_raised_from_a_timeout_is_not_a_media_server_error(self, monkeypatch):
+        import requests
+
+        monkeypatch.setattr(
+            blueprint, '_resolve_install_source',
+            lambda pid, version=None: ('https://raw.githubusercontent.com/x/y.zip', 'abc', 'repo', {'id': 'demo'}),
+        )
+
+        def boom(url, _max):
+            try:
+                raise requests.exceptions.Timeout('read timed out')
+            except requests.exceptions.Timeout as exc:
+                raise net.DownloadError('Timed out reaching raw.githubusercontent.com') from exc
+
+        monkeypatch.setattr(blueprint, '_download', boom)
+        resp = self._client().post('/api/plugins/install', json={'id': 'demo'})
+        assert resp.status_code == 502
+        assert resp.get_json()['error_code'] == 6010, (
+            'DownloadError is always raised from a requests error; classifying the chain '
+            'called a plugin download failure "Timed out waiting for the media server"'
+        )
 
 
 class TestJsdelivrMirrorFallback:
@@ -394,7 +427,7 @@ class TestInstallVersionPin:
         monkeypatch.setattr(blueprint, '_download', boom)
         resp = self._client().post('/api/plugins/install', json={'id': 'demo', 'version': '1.5.1'})
         assert resp.status_code == 409
-        assert '1.5.1' in resp.get_json()['error']
+        assert resp.get_json()['error_code'] == 1016
 
     def test_rollback_to_listed_older_version(self, monkeypatch):
         cache = json.dumps({

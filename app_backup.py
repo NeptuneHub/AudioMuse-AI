@@ -60,12 +60,15 @@ from flask import Blueprint, render_template, jsonify, request, send_file
 import config
 from sanitization import sanitize_for_log
 import restart_manager
-from error import error_manager
 from error.error_dictionary import (
-    ERR_BACKUP_VERSION_MISMATCH,
     ERR_BACKUP_FAILED,
+    ERR_BACKUP_VERSION_MISMATCH,
+    ERR_CONFLICT,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
     ERR_RESTORE_FAILED,
 )
+from error.responses import json_error
 
 logger = logging.getLogger(__name__)
 
@@ -730,9 +733,10 @@ def create_backup():
     """
     os.makedirs(BACKUP_DIR, exist_ok=True)
     if not _acquire_backup_create_lock():
-        return jsonify(
-            {'error': 'A backup is already being created. Wait for it to finish, then download it.'}
-        ), 409
+        return json_error(
+            ERR_CONFLICT,
+            'A backup is already being created. Wait for it to finish, then download it.',
+        )
     try:
         return _create_backup_locked()
     finally:
@@ -766,23 +770,19 @@ def _create_backup_locked():
                 os.remove(filepath)
             stderr = result.stderr or ""
             if "server version mismatch" in stderr.lower():
-                err = error_manager.build(ERR_BACKUP_VERSION_MISMATCH, stderr)
-            else:
-                err = error_manager.build(ERR_BACKUP_FAILED, stderr)
-            return jsonify({**err, 'error': err['error_message']}), 500
+                return json_error(ERR_BACKUP_VERSION_MISMATCH, stderr)
+            return json_error(ERR_BACKUP_FAILED, stderr)
     except FileNotFoundError:
         logger.exception("pg_dump not found on system PATH")
-        err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump is not installed or not on PATH.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_BACKUP_FAILED, "pg_dump is not installed or not on PATH.")
     except subprocess.TimeoutExpired:
         logger.exception("pg_dump timed out")
         if os.path.exists(filepath):
             os.remove(filepath)
-        err = error_manager.build(
+        return json_error(
             ERR_BACKUP_FAILED,
             f"pg_dump timed out after {BACKUP_RESTORE_TIMEOUT_SECONDS} seconds.",
         )
-        return jsonify({**err, 'error': err['error_message']}), 500
 
     zip_filename = f"audiomuse_backup_{timestamp}.zip"
     zip_filepath = os.path.join(BACKUP_DIR, zip_filename)
@@ -800,8 +800,7 @@ def _create_backup_locked():
                     os.remove(path)
             except OSError:
                 logger.warning("Could not delete %s after compression failure", path, exc_info=True)
-        err = error_manager.build(ERR_BACKUP_FAILED, "Failed to compress the backup file.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_BACKUP_FAILED, "Failed to compress the backup file.")
 
     logger.info("Backup created: %s", zip_filepath)
     return jsonify(
@@ -843,10 +842,10 @@ def download_backup(filename):
                   type: string
     """
     if not _BACKUP_FILENAME_RE.fullmatch(filename):
-        return jsonify({'error': 'Invalid backup file name.'}), 404
+        return json_error(ERR_NOT_FOUND, 'Invalid backup file name.')
     filepath = os.path.join(BACKUP_DIR, filename)
     if not os.path.isfile(filepath):
-        return jsonify({'error': 'Backup file not found. Create a new backup first.'}), 404
+        return json_error(ERR_NOT_FOUND, 'Backup file not found. Create a new backup first.')
     return send_file(filepath, as_attachment=True, download_name=filename)
 
 
@@ -938,11 +937,11 @@ def restore_backup():
     confirmation = request.form.get('confirmation', '')
     expected = "I want to restore the database from the backup. This action is not reversible"
     if confirmation != expected:
-        return jsonify({'error': 'Confirmation text does not match.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Confirmation text does not match.')
 
     uploaded = request.files.get('file')
     if not uploaded or not uploaded.filename:
-        return jsonify({'error': 'No file uploaded.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'No file uploaded.')
 
     # Check if this is a chunked upload
     chunk_num = request.form.get('chunk_num')
@@ -960,14 +959,15 @@ def restore_backup():
                 chunk_num = int(chunk_num)
                 total_chunks = int(total_chunks)
             except ValueError:
-                return jsonify({'error': 'chunk_num and total_chunks must be integers.'}), 400
+                return json_error(
+                    ERR_INVALID_REQUEST, 'chunk_num and total_chunks must be integers.'
+                )
 
             if chunk_num < 1 or chunk_num > total_chunks or total_chunks < 1:
-                return jsonify(
-                    {
-                        'error': f'Invalid chunk numbers: chunk_num={chunk_num}, total_chunks={total_chunks}'
-                    }
-                ), 400
+                return json_error(
+                    ERR_INVALID_REQUEST,
+                    f'Invalid chunk numbers: chunk_num={chunk_num}, total_chunks={total_chunks}',
+                )
 
             chunks_dir = os.path.join(BACKUP_DIR, 'chunks')
             os.makedirs(chunks_dir, exist_ok=True)
@@ -978,21 +978,16 @@ def restore_backup():
             if chunk_num == 1:
                 if not _acquire_restore_lock():
                     logger.warning("Refusing chunk 1: restore lock already held.")
-                    return jsonify(
-                        {
-                            'error': 'A database restore is already in progress. '
-                            'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
-                        }
-                    ), 409
+                    return json_error(
+                        ERR_CONFLICT,
+                        'A database restore is already in progress. Wait for it to finish, '
+                        'or wait up to 1 hour for the lock to auto-release.',
+                    )
             else:
                 if not _restore_lock_held():
                     logger.warning("Refusing chunk %s: restore lock no longer held.", chunk_num)
-                    return jsonify(
-                        {
-                            'error': 'Restore session expired or was overtaken. '
-                            'Restart the upload from chunk 1.'
-                        }
-                    ), 409
+                    return json_error(ERR_CONFLICT, 'Restore session expired or was overtaken. '
+                            'Restart the upload from chunk 1.')
                 _refresh_restore_lock()
 
             chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
@@ -1015,8 +1010,7 @@ def restore_backup():
                 logger.info(f"Saved chunk {chunk_num}/{total_chunks}")
             except Exception:
                 logger.exception("Failed to save chunk %s", chunk_num)
-                err = error_manager.build(ERR_RESTORE_FAILED, f"Failed to save chunk {chunk_num}.")
-                return jsonify({**err, 'error': err['error_message']}), 500
+                return json_error(ERR_RESTORE_FAILED, f"Failed to save chunk {chunk_num}.")
 
             # Rebuild the received set from disk (only chunks belonging to this session)
             received_chunks = set()
@@ -1094,9 +1088,9 @@ def restore_backup():
                                 exc_info=True,
                             )
                     _release_restore_lock()
-                    return jsonify(
-                        {'error': 'Failed to reassemble chunks due to an internal error.'}
-                    ), 500
+                    return json_error(
+                        ERR_RESTORE_FAILED, 'Failed to reassemble chunks due to an internal error.'
+                    )
             else:
                 # Still waiting for more chunks
                 missing_chunks = [i for i in range(1, total_chunks + 1) if i not in received_chunks]
@@ -1115,12 +1109,8 @@ def restore_backup():
             # Single file upload (non-chunked)
             if not _acquire_restore_lock():
                 logger.warning("Refusing non-chunked restore: lock already held.")
-                return jsonify(
-                    {
-                        'error': 'A database restore is already in progress. '
-                        'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
-                    }
-                ), 409
+                return json_error(ERR_CONFLICT, 'A database restore is already in progress. '
+                        'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.')
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
             uploaded.save(tmp)
             tmp.close()
@@ -1148,9 +1138,11 @@ def restore_backup():
                 if restore_file and os.path.exists(restore_file):
                     os.unlink(restore_file)
                 _release_restore_lock()
-                return jsonify({
-                    'error': 'Restore was not started because workers did not confirm they stopped.'
-                }), 503
+                return json_error(
+                    ERR_RESTORE_FAILED,
+                    'Restore was not started because workers did not confirm they stopped.',
+                    http_status=503,
+                )
             logger.info('Worker stop request completed successfully')
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1199,8 +1191,7 @@ def restore_backup():
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
-        err = error_manager.build(ERR_RESTORE_FAILED, "Python executable not found for restore runner.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_RESTORE_FAILED, "Python executable not found for restore runner.")
     except Exception:
         logger.exception("Restore failed")
         if workers_require_recovery:
@@ -1208,8 +1199,7 @@ def restore_backup():
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
-        err = error_manager.build(ERR_RESTORE_FAILED, "Restore failed. Check server logs.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_RESTORE_FAILED, "Restore failed. Check server logs.")
 
 
 if __name__ == '__main__':

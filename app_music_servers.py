@@ -51,6 +51,15 @@ from app_server_context import (
 )
 from tasks import provider_probe
 from tasks.mediaserver import registry
+from error.error_dictionary import (
+    ERR_DEFAULT_SERVER_DELETE,
+    ERR_FORBIDDEN,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_TASK_ENQUEUE_FAILED,
+    ERR_TASK_IN_PROGRESS,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +93,7 @@ def _is_admin_caller():
 def _forbid_non_admin():
     if _is_admin_caller():
         return None
-    return jsonify({"error": "Forbidden"}), 403
+    return json_error(ERR_FORBIDDEN, "Forbidden")
 
 
 def _validate_type(server_type):
@@ -398,19 +407,24 @@ def add_server():
     server_type = (data.get('server_type') or '').strip().lower()
     creds = data.get('creds') or {}
     if not name:
-        return jsonify({"error": "Server name is required."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Server name is required.")
     if not _validate_type(server_type):
-        return jsonify({"error": f"server_type must be one of {list(_SUPPORTED_TYPES)}."}), 400
+        return json_error(
+            ERR_INVALID_REQUEST, f"server_type must be one of {list(_SUPPORTED_TYPES)}."
+        )
     if not isinstance(creds, dict):
-        return jsonify({"error": "creds must be an object."}), 400
+        return json_error(ERR_INVALID_REQUEST, "creds must be an object.")
     if _name_taken(name):
-        return jsonify({"error": f"A server named '{name}' already exists; names must be unique."}), 400
+        return json_error(
+            ERR_INVALID_REQUEST, f"A server named '{name}' already exists; names must be unique."
+        )
     make_default = _as_bool(data.get('make_default', False))
     missing = _missing_cred_keys(server_type, creds)
     if missing:
-        return jsonify(
-            {"error": f"Missing required credentials for {server_type}: {', '.join(missing)}."}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f"Missing required credentials for {server_type}: {', '.join(missing)}.",
+        )
     placeholder = _placeholder_default()
     if placeholder is not None and not make_default:
         logger.info(
@@ -449,18 +463,23 @@ def update_server(server_id):
         return forbidden
     existing = registry.get_server(server_id)
     if existing is None:
-        return jsonify({"error": "Unknown server."}), 404
+        return json_error(ERR_NOT_FOUND, "Unknown server.")
     data = request.get_json(silent=True) or {}
     server_type = data.get('server_type')
     if server_type is not None:
         server_type = server_type.strip().lower()
         if not _validate_type(server_type):
-            return jsonify({"error": f"server_type must be one of {list(_SUPPORTED_TYPES)}."}), 400
+            return json_error(
+                ERR_INVALID_REQUEST, f"server_type must be one of {list(_SUPPORTED_TYPES)}."
+            )
     new_name = data.get('name').strip() if isinstance(data.get('name'), str) else None
     if isinstance(data.get('name'), str) and not new_name:
-        return jsonify({"error": "Server name cannot be empty"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Server name cannot be empty")
     if new_name and _name_taken(new_name, exclude_server_id=server_id):
-        return jsonify({"error": f"A server named '{new_name}' already exists; names must be unique."}), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f"A server named '{new_name}' already exists; names must be unique.",
+        )
     creds = None
     if 'creds' in data and isinstance(data['creds'], dict):
         creds = merge_creds(existing['creds'], data['creds'])
@@ -473,9 +492,10 @@ def update_server(server_id):
         effective_creds = creds if creds is not None else existing['creds']
         missing = _missing_cred_keys(effective_type, effective_creds)
         if missing:
-            return jsonify(
-                {"error": f"Missing required credentials for {effective_type}: {', '.join(missing)}."}
-            ), 400
+            return json_error(
+                ERR_INVALID_REQUEST,
+                f"Missing required credentials for {effective_type}: {', '.join(missing)}.",
+            )
     registry.update_server(
         server_id,
         name=new_name,
@@ -514,9 +534,9 @@ def delete_server(server_id):
     try:
         deleted = registry.delete_server(server_id)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return json_exception(exc, ERR_DEFAULT_SERVER_DELETE)
     if not deleted:
-        return jsonify({"error": "Unknown server."}), 404
+        return json_error(ERR_NOT_FOUND, "Unknown server.")
     return jsonify({"deleted": server_id})
 
 
@@ -526,7 +546,7 @@ def set_default_server(server_id):
     if forbidden:
         return forbidden
     if registry.get_server(server_id) is None:
-        return jsonify({"error": "Unknown server."}), 404
+        return json_error(ERR_NOT_FOUND, "Unknown server.")
     registry.set_default(server_id)
     restart_acknowledged = _apply_default_to_config()
     sweep_task_id = _enqueue_sweep()
@@ -545,7 +565,9 @@ def _parse_probe_request():
     server_type = (data.get('server_type') or '').strip().lower()
     creds = data.get('creds') or {}
     if not _validate_type(server_type):
-        error = jsonify({"error": f"server_type must be one of {list(_SUPPORTED_TYPES)}."}), 400
+        error = json_error(
+            ERR_INVALID_REQUEST, f"server_type must be one of {list(_SUPPORTED_TYPES)}."
+        )
         return None, None, error
     server_id = data.get('server_id')
     if server_id:
@@ -587,7 +609,9 @@ def align_servers():
         return forbidden
     task_id = _enqueue_sweep(at_front=True)
     if task_id is None:
-        return jsonify({"error": "Could not enqueue the alignment; check container logs."}), 500
+        return json_error(
+            ERR_TASK_ENQUEUE_FAILED, "Could not enqueue the alignment; check container logs."
+        )
     return jsonify({"enqueued": True, "task_id": task_id}), 202
 
 
@@ -597,7 +621,7 @@ def sweep_server(server_id):
     if forbidden:
         return forbidden
     if registry.get_server(server_id) is None:
-        return jsonify({"error": "Unknown server."}), 404
+        return json_error(ERR_NOT_FOUND, "Unknown server.")
     task_id = str(uuid.uuid4())
     try:
         # This endpoint had no gate at all, so a single-server sweep could start
@@ -605,22 +629,16 @@ def sweep_server(server_id):
         with main_task_start_lock():
             active = _task_blocking_a_sweep()
             if active:
-                return jsonify(
-                    {
-                        "error": f"A {active['task_type']} task is running. "
-                                 f"Re-run the sweep once it finishes.",
-                        "task_id": active['task_id'],
-                    }
-                ), 409
+                return json_error(ERR_TASK_IN_PROGRESS, f"A {active['task_type']} task is running. "
+                                 f"Re-run the sweep once it finishes.", task_id=active['task_id'])
             active_sweep = _live_sweep_row()
             if active_sweep:
-                return jsonify(
-                    {
-                        "error": "A server sweep is already in progress.",
-                        "task_id": active_sweep['task_id'],
-                        "status": active_sweep['status'],
-                    }
-                ), 409
+                return json_error(
+                    ERR_TASK_IN_PROGRESS,
+                    "A server sweep is already in progress.",
+                    task_id=active_sweep['task_id'],
+                    status=active_sweep['status'],
+                )
             taskqueue.enqueue(
                 'tasks.multiserver_sync.sweep_server',
                 args=(server_id,),
@@ -634,10 +652,12 @@ def sweep_server(server_id):
                 },
             )
     except taskqueue.TaskAlreadyRunning as exc:
-        return jsonify({"error": exc.user_message}), exc.status_code
-    except Exception:
+        return json_error(ERR_TASK_IN_PROGRESS, exc.user_message, http_status=exc.status_code)
+    except Exception as exc:
         logger.exception(
             "Failed to queue the matching sweep for server %s", sanitize_log_value(server_id)
         )
-        return jsonify({"error": "Could not queue the sweep; check container logs."}), 500
+        return json_exception(
+            exc, ERR_TASK_ENQUEUE_FAILED, "Could not queue the sweep; check container logs."
+        )
     return jsonify({"enqueued": True, "task_id": task_id, "job_id": task_id, "server_id": server_id}), 202

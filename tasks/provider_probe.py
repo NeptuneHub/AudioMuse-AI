@@ -21,9 +21,18 @@ Main Features:
   never coexists with a full normalised copy.
 * The normalised dict carries exactly what the consumers read: the id, path and
   metadata the sweep matches on, plus the artist id and rating it aligns.
+* ``test_connection`` answers the Music Servers page and the provider migration
+  wizard, so a failed probe carries a registry code and its predefined message
+  instead of the client's own error text (which can quote a URL with its token);
+  that text is logged in full. The raw ``mediaserver.test_connection`` result is
+  untouched for the analysis, which reads its text to spot an auth failure.
 """
 
+import logging
+
 from tasks import mediaserver
+
+logger = logging.getLogger(__name__)
 
 
 def _duration_seconds(item):
@@ -126,7 +135,29 @@ def get_album_tracks(provider_type, creds, album_id):
 
 def test_connection(provider_type, creds):
     t = _normalize_provider_type(provider_type)
-    return mediaserver.test_connection(user_creds=creds, provider_type=t)
+    return public_test_result(t, mediaserver.test_connection(user_creds=creds, provider_type=t))
+
+
+def public_test_result(provider_type, result):
+    from error.error_dictionary import (
+        ERR_MEDIASERVER_AUTH,
+        ERR_MEDIASERVER_TEST_FAILED,
+        get_default_message,
+        get_error_class,
+    )
+
+    if not isinstance(result, dict) or result.get('ok'):
+        return result
+    logger.warning(
+        "Media server connection test failed for %s: %s", provider_type, result.get('error')
+    )
+    code = ERR_MEDIASERVER_AUTH if result.get('auth_failed') else ERR_MEDIASERVER_TEST_FAILED
+    return {
+        **result,
+        'error_code': code,
+        'error_class': get_error_class(code),
+        'error': get_default_message(code),
+    }
 
 
 def list_libraries(provider_type, creds):

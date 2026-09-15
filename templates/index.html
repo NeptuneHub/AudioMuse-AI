@@ -1,5 +1,21 @@
 {% extends "includes/layout.html" %}
 
+{% block headAdditions %}
+<style>
+    @media (max-width: 768px) {
+        .playlist-header .show-songs-btn {
+            min-height: 32px;
+            padding: 0.4rem 0.9rem;
+            font-size: 0.8rem;
+        }
+        #config-enable_clustering_embeddings {
+            width: 22px !important;
+            height: 22px;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div id="main-content-inner">
     <section>

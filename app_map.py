@@ -38,6 +38,12 @@ import gzip
 from database import get_db, load_map_projection
 from app_helper import catalogue_has_canonical_ids, remember_catalogue_canonical_ids
 import app_server_context
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_INVALID_REQUEST,
+    UNKNOWN_ERROR_CODE,
+)
+from error.responses import json_error, json_exception
 
 # Try to reuse the shared projection helpers
 try:
@@ -529,7 +535,7 @@ def map_api():
         server_id = app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     from tasks.mediaserver import registry
 
     # The legacy fast path streams score.item_id verbatim; that is safe only while
@@ -599,11 +605,13 @@ def map_cache_status():
                 'projection': v.get('projection'),
             }
         return jsonify({'ok': True, 'buckets': info}), 200
-    except Exception:
+    except Exception as exc:
         # Log the full exception (including stack) for diagnostics, but do not expose
         # internal exception details to API clients.
         logger.exception('map_cache_status failed')
-        return jsonify({'ok': False, 'reason': 'exception', 'error': 'Internal server error'}), 500
+        return json_exception(
+            exc, UNKNOWN_ERROR_CODE, 'Internal server error', ok=False, reason='exception'
+        )
 
 
 @map_bp.route('/api/rebuild_map_cache', methods=['POST'])
@@ -633,7 +641,7 @@ def rebuild_map_cache():
     try:
         build_map_cache()
         return jsonify({'ok': True, 'message': 'map cache rebuilt'}), 200
-    except Exception:
+    except Exception as exc:
         # Log the full exception for debugging, but return a generic error to the caller.
         logger.exception('rebuild_map_cache failed')
-        return jsonify({'ok': False, 'error': 'Internal server error'}), 500
+        return json_exception(exc, ERR_CACHE_REFRESH_FAILED, 'Internal server error', ok=False)

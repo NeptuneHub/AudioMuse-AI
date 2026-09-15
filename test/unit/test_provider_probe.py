@@ -244,3 +244,26 @@ class TestProviderIdsAreText:
     def test_an_integer_provider_id_becomes_a_string(self, probe):
         assert probe._normalize_track({'id': 12345, 'title': 'x'})['id'] == '12345'
         assert probe._normalize_track({'title': 'no id'})['id'] is None
+
+
+class TestDispatcherKeepsProviderErrorsInTheLog:
+    def test_a_failed_probe_answers_the_registry_text_and_logs_the_provider_text(self, probe, caplog):
+        import logging
+
+        from error.error_dictionary import ERR_MEDIASERVER_AUTH, ERR_MEDIASERVER_TEST_FAILED
+
+        leaky = 'HTTPSConnectionPool: /Items?api_key=user-token failed'
+        with caplog.at_level(logging.WARNING, logger='tasks.provider_probe'):
+            failed = probe.public_test_result('jellyfin', {'ok': False, 'error': leaky})
+            refused = probe.public_test_result(
+                'navidrome', {'ok': False, 'error': 'Wrong password', 'auth_failed': True}
+            )
+            passed = probe.public_test_result('plex', {'ok': True, 'error': None})
+
+        assert failed['error_code'] == ERR_MEDIASERVER_TEST_FAILED and 'user-token' not in failed['error']
+        assert failed['error_class'] == 'Music Server Connection Test Failed', (
+            'the page renders [code] class: message; without the class it showed "Error"'
+        )
+        assert refused['error_code'] == ERR_MEDIASERVER_AUTH and refused['auth_failed'] is True
+        assert passed == {'ok': True, 'error': None}
+        assert 'api_key=user-token' in caplog.text, 'the container log keeps the provider answer'

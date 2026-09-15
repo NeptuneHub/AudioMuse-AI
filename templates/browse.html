@@ -93,7 +93,9 @@
      stretching the whole table even wider; every other column stays on one line. */
   @media (max-width: 600px) {
     table.browse-table { min-width: 520px; font-size: 0.85rem; }
+    table.browse-table.browse-narrow { min-width: 0; }
     table.browse-table th, table.browse-table td { white-space: nowrap; padding: 7px 8px; }
+    .browse-dup-detail .browse-files { position: sticky; left: 8px; max-width: calc(100vw - 4rem); }
     /* These two MUST out-specify the blanket nowrap above, or they never wrap.
        The title keeps at least ~15 characters before wrapping so it does not get
        squeezed down to a few letters per line. */
@@ -104,9 +106,25 @@
       max-width: 45vw;
     }
     table.browse-table .browse-dup-detail td { white-space: normal; }
+    table.browse-table td.browse-wrap-cell {
+      white-space: normal;
+      word-break: break-word;
+      min-width: 10ch;
+      max-width: 40vw;
+    }
     .browse-idx { width: 1%; }
     .browse-controls { gap: 0.5rem; }
     .browse-search { flex-basis: 100%; }
+    .browse-field { min-width: 0; max-width: 100%; }
+    .browse-tabs { display: flex; flex-wrap: wrap; }
+    .browse-tabs .btn-sm,
+    .browse-pager .btn-sm { min-height: 40px; }
+    .browse-field > label,
+    table.browse-table th,
+    .browse-copies,
+    .browse-chip { font-size: 0.75rem; }
+    .browse-field select,
+    .browse-field input { font-size: 1rem; }
   }
 </style>
 {% endblock %}
@@ -277,6 +295,8 @@
     else if (state.kind === 'unanalyzable') cols = ['#', 'Title', 'Artist', 'Duration', 'Error', 'Server', 'First seen', 'Last seen'];
     else if (isDup()) cols = ['#', 'Copies', 'Title', 'Artist', 'Album'];
     else cols = ['#', 'Title', 'Artist', 'Album', 'Year'];
+    $('browse-thead').closest('table').classList.toggle('browse-narrow',
+      state.kind === 'artists' || state.kind === 'albums' || isDup());
     $('browse-thead').innerHTML = '<tr>' + cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr>';
   }
 
@@ -291,10 +311,10 @@
     items.forEach((r, i) => {
       const n = fmt(base + i + 1);
       if (state.kind === 'artists') {
-        html += '<tr><td class="browse-idx">' + n + '</td><td>' + esc(r.artist) + '</td></tr>';
+        html += '<tr><td class="browse-idx">' + n + '</td><td class="browse-wrap-cell">' + esc(r.artist) + '</td></tr>';
       } else if (state.kind === 'albums') {
-        html += '<tr><td class="browse-idx">' + n + '</td><td>' + esc(r.album_artist)
-              + '</td><td>' + esc(r.album) + '</td></tr>';
+        html += '<tr><td class="browse-idx">' + n + '</td><td class="browse-wrap-cell">' + esc(r.album_artist)
+              + '</td><td class="browse-wrap-cell">' + esc(r.album) + '</td></tr>';
       } else if (state.kind === 'unanalyzable') {
         const reason = r.reason_code == null ? null : 'ERR-' + r.reason_code;
         const reasonCell = reason
@@ -302,7 +322,7 @@
             + '" aria-label="' + esc(reasonText(r.reason_code)) + '">' + esc(reason) + '</span>'
           : '–';
         html += '<tr><td class="browse-idx">' + n + '</td><td class="browse-title-cell">'
-              + esc(r.title) + '</td><td>' + esc(r.artist) + '</td><td>'
+              + esc(r.title) + '</td><td class="browse-wrap-cell">' + esc(r.artist) + '</td><td>'
               + esc(fmtDuration(r.duration_seconds)) + '</td><td>' + reasonCell
               + '</td><td>' + esc(r.server) + '</td><td>' + esc(r.created_at)
               + '</td><td>' + esc(r.updated_at) + '</td></tr>';
@@ -313,13 +333,13 @@
         html += '<tr class="browse-dup-row">'
               + '<td class="browse-idx"><span class="browse-caret">&#9656;</span> ' + n + '</td>'
               + '<td><span class="browse-copies">' + esc(r.copies) + '</span></td>'
-              + '<td class="browse-title-cell">' + esc(r.title) + '</td><td>' + esc(r.author) + '</td>'
-              + '<td>' + esc(r.album) + '</td></tr>'
+              + '<td class="browse-title-cell">' + esc(r.title) + '</td><td class="browse-wrap-cell">' + esc(r.author) + '</td>'
+              + '<td class="browse-wrap-cell">' + esc(r.album) + '</td></tr>'
               + '<tr class="browse-dup-detail" hidden><td colspan="' + colCount() + '">'
               + '<div class="browse-files">' + files + '</div></td></tr>';
       } else {
         html += '<tr><td class="browse-idx">' + n + '</td><td class="browse-title-cell">' + esc(r.title)
-              + '</td><td>' + esc(r.author) + '</td><td>' + esc(r.album)
+              + '</td><td class="browse-wrap-cell">' + esc(r.author) + '</td><td class="browse-wrap-cell">' + esc(r.album)
               + '</td><td>' + esc(r.year) + '</td></tr>';
       }
     });
@@ -375,9 +395,9 @@
       // No ?server= is added by server_selector.js here (/api/dashboard/ is excluded),
       // so this endpoint sees exactly the server this page chose.
       const resp = await fetch(API + '?' + p.toString());
-      const data = await resp.json();
+      const data = await readJsonBody(resp);
       if (token !== reqToken) return;
-      if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+      if (!resp.ok || data === null) throw new Error(apiErrorText(data, 'Server returned an error (HTTP ' + resp.status + ')'));
       if (data.capped) {
         $('browse-status').textContent =
           'Too many results to page this deep - refine with search or a filter to narrow them.';

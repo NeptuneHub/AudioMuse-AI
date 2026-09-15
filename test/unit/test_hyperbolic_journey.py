@@ -337,7 +337,8 @@ def test_journey_api_reports_a_rejected_walk_as_a_bad_request():
             "/api/hyperbolic/journey", json={"start_item_id": "a", "end_item_id": "a"}
         )
     assert response.status_code == 400
-    assert response.get_json()["error"] == "The start and end track must be different."
+    assert response.get_json()["error_code"] == 1013
+    assert "run the analysis" in response.get_json()["error"]
 
 
 def test_journey_api_returns_provider_ids_not_canonical_ones():
