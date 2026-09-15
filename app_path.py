@@ -280,7 +280,7 @@ def find_path_endpoint():
             [i for i in (start_song_id, end_song_id) if i]
         )
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_INVALID_REQUEST)
     if start_song_id:
         start_song_id = resolved_endpoints.get(start_song_id, start_song_id)
     if end_song_id:

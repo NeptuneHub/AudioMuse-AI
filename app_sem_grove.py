@@ -131,7 +131,7 @@ def sem_grove_search_api():
         return jsonify({"results": results, "count": len(results)})
 
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_INVALID_REQUEST)
     except Exception as exc:
         logger.exception("SemGrove search failed")
         return json_exception(exc, ERR_SEARCH_FAILED, "An internal error occurred.")

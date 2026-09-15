@@ -54,6 +54,7 @@ from error.error_dictionary import (
     ERR_MODEL_INFERENCE,
     ERR_MODEL_OUT_OF_MEMORY,
     ERR_OUT_OF_MEMORY,
+    ERR_UNKNOWN_SERVER,
     get_error_class,
     get_default_message,
     get_http_status,
@@ -73,6 +74,7 @@ _AUTH_STATUS_CODES = (401, 403)
 # BrokenPipeError) from stealing a media-server or database code.
 _EXCEPTION_RULES = (
     ("LyrionAPIError", None, ERR_MEDIASERVER_UNREACHABLE),
+    ("UnknownServerError", ("app_server_context",), ERR_UNKNOWN_SERVER),
     ("OperationalError", ("psycopg2",), ERR_DB_CONNECTION),
     ("InterfaceError", ("psycopg2",), ERR_DB_CONNECTION),
     ("DatabaseError", ("psycopg2",), ERR_DB_QUERY),

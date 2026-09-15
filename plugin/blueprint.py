@@ -36,10 +36,13 @@ from plugin import net
 from ssrf_guard import validate_outbound_url
 from plugin.manager import plugin_manager, version_ge, _parse_version, _download_url as _download
 from error.error_dictionary import (
-    ERR_CONFLICT,
     ERR_INVALID_REQUEST,
     ERR_NOT_FOUND,
+    ERR_PLUGIN_DOWNLOAD_FAILED,
     ERR_PLUGIN_FAILED,
+    ERR_PLUGIN_PACKAGE_REJECTED,
+    ERR_PLUGIN_VERSION_UNAVAILABLE,
+    get_default_message,
 )
 from error.responses import json_error, json_exception
 
@@ -52,6 +55,10 @@ _CATALOG_CACHE_KEY = 'PLUGIN_CATALOG_CACHE'
 _CATALOG_MAX_BYTES = 5 * 1024 * 1024
 
 _GENERIC_ERROR = 'Operation failed. Check the container logs for details.'
+
+
+def _repo_error(repo, code):
+    return {'repo': repo, 'error_code': code, 'error': get_default_message(code)}
 
 _catalog_refresh_lock = threading.Lock()
 
@@ -213,9 +220,9 @@ def _resolve_versions(entry, errors):
         doc = json.loads(raw)
         if not isinstance(doc, dict):
             raise TypeError('plugin.json is not a JSON object')
-    except Exception as exc:
-        logger.warning('Failed to fetch plugin.json %s: %s', detail_url, exc)
-        errors.append({'repo': detail_url, 'error': str(exc)})
+    except Exception:
+        logger.warning('Failed to fetch plugin.json %s', detail_url, exc_info=True)
+        errors.append(_repo_error(detail_url, ERR_PLUGIN_DOWNLOAD_FAILED))
         return entry, None
     return doc, _versions_from_doc(doc)
 
@@ -226,9 +233,9 @@ def _build_catalog_entry(repo_url, entry, installed):
     try:
         detail, versions = _resolve_versions(entry, local_errors)
         best = _pick_version(versions)
-    except Exception as exc:
-        logger.warning('Failed to resolve plugin %s: %s', plugin_id, exc)
-        local_errors.append({'repo': plugin_id or repo_url, 'error': str(exc)})
+    except Exception:
+        logger.warning('Failed to resolve plugin %s', plugin_id, exc_info=True)
+        local_errors.append(_repo_error(plugin_id or repo_url, ERR_PLUGIN_FAILED))
         return plugin_id, None, local_errors
     if not best:
         return plugin_id, None, local_errors
@@ -281,9 +288,9 @@ def _fetch_catalog():
             doc = json.loads(raw)
             if not isinstance(doc, dict):
                 raise TypeError('Repository catalog is not a JSON object')
-        except net.DownloadError as exc:
-            logger.warning('Failed to fetch plugin repo %s: %s', repo_url, exc)
-            errors.append({'repo': repo_url, 'error': str(exc)})
+        except net.DownloadError:
+            logger.warning('Failed to fetch plugin repo %s', repo_url, exc_info=True)
+            errors.append(_repo_error(repo_url, ERR_PLUGIN_DOWNLOAD_FAILED))
             failed_repos.add(repo_url)
             continue
         except Exception as exc:
@@ -485,12 +492,12 @@ def api_install():
             response['deps_error'] = deps_error
         return jsonify(response)
     except VersionUnavailableError as exc:
-        return json_error(ERR_CONFLICT, str(exc))
-    except net.DownloadError as exc:
-        logger.warning('Plugin download failed for %s: %s', plugin_id, exc)
-        return json_error(ERR_PLUGIN_FAILED, str(exc), http_status=502)
+        return json_exception(exc, ERR_PLUGIN_VERSION_UNAVAILABLE)
+    except net.DownloadError:
+        logger.exception('Plugin download failed for %s', plugin_id)
+        return json_error(ERR_PLUGIN_DOWNLOAD_FAILED)
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_PLUGIN_PACKAGE_REJECTED)
     except Exception as exc:
         logger.exception('Plugin install failed')
         return json_exception(exc, ERR_PLUGIN_FAILED, _GENERIC_ERROR)

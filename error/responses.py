@@ -27,8 +27,17 @@ Main Features:
   instead of the route's generic ones. An exception that stays on the route's
   own code answers exactly like ``json_error``: the route detail is folded into
   ``error_message`` too, which is the text the pages show. It never puts the
-  exception text in the body and never logs: the route already logged the
-  traceback.
+  exception text in the body: the caller gets only the registry code and its
+  predefined message, and the container log gets everything. The exception is
+  logged exactly once, with the request method and path: when the route already
+  logged it (``logger.exception``, which ``app_logging.LogSanitizingFilter``
+  marks) it is not repeated, otherwise it is logged here, as a warning for a
+  rejected request (below 500) and as an error for a failure. That holds for
+  every branch, a coded ``AudioMuseError`` and a caught Werkzeug error included.
+  A route catching ``ValueError`` answers ``json_exception(exc, <code whose
+  message explains the rejection>)``, never ``json_error(code, str(exc))``.
+* An extra ``message=None`` is filled with the answer text, for the pages and
+  clients that read ``message`` next to ``error``.
 * A Werkzeug HTTP error a route's own ``except Exception`` caught (the 415 or
   400 ``request.get_json()`` raises for a body that is not JSON) keeps its
   status and request code instead of turning into the route's 500, and still
@@ -49,7 +58,11 @@ Main Features:
   same way.
 """
 
-from flask import json, jsonify
+import logging
+
+from flask import has_request_context, json, jsonify, request
+
+logger = logging.getLogger(__name__)
 
 JSON_ERROR_PATH_PREFIXES = ("/api/", "/chat/api/", "/external/")
 
@@ -57,7 +70,22 @@ JSON_ERROR_PATH_PREFIXES = ("/api/", "/chat/api/", "/external/")
 def _body(payload, alias, extra):
     body = {**payload, "error": alias}
     body.update(extra)
+    if "message" in body and body["message"] is None:
+        body["message"] = alias
     return body
+
+
+def _log_once(exc, code, status):
+    from app_logging import mark_logged, was_logged
+
+    if was_logged(exc):
+        return
+    where = f"{request.method} {request.path}" if has_request_context() else "a call"
+    if status < 500:
+        logger.warning("Rejected %s with error code %s", where, code, exc_info=exc)
+    else:
+        logger.error("Failed %s with error code %s", where, code, exc_info=exc)
+    mark_logged(exc)
 
 
 def _respond(payload, alias, http_status, extra):
@@ -87,15 +115,21 @@ def json_exception(exc, default_code, detail=None, http_status=None, **extra):
 
     if isinstance(exc, HTTPException):
         response = json_http_exception(exc, **extra)
+        _log_once(exc, getattr(exc, "code", None), response.status_code)
         return response, response.status_code
     if isinstance(exc, AudioMuseError):
+        code = exc.code
         payload = exc.to_dict()
-        return _respond(payload, payload["error_message"], http_status, extra)
-    code = classify(exc, default_code)
-    if code == default_code:
-        return _detailed(code, detail, http_status, extra)
-    payload = build(code)
-    return _respond(payload, payload["error_message"], http_status, extra)
+        response = _respond(payload, payload["error_message"], http_status, extra)
+    else:
+        code = classify(exc, default_code)
+        if code == default_code:
+            response = _detailed(code, detail, http_status, extra)
+        else:
+            payload = build(code)
+            response = _respond(payload, payload["error_message"], http_status, extra)
+    _log_once(exc, code, response[1])
+    return response
 
 
 def wants_json_error(path):

@@ -43,6 +43,7 @@ import config
 from flask import Blueprint, jsonify, render_template, request
 from error.error_dictionary import (
     ERR_CACHE_REFRESH_FAILED,
+    ERR_HYPERBOLIC_REJECTED,
     ERR_INVALID_REQUEST,
     ERR_SEARCH_FAILED,
     UNKNOWN_ERROR_CODE,
@@ -245,7 +246,7 @@ def hyperbolic_similar_api():
         })
 
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_HYPERBOLIC_REJECTED)
     except Exception as exc:
         logger.exception("Hyperbolic similar search failed")
         return json_exception(exc, ERR_SEARCH_FAILED, _INTERNAL_ERROR_MSG)
@@ -438,7 +439,7 @@ def hyperbolic_journey_api():
         return jsonify(journey)
 
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_HYPERBOLIC_REJECTED)
     except Exception as exc:
         logger.exception("Hyperbolic geodesic journey failed")
         return json_exception(exc, ERR_SEARCH_FAILED, _INTERNAL_ERROR_MSG)
@@ -532,7 +533,7 @@ def hyperbolic_tree_api():
         return jsonify({"node": node})
 
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_HYPERBOLIC_REJECTED)
     except Exception as exc:
         logger.exception("Hyperbolic tree browse failed")
         return json_exception(exc, ERR_SEARCH_FAILED, _INTERNAL_ERROR_MSG)

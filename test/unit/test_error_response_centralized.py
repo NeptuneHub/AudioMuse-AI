@@ -27,6 +27,11 @@ Main Features:
 * A ``jsonify`` of a dict literal holding a non-null ``error`` key with no status
   at all fails: an error answered as an implicit 200 carries no code either. A
   success body that reports a failed probe states its 200 explicitly
+* An ``except`` block never answers with its exception's text: ``str(exc)``, an
+  f-string or ``exc.args`` handed to ``json_error`` / ``json_exception`` fails
+  (CodeQL py/stack-trace-exposure). The route passes the exception itself to
+  ``json_exception``: the caller gets the registry code and message, the log
+  gets the full traceback
 * The scanner is checked against small sources, so each rule really fires
 """
 
@@ -139,6 +144,87 @@ def _scan(source, relative=Path("app_example.py")):
     return list(_violations(ast.parse(textwrap.dedent(source)), relative))
 
 
+_RESPONSE_HELPERS = {"json_error", "json_exception"}
+_CURATED_EXCEPTION_ATTRIBUTES = {"code", "user_message", "status_code"}
+
+
+def _mentions(node, name):
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return node.value.id == name and node.attr not in _CURATED_EXCEPTION_ATTRIBUTES
+    if isinstance(node, ast.Name):
+        return node.id == name
+    return any(_mentions(child, name) for child in ast.iter_child_nodes(node))
+
+
+_PAYLOAD_KEYS = {"error", "message", "detail"}
+_LOG_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "log", "write"}
+
+
+def _is_text_of(node, names):
+    if isinstance(node, ast.Call) and _call_name(node) in ("str", "repr") and node.args:
+        return any(_mentions(node.args[0], name) for name in names)
+    if isinstance(node, ast.JoinedStr):
+        return any(
+            isinstance(part, ast.FormattedValue) and any(_mentions(part.value, name) for name in names)
+            for part in node.values
+        )
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return node.value.id in names and node.attr not in _CURATED_EXCEPTION_ATTRIBUTES
+    if isinstance(node, ast.Name):
+        return node.id in names
+    return False
+
+
+def _carries_text(node, names):
+    if _call_name(node) in _LOG_CALLS:
+        return False
+    if isinstance(node, ast.Attribute) and node.attr in _CURATED_EXCEPTION_ATTRIBUTES:
+        return False
+    if _is_text_of(node, names):
+        return True
+    return any(_carries_text(child, names) for child in ast.iter_child_nodes(node))
+
+
+def _tainted_names(handler):
+    names = {handler.name}
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Assign) and _carries_text(node.value, names):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+def _answers_http(relative):
+    return (len(relative.parts) == 1 and relative.name.startswith("app")) or relative == Path(
+        "plugin", "blueprint.py"
+    )
+
+
+def _exception_text_leaks(tree, relative=Path("app_example.py")):
+    route_module = _answers_http(relative)
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler) or not handler.name:
+            continue
+        names = _tainted_names(handler)
+        for node in ast.walk(handler):
+            if _call_name(node) in _RESPONSE_HELPERS | {"jsonify"}:
+                args = list(node.args)
+                if _call_name(node) == "json_exception" and args:
+                    if isinstance(args[0], ast.Name) and args[0].id == handler.name:
+                        args = args[1:]
+                values = args + [keyword.value for keyword in node.keywords]
+                if any(_carries_text(value, names) for value in values):
+                    yield node.lineno
+            elif route_module and isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if isinstance(key, ast.Constant) and key.value in _PAYLOAD_KEYS \
+                            and _carries_text(value, names):
+                        yield node.lineno
+
+
+def _leaks(source):
+    return list(_exception_text_leaks(ast.parse(textwrap.dedent(source))))
+
+
 def test_the_walk_never_enters_an_excluded_directory():
     for _path, relative in _python_files():
         assert not set(relative.parts[:-1]) & EXCLUDED_DIRS, relative
@@ -200,4 +286,42 @@ def test_no_route_hand_rolls_an_error_response():
         "Answer errors with error.responses.json_error(code, detail, **extra) or "
         "json_exception(exc, default_code, detail, **extra) so the page receives the "
         "structured error code: " + ", ".join(sorted(found))
+    )
+
+
+def test_the_leak_scanner_flags_exception_text_and_allows_the_exception_itself():
+    flagged = {
+        "str": "try:\n    x()\nexcept ValueError as exc:\n    json_error(1003, str(exc))\n",
+        "f-string": "try:\n    x()\nexcept ValueError as exc:\n    json_error(1003, f'Error: {exc}', message=f'{exc}')\n",
+        "args": "try:\n    x()\nexcept ValueError as exc:\n    json_exception(exc, 3003, exc.args[0])\n",
+        "detail keyword": "try:\n    x()\nexcept ValueError as exc:\n    json_error(1003, detail=repr(exc))\n",
+        "through a variable": "try:\n    x()\nexcept ValueError as exc:\n    msg = str(exc)\n    json_error(1003, msg)\n",
+        "payload dict": "try:\n    x()\nexcept ValueError as exc:\n    errors.append({'repo': r, 'error': str(exc)})\n",
+    }
+    allowed = {
+        "exception itself": "try:\n    x()\nexcept ValueError as exc:\n    json_exception(exc, 1003)\n",
+        "own code": "try:\n    x()\nexcept AudioMuseError as ae:\n    json_exception(ae, ae.code)\n",
+        "curated message": "try:\n    x()\nexcept TaskAlreadyRunning as exc:\n    json_error(1201, exc.user_message, http_status=exc.status_code)\n",
+        "logged text": "try:\n    x()\nexcept ValueError as exc:\n    logger.warning('failed: %s', str(exc))\n    json_exception(exc, 1003)\n",
+    }
+    for label, source in flagged.items():
+        assert _leaks(source), label
+    for label, source in allowed.items():
+        assert not _leaks(source), label
+
+
+def test_no_route_answers_with_the_text_of_a_caught_exception():
+    found = []
+    for path, relative in _python_files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        found.extend(f"{relative}:{line}" for line in _exception_text_leaks(tree, relative))
+
+    assert not found, (
+        "A caught exception's text can name files, shapes, hosts or URLs with their tokens "
+        "(CodeQL py/stack-trace-exposure). Answer with json_exception(exc, code): the "
+        "body gets only the registry code and message and the log gets the full "
+        "traceback: " + ", ".join(sorted(found))
     )

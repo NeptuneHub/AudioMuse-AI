@@ -157,17 +157,23 @@ def test_oversized_clip_answers_413(client, monkeypatch):
     assert response.status_code == 413
 
 
-def test_manager_value_error_answers_400_with_its_message(client, monkeypatch):
+def test_manager_value_error_answers_400_with_the_registry_message_only(client, monkeypatch):
     def boom(*args, **kwargs):
-        raise ValueError('The clip is silent.')
+        raise ValueError('The codebook /app/model/nmfp_pq.npy has shape (8, 16)')
 
     _patch_manager(monkeypatch, boom)
     response = _post(client, {'clip': _clip()})
     assert response.status_code == 400
-    assert response.get_json()['error'] == 'The clip is silent.'
+    from error.error_dictionary import ERR_RECORDING_REJECTED, get_default_message
+    assert response.get_json()['error_code'] == ERR_RECORDING_REJECTED
+    assert response.get_json()['error'] == get_default_message(ERR_RECORDING_REJECTED)
+    assert '/app/model' not in response.get_data(as_text=True), (
+        'a broad except ValueError also catches library errors; the body carries only '
+        'prewritten text and the log carries the exception'
+    )
 
 
-def test_index_unavailable_answers_503_with_its_message_and_a_plain_runtime_error_stays_generic(client, monkeypatch):
+def test_index_unavailable_answers_503_with_its_code_and_a_plain_runtime_error_stays_generic(client, monkeypatch):
     from tasks.neural_fingerprint_index import IndexUnavailable
 
     def not_ready(*args, **kwargs):
@@ -176,7 +182,8 @@ def test_index_unavailable_answers_503_with_its_message_and_a_plain_runtime_erro
     _patch_manager(monkeypatch, not_ready)
     response = _post(client, {'clip': _clip()})
     assert response.status_code == 503
-    assert 'Run analysis first' in response.get_json()['error']
+    assert response.get_json()['error_code'] == 3005
+    assert 'Run analysis first' not in response.get_data(as_text=True)
 
     def internal(*args, **kwargs):
         raise RuntimeError('The fingerprint of fp_secret no longer matches the index')
@@ -253,7 +260,7 @@ def test_by_track_answers_400_without_a_song_or_with_an_unknown_one(client, monk
     monkeypatch.setattr(app_server_context, 'resolve_input_item_id', unknown)
     response = _post_track(client, {'item_id': 'x'})
     assert response.status_code == 400
-    assert response.get_json()['error'] == 'unknown song'
+    assert response.get_json()['error'] == 'The request is invalid.'
 
 
 def test_by_track_passes_the_canonical_id_and_scopes_the_results(client, monkeypatch):
@@ -333,7 +340,8 @@ def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypat
     monkeypatch.setattr(rsm, 'search_by_track', rejected)
     response = _post_track(client, {'item_id': 'x'})
     assert response.status_code == 400
-    assert 'no neural fingerprint' in response.get_json()['error']
+    assert response.get_json()['error_code'] == 1014
+    assert 'neural fingerprint the analysis computes' in response.get_json()['error']
 
     from tasks.neural_fingerprint_index import IndexUnavailable
 

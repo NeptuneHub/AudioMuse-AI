@@ -793,9 +793,9 @@ def _song_alchemy_sync(
 
         return {"songs": songs, "message": "\n".join(log_messages)}
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error in song alchemy")
-        log_messages.append(f"Error: {str(e)}")
+        log_messages.append("Error: song alchemy failed. Check the container logs.")
         return {"songs": [], "message": "\n".join(log_messages)}
 
 
@@ -1139,9 +1139,9 @@ def _lyrics_search_sync(query: str, get_songs: int) -> Dict:
         ]
         log_messages.append(f"Lyrics search returned {len(songs)} songs")
         return {"songs": songs, "message": "\n".join(log_messages)}
-    except Exception as e:
+    except Exception:
         logger.exception("lyrics_search failed")
-        return {"songs": [], "message": f"lyrics_search error: {str(e)[:200]}"}
+        return {"songs": [], "message": "lyrics_search error. Check the container logs."}
 
 
 def _extract_json_object(raw: str) -> Optional[Dict]:

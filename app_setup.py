@@ -43,6 +43,8 @@ from error.error_dictionary import (
     ERR_CONFIG_MEDIASERVER_CREDENTIALS,
     ERR_DB_QUERY,
     ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_AUTH,
+    ERR_MEDIASERVER_TEST_FAILED,
     ERR_MEDIASERVER_UNREACHABLE,
     ERR_NAMING_PREVIEW_FAILED,
     ERR_TASK_ENQUEUE_FAILED,
@@ -445,12 +447,11 @@ def _test_media_server_connection(filtered_values, navidrome_auth_mode=''):
         media_type = test_config.get('MEDIASERVER_TYPE', 'jellyfin')
         result = mediaserver.test_connection() or {}
         if not result.get('ok'):
+            app.logger.warning(
+                'Media server connection test failed for %s: %s', media_type, result.get('error')
+            )
             raise AudioMuseError(
-                ERR_CONFIG_MEDIASERVER_CREDENTIALS
-                if result.get('auth_failed')
-                else ERR_MEDIASERVER_UNREACHABLE,
-                result.get('error')
-                or f"Could not reach {media_type.capitalize()}; check the URL and credentials.",
+                ERR_MEDIASERVER_AUTH if result.get('auth_failed') else ERR_MEDIASERVER_TEST_FAILED
             )
         return {
             'type': media_type,
@@ -460,11 +461,11 @@ def _test_media_server_connection(filtered_values, navidrome_auth_mode=''):
         raise
     except ValueError as exc:
         raise AudioMuseError(
-            ERR_CONFIG_MEDIASERVER_CREDENTIALS, str(exc), cause=exc
+            ERR_CONFIG_MEDIASERVER_CREDENTIALS, cause=exc
         ) from exc
     except Exception as exc:
         raise AudioMuseError(
-            error_manager.classify(exc, ERR_MEDIASERVER_UNREACHABLE), str(exc), cause=exc
+            error_manager.classify(exc, ERR_MEDIASERVER_TEST_FAILED), cause=exc
         ) from exc
     finally:
         _restore_config(original_config)
@@ -966,7 +967,6 @@ def setup_api():
                 'Configuration was saved, but requesting the worker restart failed'
             )
     except AudioMuseError as ae:
-        app.logger.error('Setup media server check failed: %s', ae, exc_info=ae.cause)
         return json_exception(ae, ae.code)
     except Exception as exc:
         app.logger.error('Setup save failed: %s', exc, exc_info=True)

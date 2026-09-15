@@ -21,10 +21,11 @@ Main Features:
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
-* The manager's ValueError (the clip is at fault) answers 400 and the index's
-  IndexUnavailable (the index or the model is not ready, with a curated
-  message) answers 503; everything else, any other RuntimeError included, is
-  a generic 500 with the detail only in the container log.
+* The manager's ValueError (the clip or the song is at fault) answers 400
+  ERR_RECORDING_REJECTED and the index's IndexUnavailable (the index or the model
+  is not ready) answers 503 ERR_RECORDING_INDEX_UNAVAILABLE, each registry message
+  naming what to fix; everything else, any other RuntimeError included, is a
+  generic 500. The exception text is only in the container log.
 * Results are scoped and id-translated to the selected server like every other
   per-server search page.
 * The page carries the built-in HTTPS state so that, on a plain-HTTP address,
@@ -41,6 +42,8 @@ from error.error_dictionary import (
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
     ERR_PAYLOAD_TOO_LARGE,
+    ERR_RECORDING_INDEX_UNAVAILABLE,
+    ERR_RECORDING_REJECTED,
     ERR_SEARCH_FAILED,
 )
 from error.responses import json_error, json_exception
@@ -125,11 +128,9 @@ def _run_search(search, label):
     try:
         return search(), None
     except ValueError as exc:
-        logger.warning('%s rejected the request: %s', label, exc)
-        return None, json_error(ERR_INVALID_REQUEST, str(exc), results=[])
+        return None, json_exception(exc, ERR_RECORDING_REJECTED, results=[])
     except IndexUnavailable as exc:
-        logger.warning('%s unavailable: %s', label, exc)
-        return None, json_error(ERR_INDEX_EMPTY, str(exc), results=[])
+        return None, json_exception(exc, ERR_RECORDING_INDEX_UNAVAILABLE, results=[])
     except Exception as exc:
         logger.exception('%s failed', label)
         return None, json_exception(
@@ -320,7 +321,7 @@ def recording_search_by_track_api():
     try:
         canonical_id = app_server_context.resolve_input_item_id(item_id)
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc), results=[])
+        return json_exception(exc, ERR_INVALID_REQUEST, results=[])
 
     payload, failure = _run_search(lambda: search_by_track(canonical_id, n_results), 'Recording search by track')
     if failure is not None:

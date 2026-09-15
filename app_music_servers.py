@@ -52,6 +52,7 @@ from app_server_context import (
 from tasks import provider_probe
 from tasks.mediaserver import registry
 from error.error_dictionary import (
+    ERR_DEFAULT_SERVER_DELETE,
     ERR_FORBIDDEN,
     ERR_INVALID_REQUEST,
     ERR_NOT_FOUND,
@@ -533,7 +534,7 @@ def delete_server(server_id):
     try:
         deleted = registry.delete_server(server_id)
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_DEFAULT_SERVER_DELETE)
     if not deleted:
         return json_error(ERR_NOT_FOUND, "Unknown server.")
     return jsonify({"deleted": server_id})

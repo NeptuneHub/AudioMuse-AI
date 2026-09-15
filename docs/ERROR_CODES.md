@@ -44,15 +44,23 @@ internal detail leaks to the frontend.
 | 1004 | Not Found | The requested item, session, task or route does not exist (also any unknown `/api/` path) | every blueprint via `json_error`, [app.py](../app.py) HTTP handler | Check the id or URL. |
 | 1005 | Authentication Required | Login is missing or the credentials are wrong | [app_auth.py](../app_auth.py) | Log in again. |
 | 1006 | Forbidden | The action needs an admin (or setup must be completed first) | [app_auth.py](../app_auth.py), [app_music_servers.py](../app_music_servers.py) | Use an admin account. |
-| 1007 | Conflict | The request clashes with the current state (a backup or restore already running, a server already registered, a plugin version unavailable) | [app_backup.py](../app_backup.py), [app_provider_migration.py](../app_provider_migration.py), [plugin/blueprint.py](../plugin/blueprint.py) | Wait for the other operation or follow the message. |
+| 1007 | Conflict | The request clashes with the current state (a backup or restore already running, a server already registered) | [app_backup.py](../app_backup.py), [app_provider_migration.py](../app_provider_migration.py) | Wait for the other operation or follow the message. |
 | 1008 | Gone | The requested data no longer exists (an old migration without orphan snapshots) | [app_provider_migration.py](../app_provider_migration.py) | Nothing to recover; re-run the operation if needed. |
 | 1009 | Payload Too Large | An upload exceeds its size cap (recording clip, request body) | [app_recording_search.py](../app_recording_search.py), [app.py](../app.py) HTTP handler | Upload a smaller file. |
+| 1010 | Unknown Server | The request names a music server that does not exist (`app_server_context.UnknownServerError`, classified centrally). The server picker drops a stale selection on this code | [app_server_context.py](../app_server_context.py), [static/server_selector.js](../static/server_selector.js) | Pick another server. |
+| 1011 | Default Server | Deleting the default server (HTTP 409) | [app_music_servers.py](../app_music_servers.py) | Set another server as default first. |
+| 1012 | Playlist Rejected | A playlist creation was rejected: no selected track is on the target server, or that server needs a user id and token | [app_ivf.py](../app_ivf.py), [app_chat.py](../app_chat.py) | Pick tracks on that server or give the credentials. |
+| 1013 | Hyperbolic Request Rejected | A hyperbolic similar / journey / tree request the manager rejected (invalid values, no projection, index or tree not built) | [app_hyperbolic.py](../app_hyperbolic.py) | Check the songs and values; run the analysis. |
+| 1014 | Recording Rejected | A recording search the manager rejected (empty, silent, undecodable, too short or too large clip; a song without a neural fingerprint) | [app_recording_search.py](../app_recording_search.py) | Record again, or run the analysis for the song. |
+| 1015 | Plugin Package Rejected | A plugin install rejected by validation (core version, checksum, archive, id, requirement) | [plugin/blueprint.py](../plugin/blueprint.py) | Read the container log for the exact reason. |
+| 1016 | Plugin Version Unavailable | The pinned plugin version is in no configured repository (HTTP 409); nothing changes | [plugin/blueprint.py](../plugin/blueprint.py) | Pick a listed version. |
 | 1101 | Music Server Connection Error | Setup "Test connection" can't reach the server / returns nothing; also network failures classified as `HTTPError` / `MaxRetryError` / `RetryError` / `SSLError` / `RequestException` / `LyrionAPIError` | [app_setup.py](../app_setup.py), [error/error_manager.py](../error/error_manager.py) | Check the server URL is correct and reachable from the container; for a TLS failure confirm the certificate; confirm the server is running and the network/DNS path is open. |
 | 1102 | Music Server Connection Error | A `requests`/`urllib3` `ConnectionError` / `NewConnectionError` (server down / refused) | classify map → analysis / clustering / cleaning excepts | Server is down or refusing connections - start it, verify the port, check firewall rules. |
 | 1103 | Music Server Connection Error | A `requests`/`urllib3` `ReadTimeout` / `ConnectTimeout` / `Timeout`, or a builtin `TimeoutError` (#523 slow server) | classify map ([error/error_manager.py](../error/error_manager.py)) | Server is too slow to respond; reduce load, raise client timeouts, or improve the network path. |
 | 1104 | Music Server Authentication Error | A media-server probe fails auth, or any exception in the chain carries an HTTP 401/403 response | [tasks/analysis/main.py](../tasks/analysis/main.py), classify auth check ([error/error_manager.py](../error/error_manager.py)) | Wrong credentials - fix the configured user/token; the server accepted the connection but rejected the login. |
 | 1105 | Music Server Library Error | Analysis runs but the server returns 0 tracks for every album (#552) | [tasks/analysis/main.py](../tasks/analysis/main.py) (no-tracks check) | Verify the library actually contains scannable music and that the configured user/library has read access to the tracks. |
 | 1106 | Music Server Playlist Error | The media server answered a playlist creation without creating one (it returned no playlist id). A playlist route whose exception is not classified answers 9999 instead, since nothing proves the server was at fault | [app_ivf.py](../app_ivf.py) | Check the media server is reachable and the user may create playlists. |
+| 1107 | Music Server Connection Test Failed | A connection test failed without an auth rejection: unreachable, or reachable without a usable music library. The provider's own answer is logged in full and replaced with this registry text in the HTTP result (`provider_probe.test_connection` for the Music Servers page and the provider migration, `_test_media_server_connection` for the wizard); the analysis keeps the raw result, whose text it reads to spot an auth failure | [tasks/provider_probe.py](../tasks/provider_probe.py), [app_setup.py](../app_setup.py) | Read the container log for the server's answer. |
 | 2001 | Analysis Error | Main analysis task fails for any non-classified reason | [tasks/analysis/main.py](../tasks/analysis/main.py) main except | Inspect the container log for the real cause; this is the catch-all for the analysis run. |
 | 2002 | Analysis Error | A per-album analysis task fails for a **real** reason (download failure, DB error, model crash, track-server map flush failure). Tracks that merely hold no analyzable audio are skipped as 2007 and do NOT fail the album | [tasks/analysis/album.py](../tasks/analysis/album.py) album except | One album failed; check the log for the album/track. The parent run reports `failed_albums` and a sample of child errors, but does **not** fail unless *every* album failed (2005). |
 | 2004 | Model Inference Error | An `onnxruntime` exception (`Fail` / `RuntimeException` / `InvalidArgument` / `NoSuchFile` / `InvalidProtobuf` / `NotImplemented`) whose text was **not** recognised as a memory allocation failure; logged per track by MusiCNN and CLAP | classify map ([error/error_manager.py](../error/error_manager.py)), [tasks/analysis/song.py](../tasks/analysis/song.py), [tasks/clap_analyzer.py](../tasks/clap_analyzer.py) | Check the model files are intact and read the model error in the container log; if it names an allocation failure in a spelling 2008 does not list, report it. |
@@ -64,6 +72,7 @@ internal detail leaks to the frontend.
 | 3002 | Index Error | A similarity, CLAP or recording search hits a not-loaded/empty index (or the feature is disabled) | [app_ivf.py](../app_ivf.py), [app_artist_similarity.py](../app_artist_similarity.py), [app_clap_search.py](../app_clap_search.py), [app_recording_search.py](../app_recording_search.py) | Nothing was indexed - run analysis so embeddings exist before the search runs. |
 | 3003 | Search Error | A search endpoint fails for an unclassified reason (similarity, artist, path, CLAP, hyperbolic, SemGrove, recording, sonic, alchemy, dashboard browse, external search) | the search blueprints via `json_exception` | Check the container log; a database or model failure surfaces as its own code instead. |
 | 3004 | Cache Refresh Error | A warmup, cache refresh or projection rebuild fails (CLAP, lyrics, SemGrove, hyperbolic tree, map, artist projection, recording models) | the same blueprints' warmup/refresh routes | Check the container log; retry the refresh. |
+| 3005 | Recording Index Unavailable | The neural fingerprint index is not built, is being prepared, or was built with another codebook (HTTP 503) | [app_recording_search.py](../app_recording_search.py) | Run the analysis, or retry in a minute. |
 | 4001 | Database Error | `OperationalError` in a task or endpoint (DB down / connection dropped) | classify map + `OperationalError` branches ([tasks/analysis/main.py](../tasks/analysis/main.py), [tasks/cleaning.py](../tasks/cleaning.py), data/auth endpoints) | PostgreSQL is unreachable or dropped the connection - confirm the DB is up, credentials are valid, and the connection pool isn't exhausted. |
 | 4002 | Database Error | A psycopg2 `DatabaseError` subclass (query failure), or the default for a failed DB-backed endpoint ([app_sync.py](../app_sync.py), [app_external.py](../app_external.py), [app_auth.py](../app_auth.py) count/list) | classify map + endpoint defaults | A query failed rather than the connection - inspect the container log for the failing statement. |
 | 4101 | Backup Error | `pg_dump` reports a server version mismatch (#540) | [app_backup.py](../app_backup.py) | Match the `pg_dump` client version to the PostgreSQL server version. |
@@ -80,6 +89,7 @@ internal detail leaks to the frontend.
 | 6007 | Plugin Error | A plugin task, install, uninstall, enable, settings save or apply fails | queue (`plugin.manager.run_plugin_task`), [plugin/blueprint.py](../plugin/blueprint.py) | Check the plugin's log lines in the container log. |
 | 6008 | Task Queue Error | A task could not be queued (analysis, clustering, cleaning, alignment, sweep, migration, naming preview) | [app_helper.py](../app_helper.py) `admit_and_enqueue_main_task`, the start routes | Check the database is reachable and retry. |
 | 6009 | Task Cancel Error | A cancel could not be fully applied or confirmed (HTTP 503) | [app.py](../app.py) cancel routes | Retry the cancel; recovery tasks may still be active. |
+| 6010 | Plugin Download Error | A plugin or repository download failed (HTTP 502). Answered with this code directly, never through the exception chain, because a download error is raised from a requests error that would otherwise read as a media-server failure; catalog entries carry it as `{repo, error_code, error}` | [plugin/blueprint.py](../plugin/blueprint.py) | Read the container log for the host and status. |
 | 1201 | Task In Progress | A manual start (analysis, clustering, cleaning, provider migration, sweep, naming preview) is refused because a queue-guard task (analysis, clustering, cleaning, provider migration, sonic fingerprint or any plugin task) is already live | [app_helper.py](../app_helper.py) `queue_busy_response` / `queue_race_response`, [app_music_servers.py](../app_music_servers.py), [app_provider_migration.py](../app_provider_migration.py), [app_setup.py](../app_setup.py) | Wait for the running task to finish, or let the scheduled retry (up to `CRON_RETRY_MAX_MINUTES`) pick it up. |
 | 9001 | Worker Lost | The worker running the task died (reclaimed by maintenance) or this worker stopped the job process itself (restart, cancel, wedged-task nudge) | [taskqueue/maintenance.py](../taskqueue/maintenance.py), [taskqueue/worker.py](../taskqueue/worker.py) | Usually a restart; the task is retried within its budget. The naming preview reports it as "interrupted by a restart". |
 | 9002 | Task Interrupted | A task running inside the web process was left RUNNING when that process stopped | [taskqueue/maintenance.py](../taskqueue/maintenance.py) `fail_stale_inline_rows` | Start it again. |
@@ -129,6 +139,10 @@ may name its own `http_status`; otherwise the range decides:
 | Code | HTTP status |
 |------|-------------|
 | 1003 / 1004 / 1005 / 1006 / 1007 / 1008 / 1009 | 400 / 404 / 401 / 403 / 409 / 410 / 413 |
+| 1010 / 1012 / 1013 / 1014 / 1015 | 400 |
+| 1011 / 1016 | 409 |
+| 3005 | 503 |
+| 6010 | 502 |
 | 3003, 3004 | 500 Internal Server Error |
 | 6009 | 503 Service Unavailable |
 | 1100-1199 (music server connection / auth / playlist) | 502 Bad Gateway |
@@ -161,10 +175,22 @@ or database failure is still classified to its own code.
   `json_error`, and a `json_exception` whose exception was not classified) the
   route's one-line detail is appended to `error_message` and is the `error` text;
   when the exception was classified to another code both carry that code's registry
-  message only. The exception text itself never reaches the body.
+  message only. The exception text itself never reaches the body: a route catching
+  `ValueError` answers `json_exception(exc, <code whose registry message explains the
+  rejection>)`, never `json_error(code, str(exc))`, and `message=None` mirrors the answer
+  into a `message` key for the clients that read it.
+- **Logging** happens exactly once per exception, in the container log, with the full
+  traceback: `app_logging.LogSanitizingFilter` marks every exception a handler wrote
+  (`logger.exception`), and `json_exception` logs, with the request method and path,
+  any exception nobody logged yet (a warning below 500, an error from 500), whichever
+  branch answered it. The log is complete and not truncated; the body is the registry
+  code and message only.
   `test/unit/test_error_response_centralized.py` fails on any hand-written
   `jsonify(...)` answered with a 4xx/5xx or a computed status (tuple or
-  `make_response`), and on a `jsonify({'error': ...})` answered with no status.
+  `make_response`), and on a `jsonify({'error': ...})` answered with no status. It also
+  fails when an `except` block puts its exception's text (`str(exc)`, an f-string,
+  `exc.args`, or a variable built from them) into `json_error` / `json_exception` /
+  `jsonify`, or, in a route module, into a dict's `error` / `message` / `detail` key.
 - **Uncaught route exceptions** hit the global `errorhandler(Exception)` in
   [app.py](../app.py), which logs the traceback and answers `json_exception(err, 9999)`,
   so a database outage still reports 4001/503. An HTTP error (404, 405, 413) on a JSON

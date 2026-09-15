@@ -31,6 +31,13 @@ ERR_FORBIDDEN = 1006
 ERR_CONFLICT = 1007
 ERR_GONE = 1008
 ERR_PAYLOAD_TOO_LARGE = 1009
+ERR_UNKNOWN_SERVER = 1010
+ERR_DEFAULT_SERVER_DELETE = 1011
+ERR_PLAYLIST_REJECTED = 1012
+ERR_HYPERBOLIC_REJECTED = 1013
+ERR_RECORDING_REJECTED = 1014
+ERR_PLUGIN_PACKAGE_REJECTED = 1015
+ERR_PLUGIN_VERSION_UNAVAILABLE = 1016
 
 ERR_MEDIASERVER_UNREACHABLE = 1101
 ERR_MEDIASERVER_REFUSED = 1102
@@ -38,6 +45,7 @@ ERR_MEDIASERVER_TIMEOUT = 1103
 ERR_MEDIASERVER_AUTH = 1104
 ERR_MEDIASERVER_LIBRARY = 1105
 ERR_MEDIASERVER_PLAYLIST = 1106
+ERR_MEDIASERVER_TEST_FAILED = 1107
 
 ERR_ANALYSIS_FAILED = 2001
 ERR_ALBUM_ANALYSIS_FAILED = 2002
@@ -51,6 +59,7 @@ ERR_INDEX_BUILD = 3001
 ERR_INDEX_EMPTY = 3002
 ERR_SEARCH_FAILED = 3003
 ERR_CACHE_REFRESH_FAILED = 3004
+ERR_RECORDING_INDEX_UNAVAILABLE = 3005
 
 ERR_DB_CONNECTION = 4001
 ERR_DB_QUERY = 4002
@@ -71,6 +80,7 @@ ERR_NAMING_PREVIEW_FAILED = 6006
 ERR_PLUGIN_FAILED = 6007
 ERR_TASK_ENQUEUE_FAILED = 6008
 ERR_TASK_CANCEL_FAILED = 6009
+ERR_PLUGIN_DOWNLOAD_FAILED = 6010
 
 ERR_TASK_IN_PROGRESS = 1201
 
@@ -128,6 +138,64 @@ ERROR_REGISTRY = {
         "default_message": "The uploaded data is too large.",
         "http_status": 413,
     },
+    ERR_UNKNOWN_SERVER: {
+        "error_class": "Unknown Server",
+        "default_message": (
+            "Unknown server: the selected music server does not exist any more. "
+            "Pick another server."
+        ),
+        "http_status": 400,
+    },
+    ERR_DEFAULT_SERVER_DELETE: {
+        "error_class": "Default Server",
+        "default_message": (
+            "Cannot delete the default server; set another server as default first."
+        ),
+        "http_status": 409,
+    },
+    ERR_PLAYLIST_REJECTED: {
+        "error_class": "Playlist Rejected",
+        "default_message": (
+            "The playlist was not created: none of the selected tracks are on the target "
+            "server, or that server needs a user id and token."
+        ),
+        "http_status": 400,
+    },
+    ERR_HYPERBOLIC_REJECTED: {
+        "error_class": "Hyperbolic Request Rejected",
+        "default_message": (
+            "The hyperbolic request could not be answered: check the chosen songs and values, "
+            "and run the analysis if the hyperbolic index, the song's projection or this "
+            "server's tree is not built yet."
+        ),
+        "http_status": 400,
+    },
+    ERR_RECORDING_REJECTED: {
+        "error_class": "Recording Rejected",
+        "default_message": (
+            "The recording could not be searched: the clip must be decodable, non-silent "
+            "audio of at least two seconds within the upload limit, and a library song needs "
+            "the neural fingerprint the analysis computes."
+        ),
+        "http_status": 400,
+    },
+    ERR_PLUGIN_PACKAGE_REJECTED: {
+        "error_class": "Plugin Package Rejected",
+        "default_message": (
+            "The plugin package was rejected: it needs a newer AudioMuse-AI, its checksum or "
+            "archive is invalid, or it declares an unsafe requirement. The container log "
+            "names the reason."
+        ),
+        "http_status": 400,
+    },
+    ERR_PLUGIN_VERSION_UNAVAILABLE: {
+        "error_class": "Plugin Version Unavailable",
+        "default_message": (
+            "That plugin version is not available from any configured repository; "
+            "nothing was changed."
+        ),
+        "http_status": 409,
+    },
     ERR_MEDIASERVER_UNREACHABLE: {
         "error_class": "Music Server Connection Error",
         "default_message": "Could not reach the configured media server.",
@@ -151,6 +219,13 @@ ERROR_REGISTRY = {
     ERR_MEDIASERVER_PLAYLIST: {
         "error_class": "Music Server Playlist Error",
         "default_message": "The media server did not create the playlist.",
+    },
+    ERR_MEDIASERVER_TEST_FAILED: {
+        "error_class": "Music Server Connection Test Failed",
+        "default_message": (
+            "The media server connection test failed: the server could not be reached, or it "
+            "answered without a usable music library. The container log has the server's answer."
+        ),
     },
     ERR_ANALYSIS_FAILED: {
         "error_class": "Analysis Error",
@@ -204,6 +279,14 @@ ERROR_REGISTRY = {
         "error_class": "Cache Refresh Error",
         "default_message": "The in-memory cache could not be refreshed.",
         "http_status": 500,
+    },
+    ERR_RECORDING_INDEX_UNAVAILABLE: {
+        "error_class": "Recording Index Unavailable",
+        "default_message": (
+            "The recording index is not ready: it is not built yet, is being prepared, or was "
+            "built with another codebook. Run the analysis, or try again in a minute."
+        ),
+        "http_status": 503,
     },
     ERR_DB_CONNECTION: {
         "error_class": "Database Error",
@@ -269,6 +352,14 @@ ERROR_REGISTRY = {
         "error_class": "Task Cancel Error",
         "default_message": "The cancellation could not be fully applied or confirmed.",
         "http_status": 503,
+    },
+    ERR_PLUGIN_DOWNLOAD_FAILED: {
+        "error_class": "Plugin Download Error",
+        "default_message": (
+            "The plugin download failed: the repository host could not be reached or answered "
+            "with an error. The container log has the details."
+        ),
+        "http_status": 502,
     },
     ERR_TASK_IN_PROGRESS: {
         "error_class": "Task In Progress",

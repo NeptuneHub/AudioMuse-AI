@@ -693,3 +693,12 @@ class TestFromExceptionExtras:
         em.from_exception(exc, logger=test_logger)
         test_logger.removeHandler(cap)
         assert records and records[0].exc_info is not None
+
+
+class TestUnknownServerIsItsOwnCode:
+    def test_an_unknown_server_selection_maps_to_the_code_the_picker_reads(self):
+        unknown = type('UnknownServerError', (ValueError,), {'__module__': 'app_server_context'})
+
+        assert em.classify(unknown("Unknown server 'kitchen'"), ed.ERR_INVALID_REQUEST) == ed.ERR_UNKNOWN_SERVER
+        assert ed.ERR_UNKNOWN_SERVER == 1010, 'static/server_selector.js drops a stale selection on 1010'
+        assert em.classify(ValueError('bad'), ed.ERR_INVALID_REQUEST) == ed.ERR_INVALID_REQUEST

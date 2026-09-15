@@ -39,6 +39,7 @@ from error.error_dictionary import (
     ERR_INVALID_REQUEST,
     ERR_MEDIASERVER_PLAYLIST,
     ERR_NOT_FOUND,
+    ERR_PLAYLIST_REJECTED,
     ERR_SEARCH_FAILED,
     UNKNOWN_ERROR_CODE,
 )
@@ -516,7 +517,7 @@ def get_similar_tracks_endpoint():
         try:
             target_item_id = app_server_context.resolve_input_item_id(item_id)
         except ValueError as exc:
-            return json_error(ERR_INVALID_REQUEST, str(exc))
+            return json_exception(exc, ERR_INVALID_REQUEST)
     elif title and artist:
         resolved_id = get_item_id_by_title_and_artist(title, artist)
         if not resolved_id:
@@ -593,7 +594,7 @@ def get_max_distance_endpoint():
     try:
         item_id = app_server_context.resolve_input_item_id(item_id)
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, str(exc))
+        return json_exception(exc, ERR_INVALID_REQUEST)
 
     try:
         result = get_max_distance_for_id(item_id)
@@ -784,7 +785,7 @@ def create_media_server_playlist():
                 playlist_name, final_track_ids, server_id, user_creds=user_creds
             )
         except ValueError as exc:
-            return json_error(ERR_INVALID_REQUEST, str(exc))
+            return json_exception(exc, ERR_PLAYLIST_REJECTED)
         result = info['result']
         new_playlist_id = result.get('Id') if isinstance(result, dict) else result
         if not new_playlist_id:

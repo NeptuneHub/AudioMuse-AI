@@ -32,6 +32,7 @@ from error import error_manager
 from error.error_dictionary import (
     ERR_CONFIG_INVALID,
     ERR_INVALID_REQUEST,
+    ERR_PLAYLIST_REJECTED,
     UNKNOWN_ERROR_CODE,
 )
 
@@ -936,7 +937,7 @@ def create_media_server_playlist_api():
     try:
         server_id = app_server_context.resolve_request_server_id(data)
     except ValueError as exc:
-        return json_error(ERR_INVALID_REQUEST, f"Error: {exc}", message=f"Error: {exc}")
+        return json_exception(exc, ERR_INVALID_REQUEST, message=None)
 
     # The client posts back the provider ids it got from /api/chatPlaylist;
     # canonicalize them so the dispatcher translates to the target server exactly
@@ -950,7 +951,7 @@ def create_media_server_playlist_api():
                 user_playlist_name, item_ids, server_id
             )
         except ValueError as exc:
-            return json_error(ERR_INVALID_REQUEST, f"Error: {exc}", message=f"Error: {exc}")
+            return json_exception(exc, ERR_PLAYLIST_REJECTED, message=None)
         created_playlist_info = info['result']
 
         if not created_playlist_info:

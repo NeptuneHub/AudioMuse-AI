@@ -250,3 +250,65 @@ def test_an_http_exception_carrying_its_own_response_is_returned_untouched(app_c
         'the response the error carries is the answer; the HTTPException itself has no '
         'status_code for json_exception to read'
     )
+
+
+def test_a_rejected_request_answers_the_registry_text_and_logs_the_full_exception(app_context, caplog):
+    import logging
+
+    library = ValueError('The codebook /app/model/nmfp_pq.npy has shape (8, 16)')
+    with caplog.at_level(logging.WARNING, logger='error.responses'):
+        response, status = json_exception(library, ed.ERR_INVALID_REQUEST)
+    body = response.get_json()
+
+    assert status == 400
+    assert body['error'] == body['error_message'] == ed.get_default_message(ed.ERR_INVALID_REQUEST)
+    assert '/app/model' not in str(body)
+    record = next(r for r in caplog.records if r.name == 'error.responses')
+    assert record.exc_info[1] is library, (
+        'the log must carry the whole exception and its traceback, not a truncated summary'
+    )
+    assert '/app/model/nmfp_pq.npy has shape (8, 16)' in caplog.text
+
+
+def test_an_exception_the_route_already_logged_is_not_logged_again(app_context, caplog):
+    import logging
+
+    from app_logging import LogSanitizingFilter
+
+    caplog.handler.addFilter(LogSanitizingFilter())
+    route_logger = logging.getLogger('app_example')
+    failure = KeyError('x')
+    with caplog.at_level(logging.WARNING):
+        try:
+            raise failure
+        except KeyError:
+            route_logger.exception('Search failed')
+        json_exception(failure, ed.ERR_SEARCH_FAILED, 'Search failed.')
+
+    assert [r.name for r in caplog.records] == ['app_example']
+
+
+def test_an_unlogged_failure_is_logged_once_with_the_request(caplog):
+    import logging
+
+    from error.error_manager import AudioMuseError
+
+    app = Flask(__name__)
+    failure = AudioMuseError(ed.ERR_INDEX_EMPTY, 'no embeddings')
+    with app.test_request_context('/api/example', method='POST'):
+        with caplog.at_level(logging.WARNING, logger='error.responses'):
+            json_exception(failure, ed.ERR_SEARCH_FAILED)
+            json_exception(failure, ed.ERR_SEARCH_FAILED)
+
+    records = [r for r in caplog.records if r.name == 'error.responses']
+    assert len(records) == 1, 'the second answer for the same exception must not repeat the log'
+    assert records[0].levelname == 'ERROR'
+    assert 'POST /api/example' in records[0].getMessage()
+    assert records[0].exc_info[1] is failure
+
+
+def test_a_message_key_asked_for_with_none_mirrors_the_answer(app_context):
+    body = json_exception(ValueError('secret'), ed.ERR_PLAYLIST_REJECTED, message=None)[0].get_json()
+
+    assert body['message'] == body['error'] == ed.get_default_message(ed.ERR_PLAYLIST_REJECTED)
+    assert 'secret' not in str(body)
