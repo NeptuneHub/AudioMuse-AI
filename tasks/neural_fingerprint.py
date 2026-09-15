@@ -99,11 +99,14 @@ def is_enabled():
     return bool(config.NEURAL_FINGERPRINT_ENABLED)
 
 
-def is_available():
-    if not is_enabled():
-        return False
+def model_files_available():
+    """Check required files without loading the encoder or consulting its enable flag."""
     paths = (config.NEURAL_FINGERPRINT_MODEL_PATH, config.NEURAL_FINGERPRINT_CODEBOOK_PATH)
     return all(bool(path) and os.path.isfile(path) for path in paths)
+
+
+def is_available():
+    return is_enabled() and model_files_available()
 
 
 def _filterbank():
