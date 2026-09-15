@@ -333,7 +333,9 @@ def _load_usable_anchor(item_id, anchor_cache) -> dict | None:
         if problem:
             logger.warning(
                 "Ignoring anchor '%s' (id %s): %s. Run the alchemy again and re-save the anchor.",
-                anchor.get('name'), item_id, problem,
+                sanitize_log_value(str(anchor.get('name'))),
+                sanitize_log_value(str(item_id)),
+                sanitize_log_value(problem),
             )
             anchor = None
         anchor_cache[key] = anchor

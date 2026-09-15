@@ -704,6 +704,17 @@ class TestSongAlchemy:
         assert [p for p in result['add_points'] if p.get('type') == 'anchor'] == []
         assert loader.call_count == 1
 
+    def test_ignored_anchor_warning_cannot_forge_log_lines(self, mock_dependencies, caplog):
+        anchor = {'id': 7, 'name': 'evil\nFAKE ERROR line', 'centroid': [0.5, 0.5, 0.5], 'exclusions': None}
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor), caplog.at_level('WARNING'):
+            song_alchemy._load_usable_anchor('7\r\nforged', {})
+
+        messages = [r.getMessage() for r in caplog.records if 'Ignoring anchor' in r.getMessage()]
+        assert len(messages) == 1
+        assert '\n' not in messages[0] and '\r' not in messages[0]
+        assert "evil FAKE ERROR line" in messages[0]
+
     def test_song_alchemy_ignores_legacy_anchor_with_wrong_centroid_size(self, mock_dependencies):
         anchor = {'id': 7, 'name': 'Old', 'centroid': [0.5, 0.5, 0.5], 'exclusions': None}
         mock_dependencies['multi_query_ids'].return_value = ['r1']

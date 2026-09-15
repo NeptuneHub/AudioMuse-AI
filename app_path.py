@@ -36,6 +36,7 @@ from config import (
     DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS,
 )
 from app_helper import top_stratified_genre
+from app_logging import sanitize_log_value
 import app_server_context
 import numpy as np
 import math  # Import the math module
@@ -125,7 +126,7 @@ def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
     if problem:
         logger.warning(
             "Anchor id %s cannot be a path endpoint: %s. Run the alchemy again and re-save it.",
-            anchor_id, problem,
+            sanitize_log_value(str(anchor_id)), sanitize_log_value(problem),
         )
         return None
     try:
