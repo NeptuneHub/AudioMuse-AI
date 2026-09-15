@@ -100,7 +100,7 @@ from config import (
 
 from ..mediaserver import (
     get_recent_albums,
-    get_tracks_from_album,
+    get_album_track_ids,
     registry,
     test_connection as mediaserver_test_connection,
 )
@@ -574,8 +574,11 @@ def _run_analysis_server_task_impl(
                 if stop_dispatch[0]:
                     break
 
-                tracks = get_tracks_from_album(album['Id'])
-                if not tracks:
+                # Ids and a count are all this loop needs, so it asks for exactly that:
+                # a provider able to answer more cheaply than a full track fetch does,
+                # and the rest fall back to one inside the dispatcher.
+                ids = get_album_track_ids(album['Id'])
+                if not ids:
                     albums_skipped += 1
                     albums_no_tracks += 1
                     logger.info(
@@ -584,7 +587,6 @@ def _run_analysis_server_task_impl(
                     report_progress()
                     continue
 
-                ids = [_ah.provider_item_id(t) for t in tracks]
                 if work_map_bulk_ok:
                     masks = [work_map.get(i, 0) for i in ids]
                 else:
@@ -614,16 +616,16 @@ def _run_analysis_server_task_impl(
                 ) = _ah.album_feature_needs(
                     masks, done_bits, clap_available, LYRICS_ENABLED, neural_available
                 )
-                songs_seen += len(tracks)
+                songs_seen += len(ids)
                 songs_done += album_done
 
-                if album_done == len(tracks):
+                if album_done == len(ids):
                     albums_skipped += 1
                     status_parts = _ah.build_feature_status_parts(
                         clap_available, LYRICS_ENABLED, neural_available=neural_available
                     )
                     logger.info(
-                        f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {len(tracks)} tracks already analyzed ({' + '.join(status_parts)})."
+                        f"Skipping album '{album.get('Name')}' (ID: {album.get('Id')}) - all {len(ids)} tracks already analyzed ({' + '.join(status_parts)})."
                     )
                     report_progress()
                     continue

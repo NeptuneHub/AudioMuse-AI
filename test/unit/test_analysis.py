@@ -876,8 +876,14 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     monkeypatch.setattr(taskqueue, 'end_child', _end_child)
     monkeypatch.setattr(analysis, 'clean_temp', lambda *args, **kwargs: None)
     monkeypatch.setattr(analysis, 'get_recent_albums', lambda limit: albums)
+    # The dispatch loop needs ids and a count, not track dicts, so it asks the
+    # dispatcher for ids. Mirrors the dispatcher's own fallback so the per-album track
+    # sets still drive the skip/enqueue decisions under test.
     monkeypatch.setattr(
-        analysis, 'get_tracks_from_album', lambda album_id: tracks_by_album[album_id]
+        analysis, 'get_album_track_ids',
+        lambda album_id: [
+            str(track.get('Id') or track.get('id')) for track in tracks_by_album[album_id]
+        ],
     )
     monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
     monkeypatch.setattr(analysis, 'LYRICS_ENABLED', False)
