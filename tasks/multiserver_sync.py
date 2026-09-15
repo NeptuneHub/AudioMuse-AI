@@ -22,7 +22,8 @@ every exception, write FAILURE itself and return normally, so the queue recorded
 SUCCESS and never retried a sweep that had merely hit a media server that was
 down for two minutes. Unmatched tracks are left unmapped; re-sweeps are incremental.
 Full-refresh sweeps prune mappings whose provider track is gone (only map rows,
-never analyzed tracks), skipping the prune when a fetch looks partial.
+never analyzed tracks): what the server returns is what it has, except that an
+empty list (what a failed library lookup returns) never prunes.
 
 Main Features:
 * sweep_server / sweep_all_secondary_servers entry points; the catalogue
@@ -62,7 +63,6 @@ from taskqueue import TaskCancelled, TaskFailed
 from config import (
     DURATION_TOLERANCE_SECONDS,
     QUEUE_WEDGED_MAIN_TASK_MINUTES,
-    SWEEP_PRUNE_MIN_FETCH_RATIO,
 )
 from database import (
     connect_raw,
@@ -249,27 +249,19 @@ def _write_matches(db, server_id, result, path_by_id=None):
     return registry.upsert_track_maps(server_id, mapping, conn=db)
 
 
-def prune_stale_mappings(db, server_id, present_ids, refused=None):
+def prune_stale_mappings(db, server_id, present_ids):
     present_set = {_strip_nul(str(pid)) for pid in present_ids if pid is not None}
     present_set.discard('')
     present = [(pid,) for pid in present_set]
     if not present:
+        logger.warning(
+            "Server %s returned no tracks; its mappings are kept, since an empty list is "
+            "what a failed library lookup returns.",
+            server_id,
+        )
         return 0
     cur = db.cursor()
     try:
-        cur.execute(
-            "SELECT COUNT(*) FROM track_server_map WHERE server_id = %s", (server_id,)
-        )
-        current = cur.fetchone()[0]
-        if current > 0 and len(present) < current * SWEEP_PRUNE_MIN_FETCH_RATIO:
-            logger.warning(
-                "Multi-server sweep for server %s: fetch returned %d tracks but %d "
-                "mappings exist; fetch looks partial, pruning skipped",
-                server_id, len(present), current,
-            )
-            if refused is not None:
-                refused.append((len(present), current))
-            return 0
         cur.execute(
             "CREATE TEMP TABLE IF NOT EXISTS sweep_present_ids "
             "(provider_track_id TEXT PRIMARY KEY)"
@@ -512,17 +504,8 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
     target_tracks = None
     _store_server_track_count(db, server_id, target_total)
     pruned = 0
-    prune_refused = []
     if full_refresh:
-        pruned = prune_stale_mappings(db, server_id, present_ids, refused=prune_refused)
-        if prune_refused:
-            fetched, mapped = prune_refused[0]
-            report(
-                f"{server['name']}: only {fetched} of the {mapped} tracks it has mapped "
-                "came back, so stale mappings were NOT pruned. Re-run the alignment if "
-                "the library really shrank that much.",
-                base + span * 0.5,
-            )
+        pruned = prune_stale_mappings(db, server_id, present_ids)
         if pruned:
             logger.info(
                 "Multi-server sweep for '%s': pruned %d stale mappings no longer on the server",
@@ -588,7 +571,6 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
         'matched': written,
         'duplicate_files': duplicate_files,
         'pruned': pruned,
-        'prune_refused': bool(prune_refused),
         'artists': artists_written,
         'refreshed': refreshed,
         'tier_counts': tier_counts,

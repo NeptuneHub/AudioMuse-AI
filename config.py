@@ -1577,13 +1577,11 @@ CRON_RETRY_MAX_MINUTES = int(os.environ.get("CRON_RETRY_MAX_MINUTES", "240")) # 
 CRON_RETRY_INTERVAL_MINUTES = int(os.environ.get("CRON_RETRY_INTERVAL_MINUTES", "10")) # Minutes between re-attempts of blocked scheduled runs
 
 # --- Database Cleaning Safety ---
-CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report
+CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max orphaned albums (on no server) deleted from the catalogue in one cleaning run; the next run deletes the next ones
 # When true, cleaning also DELETES catalogue rows bound to no server (orphans); when false it only
 # unbinds each server's stale mappings and leaves the catalogue untouched. Default false; the cleaning
 # page has a per-run checkbox to enable it for a single run without changing this default.
 CLEANING_CATALOGUE = os.environ.get("CLEANING_CATALOGUE", "False").lower() == "true"
-SWEEP_PRUNE_MIN_FETCH_RATIO = float(os.environ.get("SWEEP_PRUNE_MIN_FETCH_RATIO", "0.5"))  # A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much
-
 # --- Stratified Sampling Constants (New) ---
 # Genres for which to enforce equal representation during stratified sampling
 STRATIFIED_GENRES = [

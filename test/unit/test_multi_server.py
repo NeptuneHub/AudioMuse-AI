@@ -2384,32 +2384,49 @@ class TestSweepAlignment:
         )
         assert stored == {'s1': 1}
 
-    def test_prune_skipped_when_fetch_looks_partial(self, caplog):
+    def test_a_small_fetch_still_prunes_with_no_ratio_guard(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         cursor = MagicMock()
         cursor.fetchone.return_value = (100,)
+        cursor.rowcount = 0
         db = MagicMock()
         db.cursor.return_value = cursor
-        target = {str(i) for i in range(10)}
-        with caplog.at_level(logging.WARNING):
-            assert sync.prune_stale_mappings(db, 's1', target) == 0
-        assert 'pruning skipped' in caplog.text
+        staged = []
+        monkeypatch.setattr(
+            sync, "execute_values", lambda cur, sql, rows, **kw: staged.extend(rows)
+        )
+
+        sync.prune_stale_mappings(db, 's1', {str(i) for i in range(10)})
+
+        assert len(staged) == 10
+        assert any(
+            'DELETE FROM track_server_map' in str(c.args[0])
+            for c in cursor.execute.call_args_list
+        )
+        db.commit.assert_called_once()
+
+    def test_an_empty_fetch_never_unbinds_the_server(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cursor = MagicMock()
+        cursor.rowcount = 0
+        db = MagicMock()
+        db.cursor.return_value = cursor
+        staged = []
+        monkeypatch.setattr(
+            sync, "execute_values", lambda cur, sql, rows, **kw: staged.extend(rows)
+        )
+
+        assert sync.prune_stale_mappings(db, 's1', set()) == 0
+        assert sync.prune_stale_mappings(db, 's1', {'', None}) == 0
+
+        assert staged == []
+        assert not any(
+            'DELETE FROM track_server_map' in str(c.args[0])
+            for c in cursor.execute.call_args_list
+        ), 'an empty list is what a failed library lookup returns; it must not wipe the mappings'
         db.commit.assert_not_called()
-
-    def test_a_refused_prune_is_reported_not_silently_zero(self):
-        from tasks import multiserver_sync as sync
-
-        cursor = MagicMock()
-        cursor.fetchone.return_value = (100,)
-        db = MagicMock()
-        db.cursor.return_value = cursor
-
-        refused = []
-        assert sync.prune_stale_mappings(
-            db, 's1', {str(i) for i in range(10)}, refused=refused
-        ) == 0
-        assert refused == [(10, 100)]
 
     def test_a_real_prune_invalidates_the_paged_ivf_hyperbolic_and_neural_masks(self, monkeypatch):
         from tasks import multiserver_sync as sync

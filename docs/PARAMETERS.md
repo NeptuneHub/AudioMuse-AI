@@ -60,9 +60,8 @@ These parameters can be left as-is:
 
 | Parameter               | Description                                  | Default Value     |
 |-------------------------|----------------------------------------------|-------------------|
-| `CLEANING_SAFETY_LIMIT` | Max unbound-on-every-server albums listed in the cleaning report. It caps the report only; whether orphan catalogue rows are actually deleted is decided by `CLEANING_CATALOGUE` | `100`             |
+| `CLEANING_SAFETY_LIMIT` | Max orphaned albums (songs found on no server) deleted from the catalogue in one cleaning run, when `CLEANING_CATALOGUE` or the per-run checkbox is on. The next run deletes the next albums. | `100`             |
 | `CLEANING_CATALOGUE`    | When `true`, cleaning also DELETES catalogue rows bound to no server (orphans). When `false` it only unbinds each server's stale mappings and leaves the catalogue untouched. The cleaning page has a per-run checkbox to enable it for a single run without changing this default. | `false` |
-| `SWEEP_PRUNE_MIN_FETCH_RATIO` | A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much. | `0.5` |
 | `MUSIC_LIBRARIES`       | Comma-separated list of music libraries/folders for analysis. If empty, all libraries/folders are scanned. For Lyrion: Use folder paths like "/music/myfolder". For Navidrome/Jellyfin: Use library/folder names. | `""` (empty - scan all) |
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L918) | `false` |
 | `DASHBOARD_BROWSE_PAGE_SIZE` | Rows per page in the Song/Artist/Album browse view opened from the dashboard.                | `100` |
