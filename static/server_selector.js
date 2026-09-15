@@ -76,7 +76,7 @@
         return chainedFetch.call(this, input, init).then(function (response) {
             if (injected && response.status === 400) {
                 response.clone().json().then(function (body) {
-                    if (body && (body.error_code === 1010 || (typeof body.error === 'string' && /unknown server/i.test(body.error)))) {
+                    if (body && (body.error_code === 1010 || (typeof body.error === 'string' && /unknown server|invalid server selection/i.test(body.error)))) {
                         forgetStaleSelection(injected);
                     }
                 }).catch(function () { /* not JSON: leave the selection alone */ });

@@ -261,6 +261,9 @@ class TestDispatcherKeepsProviderErrorsInTheLog:
             passed = probe.public_test_result('plex', {'ok': True, 'error': None})
 
         assert failed['error_code'] == ERR_MEDIASERVER_TEST_FAILED and 'user-token' not in failed['error']
+        assert failed['error_class'] == 'Music Server Connection Test Failed', (
+            'the page renders [code] class: message; without the class it showed "Error"'
+        )
         assert refused['error_code'] == ERR_MEDIASERVER_AUTH and refused['auth_failed'] is True
         assert passed == {'ok': True, 'error': None}
         assert 'api_key=user-token' in caplog.text, 'the container log keeps the provider answer'

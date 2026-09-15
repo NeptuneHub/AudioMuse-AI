@@ -143,6 +143,7 @@ def public_test_result(provider_type, result):
         ERR_MEDIASERVER_AUTH,
         ERR_MEDIASERVER_TEST_FAILED,
         get_default_message,
+        get_error_class,
     )
 
     if not isinstance(result, dict) or result.get('ok'):
@@ -151,7 +152,12 @@ def public_test_result(provider_type, result):
         "Media server connection test failed for %s: %s", provider_type, result.get('error')
     )
     code = ERR_MEDIASERVER_AUTH if result.get('auth_failed') else ERR_MEDIASERVER_TEST_FAILED
-    return {**result, 'error_code': code, 'error': get_default_message(code)}
+    return {
+        **result,
+        'error_code': code,
+        'error_class': get_error_class(code),
+        'error': get_default_message(code),
+    }
 
 
 def list_libraries(provider_type, creds):
