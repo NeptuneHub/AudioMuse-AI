@@ -34,6 +34,7 @@ from database import (
     save_task_status,
     get_score_data_by_ids,
     get_tracks_by_ids,
+    get_queue_blocking_task,
 )
 from config import (
     TASK_STATUS_PENDING,
@@ -179,6 +180,20 @@ def enqueue(func, *args, queue='default', **kwargs):
             "Task arguments must be JSON-serializable (str, int, float, bool, None, "
             "list, dict); pass an ISO string instead of a datetime, a list instead of a set."
         ) from exc
+    # A user-triggered plugin action must respect the queue guard, exactly like
+    # the manual batch starts. A plugin task enqueueing follow-up work from
+    # inside its own running task is exempt: that task already holds the guard.
+    if taskqueue.current_task_id() is None:
+        from error import AudioMuseError
+        from error.error_dictionary import ERR_TASK_IN_PROGRESS
+
+        blocking = get_queue_blocking_task()
+        if blocking:
+            raise AudioMuseError(
+                ERR_TASK_IN_PROGRESS,
+                f"Another queue job ({blocking['task_type']}) is still running. "
+                f"Wait for it to finish before starting plugin task {dotted}.",
+            )
     taskqueue.enqueue(
         'plugin.manager.run_plugin_task',
         args=(dotted,) + tuple(args),

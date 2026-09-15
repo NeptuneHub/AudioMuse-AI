@@ -15,6 +15,7 @@ Main Features:
 * Foreign keys are dropped before updates and re-added afterwards
 * Orphan deletion runs before updates and workers are paused before starting
 * app_config music-libraries row is written/deleted from the selected libraries
+* Incomplete target credentials fail the task before the default server is rewritten
 """
 
 import json
@@ -145,6 +146,10 @@ def _build_sql_handlers(mock_cur, session_row, meta_rows):
         ),
         (
             lambda up: up.startswith('DELETE FROM TRACK_SERVER_MAP') and 'RETURNING' in up,
+            lambda up, params: _set_all([]),
+        ),
+        (
+            lambda up: up.startswith('SELECT T.ITEM_ID, T.PROVIDER_TRACK_ID, T.FILE_PATH'),
             lambda up, params: _set_all([]),
         ),
         (
@@ -433,14 +438,17 @@ class TestExecuteProviderMigration:
             ),
         )
 
-        mig.execute_provider_migration(1)
+        result = mig.execute_provider_migration(1)
 
-        assert [s for _t, s in reported] == ['RUNNING', 'SUCCESS', 'SUCCESS'], (
-            'SUCCESS is recorded the moment the catalogue transaction commits, and '
-            'again once the workers acknowledge the restart: the swap is durable at '
-            'the first one, so nothing after it may report the run as failed'
+        assert [s for _t, s in reported] == ['RUNNING', 'RUNNING', 'SUCCESS'], (
+            'the commit is recorded at once as a progress mark naming the repointed '
+            'count, so the durable swap is visible before the restart handshake; '
+            "SUCCESS itself is the queue's row, written when the task returns after "
+            'the workers acknowledge, and the finaliser only marks the session'
         )
         assert {t for t, _s in reported} == {'mig-1'}
+        assert result['ok'] is True
+        assert 'acknowledged' in result['message']
 
     def test_a_committed_migration_is_never_reported_as_failed(self, mig, monkeypatch):
         session_row = _make_session_row(state=_session_state({'a': 'b'}))
@@ -458,7 +466,7 @@ class TestExecuteProviderMigration:
 
         monkeypatch.setattr(mig, '_await_worker_restart', _handshake_never_completes)
 
-        mig.execute_provider_migration(1)
+        result = mig.execute_provider_migration(1)
 
         swap_is_durable = (
             'the catalogue swap is already durable, so telling the user the '
@@ -467,7 +475,11 @@ class TestExecuteProviderMigration:
         )
         assert 'FAIL' not in reported, swap_is_durable
         assert 'FAILURE' not in reported, swap_is_durable
-        assert reported[-1] == 'SUCCESS'
+        assert result['ok'] is True, (
+            'the task RETURNS, so the queue writes SUCCESS; raising here would make '
+            'the queue retry a migration that is already applied'
+        )
+        assert 'restart AudioMuse by hand' in result['message']
 
     def test_a_rebuild_signalled_by_the_transaction_reaches_the_summary(self, mig):
         session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
@@ -514,10 +526,21 @@ class TestMigrationWritesTheRegistryOnly:
 
     def test_target_provider_and_creds_land_in_the_registry(self, mig):
         executed, params = self._write(mig, selected_libraries=['A'])
-        server_type, creds, libraries = self._default_row_update(executed, params)
+        server_type, creds, libraries, taken_name, new_name = self._default_row_update(executed, params)
         assert server_type == 'navidrome'
         assert creds.adapted == {'url': 'http://nav.local', 'user': 'u', 'password': 'p'}
         assert libraries == 'A'
+        assert taken_name == new_name == 'Navidrome'
+
+    def test_only_an_automatic_name_follows_the_new_provider(self, mig):
+        executed, params = self._write(mig, selected_libraries=None)
+        sql = next(s for s in executed if 'UPDATE music_servers' in s and 'is_default' in s)
+        assert 'CASE WHEN lower(m.name) = lower(m.server_type)' in sql, (
+            'a name the user chose is kept; only the automatic provider name is renamed'
+        )
+        assert 'o.server_id <> m.server_id' in sql and 'lower(o.name) = lower(%s)' in sql, (
+            'the unique lower(name) index must never abort the migration transaction'
+        )
 
     def test_none_selection_clears_the_library_filter(self, mig):
         executed, params = self._write(mig, selected_libraries=None)
@@ -792,17 +815,24 @@ class TestTheMigrationSurvivesTheRestartItTriggers:
 
 
 class TestRestartHandshakeStateMachine:
-    def test_commit_marker_is_written_under_cancel_start_lock(self, mig):
+    def test_commit_marker_is_written_under_cancel_start_lock(self, mig, monkeypatch):
         cur = MagicMock()
         cur.fetchone.side_effect = [('RUNNING',), ('mig-1',)]
+
+        lock_conns = []
+        monkeypatch.setattr(
+            'taskqueue.take_start_lock',
+            lambda conn=None: lock_conns.append(conn),
+        )
 
         mig._stage_restart_handshake(cur, 'mig-1', 7, 'restart-7')
 
         sql = [call.args[0] for call in cur.execute.call_args_list]
-        assert 'pg_advisory_xact_lock' in sql[0]
-        assert 'FOR UPDATE' in sql[1]
-        assert sql[2].startswith('UPDATE task_status')
-        details = json.loads(cur.execute.call_args_list[2].args[1][1])
+        assert len(lock_conns) == 1
+        assert lock_conns[0] is cur.connection
+        assert 'FOR UPDATE' in sql[0]
+        assert sql[1].startswith('UPDATE task_status')
+        details = json.loads(cur.execute.call_args_list[1].args[1][1])
         assert details == {
             'message': 'Provider swap committed; waiting for worker restart acknowledgement.',
             'status_message': (
@@ -917,39 +947,48 @@ class TestRestartHandshakeStateMachine:
             'mig-1', 'FAIL', 100, 'late retry failed'
         )
 
-        assert result == 'success'
-        save.assert_not_called()
-        db.commit.assert_called_once()
+        assert result is True
+        assert save.call_args.args[2] == mig.TASK_STATUS_RUNNING, (
+            'a task never writes a terminal status; FAIL is downgraded to a progress '
+            'line, and save_task_status refuses to write over a terminal row at all, '
+            'so a delayed duplicate can neither fail nor reopen a finished migration'
+        )
 
-    @pytest.mark.parametrize(('existing', 'result'), [(None, 'missing'), ('REVOKED', 'revoked')])
-    def test_orphan_or_revoked_job_cannot_start(self, mig, monkeypatch, existing, result):
-        import types
-        import database
-        from contextlib import nullcontext
+    @pytest.mark.parametrize('existing', [None, 'REVOKED'])
+    def test_orphan_or_revoked_job_cannot_start(self, mig, monkeypatch, existing):
+        from taskqueue import TaskCancelled
 
-        cur = MagicMock()
-        cur.__enter__ = lambda self: self
-        cur.__exit__ = lambda self, *a: None
-        cur.fetchone.return_value = (existing,) if existing else None
-        db = MagicMock()
-        db.cursor.return_value = cur
-        save = MagicMock()
-        fake_flask = types.ModuleType('flask_app')
-        fake_flask.app = types.SimpleNamespace(app_context=lambda: nullcontext())
-        monkeypatch.setitem(sys.modules, 'flask_app', fake_flask)
-        monkeypatch.setattr(database, 'get_db', lambda: db)
-        monkeypatch.setattr(database, 'save_task_status', save)
-
-        assert mig._report_migration('mig-1', 'RUNNING', 0, 'start') == result
-        save.assert_not_called()
-
-    def test_revoked_root_aborts_before_opening_migration_connection(self, mig, monkeypatch):
         monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
-        monkeypatch.setattr(mig, '_report_migration', lambda *a, **k: 'revoked')
+        monkeypatch.setattr(
+            'tasks.task_run._read_task_statuses',
+            lambda _conn, _ids: {'mig-1': existing} if existing else {},
+        )
+        reported = []
+        monkeypatch.setattr(mig, '_report_migration', lambda *a, **k: reported.append(a))
         conn = MagicMock()
         monkeypatch.setattr(mig, '_get_dedicated_conn', conn)
 
-        with pytest.raises(RuntimeError, match='no live execution claim'):
+        with pytest.raises(TaskCancelled):
+            mig.execute_provider_migration(7)
+
+        assert reported == [], (
+            'the shared cancel check runs before the first write, so a job whose row '
+            'was wiped or revoked between claim and start writes nothing and opens no '
+            'migration connection; the queue records REVOKED'
+        )
+        conn.assert_not_called()
+
+    def test_revoked_root_aborts_before_opening_migration_connection(self, mig, monkeypatch):
+        from taskqueue import TaskCancelled
+
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'mig-1')
+        monkeypatch.setattr(
+            'tasks.task_run._read_task_statuses', lambda _conn, _ids: {'mig-1': 'REVOKED'},
+        )
+        conn = MagicMock()
+        monkeypatch.setattr(mig, '_get_dedicated_conn', conn)
+
+        with pytest.raises(TaskCancelled):
             mig.execute_provider_migration(7)
 
         conn.assert_not_called()
@@ -1130,11 +1169,13 @@ class TestRestartHandshakeRecoverySchemaGuard:
 
 
 class TestMigrationSuccessFinalization:
-    def test_the_committed_success_row_is_finalized_on_the_same_raw_connection(
+    def test_the_claimed_task_leaves_its_success_row_to_the_queue(
         self, monkeypatch
     ):
         import database
         import tasks.provider_migration_tasks as mig
+
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'root-1')
 
         class _Cursor:
             def execute(self, sql, params=None):
@@ -1165,7 +1206,7 @@ class TestMigrationSuccessFinalization:
             lambda *a, **k: recorded.update({'args': a, 'kwargs': k}),
         )
         monkeypatch.setattr(
-            database, '_collapse_finished_task',
+            database, 'collapse_finished_task',
             lambda *a: collapsed.update({'args': a}),
         )
         monkeypatch.setattr(
@@ -1177,17 +1218,82 @@ class TestMigrationSuccessFinalization:
             conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
         )
 
-        conn.commit.assert_called_once()
+        assert conn.commit.call_count == 1, (
+            'the acknowledgement is marked on the session over the raw migration '
+            'connection, in one commit'
+        )
+        assert recorded == {}, (
+            'the SUCCESS row, its history line and the collapse to one recap are '
+            "the queue's, written when the task returns; a finaliser that wrote "
+            'them itself used to win the race against the queue and veto its retry'
+        )
+        assert collapsed == {}
+
+    def test_the_recovery_job_closes_the_root_row_the_worker_never_finalizes(
+        self, monkeypatch
+    ):
+        import database
+        import tasks.provider_migration_tasks as mig
+
+        executed = []
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                executed.append((sql, params))
+
+            def fetchone(self):
+                return ('completed', {'restart_request_id': 'req-1'})
+
+            def fetchall(self):
+                return []
+
+            def close(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        conn = MagicMock()
+        conn.cursor.return_value = _Cursor()
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'recovery-1')
+        recorded = {}
+        collapsed = {}
+        monkeypatch.setattr(
+            database, 'record_task_history',
+            lambda *a, **k: recorded.update({'args': a, 'kwargs': k}),
+        )
+        monkeypatch.setattr(
+            database, 'collapse_finished_task',
+            lambda *a: collapsed.update({'args': a}),
+        )
+
+        assert mig._finalize_restart_handshake(
+            conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
+        ) is True
+
+        success_writes = [
+            params for sql, params in executed
+            if 'INSERT INTO task_status' in sql and params and params[0] == 'root-1'
+        ]
+        assert len(success_writes) == 1, (
+            'recover_migration_handshakes re-opens the migration root as STARTED and '
+            'enqueues the handshake job as its CHILD, so the worker finalizes only the '
+            'child; the root, a main task holding the one-live-main index, would stay '
+            'RUNNING and refuse every catalogue start unless the finaliser closes it'
+        )
+        assert success_writes[0][2] == mig.TASK_STATUS_SUCCESS
         assert recorded['args'][0] == 'root-1'
-        assert recorded['args'][2] == mig.TASK_STATUS_SUCCESS
-        assert recorded['kwargs']['conn'] is conn
-        assert recorded['kwargs']['details']['message'] == 'Provider migration applied.'
-        assert collapsed['args'][0] is conn
         assert collapsed['args'][1] == 'root-1'
+        conn.commit.assert_called_once()
 
     def test_a_failed_replay_never_undoes_the_committed_success(self, monkeypatch):
         import database
         import tasks.provider_migration_tasks as mig
+
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'root-1')
 
         class _Cursor:
             rowcount = 0
@@ -1221,3 +1327,180 @@ class TestMigrationSuccessFinalization:
             conn, 7, 'req-1', 'root-1', 'Provider migration applied.',
         )
         conn.rollback.assert_not_called()
+
+
+class TestAMigrationConditionNoRetryCanFixFailsOnce:
+    def test_a_superseded_recovery_is_a_permanent_failure(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import tasks.provider_migration_tasks as mig
+        from taskqueue import TaskFailed
+
+        monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: MagicMock())
+        monkeypatch.setattr(mig, '_migration_task_id', lambda: 'recovery-2')
+        monkeypatch.setattr(mig, '_load_session', lambda cur, session_id: {
+            'status': 'completed',
+            'state': {
+                'exec_task_id': 'root-1', 'restart_request_id': 'req-1',
+                mig._RESTART_RECOVERY_TASK_KEY: 'recovery-1',
+            },
+        })
+
+        with pytest.raises(TaskFailed):
+            mig.resume_provider_migration_restart(7, 'root-1')
+
+    def test_a_session_that_is_not_ready_to_execute_is_a_permanent_failure(
+        self, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        import tasks.provider_migration_tasks as mig
+        from taskqueue import TaskFailed
+
+        monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: MagicMock())
+        monkeypatch.setattr(mig, '_load_session', lambda cur, session_id: {
+            'status': 'planning', 'state': {}, 'target_type': 'plex', 'target_creds': {},
+        })
+
+        with pytest.raises(TaskFailed):
+            mig._execute_provider_migration(7, 'mig-1', lambda force=False: None)
+
+    @pytest.mark.parametrize('target', ['jellyfin', 'emby', 'navidrome', 'lyrion', 'plex'])
+    def test_incomplete_target_creds_fail_before_the_default_server_is_rewritten(
+        self, monkeypatch, target
+    ):
+        from unittest.mock import MagicMock
+
+        import tasks.provider_migration_tasks as mig
+        from taskqueue import TaskFailed
+
+        monkeypatch.setattr(mig, '_get_dedicated_conn', lambda: MagicMock())
+        monkeypatch.setattr(mig, '_load_session', lambda cur, session_id: {
+            'status': 'dry_run_ready', 'state': _session_state({'old_1': 'new_1'}),
+            'target_type': target, 'target_creds': {},
+        })
+        transaction = MagicMock()
+        monkeypatch.setattr(mig, '_run_migration_transaction', transaction)
+
+        with pytest.raises(TaskFailed, match='Incomplete credentials'):
+            mig._execute_provider_migration(7, 'mig-1', lambda force=False: None)
+        transaction.assert_not_called()
+
+
+class TestDuplicateFileMappings:
+    def test_only_extras_of_bound_songs_on_unused_target_ids_are_kept(self):
+        from tasks import provider_migration_tasks as mig
+
+        state = {'dry_run': {'extra_matches': {'n-2': 'fp_1', 'n-3': 'fp_orphan', 'n-9': 'fp_2', 'n-5': 'fp_2'}}}
+        mapping = {'fp_1': 'n-1', 'fp_2': 'n-9'}
+        assert mig.duplicate_file_mappings(state, mapping) == {'n-2': 'fp_1', 'n-5': 'fp_2'}
+
+    def test_a_session_without_extras_restores_nothing(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        assert mig.duplicate_file_mappings({'dry_run': {}}, {'fp_1': 'n-1'}) == {}
+        assert mig._restore_duplicate_file_maps(cur, {}, {}) == 0
+        cur.execute.assert_not_called()
+
+    def test_extras_are_inserted_on_the_default_server_with_their_own_path(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        cur.rowcount = 2
+        cur.fetchone.return_value = (True,)
+        restored = mig._restore_duplicate_file_maps(
+            cur, {'n-2': 'fp_1', 'n-3': 'fp_1'}, {'n-2': {'path': '/new/copy.flac'}}
+        )
+        assert restored == 2
+        calls = [c[0] for c in cur.execute.call_args_list]
+        staged = next(c for c in calls if 'INSERT INTO migration_duplicate_files' in c[0])
+        assert staged[1] == ['fp_1', 'n-2', '/new/copy.flac', 'fp_1', 'n-3', None]
+        maps = next(c[0] for c in calls if 'INSERT INTO track_server_map' in c[0])
+        assert 's.is_default' in maps and 'ON CONFLICT (server_id, provider_track_id) DO NOTHING' in maps
+        assert 'p.match_tier' in maps, 'a duplicate file keeps the tier of its song'
+        assert not any('INSERT INTO chromaprint' in c[0] for c in calls), (
+            'a duplicate file never receives a copy of another file fingerprint'
+        )
+
+    def test_files_pair_with_their_own_old_file_by_the_longest_shared_path(self):
+        from tasks import provider_migration_tasks as mig
+
+        old_files = [('old-a', '/music/Queen/II/a.flac'), ('old-b', '/music/Queen/II/b.flac'), ('old-c', None)]
+        new_meta = {'new-b': {'path': '/lib/Queen/II/b.flac'}, 'new-a': {'path': '/lib/Queen/II/a.flac'},
+                    'new-x': {'path': '/lib/Other/x.flac'}}
+        pairs = mig._pair_files_by_path(old_files, ['new-b', 'new-a', 'new-x'], new_meta)
+        assert sorted(pairs) == [('old-a', 'new-a'), ('old-b', 'new-b')]
+
+    def test_a_tie_between_old_files_goes_to_the_one_holding_a_fingerprint(self):
+        from tasks import provider_migration_tasks as mig
+
+        old_files = [('old-a', '/x/Song.flac', False), ('old-b', '/y/Song.flac', True)]
+        new_meta = {'new-1': {'path': '/lib/Song.flac'}}
+        assert mig._pair_files_by_path(old_files, ['new-1'], new_meta) == [('old-b', 'new-1')]
+
+    def test_same_server_files_pair_one_to_one(self):
+        from tasks import provider_migration_tasks as mig
+
+        old_files = [('7', '/music/A/01.flac'), ('8', '/data/A/01.flac')]
+        new_meta = {'7': {'path': '/music/A/01.flac'}, '8': {'path': '/data/A/01.flac'}}
+        assert sorted(mig._pair_files_by_path(old_files, ['7', '8'], new_meta)) == [('7', '7'), ('8', '8')]
+
+    def test_only_multi_file_songs_are_paired_and_primaries_fall_back_in_sql(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        cur.fetchall.return_value = [
+            ('fp_1', 'old-a', '/music/Q/a.flac', True),
+            ('fp_1', 'old-b', '/music/Q/b.flac', True),
+        ]
+        pairs = mig._multi_file_carry_pairs(
+            cur, {'fp_1': 'new-b', 'fp_2': 'new-z'}, {'new-a': 'fp_1'},
+            {'new-a': {'path': '/x/Q/a.flac'}, 'new-b': {'path': '/x/Q/b.flac'}},
+        )
+        assert sorted(pairs) == [('old-a', 'new-a'), ('old-b', 'new-b')]
+        sql, params = cur.execute.call_args[0]
+        assert 's.is_default' in sql and params == (['fp_1'],)
+
+    def test_the_fallback_carry_never_reuses_a_paired_file_or_target(self):
+        from tasks import provider_migration_tasks as mig
+
+        cur = MagicMock()
+        cur.fetchone.return_value = ('chromaprint',)
+        cur.fetchall.return_value = [('fp_1', 'old-a', '/m/a.flac', True), ('fp_1', 'old-b', '/m/b.flac', False)]
+        executed = []
+        cur.execute.side_effect = lambda sql, params=None: executed.append((sql, params))
+        assert mig._stage_chromaprint_carry(
+            cur, {'fp_1': 'new-b'}, {'new-a': 'fp_1'},
+            {'new-a': {'path': '/n/a.flac'}, 'new-b': {'path': '/n/b.flac'}},
+        ) is True
+        staged = [params for sql, params in executed if 'VALUES' in sql and 'migration_chromaprint_carry' in sql]
+        assert staged and list(zip(staged[0][0::2], staged[0][1::2])) == [('old-a', 'new-a')], (
+            'old-b holds no fingerprint, so its pairing must not block the primary from the song print'
+        )
+        fallback = next(sql for sql, _p in executed if 'DISTINCT ON (m.new_id)' in sql)
+        assert 'k.new_id = m.new_id OR k.provider_track_id = c.provider_track_id' in fallback
+
+    def test_navidrome_api_key_mode_names_the_real_choice(self):
+        from tasks import provider_migration_tasks as mig
+
+        message = mig.incomplete_creds_error('navidrome', {'url': 'http://nav'})
+        assert message == 'Incomplete credentials: fill in Username and Password, or an API key.'
+        message = mig.incomplete_creds_error('navidrome', {'url': 'http://nav', 'user': 'u'})
+        assert message == 'Incomplete credentials: fill in Password.'
+        message = mig.incomplete_creds_error('jellyfin', {'url': 'http://jf'})
+        assert message == 'Incomplete credentials: fill in User ID, API Token.'
+
+
+
+class TestCompletionScrubsTheSession:
+    def test_the_completed_session_keeps_no_target_credentials(self, mig):
+        session_row = _make_session_row(state=_session_state({'old_1': 'new_1'}))
+        _, _, executed = _install_fake_psycopg2(mig, session_row)
+
+        mig.execute_provider_migration(1)
+
+        completion = [s for s in executed if s.upper().startswith("UPDATE MIGRATION_SESSION SET STATUS = 'COMPLETED'")]
+        assert completion and "target_creds = '{}'" in completion[0], (
+            'the credentials already live in music_servers; the tombstone must not keep a plaintext copy'
+        )

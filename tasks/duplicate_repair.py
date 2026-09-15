@@ -35,6 +35,7 @@ Main Features:
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 from psycopg2.extras import execute_values
 
@@ -216,6 +217,25 @@ def _release(cur, db, acquired, own_conn, lock=_REPAIR_ADVISORY_LOCK):
         cur.close()
     if own_conn:
         db.close()
+
+
+@contextmanager
+def _advisory_lock_scope(conn, lock_key):
+    own_conn = conn is None
+    db = conn or connect_raw()
+    acquired = False
+    cur = None
+    try:
+        _force_no_autocommit(db)
+        cur = db.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
+        acquired = bool(cur.fetchone()[0])
+        yield (cur, db) if acquired else None
+    except Exception:
+        _rollback(db)
+        raise
+    finally:
+        _release(cur, db, acquired, own_conn, lock_key)
 
 
 def _log_start_banner(total_groups, server_count):
@@ -432,70 +452,52 @@ def _run_migration(db, cur, prefetched=None):
 
 
 def repair_duplicate_track_maps(conn=None, prefetched_durations=None):
-    own_conn = conn is None
-    db = conn or connect_raw()
-    acquired = False
-    cur = None
-    try:
-        _force_no_autocommit(db)
-        cur = db.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_REPAIR_ADVISORY_LOCK,))
-        acquired = bool(cur.fetchone()[0])
-        if not acquired:
+    with _advisory_lock_scope(conn, _REPAIR_ADVISORY_LOCK) as scope:
+        if scope is None:
             logger.info(
                 "Catalogue duration migration: another replica already holds the "
                 "lock; skipping on this one."
             )
             return {'skipped': 'locked'}
+        cur, db = scope
         # Hard version gate: no older-scheme ids left -> already migrated -> instant
         # no-op, the server is never listed again (survives orphans with no length).
         if not _old_scheme_rows_exist(cur):
             return {'skipped': 'up_to_date'}
         return _run_migration(db, cur, prefetched_durations)
-    finally:
-        _release(cur, db, acquired, own_conn)
 
 
 def purge_orphan_catalogue_rows(conn=None):
-    own_conn = conn is None
-    db = conn or connect_raw()
-    acquired = False
-    cur = None
     try:
-        _force_no_autocommit(db)
-        cur = db.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_ORPHAN_PURGE_ADVISORY_LOCK,))
-        acquired = bool(cur.fetchone()[0])
-        if not acquired:
-            return {'skipped': 'locked'}
-        removed = 0
-        while True:
-            cur.execute(
-                "DELETE FROM score WHERE item_id IN ("
-                "SELECT s.item_id FROM score s "
-                "WHERE NOT EXISTS (SELECT 1 FROM track_server_map t "
-                "WHERE t.item_id = s.item_id) LIMIT %s)",
-                (_DELETE_CHUNK,),
-            )
-            deleted = cur.rowcount
-            removed += deleted
-            db.commit()
-            if deleted < _DELETE_CHUNK:
-                break
-        if removed:
-            logger.info(
-                "Migration orphan purge: deleted %d catalogue row(s) bound to no "
-                "server (embeddings cascade; per-file Chromaprints are kept for reuse; "
-                "each re-analyzes under its own id if its file returns).",
-                removed,
-            )
-        return {'purged': removed}
+        with _advisory_lock_scope(conn, _ORPHAN_PURGE_ADVISORY_LOCK) as scope:
+            if scope is None:
+                return {'skipped': 'locked'}
+            cur, db = scope
+            removed = 0
+            while True:
+                cur.execute(
+                    "DELETE FROM score WHERE item_id IN ("
+                    "SELECT s.item_id FROM score s "
+                    "WHERE NOT EXISTS (SELECT 1 FROM track_server_map t "
+                    "WHERE t.item_id = s.item_id) LIMIT %s)",
+                    (_DELETE_CHUNK,),
+                )
+                deleted = cur.rowcount
+                removed += deleted
+                db.commit()
+                if deleted < _DELETE_CHUNK:
+                    break
+            if removed:
+                logger.info(
+                    "Migration orphan purge: deleted %d catalogue row(s) bound to no "
+                    "server (embeddings cascade; per-file Chromaprints are kept for reuse; "
+                    "each re-analyzes under its own id if its file returns).",
+                    removed,
+                )
+            return {'purged': removed}
     except Exception:
-        _rollback(db)
         logger.exception("Migration orphan purge failed; it retries on the next start")
         return {'error': 'failed'}
-    finally:
-        _release(cur, db, acquired, own_conn, _ORPHAN_PURGE_ADVISORY_LOCK)
 
 
 def _same_folder_conflicts(cur):
@@ -511,44 +513,42 @@ def _same_folder_conflicts(cur):
     return {server_id: list(ids) for server_id, ids in by_server.items()}
 
 
-def split_same_folder_merges(conn=None):
-    own_conn = conn is None
-    db = conn or connect_raw()
-    acquired = False
-    cur = None
+def _split_false_merges(conn, advisory_lock, find_conflicts, done_message, failure_message):
     try:
-        _force_no_autocommit(db)
-        cur = db.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_SAME_FOLDER_ADVISORY_LOCK,))
-        acquired = bool(cur.fetchone()[0])
-        if not acquired:
-            return {'skipped': 'locked'}
-        by_server = _same_folder_conflicts(cur)
-        if not by_server:
-            return {'split': 0, 'removed': 0}
-        split = 0
-        removed = 0
-        for server_id, item_ids in by_server.items():
-            removed += _unmap_false_groups(cur, server_id, item_ids)
-            split += len(item_ids)
-            cur.execute(
-                "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
-                (server_id,),
-            )
-        db.commit()
-        logger.info(
-            "Same-folder cleanup: split %d merged group(s) that held two distinct "
-            "files from one folder (%d mapping(s) unmapped; each re-analyzes under "
-            "its own id).",
-            split, removed,
-        )
-        return {'split': split, 'removed': removed}
+        with _advisory_lock_scope(conn, advisory_lock) as scope:
+            if scope is None:
+                return {'skipped': 'locked'}
+            cur, db = scope
+            by_server = find_conflicts(cur)
+            if not by_server:
+                return {'split': 0, 'removed': 0}
+            split = 0
+            removed = 0
+            for server_id, item_ids in by_server.items():
+                removed += _unmap_false_groups(cur, server_id, item_ids)
+                split += len(item_ids)
+                cur.execute(
+                    "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
+                    (server_id,),
+                )
+            db.commit()
+            logger.info(done_message, split, removed)
+            return {'split': split, 'removed': removed}
     except Exception:
-        _rollback(db)
-        logger.exception("Same-folder cleanup failed; it retries on the next start")
+        logger.exception(failure_message)
         return {'error': 'failed'}
-    finally:
-        _release(cur, db, acquired, own_conn, _SAME_FOLDER_ADVISORY_LOCK)
+
+
+def split_same_folder_merges(conn=None):
+    return _split_false_merges(
+        conn,
+        _SAME_FOLDER_ADVISORY_LOCK,
+        _same_folder_conflicts,
+        "Same-folder cleanup: split %d merged group(s) that held two distinct "
+        "files from one folder (%d mapping(s) unmapped; each re-analyzes under "
+        "its own id).",
+        "Same-folder cleanup failed; it retries on the next start",
+    )
 
 
 def _group_chromaprints_disagree(fingerprints):
@@ -589,40 +589,12 @@ def _chromaprint_false_merges(cur):
 
 
 def split_chromaprint_false_merges(conn=None):
-    own_conn = conn is None
-    db = conn or connect_raw()
-    acquired = False
-    cur = None
-    try:
-        _force_no_autocommit(db)
-        cur = db.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (_CHROMAPRINT_ADVISORY_LOCK,))
-        acquired = bool(cur.fetchone()[0])
-        if not acquired:
-            return {'skipped': 'locked'}
-        by_server = _chromaprint_false_merges(cur)
-        if not by_server:
-            return {'split': 0, 'removed': 0}
-        split = 0
-        removed = 0
-        for server_id, item_ids in by_server.items():
-            removed += _unmap_false_groups(cur, server_id, item_ids)
-            split += len(item_ids)
-            cur.execute(
-                "UPDATE music_servers SET updated_at = now() WHERE server_id = %s",
-                (server_id,),
-            )
-        db.commit()
-        logger.info(
-            "Chromaprint dedup: thanks to Chromaprint, %d false merge(s) were split - "
-            "merged groups whose files Chromaprint proved are different recordings "
-            "(%d mapping(s) unmapped; each re-analyzes under its own id).",
-            split, removed,
-        )
-        return {'split': split, 'removed': removed}
-    except Exception:
-        _rollback(db)
-        logger.exception("Chromaprint dedup failed; it retries on the next run")
-        return {'error': 'failed'}
-    finally:
-        _release(cur, db, acquired, own_conn, _CHROMAPRINT_ADVISORY_LOCK)
+    return _split_false_merges(
+        conn,
+        _CHROMAPRINT_ADVISORY_LOCK,
+        _chromaprint_false_merges,
+        "Chromaprint dedup: thanks to Chromaprint, %d false merge(s) were split - "
+        "merged groups whose files Chromaprint proved are different recordings "
+        "(%d mapping(s) unmapped; each re-analyzes under its own id).",
+        "Chromaprint dedup failed; it retries on the next run",
+    )

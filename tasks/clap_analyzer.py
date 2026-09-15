@@ -30,6 +30,8 @@ os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = '1'
 
 import config
 
+from cpu_budget import usable_cpu_count
+
 try:
     from config import AUDIO_LOAD_TIMEOUT
 except Exception:
@@ -103,7 +105,12 @@ def _clap_session_options(label):
         sess_options.inter_op_num_threads = 1
         logger.info("CLAP %s: Using Python threading, ONNX single-threaded", label)
     else:
-        logger.info("CLAP %s: Using ONNX Runtime automatic thread management", label)
+        threads = usable_cpu_count()
+        if threads is None:
+            logger.info("CLAP %s: Using ONNX Runtime automatic thread management", label)
+        else:
+            sess_options.intra_op_num_threads = threads
+            logger.info("CLAP %s: ONNX limited to %s threads", label, threads)
     return sess_options
 
 
@@ -125,17 +132,9 @@ def _load_audio_model():
 
     session = None
 
-    from tasks.analysis.song import resolve_providers
+    from tasks.onnx_utils import resolve_providers
 
-    provider_options = resolve_providers(
-        allow_coreml=True,
-        cuda_options={
-            'device_id': 0,
-            'arena_extend_strategy': 'kSameAsRequested',
-            'cudnn_conv_algo_search': 'DEFAULT',
-        },
-        label='clap',
-    )
+    provider_options = resolve_providers(allow_coreml=True, label='clap')
 
     def _create_session(model_input, providers, provider_opts):
         return ort.InferenceSession(
@@ -218,16 +217,9 @@ def _load_text_model():
             "CLAP text model: CPU only (Flask process) - thread-safe across request threads"
         )
     else:
-        from tasks.analysis.song import resolve_providers
+        from tasks.onnx_utils import resolve_providers
 
-        provider_options = resolve_providers(
-            cuda_options={
-                'device_id': 0,
-                'arena_extend_strategy': 'kSameAsRequested',
-                'cudnn_conv_algo_search': 'DEFAULT',
-            },
-            label='clap_text',
-        )
+        provider_options = resolve_providers(label='clap_text')
 
     try:
         session = ort.InferenceSession(
@@ -437,7 +429,7 @@ def compute_mel_spectrogram(audio_data: np.ndarray, sr: int = 48000) -> np.ndarr
     return mel.astype(np.float32)
 
 
-def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, int]:
+def analyze_audio_file(audio_path: str, native_audio=None, native_sr=None) -> Tuple[Optional[np.ndarray], float, int]:
     if not config.CLAP_ENABLED:
         return None, 0, 0
 
@@ -448,9 +440,12 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
         SEGMENT_LENGTH = _SEGMENT_LENGTH_SAMPLES
         HOP_LENGTH = 240000
 
-        from tasks.analysis import robust_load_audio_with_fallback
+        from tasks.analysis import resample_audio, robust_load_audio_with_fallback
 
-        audio_data, sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
+        if native_audio is not None and native_sr is not None:
+            audio_data = resample_audio(native_audio, native_sr, SAMPLE_RATE)
+        else:
+            audio_data, _sr = robust_load_audio_with_fallback(audio_path, target_sr=SAMPLE_RATE)
 
         if audio_data is None or audio_data.size == 0:
             logger.warning(f"Could not load audio for CLAP analysis: {audio_path}")
@@ -530,34 +525,10 @@ def analyze_audio_file(audio_path: str) -> Tuple[Optional[np.ndarray], float, in
 
 
 def get_text_embedding(query_text: str) -> Optional[np.ndarray]:
-    if not config.CLAP_ENABLED:
+    embeddings = get_text_embeddings_batch([query_text])
+    if embeddings is None or len(embeddings) == 0:
         return None
-
-    try:
-        session = get_clap_text_model()
-        tokenizer = get_tokenizer()
-
-        encoded = tokenizer(
-            query_text, max_length=77, padding='max_length', truncation=True, return_tensors='np'
-        )
-
-        input_ids = encoded['input_ids'].astype(np.int64)
-        attention_mask = encoded['attention_mask'].astype(np.int64)
-
-        onnx_inputs = {'input_ids': input_ids, 'attention_mask': attention_mask}
-
-        outputs = session.run(None, onnx_inputs)
-        text_embedding = outputs[0]
-
-        text_embedding = text_embedding[0]
-
-        text_embedding = text_embedding / np.linalg.norm(text_embedding)
-
-        return text_embedding
-
-    except Exception:
-        logger.exception(f"Failed to get text embedding for '{query_text}'")
-        return None
+    return embeddings[0]
 
 
 def get_text_embeddings_batch(query_texts: list) -> Optional[np.ndarray]:

@@ -20,20 +20,18 @@ Main Features:
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 
 from windows import paths
+from native_common import pg_data_dir
 
 logger = logging.getLogger("audiomuse.embedded_pg")
 
 _lock = threading.RLock()
 _running_proc = None
-
-_READY_MARKER = "audiomuse_initialized"
 
 
 def _bin(name):
@@ -51,51 +49,13 @@ def _conn(password):
     }
 
 
-def _initialized(data_dir):
-    if os.path.exists(os.path.join(data_dir, _READY_MARKER)):
-        return True
-    if os.path.exists(os.path.join(data_dir, "global", "pg_control")):
-        try:
-            with open(os.path.join(data_dir, _READY_MARKER), "w", encoding="utf-8") as fh:
-                fh.write("ok\n")
-        except OSError:
-            pass
-        return True
-    return False
-
-
-def _has_cluster_data(data_dir):
-    return os.path.exists(os.path.join(data_dir, "global", "pg_control"))
-
-
-def _reset_data_dir(data_dir):
-    if not (os.path.isdir(data_dir) and os.listdir(data_dir)):
-        return
-    if _has_cluster_data(data_dir):
-        raise RuntimeError(
-            f"Refusing to wipe {data_dir}: it contains an existing PostgreSQL "
-            "cluster (global/pg_control present). Back it up or remove it "
-            "manually if you really want a fresh start."
-        )
-    logger.warning("Clearing incomplete PostgreSQL data dir %s before re-init", data_dir)
-    for entry in os.listdir(data_dir):
-        target = os.path.join(data_dir, entry)
-        try:
-            if os.path.isdir(target) and not os.path.islink(target):
-                shutil.rmtree(target)
-            else:
-                os.unlink(target)
-        except OSError:
-            logger.exception("Could not remove %s", target)
-
-
 def start(data_dir, password):
     global _running_proc
     with _lock:
         os.makedirs(data_dir, exist_ok=True)
 
-        if not _initialized(data_dir):
-            _reset_data_dir(data_dir)
+        if not pg_data_dir.initialized(data_dir):
+            pg_data_dir.reset_data_dir(data_dir)
             logger.info("Initializing PostgreSQL cluster at %s", data_dir)
             pwfile = None
             try:
@@ -130,7 +90,7 @@ def start(data_dir, password):
                 os.path.join(data_dir, "postgresql.conf"), "a", encoding="utf-8", newline="\n"
             ) as fh:
                 fh.write("\npassword_encryption = scram-sha-256\n")
-            with open(os.path.join(data_dir, _READY_MARKER), "w", encoding="utf-8") as fh:
+            with open(os.path.join(data_dir, pg_data_dir.READY_MARKER), "w", encoding="utf-8") as fh:
                 fh.write("ok\n")
 
         port = str(paths.pg_port())

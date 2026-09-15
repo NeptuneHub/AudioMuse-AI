@@ -316,6 +316,9 @@ function renderNavidromeAuthModeSelector(initialMode) {
         optLabel.style.marginBottom = '0.35rem';
         var input = document.createElement('input');
         input.type = 'radio';
+        input.style.width = 'auto';
+        input.style.flex = '0 0 auto';
+        input.style.margin = '0';
         input.name = 'navidrome_auth_mode';
         input.value = value;
         input.checked = (initialMode === value);
@@ -424,10 +427,17 @@ var ADVANCED_SECTIONS = [
     {
         title: 'Audio Analysis',
         items: [
-            'NUM_RECENT_ALBUMS', 'TOP_N_MOODS', 'CLAP_ENABLED', 'CLAP_PYTHON_MULTITHREADS',
-            'PER_SONG_MODEL_RELOAD', 'CLAP_TOP_QUERIES_COUNT', 'CLAP_TEXT_SEARCH_WARMUP_DURATION',
-            'ENERGY_MIN', 'ENERGY_MAX', 'AUDIO_LOAD_TIMEOUT', 'REBUILD_INDEX_BATCH_SIZE',
-            'MAX_QUEUED_ANALYSIS_JOBS'
+            'NUM_RECENT_ALBUMS', 'TOP_N_MOODS', 'ANALYSIS_MONITOR_DB_INTERVAL',
+            'ANALYSIS_STALL_TIMEOUT_MINUTES', 'ANALYSIS_MAX_STALL_GIVE_UPS',
+            'CLAP_PYTHON_MULTITHREADS', 'PER_SONG_MODEL_RELOAD',
+            'MUSICNN_BATCH_SIZE'
+        ]
+    },
+    {
+        title: 'Catalogue Identity & Chromaprint',
+        items: [
+            'CATALOGUE_ID_SCHEME_VERSION', 'CHROMAPRINT_COLLECTION_ENABLED',
+            'CHROMAPRINT_GATE_ENABLED', 'CHROMAPRINT_MATCH_THRESHOLD'
         ]
     },
     {
@@ -436,18 +446,45 @@ var ADVANCED_SECTIONS = [
             'ENABLE_CLUSTERING_EMBEDDINGS', 'CLUSTER_ALGORITHM', 'MAX_SONGS_PER_CLUSTER',
             'MAX_SONGS_PER_ARTIST', 'MAX_DISTANCE', 'CLUSTERING_RUNS', 'TOP_N_CLUSTERING_PLAYLIST',
             'MIN_PLAYLIST_SIZE_FOR_TOP_N', 'USE_GPU_CLUSTERING', 'CLUSTERING_CLEANING',
-            'ITERATIONS_PER_BATCH_JOB', 'MAX_CONCURRENT_BATCH_JOBS',
-            'CLUSTERING_BATCH_TIMEOUT_MINUTES', 'CLUSTERING_MAX_FAILED_BATCHES',
-            'TOP_N_ELITES', 'EXPLOITATION_START_FRACTION', 'EXPLOITATION_PROBABILITY_CONFIG',
-            'MUTATION_INT_ABS_DELTA', 'MUTATION_FLOAT_ABS_DELTA', 'MUTATION_KMEANS_COORD_FRACTION',
-            'TOP_K_MOODS_FOR_PURITY_CALCULATION', 'SCORE_WEIGHT_DIVERSITY', 'SCORE_WEIGHT_PURITY',
-            'SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY', 'SCORE_WEIGHT_OTHER_FEATURE_PURITY',
-            'SCORE_WEIGHT_SILHOUETTE', 'SCORE_WEIGHT_DAVIES_BOULDIN', 'SCORE_WEIGHT_CALINSKI_HARABASZ',
+            'CLUSTERING_SUBSET_SONGS', 'CLUSTERING_EARLY_STOP_BATCHES',
+            'CLUSTERING_STALL_TIMEOUT_MINUTES', 'CLUSTERING_MAX_STALL_GIVE_UPS'
+        ]
+    },
+    {
+        title: 'Clustering Auto-Calibration',
+        items: [
+            'CLUSTERING_AUTO_CALIBRATION', 'CLUSTERING_MAX_PLAYLIST_SONGS',
+            'CLUSTERING_CALIBRATION_MAX_TRIES'
+        ]
+    },
+    {
+        title: 'Clustering Algorithm Ranges',
+        items: [
             'NUM_CLUSTERS_MIN', 'NUM_CLUSTERS_MAX',
             'DBSCAN_EPS_MIN', 'DBSCAN_EPS_MAX', 'DBSCAN_MIN_SAMPLES_MIN', 'DBSCAN_MIN_SAMPLES_MAX',
             'GMM_N_COMPONENTS_MIN', 'GMM_N_COMPONENTS_MAX', 'GMM_COVARIANCE_TYPE',
             'SPECTRAL_N_CLUSTERS_MIN', 'SPECTRAL_N_CLUSTERS_MAX', 'SPECTRAL_N_NEIGHBORS',
-            'PCA_COMPONENTS_MIN', 'PCA_COMPONENTS_MAX',
+            'PCA_COMPONENTS_MIN', 'PCA_COMPONENTS_MAX'
+        ]
+    },
+    {
+        title: 'Clustering Evolutionary Search',
+        items: [
+            'TOP_N_ELITES', 'EXPLOITATION_START_FRACTION', 'EXPLOITATION_PROBABILITY_CONFIG',
+            'MUTATION_INT_ABS_DELTA', 'MUTATION_FLOAT_ABS_DELTA', 'MUTATION_KMEANS_COORD_FRACTION'
+        ]
+    },
+    {
+        title: 'Clustering Scoring Weights',
+        items: [
+            'TOP_K_MOODS_FOR_PURITY_CALCULATION', 'SCORE_WEIGHT_DIVERSITY', 'SCORE_WEIGHT_PURITY',
+            'SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY', 'SCORE_WEIGHT_OTHER_FEATURE_PURITY',
+            'SCORE_WEIGHT_SILHOUETTE', 'SCORE_WEIGHT_DAVIES_BOULDIN', 'SCORE_WEIGHT_CALINSKI_HARABASZ'
+        ]
+    },
+    {
+        title: 'Clustering Stratified Sampling',
+        items: [
             'MIN_SONGS_PER_GENRE_FOR_STRATIFICATION', 'STRATIFIED_SAMPLING_TARGET_PERCENTILE',
             'SAMPLING_PERCENTAGE_CHANGE_PER_RUN'
         ]
@@ -456,34 +493,50 @@ var ADVANCED_SECTIONS = [
         title: 'Similarity & IVF Index',
         items: [
             'SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT', 'SIMILARITY_RADIUS_DEFAULT', 'IVF_METRIC',
-            'IVF_NPROBE', 'IVF_NLIST_MAX', 'IVF_TRAIN_POINTS_PER_CELL', 'IVF_MAX_CELL_MB',
+            'IVF_NPROBE', 'IVF_RERANK_OVERFETCH', 'IVF_NLIST_MAX', 'IVF_STORAGE_DTYPE',
+            'IVF_TRAIN_POINTS_PER_CELL', 'IVF_MAX_CELL_MB',
             'IVF_MAX_PART_SIZE_MB', 'IVF_QUERY_CACHE_MB', 'IVF_READ_BATCH_CELLS', 'IVF_GLOBAL_CACHE_MB',
             'IVF_PRELOAD_ALL', 'IVF_GLOBAL_CACHE_IDLE_SECONDS', 'IVF_RESULT_CACHE_SECONDS',
             'IVF_RESULT_CACHE_MAX', 'IVF_MAX_DISTANCE_NPROBE', 'IVF_DISK_CACHE_ENABLED',
-            'IVF_DISK_CACHE_IDLE_SECONDS'
+            'IVF_DISK_CACHE_IDLE_SECONDS', 'IVF_LAZY_LOAD_RETRY_SECONDS', 'INDEX_BUILD_WORKERS'
         ]
     },
     {
         title: 'Duplicate & Mood Filtering',
         items: [
-            'DUPLICATE_DISTANCE_THRESHOLD_COSINE', 'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
-            'DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN', 'DUPLICATE_DISTANCE_CHECK_LOOKBACK',
-            'MOOD_SIMILARITY_THRESHOLD', 'MOOD_SIMILARITY_ENABLE'
+            'DUPLICATE_DISTANCE_THRESHOLD_COSINE', 'DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN',
+            'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS',
+            'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT',
+            'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS',
+            'DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC',
+            'DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP',
+            'DUPLICATE_DISTANCE_CHECK_LOOKBACK',
+            'MOOD_SIMILARITY_THRESHOLD', 'MOOD_SIMILARITY_ENABLE', 'MOOD_SCORE_MATCH_THRESHOLD'
         ]
     },
     {
         title: 'Song Path',
         items: [
-            'PATH_DISTANCE_METRIC', 'PATH_DEFAULT_LENGTH', 'PATH_AVG_JUMP_SAMPLE_SIZE',
-            'PATH_CANDIDATES_PER_STEP', 'PATH_LCORE_MULTIPLIER', 'PATH_FIX_SIZE'
+            'PATH_DISTANCE_METRIC', 'PATH_DEFAULT_LENGTH', 'PATH_FIX_SIZE'
         ]
     },
     {
         title: 'Song Alchemy',
         items: [
-            'ALCHEMY_DEFAULT_N_RESULTS', 'ALCHEMY_MAX_N_RESULTS', 'ALCHEMY_TEMPERATURE',
-            'ALCHEMY_SUBTRACT_DISTANCE_ANGULAR', 'ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN',
-            'ALCHEMY_PLAYLIST_MAX_SONGS', 'ALCHEMY_PLAYLIST_MAX_CENTROIDS', 'ALCHEMY_MAX_ANCHOR_POINTS'
+            'ALCHEMY_DEFAULT_N_RESULTS', 'ALCHEMY_MAX_N_RESULTS', 'ALCHEMY_TEMPERATURE'
+        ]
+    },
+    {
+        title: 'Hyperbolic Explorer',
+        items: [
+            'HYPERBOLIC_DEFAULT_LIMIT', 'HYPERBOLIC_RADIAL_SPREAD',
+            'HYPERBOLIC_CANDIDATE_OVERFETCH', 'HYPERBOLIC_RADIUS_SCALE',
+            'HYPERBOLIC_RADIUS_PERCENTILE', 'HYPERBOLIC_TARGET_LEAF_SIZE',
+            'HYPERBOLIC_MIN_CLUSTER_SIZE', 'HYPERBOLIC_TREE_WARMUP_DURATION',
+            'HYPERBOLIC_JOURNEY_DEFAULT_LENGTH',
+            'HYPERBOLIC_JOURNEY_ANCESTRY_DIVE', 'HYPERBOLIC_JOURNEY_PATH_SAMPLES',
+            'HYPERBOLIC_INDEX_CACHE_MB',
+            'HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP'
         ]
     },
     {
@@ -496,7 +549,7 @@ var ADVANCED_SECTIONS = [
     {
         title: 'Lyrics & SemGrove Search',
         items: [
-            'LYRICS_ENABLED', 'LYRICS_API_ENABLE', 'LYRICS_ASR_ENABLE', 'LYRICS_MUSICNN_SKIP',
+            'LYRICS_API_ENABLE', 'LYRICS_MUSICNN_SKIP',
             'MUSICSERVER_LYRICS_TIMEOUT', 'VAD_VOICE_RECOGNITION', 'LYRICS_ASR_BEAM_SIZE',
             'LYRICS_ASR_MIN_AVG_LOGPROB', 'LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB',
             'LYRICS_MIN_CHARS_FOR_EMBEDDING', 'LYRICS_TEXT_MAX_COMPRESSION_RATIO',
@@ -505,15 +558,163 @@ var ADVANCED_SECTIONS = [
         ]
     },
     {
-        title: 'AI Naming & Chat',
+        title: 'AI Provider & Playlist Naming',
         items: [
             'AI_MODEL_PROVIDER', 'AI_REQUEST_TIMEOUT_SECONDS', 'MAX_SONGS_IN_AI_PROMPT',
             'OLLAMA_SERVER_URL', 'OLLAMA_MODEL_NAME', 'OPENAI_SERVER_URL', 'OPENAI_MODEL_NAME',
-            'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_MODEL_NAME', 'MISTRAL_API_KEY', 'MISTRAL_MODEL_NAME'
+            'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_MODEL_NAME', 'MISTRAL_API_KEY',
+            'MISTRAL_MODEL_NAME', 'CLUSTER_NAMING_AI_HISTORY', 'PLAYLIST_NAME_HISTORY_ROUNDS'
+        ]
+    },
+    {
+        title: 'Instant Playlist & AI Tool-Calling',
+        items: [
+            'INSTANT_PLAYLIST_DEFAULT_N_RESULTS', 'INSTANT_PLAYLIST_MAX_N_RESULTS',
+            'MAX_SONGS_PER_ARTIST_PLAYLIST', 'PLAYLIST_ENERGY_ARC', 'AI_MAX_TOOL_CALLS',
+            'AI_TOOLCALL_TEMPERATURE', 'AI_TOOLCALL_TOP_P', 'AI_TOOLCALL_TOP_K',
+            'AI_TOOLCALL_MIN_P', 'AI_TOOLCALL_NUM_PREDICT'
+        ]
+    },
+    {
+        title: 'Cleaning & Scheduled Tasks',
+        items: [
+            'CLEANING_SAFETY_LIMIT', 'CLEANING_CATALOGUE', 'SWEEP_PRUNE_MIN_FETCH_RATIO',
+            'CRON_RETRY_MAX_MINUTES', 'CRON_RETRY_INTERVAL_MINUTES'
+        ]
+    },
+    {
+        title: 'Plugin System',
+        items: [
+            'PLUGINS_ENABLED', 'PLUGIN_DEFAULT_REPO_URL', 'PLUGIN_MAX_DOWNLOAD_MB',
+            'PLUGIN_ALLOW_PIP', 'PLUGIN_HTTP_CONNECT_TIMEOUT', 'PLUGIN_HTTP_READ_TIMEOUT',
+            'PLUGIN_HTTP_RETRIES', 'PLUGIN_HTTP_BACKOFF', 'PLUGIN_HTTP_FORCE_IPV4',
+            'PLUGIN_CATALOG_FETCH_WORKERS', 'PLUGIN_CATALOG_CACHE_TTL',
+            'PLUGIN_CATALOG_REFRESH_INTERVAL', 'PLUGIN_BOOT_DB_WAIT_SECONDS',
+            'PLUGIN_BOOT_DB_WAIT_INTERVAL'
         ]
     }
 ];
 var ADVANCED_OTHER_TITLE = 'Other parameters';
+
+var ML_MODEL_FLAGS = ['CLAP_ENABLED', 'LYRICS_ENABLED', 'LYRICS_ASR_ENABLE', 'NEURAL_FINGERPRINT_ENABLED'];
+
+function normalizeFlagValue(raw, fallback) {
+    var text = String(raw === undefined || raw === null ? '' : raw).trim().toLowerCase();
+    if (text === '1' || text === 'true' || text === 'yes' || text === 'on') {
+        return 'true';
+    }
+    if (text === '0' || text === 'false' || text === 'no' || text === 'off') {
+        return 'false';
+    }
+    return fallback;
+}
+
+function modelSwitchFor(flag) {
+    return document.querySelector('#ml-models-section input[type="checkbox"][data-flag="' + flag + '"]');
+}
+
+function updateModelSwitchDependencies() {
+    var lyrics = modelSwitchFor('LYRICS_ENABLED');
+    var whisper = modelSwitchFor('LYRICS_ASR_ENABLE');
+    if (!lyrics || !whisper) {
+        return;
+    }
+    var lyricsOn = lyrics.checked;
+    whisper.disabled = !lyricsOn;
+    whisper.closest('.ml-model-row')?.classList.toggle('is-locked', !lyricsOn);
+}
+
+function renderModelSwitches(fields) {
+    var byName = {};
+    (fields || []).forEach(function(field) {
+        if (field && field.name) {
+            byName[field.name] = field;
+        }
+    });
+    ML_MODEL_FLAGS.forEach(function(flag) {
+        var hidden = document.getElementById(flag);
+        var checkbox = modelSwitchFor(flag);
+        if (!hidden || !checkbox) {
+            return;
+        }
+        var field = byName[flag];
+        var shipped = normalizeFlagValue(hidden.defaultValue, 'true');
+        var fallback = field ? normalizeFlagValue(field.default, shipped) : shipped;
+        var current = field ? normalizeFlagValue(field.value, fallback) : fallback;
+        hidden.value = current;
+        hidden.dataset.originalValue = current;
+        checkbox.checked = current === 'true';
+    });
+    updateModelSwitchDependencies();
+}
+
+var MODEL_COVERAGE_LABELS = ['No index yet', 'Just started', 'Partial', 'More than half', 'Most songs', 'Ready'];
+var MODEL_COVERAGE_FLAGS = {
+    'musicnn': null,
+    'clap': 'CLAP_ENABLED',
+    'lyrics': 'LYRICS_ENABLED',
+    'neural-fingerprint': 'NEURAL_FINGERPRINT_ENABLED'
+};
+var modelCoverageLevels = {};
+
+function renderModelCoverage(levels) {
+    modelCoverageLevels = levels && typeof levels === 'object' ? levels : {};
+    document.querySelectorAll('#ml-models-section .ml-model-coverage').forEach(function(bar) {
+        var model = bar.dataset.coverage;
+        var level = modelCoverageLevels[model];
+        var flag = MODEL_COVERAGE_FLAGS[model];
+        var checkbox = flag ? modelSwitchFor(flag) : null;
+        var switchOn = flag ? !!(checkbox && checkbox.checked) : true;
+        var known = Number.isInteger(level) && level >= 0 && level < MODEL_COVERAGE_LABELS.length;
+        bar.hidden = !(known && switchOn);
+        if (!known) {
+            return;
+        }
+        bar.dataset.level = String(level);
+        var label = bar.querySelector('.ml-model-coverage-label');
+        if (label) {
+            label.textContent = MODEL_COVERAGE_LABELS[level];
+        }
+    });
+}
+
+ML_MODEL_FLAGS.forEach(function(flag) {
+    var checkbox = modelSwitchFor(flag);
+    if (!checkbox) {
+        return;
+    }
+    checkbox.addEventListener('change', function() {
+        var hidden = document.getElementById(flag);
+        if (hidden) {
+            hidden.value = checkbox.checked ? 'true' : 'false';
+        }
+        updateModelSwitchDependencies();
+        renderModelCoverage(modelCoverageLevels);
+    });
+});
+
+var modelDetailsToggles = Array.prototype.slice.call(
+    document.querySelectorAll('#ml-models-section .ml-model-details-toggle')
+);
+
+function setModelDetailsOpen(button, open) {
+    var panel = document.getElementById(button.getAttribute('aria-controls') || '');
+    if (!panel) {
+        return;
+    }
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    panel.hidden = !open;
+}
+
+modelDetailsToggles.forEach(function(button) {
+    button.addEventListener('click', function() {
+        var open = button.getAttribute('aria-expanded') === 'true';
+        modelDetailsToggles.forEach(function(other) {
+            setModelDetailsOpen(other, false);
+        });
+        setModelDetailsOpen(button, !open);
+    });
+});
 
 function buildAdvancedFieldRow(field) {
     var secret = false;
@@ -674,7 +875,9 @@ function loadSetupData() {
             }
         }
         var visibleAdvancedData = Array.isArray(advancedData)
-            ? advancedData.filter(function(f) { return f && f.name !== 'MUSIC_LIBRARIES'; })
+            ? advancedData.filter(function(f) {
+                return f && f.name !== 'MUSIC_LIBRARIES' && !ML_MODEL_FLAGS.includes(f.name);
+            })
             : advancedData;
         currentSelectedLibraries = splitLibraryList(data.music_libraries);
         originalValues = {};
@@ -693,7 +896,10 @@ function loadSetupData() {
         serverValues = basicData; // keep the full current server-related values
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
+        renderModelSwitches(advancedData);
+        renderModelCoverage(data.model_coverage);
         populateLyricsApiFields(data.lyrics_api_fields);
+        populateAiPromptFields(data.ai_prompt_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`
         // for the credential fields), auto-fetch the library list so the
@@ -1015,6 +1221,9 @@ function collectConfigFromForm(testMode) {
         if (!input) {
             return;
         }
+        if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.has(key)) {
+            return;
+        }
         var original = input.dataset.originalValue;
         if (!testMode) {
             if (original !== undefined && value === original) {
@@ -1246,6 +1455,227 @@ if (advancedExpandAll) {
 var advancedCollapseAll = document.getElementById('advanced-collapse-all');
 if (advancedCollapseAll) {
     advancedCollapseAll.addEventListener('click', function() { setAllAdvancedSections(false); });
+}
+
+// ---------------------------------------------------------------------------
+// AI Prompt section - clustering naming style and full-title prompt
+// ---------------------------------------------------------------------------
+var AI_PROMPT_FORM_FIELDS = new Set(['AI_NAMING_PROMPT_MODE', 'AI_NAMING_TITLE_PROMPT']);
+var AI_PROMPT_POLL_MS = 1500;
+var AI_PROMPT_MAX_POLL_FAILURES = 10;
+var AI_PROMPT_POLL_GAVE_UP_MESSAGE = 'Lost track of the preview status. Click Preview titles to check it again.';
+var aiPromptState = {loaded: false, defaultTitlePrompt: '', pollTimer: null, taskId: null, pollFailures: 0};
+
+function aiPromptMode() {
+    var select = document.getElementById('AI_NAMING_PROMPT_MODE');
+    return select?.value === 'title' ? 'title' : 'concept';
+}
+
+function updateAiPromptMode() {
+    var isTitle = aiPromptMode() === 'title';
+    var conceptHelp = document.getElementById('ai-prompt-concept-help');
+    var titleHelp = document.getElementById('ai-prompt-title-help');
+    var titlePanel = document.getElementById('ai-prompt-title-panel');
+    if (conceptHelp) { conceptHelp.style.display = isTitle ? 'none' : ''; }
+    if (titleHelp) { titleHelp.style.display = isTitle ? '' : 'none'; }
+    if (titlePanel) { titlePanel.style.display = isTitle ? '' : 'none'; }
+}
+
+function resetAiPromptToDefault() {
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    if (!area || !aiPromptState.defaultTitlePrompt) { return; }
+    area.value = aiPromptState.defaultTitlePrompt;
+    try { delete area.dataset.originalValue; } catch (_) { area.dataset.originalValue = undefined; }
+}
+
+function renderAiPromptPreview(state) {
+    var status = document.getElementById('ai-prompt-preview-status');
+    var list = document.getElementById('ai-prompt-preview-titles');
+    var button = document.getElementById('ai-prompt-preview-start');
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (!status || !list || !state || state.status === 'idle') {
+        if (stop) { stop.style.display = 'none'; }
+        if (button) { button.disabled = false; }
+        aiPromptState.taskId = null;
+        if (status && state && state.status === 'idle') { status.style.display = 'none'; }
+        return;
+    }
+    var running = state.status === 'running';
+    aiPromptState.taskId = state.task_id || null;
+    if (button) { button.disabled = running; }
+    if (stop) {
+        stop.style.display = running && aiPromptState.taskId ? '' : 'none';
+        stop.disabled = false;
+    }
+    status.style.display = 'block';
+    var statusClass = state.status === 'done' ? 'status-success' : 'status-failure';
+    status.className = (running ? 'status-pending' : statusClass)
+        + ' inline-feedback';
+    var progress = running && state.total ? ' (' + state.done + ' of ' + state.total + ')' : '';
+    status.textContent = (state.message || '') + progress;
+    var titles = state.titles || [];
+    list.innerHTML = '';
+    titles.forEach(function(entry) {
+        var item = document.createElement('li');
+        var name = document.createElement('strong');
+        name.textContent = entry.title;
+        var meta = document.createElement('span');
+        meta.className = 'ai-prompt-title-meta';
+        meta.textContent = entry.song_count + ' songs'
+            + (entry.tag_name_kept ? ', no AI title so the tag name is kept' : '');
+        item.title = (entry.sample || []).join('\n');
+        item.appendChild(name);
+        item.appendChild(meta);
+        list.appendChild(item);
+    });
+    list.style.display = titles.length ? '' : 'none';
+}
+
+function showAiPromptPreviewError(message) {
+    var status = document.getElementById('ai-prompt-preview-status');
+    if (!status) { return; }
+    status.style.display = 'block';
+    status.className = 'status-failure inline-feedback';
+    status.textContent = message;
+}
+
+function readAiPromptResponse(response) {
+    return response.json().catch(function() { return {}; }).then(function(body) {
+        return {ok: response.ok, code: response.status, body: body || {}};
+    });
+}
+
+function releaseAiPromptPreview(message) {
+    var button = document.getElementById('ai-prompt-preview-start');
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (button) { button.disabled = false; }
+    if (stop) { stop.style.display = 'none'; }
+    showAiPromptPreviewError(message);
+}
+
+function pollAiPromptPreview() {
+    if (aiPromptState.pollTimer) {
+        clearTimeout(aiPromptState.pollTimer);
+        aiPromptState.pollTimer = null;
+    }
+    fetch('/api/setup/ai-prompt/preview').then(readAiPromptResponse).then(function(result) {
+        if (!result.ok || !result.body.status) {
+            aiPromptState.pollFailures += 1;
+            showAiPromptPreviewError(result.body.error || 'Could not read the preview status.');
+            if (aiPromptState.pollFailures < AI_PROMPT_MAX_POLL_FAILURES) {
+                aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+            } else {
+                releaseAiPromptPreview(AI_PROMPT_POLL_GAVE_UP_MESSAGE);
+            }
+            return;
+        }
+        aiPromptState.pollFailures = 0;
+        renderAiPromptPreview(result.body);
+        if (result.body.status === 'running') {
+            aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS);
+        }
+    }).catch(function() {
+        aiPromptState.pollFailures += 1;
+        if (aiPromptState.pollFailures < AI_PROMPT_MAX_POLL_FAILURES) {
+            aiPromptState.pollTimer = setTimeout(pollAiPromptPreview, AI_PROMPT_POLL_MS * 2);
+        } else {
+            releaseAiPromptPreview(AI_PROMPT_POLL_GAVE_UP_MESSAGE);
+        }
+    });
+}
+
+function startAiPromptPreview() {
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    var status = document.getElementById('ai-prompt-preview-status');
+    var button = document.getElementById('ai-prompt-preview-start');
+    if (!status || button?.disabled) { return; }
+    if (button) { button.disabled = true; }
+    status.style.display = 'block';
+    status.className = 'status-pending inline-feedback';
+    status.textContent = 'Starting the preview...';
+    fetch('/api/setup/ai-prompt/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: aiPromptMode(), instructions: area ? area.value : ''})
+    }).then(readAiPromptResponse).then(function(result) {
+        if (!result.ok) {
+            if (button) { button.disabled = false; }
+            showAiPromptPreviewError(result.body.error || 'The preview could not start.');
+            if (result.body.preview_running) {
+                aiPromptState.pollFailures = 0;
+                pollAiPromptPreview();
+            }
+            return;
+        }
+        aiPromptState.pollFailures = 0;
+        renderAiPromptPreview(result.body);
+        pollAiPromptPreview();
+    }).catch(function() {
+        if (button) { button.disabled = false; }
+        showAiPromptPreviewError('The preview request failed. Check that the app is still running.');
+    });
+}
+
+function stopAiPromptPreview() {
+    var stop = document.getElementById('ai-prompt-preview-stop');
+    if (!aiPromptState.taskId || stop?.disabled) { return; }
+    if (stop) { stop.disabled = true; }
+    fetch('/api/cancel/' + encodeURIComponent(aiPromptState.taskId), {method: 'POST'})
+        .then(readAiPromptResponse)
+        .then(function(result) {
+            if (!result.ok) {
+                if (stop) { stop.disabled = false; }
+                showAiPromptPreviewError(result.body.error || 'Could not stop the preview.');
+                return;
+            }
+            aiPromptState.pollFailures = 0;
+            pollAiPromptPreview();
+        })
+        .catch(function() {
+            if (stop) { stop.disabled = false; }
+            showAiPromptPreviewError('Could not stop the preview. Check that the app is still running.');
+        });
+}
+
+function populateAiPromptFields(promptData) {
+    if (!promptData) { return; }
+    var select = document.getElementById('AI_NAMING_PROMPT_MODE');
+    if (select) {
+        select.value = promptData.mode === 'title' ? 'title' : 'concept';
+        select.dataset.originalValue = select.value;
+    }
+    var area = document.getElementById('AI_NAMING_TITLE_PROMPT');
+    if (area) {
+        area.value = promptData.title_prompt || '';
+        area.dataset.originalValue = area.value;
+    }
+    aiPromptState.defaultTitlePrompt = promptData.title_prompt_default || '';
+    var maxSongs = document.getElementById('ai-prompt-max-songs');
+    if (maxSongs) { maxSongs.textContent = String(promptData.max_songs); }
+    var previewMax = document.getElementById('ai-prompt-preview-max');
+    if (previewMax) { previewMax.textContent = String(promptData.preview_max_songs); }
+    var songBlock = document.getElementById('ai-prompt-song-block');
+    if (songBlock) { songBlock.textContent = promptData.example_song_block || ''; }
+    aiPromptState.loaded = true;
+    updateAiPromptMode();
+    pollAiPromptPreview();
+}
+
+var _aiPromptModeSelect = document.getElementById('AI_NAMING_PROMPT_MODE');
+if (_aiPromptModeSelect) {
+    _aiPromptModeSelect.addEventListener('change', updateAiPromptMode);
+}
+var _aiPromptReset = document.getElementById('ai-prompt-reset');
+if (_aiPromptReset) {
+    _aiPromptReset.addEventListener('click', resetAiPromptToDefault);
+}
+var _aiPromptPreviewStart = document.getElementById('ai-prompt-preview-start');
+if (_aiPromptPreviewStart) {
+    _aiPromptPreviewStart.addEventListener('click', startAiPromptPreview);
+}
+var _aiPromptPreviewStop = document.getElementById('ai-prompt-preview-stop');
+if (_aiPromptPreviewStop) {
+    _aiPromptPreviewStop.addEventListener('click', stopAiPromptPreview);
 }
 
 // ---------------------------------------------------------------------------

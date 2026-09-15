@@ -167,7 +167,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
             'name': 'Art Flower - Art Flower - Creamy Snowflakes.mp3',
             'expected': {
                 "tempo": 75.0,
-                "key": "G",
+                "key": "D",
                 "scale": "minor",
                 "moods": {
                     "rock": 0.5461238026618958,
@@ -221,7 +221,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
                     "House": 0.5007247924804688,
                     "happy": 0.5004531145095825,
                 },
-                "energy": 0.11941074579954147,
+                "energy": 0.6611433029174805,
                 "danceable": 0.09910931438207626,
                 "aggressive": 0.021448878571391106,
                 "happy": 0.06873109191656113,
@@ -238,8 +238,8 @@ def test_real_analysis_runs_and_returns_expected_shape():
             'name': 'Aaron Dunn - Minuet - Notebook for Anna Magdalena.mp3',
             'expected': {
                 "tempo": 125.0,
-                "key": "E",
-                "scale": "minor",
+                "key": "G",
+                "scale": "major",
                 "moods": {
                     "rock": 0.5274592638015747,
                     "pop": 0.5133988261222839,
@@ -292,7 +292,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
                     "House": 0.5008860230445862,
                     "happy": 0.5007311105728149,
                 },
-                "energy": 0.006939841900020838,
+                "energy": 0.24952411651611328,
                 "danceable": 0.017882201820611954,
                 "aggressive": 0.000734207103960216,
                 "happy": 0.006147411186248064,
@@ -309,8 +309,8 @@ def test_real_analysis_runs_and_returns_expected_shape():
             'name': "Michael Hawley - Sonata 'Waldstein', Op. 53 - II. Introduzione-Adagio molto.mp3",
             'expected': {
                 "tempo": 104.16666666666667,
-                "key": "A#",
-                "scale": "minor",
+                "key": "F#",
+                "scale": "major",
                 "moods": {
                     "rock": 0.546576976776123,
                     "pop": 0.5153129696846008,
@@ -363,7 +363,7 @@ def test_real_analysis_runs_and_returns_expected_shape():
                     "House": 0.5015008449554443,
                     "happy": 0.5005825161933899,
                 },
-                "energy": 0.01083404291421175,
+                "energy": 0.34370046854019165,
                 "danceable": 0.07516419887542725,
                 "aggressive": 0.07692281156778336,
                 "happy": 0.015692999586462975,

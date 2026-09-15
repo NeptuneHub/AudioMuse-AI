@@ -35,7 +35,6 @@ Main Features:
 
 import logging
 import os
-import time
 import uuid
 
 import taskqueue
@@ -50,15 +49,16 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     CHROMAPRINT_COLLECTION_ENABLED,
-)
-
-from flask_app import app
-from app_helper import (
-    save_task_status,
-    get_task_statuses,
+    TASK_STATUS_RUNNING,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
     TASK_STATUS_REVOKED,
+)
+
+from flask_app import app
+from database import (
+    save_task_status,
+    get_task_statuses,
 )
 from psycopg2 import InterfaceError, OperationalError
 
@@ -75,19 +75,24 @@ from ..memory_utils import (
     SessionRecycler,
     comprehensive_memory_cleanup,
 )
-from .. import chromaprint
+from .. import chromaprint, neural_fingerprint
 from database import (
     persist_chromaprint,
     get_chromaprint,
     record_analysis_exclusion,
+    save_neural_fingerprint,
 )
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
+from ..task_run import TaskCancelled, make_cancel_check
 from .song import (
     analyze_track_for_album,
     AudioNotDecodableError,
     cleanup_musicnn_sessions,
     cleanup_optional_models,
+    decode_audio_once,
+    extract_basic_features,
+    resample_audio,
     robust_load_audio_with_fallback,
 )
 
@@ -136,7 +141,7 @@ def _stage_collect_chromaprint(item, path, track_name_full):
 
 
 def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
-                   onnx_sessions, album_name):
+                   onnx_sessions, album_name, native_audio=None, native_sr=None):
     onnx_sessions = _ah.ensure_musicnn_sessions(
         onnx_sessions, model_paths, session_recycler, album_name
     )
@@ -145,10 +150,12 @@ def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
             analysis, embedding, track_audio, track_sr = analyze_track(
                 path, MOOD_LABELS, model_paths,
                 onnx_sessions=onnx_sessions, return_audio=True,
+                native_audio=native_audio, native_sr=native_sr,
             )
         else:
             analysis, embedding = analyze_track(
-                path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions
+                path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions,
+                native_audio=native_audio, native_sr=native_sr,
             )
             track_audio = track_sr = None
     except AudioNotDecodableError as exc:
@@ -212,8 +219,46 @@ def _stage_persist_musicnn(item, track_name_full, track_id_str, musicnn_analysis
     )
 
 
-def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings):
-    embedding = _ah.run_clap_for_track(path, track_name_full)
+def _base_features_from(analysis):
+    if not analysis:
+        return None
+    values = (
+        analysis.get('tempo'), analysis.get('energy'),
+        analysis.get('key'), analysis.get('scale'),
+    )
+    return None if any(v is None for v in values) else values
+
+
+def _stage_base(path, track_id_str, track_name_full, native_audio=None, native_sr=None,
+                precomputed=None):
+    if precomputed is not None:
+        tempo, energy, musical_key, scale = precomputed
+    else:
+        if native_audio is not None and native_sr is not None:
+            audio, sr = resample_audio(native_audio, native_sr, 16000), 16000
+        else:
+            audio, sr = robust_load_audio_with_fallback(path, target_sr=16000)
+        if audio is None or audio.size == 0:
+            logger.warning(
+                "  - Could not decode audio to recompute base features for '%s'",
+                track_name_full,
+            )
+            return False
+        tempo, energy, musical_key, scale = extract_basic_features(audio, sr)
+    if _ah.refresh_base_features(track_id_str, tempo, energy, musical_key, scale):
+        logger.info(
+            "  - Base features stored for '%s': tempo %.2f, energy %.4f, key %s %s",
+            track_name_full, tempo, energy, musical_key, scale,
+        )
+        return True
+    return False
+
+
+def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings,
+                native_audio=None, native_sr=None):
+    embedding = _ah.run_clap_for_track(
+        path, track_name_full, native_audio=native_audio, native_sr=native_sr
+    )
     if embedding is None:
         logger.warning(
             "  - CLAP produced no embedding for '%s'; its other stages still run "
@@ -230,12 +275,37 @@ def _stage_clap(path, track_id_str, track_name_full, clap_label_embeddings):
     return embedding, True
 
 
+def _stage_neural_fingerprint(track_id_str, track_name_full, native_audio, native_sr):
+    if native_audio is None or not native_sr:
+        logger.warning("  - Neural fingerprint skipped for '%s': no decoded audio", track_name_full)
+        return False
+    try:
+        blob = neural_fingerprint.fingerprint_track(native_audio, native_sr, track_name_full)
+    except OperationalError:
+        raise
+    except Exception:
+        logger.exception("  - Neural fingerprint failed for '%s'; retried on the next run", track_name_full)
+        return False
+    if blob is None:
+        return False
+    if not save_neural_fingerprint(track_id_str, blob):
+        logger.warning(
+            "  - Neural fingerprint for '%s' not saved: the track has no embedding row yet", track_name_full
+        )
+        return False
+    logger.info("  - Neural fingerprint saved (%d KB)", len(blob) // 1024)
+    return True
+
+
 def _stage_lyrics(item, path, track_audio, track_sr, track_name_full, top_moods,
                   ensure_download):
-    saved = _ah.run_lyrics_for_track(
-        item, path, track_audio, track_sr, track_name_full,
-        robust_load_audio_with_fallback, top_moods=top_moods, download_fn=ensure_download,
-    )
+    try:
+        saved = _ah.run_lyrics_for_track(
+            item, path, track_audio, track_sr, track_name_full,
+            robust_load_audio_with_fallback, top_moods=top_moods, download_fn=ensure_download,
+        )
+    except AudioNotDecodableError as exc:
+        raise TrackNotAnalyzable(str(exc), cacheable=True) from exc
     if not saved:
         logger.info(
             "  - No lyrics for '%s' (instrumental or ungradable transcript); "
@@ -252,16 +322,31 @@ def _analyze_single_track(
     track_id_str = _ah.catalog_item_id(item)
     path = None
     track_audio = track_sr = None
+    native_audio = native_sr = None
     musicnn_analysis = musicnn_embedding = None
+    base_features = None
     clap_embedding = None
     top_moods = None
     produced = False
+    audio_undecodable = False
     try:
         if plan.needs_audio:
             path = _stage_download(item, track_name_full)
 
         if plan.musicnn:
             _stage_collect_chromaprint(item, path, track_name_full)
+
+        if path and plan.needs_audio:
+            native_audio, native_sr = decode_audio_once(path)
+            audio_undecodable = native_audio is None
+            if audio_undecodable:
+                logger.warning(
+                    "  - Audio for '%s' could not be decoded; every stage that needs "
+                    "it is skipped instead of re-reading the file.", track_name_full
+                )
+                raise TrackNotAnalyzable(
+                    f"no decodable audio for {track_name_full}", cacheable=True
+                )
 
         def ensure_download():
             nonlocal path
@@ -274,6 +359,7 @@ def _analyze_single_track(
                 _stage_musicnn(
                     path, track_name_full, plan, model_paths, session_recycler,
                     onnx_sessions, album_name,
+                    native_audio=native_audio, native_sr=native_sr,
                 )
             )
             top_moods = _ah.top_moods_from(musicnn_analysis, top_n_moods)
@@ -284,6 +370,7 @@ def _analyze_single_track(
                 pending_track_maps,
                 track_duration=musicnn_analysis.get('duration_seconds'),
             )
+            base_features = _base_features_from(musicnn_analysis)
             if not keep_analysis:
                 musicnn_analysis = musicnn_embedding = None
             if not plan.any_stage:
@@ -301,20 +388,40 @@ def _analyze_single_track(
                 top_moods, musicnn_embedding,
             )
 
+        if plan.base:
+            produced = _stage_base(
+                path, track_id_str, track_name_full,
+                native_audio=native_audio, native_sr=native_sr,
+                precomputed=base_features,
+            ) or produced
+
         if plan.clap:
             clap_embedding, clap_saved = _stage_clap(
-                path, track_id_str, track_name_full, clap_label_embeddings
+                path, track_id_str, track_name_full, clap_label_embeddings,
+                native_audio=native_audio, native_sr=native_sr,
             )
             produced = produced or clap_saved
 
+        if plan.neural:
+            produced = _stage_neural_fingerprint(
+                track_id_str, track_name_full, native_audio, native_sr
+            ) or produced
+
         if plan.lyrics:
+            if track_audio is None and native_audio is not None and native_sr:
+                track_audio = resample_audio(native_audio, native_sr, 16000)
+                track_sr = 16000
+            native_audio = None
             produced = _stage_lyrics(
                 item, path, track_audio, track_sr, track_name_full, top_moods,
                 ensure_download,
             ) or produced
 
         if not produced:
-            raise TrackNotAnalyzable(f"no stage produced anything for {track_name_full}")
+            raise TrackNotAnalyzable(
+                f"no stage produced anything for {track_name_full}",
+                cacheable=audio_undecodable,
+            )
 
         _ah.run_song_analyzed_hook(
             item, path, musicnn_analysis, musicnn_embedding, clap_embedding,
@@ -338,14 +445,14 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, server
     try:
         with server_context.use_server(_bind_server_context(server_id)):
             return _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id)
-    except (OperationalError, InterfaceError):
+    except (OperationalError, InterfaceError, TaskCancelled):
         raise
     except Exception as e:
-        _record_album_failure_row(album_id, album_name, parent_task_id, e)
+        _record_album_error_on_row(album_id, album_name, parent_task_id, e)
         raise
 
 
-def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
+def _record_album_error_on_row(album_id, album_name, parent_task_id, exc):
     current_task_id = taskqueue.current_task_id()
     if current_task_id is None:
         return
@@ -361,8 +468,6 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
                 in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
             ):
                 return
-            if statuses.get(current_task_id) == TASK_STATUS_FAILURE:
-                return
             err = error_manager.from_exception(
                 exc, code=error_manager.classify(exc, ERR_ALBUM_ANALYSIS_FAILED),
                 logger=logger,
@@ -370,7 +475,7 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
             save_task_status(
                 current_task_id,
                 "album_analysis",
-                TASK_STATUS_FAILURE,
+                TASK_STATUS_RUNNING,
                 parent_task_id=parent_task_id,
                 sub_type_identifier=album_id,
                 progress=0,
@@ -382,8 +487,8 @@ def _record_album_failure_row(album_id, album_name, parent_task_id, exc):
             )
     except Exception:
         logger.exception(
-            "Could not record the failure row for album '%s'; the phase may "
-            "count this job as completed.", album_name,
+            "Could not record the error for album '%s' on its row; the queue still "
+            "fails the row, with only the exception text", album_name,
         )
 
 
@@ -394,22 +499,10 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
     current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
-        if claimed_task_id and parent_task_id:
-            parent_statuses = get_task_statuses([parent_task_id])
-            if (
-                parent_task_id not in parent_statuses
-                or parent_statuses.get(parent_task_id)
-                in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED)
-            ):
-                logger.info(
-                    "Album task %s will not start because parent %s is missing or terminal.",
-                    current_task_id,
-                    parent_task_id,
-                )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Parent analysis was cancelled.",
-                }
+        cancel, close_cancel = make_cancel_check(
+            claimed_task_id, parent_task_id, every_seconds=ANALYSIS_MONITOR_DB_INTERVAL,
+        )
+        cancel(force=True)
         tracks_analyzed_count, tracks_skipped_count = 0, 0
         tracks_not_analyzable_count = 0
         model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
@@ -425,16 +518,15 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             prefix=f"AlbumTask-{current_task_id}-{album_name}",
             min_db_interval=ANALYSIS_MONITOR_DB_INTERVAL,
         )
+        pending_track_maps = {}
+        map_flush_errors = []
         try:
             log_and_update_album_task(f"Fetching tracks for album: {album_name}", 5)
             tracks = get_tracks_from_album(album_id)
             if not tracks:
-                log_and_update_album_task(
-                    f"No tracks found for album: {album_name}", 100, task_state=TASK_STATUS_SUCCESS
-                )
                 return {
-                    "status": "SUCCESS",
-                    "message": f"No tracks in album {album_name}",
+                    "status": TASK_STATUS_SUCCESS,
+                    "message": f"No tracks found for album: {album_name}",
                     "tracks_analyzed": 0,
                 }
 
@@ -443,45 +535,21 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 existing_track_ids_set,
                 missing_clap_ids_set,
                 missing_lyrics_ids_set,
+                missing_base_ids_set,
                 clap_label_embeddings,
                 existing_top_moods_by_id,
+                missing_neural_ids_set,
             ) = _ah.build_album_plan(album_name, tracks, top_n_moods, LYRICS_ENABLED)
             analysis_exclusions = _ah.load_album_analysis_exclusions(tracks)
 
             _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album_name)
 
             fingerprint_index = None
-            pending_track_maps = {}
             failed_tracks = []
             unavailable_tracks = []
-            map_flush_errors = []
-            last_revocation_check = float('-inf')
-
-            def revoked():
-                nonlocal last_revocation_check
-                if not claimed_task_id:
-                    return False
-                now = time.monotonic()
-                if now - last_revocation_check < ANALYSIS_MONITOR_DB_INTERVAL:
-                    return False
-                last_revocation_check = now
-                statuses = get_task_statuses([current_task_id, parent_task_id])
-                if statuses.get(current_task_id, TASK_STATUS_REVOKED) == TASK_STATUS_REVOKED:
-                    return True
-                parent_status = statuses.get(parent_task_id) if parent_task_id else None
-                return parent_status in (TASK_STATUS_REVOKED, TASK_STATUS_FAILURE)
 
             for idx, item in enumerate(tracks, 1):
-                if revoked():
-                    _ah.flush_pending_track_maps(
-                        pending_track_maps, map_flush_errors, album_name
-                    )
-                    log_and_update_album_task(
-                        f"Stopping album analysis for '{album_name}' due to parent/self revocation.",
-                        log_and_update_album_task.state['progress'],
-                        task_state=TASK_STATUS_REVOKED,
-                    )
-                    return {"status": "REVOKED"}
+                cancel()
 
                 track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
                 provider_id = _ah.provider_item_id(item)
@@ -503,13 +571,16 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     existing_track_ids_set,
                     missing_clap_ids_set,
                     missing_lyrics_ids_set,
+                    missing_base_ids_set,
                     LYRICS_ENABLED,
+                    missing_neural_ids_set,
                 )
 
                 if not plan.any_stage:
                     tracks_skipped_count += 1
                     status_parts = _ah.build_feature_status_parts(
-                        is_clap_available(), LYRICS_ENABLED, include_check_marks=True
+                        is_clap_available(), LYRICS_ENABLED, include_check_marks=True,
+                        neural_available=neural_fingerprint.is_available(),
                     )
                     logger.info(
                         f"Skipping '{track_name_full}' - all analyses complete ({', '.join(status_parts)})"
@@ -607,16 +678,13 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                     f" {len(unavailable_tracks)}/{total_tracks_in_album} track(s) were "
                     "unavailable on the server and were skipped."
                 )
-            log_and_update_album_task(
-                completion_message,
-                100,
-                task_state=TASK_STATUS_SUCCESS,
-                final_summary_details=summary,
-            )
-            return {"status": "SUCCESS", **summary}
+            return {"status": TASK_STATUS_SUCCESS, "message": completion_message, **summary}
 
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
+            raise
+        except TaskCancelled:
+            _ah.flush_pending_track_maps(pending_track_maps, map_flush_errors, album_name)
             raise
         except Exception as e:
             err = error_manager.from_exception(
@@ -625,11 +693,11 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             log_and_update_album_task(
                 f"Failed to analyze album '{album_name}': {e}",
                 log_and_update_album_task.state['progress'],
-                task_state=TASK_STATUS_FAILURE,
-                error=err,
+                error=err, force=True,
             )
             raise
         finally:
+            close_cancel()
             cleanup_musicnn_sessions(onnx_sessions, context="finally")
             onnx_sessions = None
             try:

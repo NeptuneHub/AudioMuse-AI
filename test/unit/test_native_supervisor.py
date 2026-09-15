@@ -26,10 +26,12 @@ Main Features:
 
 import importlib.util
 import os
+import subprocess
 import sys
 import threading
 import time
 import types
+import urllib.request
 from unittest.mock import MagicMock
 
 import pytest
@@ -211,8 +213,7 @@ class TestStartHealthLoopClearsStop:
 
         if hasattr(sup, '_ensure_postgres_healthy'):
             monkeypatch.setattr(sup, '_ensure_postgres_healthy', _record_and_stop)
-        if hasattr(mod, 'urllib'):
-            monkeypatch.setattr(mod.urllib.request, 'urlopen', _record_and_stop)
+        monkeypatch.setattr(urllib.request, 'urlopen', _record_and_stop)
 
         sup._health_stop.set()
         assert sup._health_stop.is_set()
@@ -246,7 +247,7 @@ class TestSpawnRefusedWhileStopping:
             popen_calls.append((a, k))
             raise AssertionError("Popen must not be called once stopping")
 
-        monkeypatch.setattr(mod.subprocess, 'Popen', _fake_popen)
+        monkeypatch.setattr(subprocess, 'Popen', _fake_popen)
 
         sup._state = 'stopping'
         sup._stop_requested.set()
@@ -269,16 +270,15 @@ class TestSpawnRefusedWhileStopping:
             def poll(self):
                 return None
 
-        monkeypatch.setattr(mod.subprocess, 'Popen', _FakePopen)
+        monkeypatch.setattr(subprocess, 'Popen', _FakePopen)
         for name in ('_terminate_named',):
             if hasattr(sup, name):
                 monkeypatch.setattr(sup, name, lambda *a, **k: True)
-        if hasattr(mod, 'threading'):
-            monkeypatch.setattr(
-                mod.threading,
-                'Thread',
-                lambda *a, **k: type('T', (), {'start': lambda self: None, 'daemon': True})(),
-            )
+        monkeypatch.setattr(
+            threading,
+            'Thread',
+            lambda *a, **k: type('T', (), {'start': lambda self: None, 'daemon': True})(),
+        )
         if hasattr(mod, 'db_backend'):
             monkeypatch.setattr(
                 mod.db_backend, 'ensure_embedded_running', lambda *a, **k: 'postgresql://x'
@@ -303,7 +303,7 @@ class TestSpawnRefusedWhileStopping:
         live = _Live()
         sup._children['queue-worker-default'] = live
         popen = MagicMock(side_effect=AssertionError('must not spawn a duplicate child'))
-        monkeypatch.setattr(mod.subprocess, 'Popen', popen)
+        monkeypatch.setattr(subprocess, 'Popen', popen)
 
         assert sup.start_child('queue-worker-default') is True
         assert sup._children['queue-worker-default'] is live
@@ -403,8 +403,8 @@ def test_unstoppable_child_returns_false_and_remains_tracked(platform_name, monk
     sup._children['queue-worker-default'] = proc
     sup._desired.add('queue-worker-default')
     if platform_name != 'windows':
-        monkeypatch.setattr(mod.os, 'getpgid', lambda _pid: 4321, raising=False)
-        monkeypatch.setattr(mod.os, 'killpg', lambda *_args: None, raising=False)
+        monkeypatch.setattr(os, 'getpgid', lambda _pid: 4321, raising=False)
+        monkeypatch.setattr(os, 'killpg', lambda *_args: None, raising=False)
 
     assert sup.stop_child('queue-worker-default') is False
     assert sup._children['queue-worker-default'] is proc

@@ -17,22 +17,34 @@ UPDATE whose subquery takes FOR UPDATE SKIP LOCKED - so N workers race with no
 coordination and exactly one wins. Second, liveness is a session advisory lock
 rather than a heartbeat: a dead process releases the lock when its connection
 drops. Every function takes a cursor the caller owns and commits, keeping this
-a near-leaf module (imports only config) under the MAX_CHAIN cap.
+a near-leaf module (imports only leaves) under the MAX_CHAIN cap.
 
 Main Features:
 * ensure_schema adds the queue columns, indexes and the one-time migration
-* insert_job / claim / finish_child / requeue_or_fail move a row through its life
+* insert_job / claim / finish_task / requeue_or_fail move a row through its life
+* end_child is the one statement a parent ends its own child with when it gives
+  up on it: guarded by parent_task_id, and accepting a NEW child as well as a
+  RUNNING one, because a give-up victim may never have been claimed. It clears
+  the job columns like finish_task does, so a terminal child is never runnable
 * hold / try_hold / release are the advisory-lock liveness primitives
 * reap_children deletes finished children; notify_* publish to workers/Flask
+* blob_tables_autovacuum_cannot_reach / vacuum_table sweep the tables whose dead
+  rows autovacuum will not collect, because its threshold counts ROWS and these
+  hold a few enormous TOASTed blobs; begin_reclaim_session caps that sweep with
+  a lock_timeout so it can never queue behind a reader, writer or restore
 """
 
 import hashlib
 import json
+import logging
 import socket
 import zlib
 
 import config
 import queue_names
+import task_types
+
+logger = logging.getLogger(__name__)
 
 LOCK_CLASS = 0x41554449
 MAINTENANCE_LOCK_CLASS = 0x4155444A
@@ -79,7 +91,8 @@ _ADD_COLUMNS = """
       ADD COLUMN IF NOT EXISTS max_attempts INTEGER DEFAULT 3,
       ADD COLUMN IF NOT EXISTS worker_id    TEXT,
       ADD COLUMN IF NOT EXISTS shared_token   TEXT,
-      ADD COLUMN IF NOT EXISTS shared_payload TEXT
+      ADD COLUMN IF NOT EXISTS shared_payload TEXT,
+      ADD COLUMN IF NOT EXISTS next_run_at    TIMESTAMP
 """
 
 _SET_FILLFACTOR = "ALTER TABLE task_status SET (fillfactor = 70)"
@@ -98,13 +111,25 @@ PARENT_INDEX_SQL = """
       ON task_status (parent_task_id) WHERE parent_task_id IS NOT NULL
 """.format(PARENT_INDEX_NAME)
 
-MAIN_TASK_TYPES = ('main_analysis', 'main_clustering', 'cleaning', 'provider_migration')
+def _index_name(prefix, seed):
+    return "{}_{:x}".format(prefix, zlib.crc32(seed.encode()))
+
+
+LIVE_INDEX_PREFIX = 'idx_task_status_live'
+
+LIVE_INDEX_NAME = _index_name(LIVE_INDEX_PREFIX, ','.join(LIVE_STATUSES))
+
+_LIVE_INDEX = """
+    CREATE INDEX IF NOT EXISTS {name}
+      ON task_status (status) WHERE status IN ({live})
+""".format(name=LIVE_INDEX_NAME, live=_LIVE_STATUS_SQL)
+
+MAIN_TASK_TYPES = task_types.MAIN_TASK_TYPES
 
 MAIN_INDEX_PREFIX = 'idx_task_status_one_live_main'
 
-MAIN_INDEX_NAME = "{}_{:x}".format(
-    MAIN_INDEX_PREFIX,
-    zlib.crc32('|'.join((','.join(MAIN_TASK_TYPES), ','.join(LIVE_STATUSES))).encode()),
+MAIN_INDEX_NAME = _index_name(
+    MAIN_INDEX_PREFIX, '|'.join((','.join(MAIN_TASK_TYPES), ','.join(LIVE_STATUSES)))
 )
 
 _DROP_STALE_INDEXES = """
@@ -135,13 +160,45 @@ _ONE_LIVE_MAIN_INDEX = """
     types=', '.join(f"'{name}'" for name in MAIN_TASK_TYPES),
 )
 
+
+def _retire_surplus_main_live_roots(cur):
+    cur.execute(
+        "SELECT task_id FROM task_status "
+        "WHERE parent_task_id IS NULL AND status IN ({live}) "
+        "AND task_type IN ({types}) ORDER BY id DESC".format(
+            live=_LIVE_IN_LIST,
+            types=', '.join(f"'{name}'" for name in MAIN_TASK_TYPES),
+        )
+    )
+    rows = [row[0] for row in cur.fetchall()]
+    if len(rows) <= 1:
+        return True
+    running = []
+    for task_id in rows:
+        if try_hold(cur, task_id):
+            release(cur, task_id)
+        else:
+            running.append(task_id)
+    if len(running) > 1:
+        logger.warning(
+            "Queue schema: %d main tasks are still executing; deferring the "
+            "one-live-main index build to a later startup.", len(running),
+        )
+        return False
+    keep = running[0] if running else rows[0]
+    revoke = [task_id for task_id in rows if task_id != keep]
+    cur.execute(
+        "UPDATE task_status SET status=%s, progress=100 WHERE task_id = ANY(%s)",
+        (_REVOKED, revoke),
+    )
+    return True
+
 SWEEP_TASK_TYPE = 'server_sweep'
 
 SWEEP_INDEX_PREFIX = 'idx_task_status_one_live_sweep'
 
-SWEEP_INDEX_NAME = "{}_{:x}".format(
-    SWEEP_INDEX_PREFIX,
-    zlib.crc32('|'.join((SWEEP_TASK_TYPE, ','.join(LIVE_STATUSES))).encode()),
+SWEEP_INDEX_NAME = _index_name(
+    SWEEP_INDEX_PREFIX, '|'.join((SWEEP_TASK_TYPE, ','.join(LIVE_STATUSES)))
 )
 
 _ONE_LIVE_SWEEP_INDEX = """
@@ -171,6 +228,8 @@ _MIGRATE_STATUSES = (
     """,
 )
 
+_NON_WORKER_SQL = ','.join(f"'{name}'" for name in task_types.NON_WORKER_TASK_TYPES)
+
 _DROP_LEGACY_CHILDREN = "DELETE FROM task_status WHERE parent_task_id IS NOT NULL"
 
 _RETIRE_SURPLUS_LIVE_ROOTS = """
@@ -182,11 +241,12 @@ _RETIRE_SURPLUS_LIVE_ROOTS = """
             FROM task_status
             WHERE parent_task_id IS NULL
               AND status IN ({live})
-              AND task_type NOT IN ('alchemy_radio','{control}')
+              AND task_type NOT IN ({non_worker})
         ) ranked WHERE ranked.rank > 1
     )
 """.format(
-    revoked=_REVOKED, live=_LIVE_IN_LIST, sweep=SWEEP_TASK_TYPE, control=CONTROL_TASK_TYPE,
+    revoked=_REVOKED, live=_LIVE_IN_LIST, sweep=SWEEP_TASK_TYPE,
+    non_worker=_NON_WORKER_SQL,
 )
 
 _CREATE_BASE_TABLE = """
@@ -205,9 +265,14 @@ _CREATE_BASE_TABLE = """
     )
 """
 
+# This probe gates the WHOLE _ADD_COLUMNS block, so it must always name the
+# column added LAST: an install that already has every earlier column skips the
+# ALTER entirely, and a column appended without moving the probe never arrives.
+NEWEST_COLUMN = 'next_run_at'
+
 _PROBE_NEWEST_COLUMN = (
     "SELECT 1 FROM information_schema.columns "
-    "WHERE table_name = 'task_status' AND column_name = 'shared_payload'"
+    f"WHERE table_name = 'task_status' AND column_name = '{NEWEST_COLUMN}'"
 )
 
 _PROBE_FILLFACTOR = (
@@ -244,11 +309,22 @@ def ensure_schema(cur):
     if _index_missing(cur, PARENT_INDEX_NAME):
         cur.execute(PARENT_INDEX_SQL)
     if _index_missing(cur, MAIN_INDEX_NAME):
-        cur.execute(_ONE_LIVE_MAIN_INDEX)
-        cur.execute(_DROP_STALE_INDEXES, (MAIN_INDEX_PREFIX + '%', MAIN_INDEX_NAME))
+        # The one-live-main index now also covers sonic_fingerprint. An upgrade
+        # can leave a live batch root and a live fingerprint side by side (the
+        # old index never admitted the fingerprint), so retire every live main
+        # root but the newest before the unique index is (re)created. A row a
+        # live worker is still executing (its per-task advisory lock is held) is
+        # never revoked; if two are executing the build is deferred to a later
+        # boot rather than force-revoking a running task.
+        if _retire_surplus_main_live_roots(cur):
+            cur.execute(_ONE_LIVE_MAIN_INDEX)
+            cur.execute(_DROP_STALE_INDEXES, (MAIN_INDEX_PREFIX + '%', MAIN_INDEX_NAME))
     if _index_missing(cur, SWEEP_INDEX_NAME):
         cur.execute(_ONE_LIVE_SWEEP_INDEX)
         cur.execute(_DROP_STALE_INDEXES, (SWEEP_INDEX_PREFIX + '%', SWEEP_INDEX_NAME))
+    if _index_missing(cur, LIVE_INDEX_NAME):
+        cur.execute(_LIVE_INDEX)
+        cur.execute(_DROP_STALE_INDEXES, (LIVE_INDEX_PREFIX + '%', LIVE_INDEX_NAME))
     return first_time
 
 
@@ -276,6 +352,7 @@ _INSERT_JOB = f"""
                                        task_status.sub_type_identifier),
         details = COALESCE(EXCLUDED.details, task_status.details),
         status = '{_NEW}',
+        next_run_at = NULL,
         timestamp = NOW()
     WHERE task_status.func IS NULL
       AND task_status.status IN ({_LIVE_IN_LIST})
@@ -355,6 +432,7 @@ _CLAIM = f"""
     WHERE task_id = (
         SELECT task_id FROM task_status
         WHERE status='{_NEW}' AND queue_name = %s
+          AND (next_run_at IS NULL OR next_run_at <= NOW())
         ORDER BY priority DESC, id
         FOR UPDATE SKIP LOCKED
         LIMIT 1)
@@ -417,6 +495,78 @@ def release_maintenance_lock(cur):
     )
 
 
+def begin_reclaim_session(cur):
+    cur.execute(
+        "SELECT set_config('lock_timeout', %s, false)", (config.BLOB_RECLAIM_LOCK_TIMEOUT,)
+    )
+    cur.execute(
+        "SELECT set_config('statement_timeout', %s, false)",
+        (config.BLOB_RECLAIM_STATEMENT_TIMEOUT,),
+    )
+
+
+_ANY_LIVE_TASK = f"SELECT 1 FROM task_status WHERE status IN ({_LIVE_IN_LIST}) LIMIT 1"
+
+
+def any_live_task(cur):
+    cur.execute(_ANY_LIVE_TASK)
+    return cur.fetchone() is not None
+
+
+_OLD_SNAPSHOT_HOLDER = """
+    SELECT 1 FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND pid <> pg_backend_pid()
+      AND backend_xmin IS NOT NULL
+      AND xact_start < now() - make_interval(secs => %s)
+    LIMIT 1
+"""
+
+
+def snapshot_holder_blocking_reclaim(cur, grace_seconds=None):
+    grace = (
+        config.BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS
+        if grace_seconds is None
+        else float(grace_seconds)
+    )
+    cur.execute(_OLD_SNAPSHOT_HOLDER, (grace,))
+    return cur.fetchone() is not None
+
+
+_BLOB_TABLES_AUTOVACUUM_CANNOT_REACH = """
+    SELECT quote_ident(s.schemaname) || '.' || quote_ident(s.relname), s.n_dead_tup,
+           pg_size_pretty(pg_total_relation_size(s.relid))
+    FROM pg_stat_user_tables AS s
+    WHERE s.n_dead_tup > 0
+      AND s.n_dead_tup < current_setting('autovacuum_vacuum_threshold')::numeric
+                         + current_setting('autovacuum_vacuum_scale_factor')::numeric
+                           * greatest(s.n_live_tup, 0)
+      AND (
+          EXISTS (
+              SELECT 1 FROM pg_attribute AS a
+              WHERE a.attrelid = s.relid
+                AND a.attnum > 0 AND NOT a.attisdropped
+                AND a.atttypid = 'bytea'::regtype
+          )
+          OR pg_total_relation_size(s.relid) >= %s
+      )
+    ORDER BY pg_total_relation_size(s.relid) ASC
+"""
+
+
+def blob_tables_autovacuum_cannot_reach(cur, min_bytes=None):
+    floor_bytes = config.BLOB_RECLAIM_MIN_BYTES if min_bytes is None else int(min_bytes)
+    cur.execute(_BLOB_TABLES_AUTOVACUUM_CANNOT_REACH, (floor_bytes,))
+    return [
+        (quoted_relname, int(dead), str(total))
+        for quoted_relname, dead, total in (cur.fetchall() or ())
+    ]
+
+
+def vacuum_table(cur, quoted_relname):
+    cur.execute('VACUUM ' + quoted_relname)
+
+
 _RUNNING_TASKS = f"""
     SELECT task_id, attempts, max_attempts, task_type
     FROM task_status AS t
@@ -459,6 +609,8 @@ _REQUEUE_OR_FAIL = f"""
                             THEN t.progress ELSE 100 END,
             end_time = CASE WHEN NOT prev.parent_gone AND t.attempts + 1 <= t.max_attempts
                             THEN NULL ELSE %s END,
+            next_run_at = CASE WHEN NOT prev.parent_gone AND t.attempts + 1 <= t.max_attempts
+                               THEN NOW() + (%s * interval '1 second') ELSE NULL END,
             timestamp = NOW()
         FROM prev
         WHERE t.task_id = prev.task_id AND t.status='{_RUNNING}'
@@ -477,7 +629,7 @@ RECLAIM_SEPARATOR = '\x1f'
 
 
 _REQUEUE_UNCHARGED = f"""
-    UPDATE task_status SET status='{_NEW}', worker_id=NULL, timestamp=NOW()
+    UPDATE task_status SET status='{_NEW}', worker_id=NULL, next_run_at=NULL, timestamp=NOW()
     WHERE task_id = %s AND status='{_RUNNING}'
       AND (%s IS NULL OR worker_id IS NULL OR worker_id = %s)
     RETURNING task_id
@@ -489,11 +641,12 @@ def requeue_uncharged(cur, task_id, worker_id=None):
     return cur.fetchone() is not None
 
 
-def requeue_or_fail(cur, task_id, now, failure_details):
+def requeue_or_fail(cur, task_id, now, failure_details, delay_seconds=None):
+    delay = None if delay_seconds is None else float(delay_seconds)
     cur.execute(
         _REQUEUE_OR_FAIL,
         (
-            task_id, json.dumps(failure_details), now,
+            task_id, json.dumps(failure_details), now, delay,
             CHANNEL_RECLAIM, RECLAIM_SEPARATOR, RECLAIM_SEPARATOR,
         ),
     )
@@ -587,6 +740,35 @@ def current_row(cur, task_id):
     }
 
 
+_TASK_STATUSES = "SELECT task_id, status FROM task_status WHERE task_id = ANY(%s)"
+
+
+def task_statuses(cur, task_ids):
+    cur.execute(_TASK_STATUSES, (list(task_ids),))
+    rows = cur.fetchall()
+    if not isinstance(rows, list):
+        raise TypeError(f"task_status read returned {type(rows).__name__}, not a result set")
+    return {row[0]: row[1] for row in rows}
+
+
+_CURRENT_DETAILS = "SELECT details FROM task_status WHERE task_id = %s"
+
+
+def current_details(cur, task_id):
+    cur.execute(_CURRENT_DETAILS, (task_id,))
+    row = cur.fetchone()
+    if not row:
+        return {}
+    raw = row[0]
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else None
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 _FINISH_TASK = f"""
     UPDATE task_status
     SET status = %s, progress = 100, details = %s,
@@ -601,10 +783,30 @@ _FINISH_TASK = f"""
 
 def finish_task(cur, task_id, status, details, now, worker_id=None):
     cur.execute(
-        _FINISH_TASK, (status, json.dumps(details), now, task_id, worker_id, worker_id)
+        _FINISH_TASK,
+        (status, json.dumps(details, default=str), now, task_id, worker_id, worker_id),
     )
     row = cur.fetchone()
     return row[0] if row else None
+
+
+_END_CHILD = f"""
+    UPDATE task_status
+    SET status = %s, progress = 100, details = %s,
+        end_time = COALESCE(end_time, %s), timestamp = NOW(),
+        func = NULL, payload = NULL,
+        shared_token = NULL, shared_payload = NULL
+    WHERE task_id = %s AND parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
+    RETURNING task_id
+"""
+
+
+def end_child(cur, task_id, parent_task_id, status, details, now):
+    cur.execute(
+        _END_CHILD,
+        (status, json.dumps(details, default=str), now, task_id, parent_task_id),
+    )
+    return cur.fetchone() is not None
 
 
 _REAP_CHILDREN = f"""
@@ -631,8 +833,77 @@ def reap_children(cur, parent_task_id):
     return reaped
 
 
+# server_sweep is watched too, even though it is not a MAIN_TASK_TYPE and holds
+# its own index rather than the one-live-main one. "It blocks only other sweeps"
+# was wrong: the cleaning start and the provider-migration execute both refuse
+# while a sweep is live, so a wedged sweep locked out cleaning, migration and
+# every future sweep, and nothing else was watching it - reclaim needs the worker
+# to DIE, and a wedged worker does not.
+NUDGE_TASK_TYPES = task_types.NUDGE_TASK_TYPES
+
+# A plugin task is matched by PREFIX, not by name: the namespace is open, so
+# there is no fixed list to put in an IN clause. It refuses every cron start
+# and every manual batch start (get_queue_blocking_task ORs in 'plugin.%'), so
+# a wedged one locks the catalogue out exactly the way a wedged sweep did, and
+# reclaim cannot help because reclaim needs the worker to DIE.
+NUDGE_TASK_TYPE_PATTERNS = [
+    prefix + '%' for prefix in task_types.NUDGE_TASK_TYPE_PREFIXES
+]
+
+
+_WEDGED_MAIN_TASKS = """
+    SELECT task_id, task_type, attempts, max_attempts,
+           EXTRACT(EPOCH FROM (NOW() - t.timestamp)) AS silent_seconds
+    FROM task_status AS t
+    WHERE t.status='{running}' AND t.parent_task_id IS NULL AND t.func IS NOT NULL
+      AND (t.task_type IN ({types}) OR t.task_type LIKE ANY(%s))
+      AND t.timestamp < NOW() - make_interval(secs => %s)
+      AND EXISTS (SELECT 1 FROM pg_stat_activity AS a
+                  WHERE a.datname = current_database()
+                    AND a.application_name IN (t.worker_id, t.worker_id || %s))
+""".format(
+    running=_RUNNING,
+    types=', '.join(f"'{name}'" for name in NUDGE_TASK_TYPES),
+)
+
+
+_TERMINATE_WEDGED_WORKER = """
+    SELECT a.pid, pg_terminate_backend(a.pid)
+    FROM pg_stat_activity AS a, task_status AS t
+    WHERE t.task_id = %s
+      AND a.datname = current_database()
+      AND a.pid <> pg_backend_pid()
+      AND a.application_name IN (t.worker_id, t.worker_id || %s)
+"""
+
+
+def terminate_wedged_worker_backends(cur, task_id):
+    cur.execute(_TERMINATE_WEDGED_WORKER, (task_id, WORKER_LISTEN_SUFFIX))
+    return [row[0] for row in (cur.fetchall() or ()) if row[1]]
+
+
+def wedged_main_tasks(cur, silent_seconds):
+    cur.execute(
+        _WEDGED_MAIN_TASKS,
+        (NUDGE_TASK_TYPE_PATTERNS, silent_seconds, WORKER_LISTEN_SUFFIX),
+    )
+    return [
+        {
+            'task_id': row[0], 'task_type': row[1],
+            'attempts': row[2], 'max_attempts': row[3],
+            'silent_seconds': float(row[4] or 0.0),
+        }
+        for row in (cur.fetchall() or ())
+    ]
+
+
+# beat_at is the child's own timestamp, and a fan-out parent puts it in its
+# no-progress signature. Without it the only sign of life a child can give is a
+# progress WRITE, so a child whose one step is a single opaque call - a spectral
+# fit over 10k songs - looked identical to a wedge and was revoked while healthy.
 _LIVE_CHILDREN = f"""
-    SELECT task_id, sub_type_identifier FROM task_status
+    SELECT task_id, sub_type_identifier, progress, status, timestamp, task_type
+    FROM task_status
     WHERE parent_task_id = %s AND status IN ({_LIVE_IN_LIST})
 """
 
@@ -640,7 +911,11 @@ _LIVE_CHILDREN = f"""
 def live_children(cur, parent_task_id):
     cur.execute(_LIVE_CHILDREN, (parent_task_id,))
     return [
-        {'task_id': row[0], 'sub_type_identifier': row[1]}
+        {
+            'task_id': row[0], 'sub_type_identifier': row[1],
+            'progress': row[2], 'status': row[3], 'beat_at': row[4],
+            'task_type': row[5],
+        }
         for row in (cur.fetchall() or ())
     ]
 
@@ -670,13 +945,26 @@ def clear_task_status(cur):
 
 
 _WORKER_SNAPSHOT = f"""
-    SELECT a.application_name, a.backend_start, t.task_id, t.task_type
-    FROM pg_stat_activity AS a
+    SELECT w.identity, w.backend_start, t.task_id, t.task_type, t.timestamp
+    FROM (
+        SELECT CASE WHEN a.application_name LIKE %s
+                    THEN left(a.application_name, -length(%s))
+                    ELSE a.application_name END AS identity,
+               MIN(a.backend_start) AS backend_start
+        FROM pg_stat_activity AS a
+        WHERE a.application_name LIKE %s AND a.datname = current_database()
+        GROUP BY 1
+    ) AS w
     LEFT JOIN task_status AS t
-      ON t.status = '{_RUNNING}' AND t.worker_id = a.application_name
-    WHERE a.application_name LIKE %s AND a.application_name NOT LIKE %s
-      AND a.datname = current_database()
-    ORDER BY a.application_name
+      ON t.status = '{_RUNNING}' AND t.worker_id = w.identity
+    UNION ALL
+    SELECT t.worker_id, NULL, t.task_id, t.task_type, t.timestamp
+    FROM task_status AS t
+    WHERE t.status = '{_RUNNING}' AND t.worker_id LIKE %s
+      AND NOT EXISTS (SELECT 1 FROM pg_stat_activity AS a
+                      WHERE a.datname = current_database()
+                        AND a.application_name IN (t.worker_id, t.worker_id || %s))
+    ORDER BY 1, 5 DESC NULLS LAST
 """
 
 WORKER_IDENTITY_PREFIX = 'audiomuse-worker-'
@@ -693,43 +981,56 @@ def parse_worker_identity(application_name):
 
 
 def worker_snapshot(cur):
+    from tz_helper import to_local_str
+
+    listen_pattern = '%' + WORKER_LISTEN_SUFFIX
+    worker_pattern = WORKER_IDENTITY_PREFIX + '%'
     cur.execute(
         _WORKER_SNAPSHOT,
-        (WORKER_IDENTITY_PREFIX + '%', '%' + WORKER_LISTEN_SUFFIX),
+        (
+            listen_pattern, WORKER_LISTEN_SUFFIX, worker_pattern,
+            worker_pattern, WORKER_LISTEN_SUFFIX,
+        ),
     )
     seen = set()
     workers = []
-    for application_name, backend_start, task_id, task_type in (cur.fetchall() or ()):
-        if application_name in seen:
+    for identity, backend_start, task_id, task_type, _beat_at in (cur.fetchall() or ()):
+        if identity in seen:
             continue
-        seen.add(application_name)
-        queue, hostname = parse_worker_identity(application_name)
+        seen.add(identity)
+        queue, hostname = parse_worker_identity(identity)
         workers.append({
-            'hostname': hostname or application_name,
+            'hostname': hostname or identity,
             'queues': [queue] if queue else [],
             'state': 'busy' if task_id else 'idle',
             'current_job_id': task_id,
             'current_task_type': task_type,
-            'started_at': backend_start.isoformat() if backend_start else None,
+            'started_at': to_local_str(backend_start) if backend_start else None,
         })
     return workers
 
 
 _QUEUE_BACKLOG = f"""
-    SELECT queue_name, COUNT(*)
+    SELECT queue_name,
+           COUNT(*) FILTER (WHERE status = '{_RUNNING}'),
+           COUNT(*) FILTER (WHERE status = '{_NEW}'
+                            AND (next_run_at IS NULL OR next_run_at <= NOW())),
+           COUNT(*) FILTER (WHERE status = '{_NEW}' AND next_run_at > NOW())
     FROM task_status
-    WHERE status = '{_NEW}' AND queue_name = ANY(%s)
+    WHERE status IN ('{_NEW}', '{_RUNNING}') AND queue_name = ANY(%s)
     GROUP BY queue_name
 """
 
 
 def queue_backlog(cur):
     cur.execute(_QUEUE_BACKLOG, (list(queue_names.QUEUE_NAMES),))
-    found = dict(cur.fetchall())
+    found = {row[0]: row[1:] for row in (cur.fetchall() or ())}
     return [
         {
             'queue_name': name,
-            'pending_count': found.get(name, 0),
+            'running_count': int(found.get(name, (0, 0, 0))[0] or 0),
+            'pending_count': int(found.get(name, (0, 0, 0))[1] or 0),
+            'delayed_count': int(found.get(name, (0, 0, 0))[2] or 0),
         }
         for name in queue_names.QUEUE_NAMES
     ]

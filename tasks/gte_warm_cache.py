@@ -15,54 +15,40 @@ the index caches) by managing only the ONNX model lifetime.
 
 Main Features:
 * warmup_gte_model: loads the model on demand and (re)arms the expiry timer.
-* _unload_timer_worker: single background thread that unloads gte_onnx and runs
-  comprehensive_memory_cleanup once the warm window expires; guarded by an RLock
-  shared via warm_lock so warmups and the timer never race.
+* IdleUnloadTimer owns the background unload thread: once the warm window
+  lapses it resets the gte_onnx session and runs comprehensive_memory_cleanup,
+  guarded by warm_lock so warmups and the timer never race.
 """
 
 import logging
-import threading
 import time
 from typing import Dict
 
 import config
 
+from tasks.idle_unload import IdleUnloadTimer
+
 logger = logging.getLogger(__name__)
 
-_WARM = {
-    'expiry_time': None,
-    'timer_thread': None,
-    'lock': threading.RLock(),
-}
+_TIMER = IdleUnloadTimer()
 
 
-def warm_lock() -> threading.RLock:
-    return _WARM['lock']
+def warm_lock():
+    return _TIMER.lock()
 
 
-def _unload_timer_worker():
-    while True:
-        with _WARM['lock']:
-            expiry = _WARM['expiry_time']
-            if expiry is None:
-                break
-            if expiry - time.time() <= 0:
-                from lyrics import gte_onnx
+def _unload_expired():
+    from lyrics import gte_onnx
 
-                if gte_onnx.is_loaded():
-                    logger.info("GTE warm cache expired - unloading lyrics embedding model")
-                    gte_onnx.reset_session()
-                    try:
-                        from tasks.memory_utils import comprehensive_memory_cleanup
+    if gte_onnx.is_loaded():
+        logger.info("GTE warm cache expired - unloading lyrics embedding model")
+        gte_onnx.reset_session()
+        try:
+            from tasks.memory_utils import comprehensive_memory_cleanup
 
-                        comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=True)
-                    except Exception as e:
-                        logger.debug("GTE unload cleanup failed: %s", e)
-                _WARM['expiry_time'] = None
-                _WARM['timer_thread'] = None
-                break
-            time_remaining = expiry - time.time()
-        time.sleep(min(1.0, max(0.05, time_remaining)))
+            comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=True)
+        except Exception as e:
+            logger.debug("GTE unload cleanup failed: %s", e)
 
 
 def warmup_gte_model() -> Dict:
@@ -77,13 +63,8 @@ def warmup_gte_model() -> Dict:
             return {'loaded': False, 'expiry_seconds': 0}
 
     duration = config.LYRICS_GTE_WARMUP_DURATION
-    with _WARM['lock']:
-        _WARM['expiry_time'] = time.time() + duration
-        if _WARM['timer_thread'] is None or not _WARM['timer_thread'].is_alive():
-            thread = threading.Thread(target=_unload_timer_worker, daemon=True)
-            thread.start()
-            _WARM['timer_thread'] = thread
-            logger.info("Started GTE warm cache timer (%ss)", duration)
+    if _TIMER.arm(duration, _unload_expired):
+        logger.info("Started GTE warm cache timer (%ss)", duration)
 
     return {'loaded': True, 'expiry_seconds': duration}
 
@@ -91,8 +72,7 @@ def warmup_gte_model() -> Dict:
 def get_gte_warm_status() -> Dict:
     from lyrics import gte_onnx
 
-    with _WARM['lock']:
-        expiry = _WARM['expiry_time']
+    expiry = _TIMER.expiry()
 
     if expiry is None or not gte_onnx.is_loaded():
         return {'active': False, 'seconds_remaining': 0}

@@ -67,12 +67,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p models
-          # The 7 assets the Dockerfiles actually download from the model release.
+          # The 9 assets the Dockerfiles actually download from the model release.
           # (model_epoch_36.onnx comes from the separate AudioMuse-AI-DCLAP repo
           #  and is therefore NOT part of this transfer.)
           gh release download "$SOURCE_TAG" -D models \
             -p musicnn_embedding.onnx \
             -p musicnn_prediction.onnx \
+            -p neural_fingerprint.onnx \
+            -p neural_fingerprint_pq.npz \
             -p huggingface_models.tar.gz \
             -p clap_text_model.onnx \
             -p lyrics_model_whisper.tar.gz \
@@ -81,12 +83,14 @@ jobs:
           echo "Downloaded:"
           ls -lh models
 
-      - name: Verify all 7 assets are present
+      - name: Verify all 9 assets are present
         run: |
           set -euo pipefail
           expected=( \
             musicnn_embedding.onnx \
             musicnn_prediction.onnx \
+            neural_fingerprint.onnx \
+            neural_fingerprint_pq.npz \
             huggingface_models.tar.gz \
             clap_text_model.onnx \
             lyrics_model_whisper.tar.gz \
@@ -112,6 +116,8 @@ jobs:
 
           - musicnn_embedding.onnx
           - musicnn_prediction.onnx
+          - neural_fingerprint.onnx
+          - neural_fingerprint_pq.npz
           - huggingface_models.tar.gz
           - clap_text_model.onnx
           - lyrics_model_whisper.tar.gz

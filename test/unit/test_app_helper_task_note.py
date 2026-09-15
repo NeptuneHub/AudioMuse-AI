@@ -25,7 +25,7 @@ import inspect
 
 import pytest
 
-from app_helper import _build_task_note
+from database import _build_task_note
 
 
 class TestAnalysisNote:

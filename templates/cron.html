@@ -13,6 +13,8 @@
             </div>
         </div>
 
+        <div id="cron-retry-status" style="display:none;margin-top:.5rem;padding:.5rem .75rem;background:#fff3cd;color:#856404;border:1px solid #ffeeba;border-radius:.25rem;font-size:.9rem;"></div>
+
         <div style="max-width:100%; margin-top:1rem;">
             <label style="display:block;margin-bottom:.5rem;" class="label-with-tooltip">
                 Analysis
@@ -92,6 +94,20 @@
             });
         }
 
+        function showRetryStatus(rows){
+            const pending = (rows || []).filter(r => r.retry_pending);
+            const el = document.getElementById('cron-retry-status');
+            if(!el){ return; }
+            if(pending.length){
+                el.textContent = 'Waiting to run, blocked by another running task (will retry automatically): ' +
+                    pending.map(r => r.name || r.task_type).join(', ');
+                el.style.display = 'block';
+            } else {
+                el.textContent = '';
+                el.style.display = 'none';
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', load);
         async function load(){
             // Save stays disabled until the current rows are loaded: saving over a
@@ -107,6 +123,7 @@
                 const rows = await res.json();
                 // cache rows to avoid refetching on save
                 window.cronRows = rows;
+                showRetryStatus(rows);
                 // find entries
                 const a = rows.find(r=>r.task_type==='analysis');
                 const c = rows.find(r=>r.task_type==='clustering');

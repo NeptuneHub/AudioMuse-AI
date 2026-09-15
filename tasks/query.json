@@ -16,7 +16,7 @@
     "Harmonica", "Accordion", "Harp",
     "Ukulele", "Banjo", "Mandolin",
     "Sitar", "Tabla", "Djembe", "Bongos", "Congas",
-    "Marimba", "Xylophone", "Vibraphone", "Steelpan"
+    "Marimba", "Xylophone", "Vibraphone", "Viola", "Steelpan"
   ],
   "Emotion_Mood": [
     "Happy", "Sad", "Angry", "Relaxed", "Excited",

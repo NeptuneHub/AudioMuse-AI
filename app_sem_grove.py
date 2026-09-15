@@ -18,6 +18,7 @@ Main Features:
 """
 
 import logging
+import config
 
 from flask import Blueprint, jsonify, request
 
@@ -48,8 +49,10 @@ def sem_grove_search_api():
               limit:
                 type: integer
                 minimum: 1
-                maximum: 500
                 default: 50
+                description: >-
+                  Number of tracks to return. Not capped - ask for as many
+                  as the index holds.
     responses:
       200:
         description: Sorted similar tracks (seed song included with `is_seed=true`).
@@ -68,6 +71,12 @@ def sem_grove_search_api():
                       title:
                         type: string
                       author:
+                        type: string
+                      album:
+                        type: string
+                      top_genre:
+                        type: string
+                      top_mood:
                         type: string
                       similarity:
                         type: number
@@ -93,10 +102,10 @@ def sem_grove_search_api():
             return jsonify({"error": 'Missing "item_id".'}), 400
 
         try:
-            limit = int(data.get("limit", 50))
+            limit = int(data.get("limit", config.SEM_GROVE_DEFAULT_LIMIT))
         except (TypeError, ValueError):
             return jsonify({"error": 'Invalid "limit" value.'}), 400
-        limit = min(max(1, limit), 500)
+        limit = max(1, limit)
 
         import app_server_context
 
@@ -114,8 +123,8 @@ def sem_grove_search_api():
                 }
             ), 404
 
-        results = app_server_context.scope_results(results, limit, id_key='item_id')
         attach_song_features(results)
+        results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify({"results": results, "count": len(results)})
 
     except ValueError as exc:

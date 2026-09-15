@@ -19,18 +19,34 @@ import below is deferred into function bodies to keep the eager chains under
 MAX_CHAIN.
 
 Main Features:
-* enqueue writes the job row and the wake-up notification in one transaction
+* enqueue writes the job row and the wake-up notification in one transaction,
+  and takes the restart budget from task_types when the caller passes none, so
+  a child's smaller budget is declared once, on its type
 * request_cancel / request_cancel_all publish the real-time stop signal
 * current_task_id tells a running task which row is its own
 * reap_finished_children deletes finished children and returns their outcomes
+* end_child is how a parent ends a child it gave up on: the queue writes the
+  child's terminal row, guarded by the parent's own id, and publishes the cancel
+  in the same transaction, so the row and the signal land together or not at
+  all. It is the ONE terminal row a task may write, and it is never its own
+* task_statuses is the one read a running task makes to learn whether it, or its
+  parent, was cancelled; tasks.task_run builds the shared cancel check on it
+* TaskFailed / TaskCancelled are the two things a task may raise to steer the
+  queue's verdict: never retry, and revoked. Everything else it raises is retried
 A root enqueue clears the FINISHED rows before inserting itself (the whole
-retention policy); it never touches NEW or RUNNING rows.
+retention policy); it never touches NEW or RUNNING rows. A side job
+(task_types.SIDE_JOB_TASK_TYPES) skips that clear, so starting it never erases the
+last task's recap.
 """
 
 import importlib
 import logging
+import time
 
 import queue_names
+import task_types
+
+from .errors import WORKER_LOST_ERROR, TaskCancelled, TaskFailed  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +70,7 @@ ALLOWED_FUNCS = frozenset((
     'tasks.provider_migration_tasks.dry_run_provider_migration',
     'tasks.provider_migration_tasks.source_refresh_provider_migration',
     'tasks.provider_migration_tasks.resume_provider_migration_restart',
+    'tasks.naming_preview.run_naming_preview_task',
     'plugin.manager.run_plugin_task',
 ))
 
@@ -165,6 +182,8 @@ def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAU
         raise UnknownTaskFunction(f"{func} is not an allowed task function")
 
     kwargs = dict(kwargs or {})
+    if max_attempts is None:
+        max_attempts = task_types.restarts_for(task_type)
     if shared:
         _check_shared(shared, kwargs, parent_task_id)
 
@@ -173,7 +192,7 @@ def enqueue(func, args=(), kwargs=None, *, task_id, task_type, queue=QUEUE_DEFAU
             sql.take_start_lock(cur)
         cur.execute("SAVEPOINT audiomuse_enqueue")
         try:
-            if parent_task_id is None:
+            if parent_task_id is None and task_type not in task_types.SIDE_JOB_TASK_TYPES:
                 sql.clear_task_status(cur)
             if shared:
                 _publish_shared(sql, cur, parent_task_id, shared, kwargs)
@@ -211,8 +230,30 @@ def reap_finished_children(parent_task_id, conn=None):
     return _with_cursor(lambda sql, cur: sql.reap_children(cur, parent_task_id), conn)
 
 
+def end_child(task_id, parent_task_id, status, message, conn=None):
+    import config
+
+    if status not in (config.TASK_STATUS_FAIL, config.TASK_STATUS_REVOKED):
+        raise ValueError(f"a parent may end its child as FAIL or REVOKED, not {status!r}")
+    if not parent_task_id:
+        raise ValueError('end_child needs the parent that owns the child')
+
+    def _end(sql, cur):
+        ended = sql.end_child(
+            cur, task_id, parent_task_id, status, {'message': message}, time.time(),
+        )
+        sql.notify_cancel(cur, str(task_id))
+        return ended
+
+    return _with_cursor(_end, conn)
+
+
 def live_children(parent_task_id, conn=None):
     return _with_cursor(lambda sql, cur: sql.live_children(cur, parent_task_id), conn)
+
+
+def task_statuses(task_ids, conn=None):
+    return _with_cursor(lambda sql, cur: sql.task_statuses(cur, task_ids), conn)
 
 
 def worker_snapshot(conn=None):

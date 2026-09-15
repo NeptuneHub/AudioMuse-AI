@@ -36,6 +36,9 @@ class DummyIVFIndex:
     def distance_to_similarity(self, distance):
         return 1.0 - float(distance)
 
+    def get_vector(self, vec_id):
+        return self.embeddings[int(vec_id)]
+
     def query(self, query_vector: np.ndarray, k: int):
         similarities = self.embeddings @ query_vector
         order = np.argsort(similarities)[::-1]
@@ -135,9 +138,9 @@ class TestSimilarityCalculationLogic:
             [
                 [1.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0],
-                [0.9, 0.1, 0.0],
+                [0.8, 0.6, 0.0],
                 [0.0, 0.0, 1.0],
-                [0.8, 0.2, 0.0],
+                [0.6, 0.8, 0.0],
             ],
             dtype=np.float32,
         )
@@ -265,7 +268,7 @@ class TestSearchResultStructure:
         query_embedding /= np.linalg.norm(query_embedding)
         mock_get_embedding.return_value = query_embedding
 
-        with patch('app_helper.get_score_data_by_ids') as mock_get_score_data:
+        with patch('database.get_score_data_by_ids') as mock_get_score_data:
             mock_get_score_data.return_value = [
                 {
                     'item_id': 'song1',
@@ -334,7 +337,7 @@ class TestSearchResultStructure:
         query_embedding /= np.linalg.norm(query_embedding)
         mock_get_embedding.return_value = query_embedding
 
-        with patch('app_helper.get_score_data_by_ids') as mock_get_score_data:
+        with patch('database.get_score_data_by_ids') as mock_get_score_data:
             mock_get_score_data.return_value = [
                 {'item_id': 'abc123', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
                 {'item_id': 'xyz789', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},

@@ -29,11 +29,13 @@ import logging
 import os
 import threading
 import time
-import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
+
+from cpu_budget import usable_cpu_count
+from .text_quality import compression_ratio as _compression_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +57,12 @@ WHISPER_COMPRESSION_RATIO_THRESHOLD = float(
 def _resolve_whisper_threads() -> int:
     raw = os.environ.get('LYRICS_WHISPER_INTRA_OP_THREADS', '').strip()
     if raw == '':
-        cpu_count = os.cpu_count() or 1
+        cpu_count = usable_cpu_count() or os.cpu_count() or 1
         return max(1, cpu_count // 3)
     try:
         return max(0, int(raw))
     except ValueError:
-        cpu_count = os.cpu_count() or 1
+        cpu_count = usable_cpu_count() or os.cpu_count() or 1
         return max(1, cpu_count // 3)
 
 
@@ -126,15 +128,6 @@ def _no_repeat_banned_tokens(tokens: List[int], n: int) -> Set[int]:
         if tuple(tokens[i : i + n - 1]) == prefix:
             banned.add(tokens[i + n - 1])
     return banned
-
-
-def _compression_ratio(text: str) -> float:
-    if not text:
-        return 0.0
-    encoded = text.encode('utf-8')
-    if not encoded:
-        return 0.0
-    return len(encoded) / max(1, len(zlib.compress(encoded)))
 
 
 def _check_free_ram_or_raise() -> None:
@@ -262,7 +255,7 @@ class _OnnxWhisperPipeline:
         )
 
         try:
-            from tasks.analysis.song import create_onnx_session
+            from tasks.onnx_utils import create_onnx_session
 
             self.encoder_session = create_onnx_session(
                 str(encoder_path), sess_options=sess_opts, label='whisper_encoder'

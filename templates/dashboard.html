@@ -260,7 +260,7 @@
         <h2>Queue Workers
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">Each worker container runs two queue worker processes: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here.</span>
+                <span class="tooltip-text">Each worker container runs two queue worker processes: one serving the <strong>high</strong> priority queue and one serving the <strong>default</strong> queue. So a single physical node usually shows up as two rows here. The two cards count, per queue, the tasks running right now, the ones queued behind them and any waiting out a retry delay.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="workers-updated">Loading…</p>
@@ -595,11 +595,17 @@
         const host = document.getElementById('queue-backlog');
         host.innerHTML = '';
         (rows || []).forEach(q => {
-            const count = q.pending_count || 0;
+            const running = q.running_count || 0;
+            const pending = q.pending_count || 0;
+            const delayed = q.delayed_count || 0;
+            const detail = [pending.toLocaleString() + ' queued']
+                .concat(delayed ? [delayed.toLocaleString() + ' waiting to retry'] : [])
+                .join(', ');
             const div = document.createElement('div');
             div.className = 'dash-stat-card';
             div.innerHTML = `<h3>${QUEUE_LABELS[q.queue_name] || q.queue_name}</h3>
-                             <div class="dash-stat">${count.toLocaleString()}</div>`;
+                             <div class="dash-stat">${running.toLocaleString()} running</div>
+                             <div class="muted">${detail}</div>`;
             host.appendChild(div);
         });
     }

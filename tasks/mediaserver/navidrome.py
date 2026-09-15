@@ -399,8 +399,12 @@ def get_all_songs(user_creds=None, apply_filter=True):
                 offset += len(songs)
                 if len(songs) < limit:
                     break
+            elif response is None:
+                logger.error("Failed to fetch all songs from Navidrome at offset %d.", offset)
+                raise RuntimeError(
+                    f"Navidrome song listing failed at offset {offset}; a partial catalogue is never returned."
+                )
             else:
-                logger.error("Failed to fetch all songs from Navidrome.")
                 break
 
     else:
@@ -431,8 +435,12 @@ def get_all_songs(user_creds=None, apply_filter=True):
 
                     if len(albums) < page_size:
                         break
-                else:
+                elif response is None:
                     logger.error(f"Failed to fetch albums from Navidrome folder ID {folder_id}.")
+                    raise RuntimeError(
+                        f"Navidrome album listing failed for folder {folder_id}; a partial catalogue is never returned."
+                    )
+                else:
                     break
 
         logger.info(

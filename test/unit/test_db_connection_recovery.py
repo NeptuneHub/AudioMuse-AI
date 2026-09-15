@@ -27,6 +27,8 @@ Main Features:
 * A locally closed connection is a deliberate boundary and is just replaced
 * Any other truthy ``closed`` (a test double, say) is replaced, never raised on
 * ``close_db`` keeps closing and clearing the cached connection
+* A swallowed score fetch error rolls the connection back, so the next startup
+  loader on the same connection is not refused as an aborted transaction
 """
 
 from unittest.mock import MagicMock
@@ -162,3 +164,29 @@ def test_close_db_closes_and_clears_the_cached_connection(monkeypatch):
         database.close_db()
         assert conn.close_calls == 1
         assert 'db' not in g
+
+
+def test_a_failed_score_fetch_rolls_back_so_the_next_query_can_run(monkeypatch):
+    import database
+    import psycopg2
+
+    statements = []
+
+    def execute(sql, params=None):
+        statements.append(sql.split()[0] if sql.strip().startswith(('SAVEPOINT', 'RELEASE', 'ROLLBACK')) else 'SELECT')
+        if statements[-1] == 'SELECT':
+            raise psycopg2.errors.DeadlockDetected('deadlock detected')
+
+    cursor = MagicMock()
+    cursor.execute.side_effect = execute
+    conn = MagicMock()
+    conn.autocommit = False
+    conn.cursor.return_value = cursor
+    monkeypatch.setattr(database, 'get_db', lambda: conn)
+
+    assert database.get_score_data_by_ids(['fp_1']) == []
+    assert statements == ['SAVEPOINT', 'SELECT', 'ROLLBACK'], (
+        'only the failed read is undone; the caller\'s earlier writes stay in its transaction'
+    )
+    conn.rollback.assert_not_called()
+    cursor.close.assert_called_once()

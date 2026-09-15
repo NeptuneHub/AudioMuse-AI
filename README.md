@@ -34,6 +34,7 @@ AudioMuse-AI lets you explore your music library in innovative ways, just **star
 * **Song Alchemy**: Mix your ideal vibe, mark tracks as "ADD" or "SUBTRACT" to get a curated playlist and a 2D preview. Export the final selection directly to your media server.
 * **Text Search**: search your song with simple text that can contains mood, instruments and genre like calm piano songs.
 * **Lyrics Search**: search your library by theme, story or meaning, like love songs, not just the sound.
+* **Search by Recording**: record 20 seconds of whatever is playing around you, or upload a clip, and find which song in your library it is; or pick a song of the library and find its other recordings.
 
 > **Lyrics language support:** the Lyrics Search feature works only with the **72 languages** listed below.
 >
@@ -55,6 +56,7 @@ More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/AR
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
+> * **Version 3.3.0** introduce the `-nvidia-arm` image in order to support the DGX Spark and other machine based on the GB10 GPU. This new image is **experimental**
 > * **Version 3.2.0** implemented queue on postgresql, this means that Redis is not needed anymore. Just check the new deployment/docker-compose example.
 > * **Version 3.0.0** added multiple music server support on a single deployment, with duplicate detection so a song shared by more servers is analyzed only once.
 > * **Version 2.6.0** added support for third party plugin. Give a look to the [plugin documentation](docs/PLUGIN.md) to know how to develop one and to the [official 3rd party catalog](https://github.com/NeptuneHub/AudioMuse-AI-plugins). The plugin system requires a persistent volume mounted on both the Flask and worker containers, otherwise installed plugins are lost whenever the containers restart; the deployment example has been updated accordingly.
@@ -210,6 +212,9 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 * **`-nvidia`** variants
   Images that support the use of GPU for both Analysis and Clustering.
   **Not recommended** for old GPU.
+  
+* **`-nvidia-arm`** variants
+  Images that support the use of GPU of DGX SPARK on ARM processor for both Analysis and Clustering **EXPERIMENTAL**.
 
 > Versioning is Major.Minor.Patch release. Eventually (rare) model change that could require a new analysis could happen in Major and Minor release.
 > Read the [release note](https://github.com/NeptuneHub/AudioMuse-AI/releases) before any update especially for Major and Minor release.

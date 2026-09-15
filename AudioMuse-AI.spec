@@ -30,6 +30,8 @@ datas = [
     (os.path.join(ROOT, "static"), "static"),
     (os.path.join(ROOT, "model"), "model"),
     (os.path.join(ROOT, "mood_centroids_real_080_clap.json"), "."),
+    (os.path.join(ROOT, "genre_subgenre.json"), "."),
+    (os.path.join(ROOT, "dclap_sae_concepts.json"), "."),
     # The plugins admin page lives in the blueprint's own template folder; without
     # this entry every native build 500s with TemplateNotFound on /plugins.
     (os.path.join(ROOT, "plugin", "templates"), os.path.join("plugin", "templates")),
@@ -45,7 +47,7 @@ if USE_PGSERVER:
 if not USE_PGSERVER:
     datas += [(os.path.join(ROOT, cfg["vendor_dir"], "postgres", arch), "pgsql")]
 
-for _pkg in ("librosa", "resampy", "flasgger", "wn", "langdetect"):
+for _pkg in ("librosa", "soxr", "flasgger", "wn", "langdetect"):
     datas += collect_data_files(_pkg)
 datas += collect_data_files("transformers", include_py_files=False)
 

@@ -20,6 +20,7 @@ Main Features:
 """
 
 import os
+import sys
 import tempfile
 
 # --- Task Status Constants ---
@@ -40,6 +41,15 @@ TASK_STATUS_FAILURE = TASK_STATUS_FAIL
 
 TASK_STATUS_TERMINAL = (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL, TASK_STATUS_REVOKED)
 TASK_STATUS_LIVE = (TASK_STATUS_NEW, TASK_STATUS_RUNNING)
+
+# --- Queue Guard ---
+# Every task type that enqueues catalogue work and must never run in parallel
+# with any other member of this set. The centralized queue guard checks this
+# for the cron scheduler and the manual start endpoints alike.
+QUEUE_BLOCKING_TASK_TYPES = (
+    'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
+    'sonic_fingerprint',
+)
 
 # --- Media Server Type ---
 MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
@@ -172,6 +182,10 @@ MEDIASERVER_CONFIG_KEYS = frozenset(
 APP_CONFIG_RUNTIME_KEYS = {
     'PLUGIN_REPOS',
     'PLUGIN_CATALOG_CACHE',
+    # Global Cancel counter (database.GLOBAL_CANCEL_EPOCH_KEY): the migration
+    # planner compares it before and after its claim lock. A live counter, not a
+    # setting, so the startup prune must keep the row.
+    'global_cancel_epoch',
 }
 
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
@@ -212,6 +226,48 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # import, so a persisted app_config row would replace the floored value with a
     # smaller one and re-open that incident. Excluded so the floor always wins.
     'CONTROL_IPC_TIMEOUT_SECONDS',
+    # Filesystem locations resolved from the RUNNING build, not chosen. Each is
+    # computed at import from the bundle root (_bundle_data_root, which is
+    # sys._MEIPASS on a frozen build) or from APP_DATA_DIR / the system temp dir,
+    # so the correct value differs per container, per install and per launch.
+    # Persisting one process's answer pins every other process to a path that
+    # may not exist there, and the wizard hides them precisely because there is
+    # no value an operator could usefully type. Excluded so they are never
+    # written, never override, and any row an older version left is pruned.
+    'MOOD_CENTROIDS_FILE',
+    'GENRE_SUBGENRE_FILE',
+    'PLUGINS_DIR',
+    'IVF_DISK_CACHE_DIR',
+    # Locations the native launchers hand every child through the environment
+    # (native-build/native_common/child_env.py) from the install of THIS launch:
+    # the bundled model files, the application data and temp directories and the
+    # embedded database kind. A container reads the same keys from the image
+    # layout. Persisting one launch's answer would pin an old install directory
+    # after the application is moved or upgraded, with no wizard field to fix it.
+    'APP_DATA_DIR',
+    'DATABASE_TYPE',
+    'TEMP_DIR',
+    'EMBEDDING_MODEL_PATH',
+    'PREDICTION_MODEL_PATH',
+    'CLAP_AUDIO_MODEL_PATH',
+    'CLAP_TEXT_MODEL_PATH',
+    'CLAP_SAE_ENCODER_PATH',
+    'CLAP_SAE_MODEL_PATH',
+    'CLAP_SAE_CONCEPTS_PATH',
+    'LYRICS_MODEL_DIR',
+    'LYRICS_WHISPER_MODEL_DIR',
+    'LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR',
+    'CLAP_OTHER_FEATURES_CACHE_DIR',
+    'CLAP_OTHER_FEATURES_CACHE_FILE',
+    'FPCALC_BINARY',
+    # The queue guard's task-type set is a correctness constant like the two
+    # above it: a stale row from an older version would let a task type that has
+    # since become blocking run in parallel with a catalogue job.
+    'QUEUE_BLOCKING_TASK_TYPES',
+    # Import-time facts about THIS process, not settings. They are reassigned at
+    # the end of _apply_db_overrides anyway, so a row only ever added junk.
+    'DB_OVERRIDES_LOADED',
+    'DB_DEFAULT_SERVER_PROJECTED',
     # Per-container process plumbing, NOT install-wide preferences. app_config is
     # shared by every container, so persisting one container's value forces it on
     # all of them at the next boot. AUDIO_MUSE_LISTENER_ID is the worst case: it
@@ -223,10 +279,50 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'SUPERVISORCTL_CMD',
     'SUPERVISOR_CONF',
     'DISABLE_FLASK_RESTART',
+    # Per-endpoint result-count defaults. These DO reach the UI: each search page
+    # renders one of them into its count input's value= attribute, so they are the
+    # number the box starts on as well as the fallback for a direct API caller that
+    # sends no count. They are deliberately env-only all the same. The wizard hides
+    # them (HIDDEN_ADVANCED_FIELDS), and hiding alone would still mirror them into
+    # app_config on the first boot, where a hidden row that overrides from the DB is
+    # a value no operator could ever change again - not in the wizard, and not by the
+    # environment variable the DB row outranks. Excluding them keeps them env-driven
+    # and prunes any row an older boot left behind. To make one of these operator-
+    # tunable instead, drop it from BOTH this set and HIDDEN_ADVANCED_FIELDS, the way
+    # HYPERBOLIC_DEFAULT_LIMIT / ALCHEMY_DEFAULT_N_RESULTS / SONIC_FINGERPRINT_NEIGHBORS
+    # / PATH_DEFAULT_LENGTH are handled.
+    'SIMILARITY_DEFAULT_N_RESULTS',
+    'ARTIST_SIMILARITY_DEFAULT_N_RESULTS',
+    'CLAP_SEARCH_DEFAULT_LIMIT',
+    'LYRICS_AXES_DEFAULT_LIMIT',
+    'LYRICS_TEXT_DEFAULT_LIMIT',
+    'SEM_GROVE_DEFAULT_LIMIT',
+    # Search by Recording: the page's own knobs, env-only like the defaults above.
+    'RECORDING_SEARCH_DEFAULT_N_RESULTS',
+    'RECORDING_SEARCH_RECORD_SECONDS',
+    'RECORDING_SEARCH_MAX_CLIP_SECONDS',
+    'RECORDING_SEARCH_MAX_UPLOAD_MB',
+    'RECORDING_SEARCH_TARGET_LEVEL_DB',
+    'RECORDING_SEARCH_WARMUP_DURATION',
+    # Built-in HTTPS is process-level plumbing, set from the environment like the
+    # HTTP bind, never from the wizard.
+    'FLASK_BUILTIN_HTTPS',
+    'FLASK_HTTPS_CERT_DIR',
+    # The neural fingerprint model is a file shipped with the image, not a setting.
+    'NEURAL_FINGERPRINT_MODEL_PATH',
+    'NEURAL_FINGERPRINT_CODEBOOK_PATH',
+    'NEURAL_FINGERPRINT_NPROBE',
+    'NEURAL_FINGERPRINT_TRAIN_ROWS',
+    'NEURAL_FINGERPRINT_RETRAIN_GROWTH',
+    'NEURAL_FINGERPRINT_MIN_SCORE',
+    'NEURAL_FINGERPRINT_MIN_LEAD',
+    'NEURAL_FINGERPRINT_INDEX_STRIDE',
+    'NEURAL_FINGERPRINT_QUERY_THREADS',
+    'NEURAL_FINGERPRINT_CACHE_MB',
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.2.0"
+APP_VERSION = "v3.6.1"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -234,6 +330,10 @@ MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs p
 SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = os.environ.get("SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT", "True").lower() == 'true'
 # Default behavior for radius similarity mode. Can be toggled via environment variable.
 SIMILARITY_RADIUS_DEFAULT = os.environ.get("SIMILARITY_RADIUS_DEFAULT", "True").lower() == 'true'
+# Default result count when the similarity APIs are called without an explicit
+# count. Each mirrors the value its page ships in its own input box.
+SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("SIMILARITY_DEFAULT_N_RESULTS", "50"))
+ARTIST_SIMILARITY_DEFAULT_N_RESULTS = int(os.environ.get("ARTIST_SIMILARITY_DEFAULT_N_RESULTS", "10"))
 # Optional radius-walk bucket-skip instrumentation (hidden debug flag, not a wizard param)
 RADIUS_INSTRUMENTATION = os.environ.get("RADIUS_INSTRUMENTATION", "False").lower() == 'true'
 NUM_RECENT_ALBUMS = int(os.getenv("NUM_RECENT_ALBUMS", "0")) # Convert to int
@@ -304,8 +404,21 @@ CLUSTERING_AUTO_CALIBRATION = os.environ.get("CLUSTERING_AUTO_CALIBRATION", "Tru
 CLUSTERING_MAX_PLAYLIST_SONGS = int(os.environ.get("CLUSTERING_MAX_PLAYLIST_SONGS", "200")) # Calibration tries to keep playlists at or under this many songs (soft goal; big beats empty)
 CLUSTERING_CALIBRATION_MAX_TRIES = int(os.environ.get("CLUSTERING_CALIBRATION_MAX_TRIES", "3")) # Quick single-iteration probes per server before the real run
 CLUSTERING_SUBSET_SONGS = int(os.environ.get("CLUSTERING_SUBSET_SONGS", "10000")) # Exact per-iteration sample cap; all per-genre quotas are calculated before selecting tracks, and smaller libraries contribute every clusterable song
-CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches without a better result; in-flight batches still drain
+CLUSTERING_EARLY_STOP_BATCHES = int(os.environ.get("CLUSTERING_EARLY_STOP_BATCHES", "3")) # Stop enqueuing new batches after this many consecutive batches that brought back nothing better; a CRASHED batch counts as one of them, so this is also the number of failures that ends a run with the best result it holds. In-flight batches still drain
 MAX_QUEUED_ANALYSIS_JOBS = int(os.environ.get("MAX_QUEUED_ANALYSIS_JOBS", "25")) # Max album analysis jobs to keep in task queue (reduced from 100 to prevent resource exhaustion)
+# The analysis twin of CLUSTERING_STALL_TIMEOUT_MINUTES, and the same sliding
+# window: an album job whose worker is alive but whose native code never returns
+# holds its advisory lock, so reclaim cannot take it and the parent would wait on
+# it forever. Any sign of life restarts the clock, a live album merely advancing
+# one track included, so only a genuinely wedged album runs it out; it is then
+# failed and reported in the album failure tally. 0 disables it.
+ANALYSIS_STALL_TIMEOUT_MINUTES = int(os.environ.get("ANALYSIS_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in the album drain - none finished, failed, and no live album advanced a track - before the parent gives up on the albums it is waiting for
+# The bound on how OFTEN the valve above may fire in one run, and the analysis
+# counterpart of CLUSTERING_EARLY_STOP_BATCHES. A worker that wedges on every
+# album it claims makes the valve fire once per album forever - one stall window
+# each - and the parent's own progress writes keep the wedged-main nudge blind to
+# it, so without this bound a run never ends. 0 disables it.
+ANALYSIS_MAX_STALL_GIVE_UPS = int(os.environ.get("ANALYSIS_MAX_STALL_GIVE_UPS", "3")) # How many times an analysis run may give up on a wedged album before it stops dispatching and finishes with what it has analysed
 
 # --- Batching Constants for Clustering Runs ---
 ITERATIONS_PER_BATCH_JOB = int(os.environ.get("ITERATIONS_PER_BATCH_JOB", "20")) # Number of clustering iterations per queued batch job
@@ -315,23 +428,34 @@ MAX_CONCURRENT_BATCH_JOBS = int(os.environ.get("MAX_CONCURRENT_BATCH_JOBS", "10"
 # Recommended values: 10-25 for servers with limited resources, 50-100 for powerful servers
 
 # --- Clustering Batch Timeout and Failure Recovery ---
-CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Max number of failed batches before stopping
+CLUSTERING_MAX_FAILED_BATCHES = int(os.environ.get("CLUSTERING_MAX_FAILED_BATCHES", "10")) # Upper bound on failed batches. Failures also count toward CLUSTERING_EARLY_STOP_BATCHES, so while that stays lower this bound is only reached when successes keep resetting the early-stop counter between failures
 # Last-resort safety valve for the clustering parent's drain loop, NOT a per-batch
 # budget: it measures the wall time during which NOTHING in the whole run changed
 # (no batch finished, none failed, none was launched, no live batch appeared or
 # disappeared). A batch wedged in non-returning native code keeps its worker alive,
 # so the worker still holds the advisory lock, reclaim correctly leaves it alone and
 # an unattended cron run would wait at a frozen generation count forever. When this
-# expires the parent cancels the batches it is still waiting on and finishes with the
-# best result it already has. The predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES was 60
-# and killed a batch on ITS OWN elapsed time, which a merely slow batch trips; this
-# one only fires when the entire run is frozen, so it is set to four times that to
-# stay far above any legitimate single-batch duration on slow hardware. 0 disables it.
-CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "240")) # Minutes without ANY change anywhere in a clustering run before the parent gives up on the batches it is waiting for (0 = never give up)
+# expires the parent ends the batches a worker is HOLDING and launches the next one;
+# only CLUSTERING_MAX_STALL_GIVE_UPS of those end the run. A live batch's own iteration counter counts as change,
+# so a slow batch and one a fresh worker restarted after a worker death both keep the
+# window open; only a batch producing nothing at all runs it out. Same 60 minutes as
+# the predecessor CLUSTERING_BATCH_TIMEOUT_MINUTES, which was a per-batch budget that
+# a merely slow batch could trip. 0 disables it.
+CLUSTERING_STALL_TIMEOUT_MINUTES = int(os.environ.get("CLUSTERING_STALL_TIMEOUT_MINUTES", "60")) # Minutes without ANY change anywhere in a clustering run - no batch finished, failed, launched, and no live batch advanced even one iteration - before the parent gives up on the batches it is waiting for and launches the next one (0 = never give up)
+# The clustering twin of ANALYSIS_MAX_STALL_GIVE_UPS, and the two are deliberately the
+# same number. This used to be hard-wired to 1: the FIRST wedged batch ended the whole
+# search, so an overnight run of fifty batches could return the result of five. One
+# wedged batch is a wedged batch, not a wedged run - the parent ends it, launches the
+# next one, and only gives up on the search after this many. It costs nothing to be
+# generous here because a given-up batch is also counted as failed, so
+# CLUSTERING_EARLY_STOP_BATCHES and CLUSTERING_MAX_FAILED_BATCHES still end a run whose
+# batches are genuinely all dying. 0 = never stop launching over stalls.
+CLUSTERING_MAX_STALL_GIVE_UPS = int(os.environ.get("CLUSTERING_MAX_STALL_GIVE_UPS", "3")) # How many times a clustering run may give up on a wedged batch before it stops launching new ones and finishes with its best result
 
 # --- Batching Constants for Analysis ---
 REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000")) # Rebuild IVF index after this many albums are analyzed.
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
+AUDIO_MIN_DECODED_FRACTION = float(os.getenv("AUDIO_MIN_DECODED_FRACTION", "0.5")) # Applies to the PyAV fallback only, never to a plain librosa load. When PyAV has to skip corrupt packets, at least this fraction of the duration the container declares must survive, otherwise the track counts as not decodable and is marked as such.
 ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via the queue every poll regardless).
 
 # --- Guided Evolutionary Clustering Constants ---
@@ -467,6 +591,33 @@ AI_NAMING_CANDIDATES = int(os.environ.get("AI_NAMING_CANDIDATES", "10"))
 # parts first, and a low cap makes them return nothing at all.
 AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
 
+# Playlist naming mode. "concept" (the default) asks the AI for one grounded word and
+# builds the title locally as "<Word> <Genre>". "title" is the classic behaviour: the AI
+# writes the whole title from a sample of the playlist songs, following
+# AI_NAMING_TITLE_PROMPT.
+AI_NAMING_PROMPT_MODE = os.environ.get("AI_NAMING_PROMPT_MODE", "concept").strip().lower()
+
+# Instructions sent in the "title" naming mode. Only these instructions are editable: the
+# playlist song sample, capped by MAX_SONGS_IN_AI_PROMPT, is always appended after them.
+# The _DEFAULT copy keeps a leading underscore so it is never persisted nor overridden by
+# the database, which gives the setup wizard a pristine value to reset to.
+_AI_NAMING_TITLE_PROMPT_DEFAULT = (
+    'You are an expert music collector and MUST give a title to this playlist.\n'
+    'The title MUST represent the mood and the activity of when you are listening to the playlist.\n'
+    "The title MUST use ONLY standard ASCII (a-z, A-Z, 0-9, spaces, and - & ' ! . , ? ( ) [ ]).\n"
+    'The title MUST be within the range of 5 to 40 characters long.\n'
+    'No special fonts or emojis.\n'
+    "* BAD EXAMPLES: 'Ambient Electronic Space - Electric Soundscapes - Emotional Waves' (Too long/descriptive)\n"
+    "* BAD EXAMPLES: 'Blues Rock Fast Tracks' (Too direct/literal, not evocative enough)\n"
+    "* BAD EXAMPLES: '\U0001d5dd\U0001d5c2\U0001d5c8 \U0001d5c2\U0001d5cb\U0001d5c8\U0001d5c7\U0001d5c2 \U0001d5c9\U0001d5cb\U0001d5c8\U0001d5c7\U0001d5c2' (Non-standard characters)\n"
+    '\n'
+    "CRITICAL: Your response MUST be ONLY the single playlist name. No explanations, no 'Playlist Name:', no numbering, no extra text or formatting whatsoever.\n"
+    '\n'
+)
+AI_NAMING_TITLE_PROMPT = os.environ.get(
+    "AI_NAMING_TITLE_PROMPT", _AI_NAMING_TITLE_PROMPT_DEFAULT
+)
+
 # Loopback URL the app answers on. Used by anything that has to wait for Flask to
 # come back after restarting it (the restore runner, the native supervisors).
 # NOT env-tunable: every actual bind (gunicorn in supervisord.conf, app.run, the
@@ -474,8 +625,18 @@ AI_NAMING_MAX_ATTEMPTS = int(os.environ.get("AI_NAMING_MAX_ATTEMPTS", "3"))
 # only point the readiness poll at a port Flask never answers on.
 FLASK_BIND_PORT = 8000
 FLASK_LOCAL_URL = f"http://127.0.0.1:{FLASK_BIND_PORT}/"
+# Browsers hand the microphone only to pages on HTTPS or localhost, and a self-hosted
+# app is reached as http://<ip>:8000, so the SAME port also answers HTTPS: the first
+# byte of a connection tells a TLS handshake from an HTTP request, TLS is terminated
+# in the web process with a self-signed certificate it generates once into
+# FLASK_HTTPS_CERT_DIR, and the Search by Recording page sends its record button to
+# https://<host>:8000. No extra port, nothing to publish. false switches it off.
+FLASK_BUILTIN_HTTPS = os.environ.get("FLASK_BUILTIN_HTTPS", "true").lower() == "true"
 # How long that wait may take before giving up and continuing anyway.
-FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "180"))
+FLASK_READY_TIMEOUT_SECONDS = float(os.environ.get("FLASK_READY_TIMEOUT_SECONDS", "3600"))
+# Web process idle heap trim: seconds of quiet before freed heap returns to the
+# OS (glibc malloc_trim). 0 disables it.
+FLASK_IDLE_HEAP_TRIM_SECONDS = float(os.environ.get("FLASK_IDLE_HEAP_TRIM_SECONDS", "60"))
 
 # --- Postgres task queue (taskqueue/) ---
 # The two queue names ('high' carries the user-facing coordinators so a fan-out
@@ -541,15 +702,50 @@ QUEUE_SECRET_KWARGS = (
     'mistral_api_key_param',
 )
 
-# Worker-death restarts, then the task fails for good. The ONLY retry knob: a task
-# that fails on its own merits is never retried, whatever the number here.
-# It counts WORKER DEATHS, not claims. The counter used to be incremented by the
-# claim itself, so the first, healthy claim already spent one: a long root task
-# that had merely been restarted twice was failed for good on the third restart,
-# and a FAIL row is unreachable afterwards because the claim only looks at NEW
-# rows and the reclaim only at RUNNING ones. That is one of the two ways a main
-# task could "never get re-enqueued".
+# How many RESTARTS a task gets before it fails for good: 3 means the first
+# attempt plus three more, the way worker-death reclaim always read it. ONE counter
+# covers a worker death AND a task that raised - a media-server 502, an LLM
+# timeout, a deadlock, a job child the kernel killed for memory - which is what
+# every comparable queue does. A task that raises taskqueue.TaskFailed is
+# never retried; everything else is. The wedged-main nudge spends from this same
+# budget: it ends the worker and reclaim then charges the attempt.
+# It counts ATTEMPTS THAT ENDED BADLY, not claims. The counter used to be
+# incremented by the claim itself, so the first, healthy claim already spent one:
+# a long root task that had merely been restarted twice was failed for good on
+# the third restart, and a FAIL row is unreachable afterwards because the claim
+# only looks at NEW rows and the reclaim only at RUNNING ones.
+# A child (album, clustering batch, index rebuild) declares a smaller budget of
+# ONE restart on its type in task_types.py: the next run re-queues whatever it
+# missed, so three restarts only made its parent wait out three backoffs.
 QUEUE_MAX_ATTEMPTS = max(1, int(os.getenv('QUEUE_MAX_ATTEMPTS', '3')))
+# The wait before a task that raised is attempted again: doubles per attempt
+# from the base, capped at the max, with a small jitter so a burst of failures
+# does not retry in lockstep. Worker-death reclaim is NOT delayed by this - a
+# task whose worker died resumes at once, as it always has. Sized for overnight
+# batch work, where a few minutes of waiting is nothing and a media server that
+# is down for two of them is the case the retry exists for.
+QUEUE_RETRY_BASE_SECONDS = float(os.getenv('QUEUE_RETRY_BASE_SECONDS', '30'))
+QUEUE_RETRY_MAX_SECONDS = float(os.getenv('QUEUE_RETRY_MAX_SECONDS', '600'))
+# How often a running task re-reads its own row, and its parent's, to notice it
+# was cancelled. Every task shares one cancel check (tasks.task_run) and this is
+# its only cadence.
+QUEUE_CANCEL_CHECK_SECONDS = float(os.getenv('QUEUE_CANCEL_CHECK_SECONDS', '2'))
+# A main task whose worker process is ALIVE but whose row has not changed for this
+# long is wedged, not working: reclaim deliberately will not touch it, because its
+# advisory lock is still held, so it would block every other main task forever.
+# Maintenance sends it a cancel, which ends that worker's process tree; supervisord
+# restarts the worker and the normal reclaim then requeues the task, so it RESUMES
+# from its persisted progress rather than being thrown away. Well above any silence
+# a healthy run has (clustering's AI naming phase is the longest). 0 disables it.
+QUEUE_WEDGED_MAIN_TASK_MINUTES = int(os.environ.get("QUEUE_WEDGED_MAIN_TASK_MINUTES", "180")) # Minutes a RUNNING main task row may stay unchanged while its worker is still alive before maintenance restarts that worker
+# A wedged task that has ignored the cancel for this many multiples of the limit
+# above has provably not run Python since (a worker that can hear the NOTIFY
+# dies within seconds), so maintenance terminates its database backends instead,
+# which drops the advisory lock that is holding the queue. A global timing ratio,
+# deliberately not a per-task-type property.
+QUEUE_WEDGED_ESCALATE_FACTOR = max(
+    1.0, float(os.getenv('QUEUE_WEDGED_ESCALATE_FACTOR', '2'))
+)
 # Jobs a worker runs before recycling itself, bounding native-extension leaks the
 # same way the queue worker's max_jobs did.
 QUEUE_MAX_JOBS = int(os.getenv('QUEUE_MAX_JOBS', '50'))
@@ -641,6 +837,17 @@ QUEUE_CONTROL_ACTION_WINDOW_SECONDS = (
 )
 # Errors kept on a failed root row. The user needs a sample, not a transcript.
 QUEUE_MAX_ERRORS_KEPT = max(1, int(os.getenv('QUEUE_MAX_ERRORS_KEPT', '5')))
+# The web process's hourly blob-table space sweep (see taskqueue.maintenance).
+# Autovacuum's threshold counts ROWS, so a table of a few huge blobs never
+# qualifies; this sweep VACUUMs what autovacuum cannot reach. Plain VACUUM only,
+# so readers and writers are never blocked. MIN_BYTES is the floor below which a
+# non-bytea table is left to autovacuum; a table is swept however big it is.
+BLOB_RECLAIM_MIN_BYTES = int(os.getenv('BLOB_RECLAIM_MIN_BYTES', str(1024 * 1024)))
+BLOB_RECLAIM_STARTUP_DELAY_SECONDS = float(os.getenv('BLOB_RECLAIM_STARTUP_DELAY_SECONDS', '120'))
+BLOB_RECLAIM_INTERVAL_SECONDS = float(os.getenv('BLOB_RECLAIM_INTERVAL_SECONDS', '3600'))
+BLOB_RECLAIM_LOCK_TIMEOUT = os.getenv('BLOB_RECLAIM_LOCK_TIMEOUT', '2s')
+BLOB_RECLAIM_STATEMENT_TIMEOUT = os.getenv('BLOB_RECLAIM_STATEMENT_TIMEOUT', '10min')
+BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS = float(os.getenv('BLOB_RECLAIM_SNAPSHOT_GRACE_SECONDS', '30'))
 
 # Construct DATABASE_URL from individual components for better security in K8s
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "audiomuse")
@@ -700,10 +907,6 @@ DISABLE_FLASK_RESTART = os.environ.get("DISABLE_FLASK_RESTART", "false").lower()
 # one connection is what broke pg_dump when only one of them was set (#832).
 DATABASE_URL = _DERIVED_DATABASE_URL
 
-# --- AI User for Chat SQL Execution ---
-AI_CHAT_DB_USER_NAME = os.environ.get("AI_CHAT_DB_USER_NAME", "ai_user")
-AI_CHAT_DB_USER_PASSWORD = os.environ.get("AI_CHAT_DB_USER_PASSWORD", "ChangeThisSecurePassword123!") # IMPORTANT: Change this default and use environment variables
-
 # --- Classifier Constant ---
 MOOD_LABELS = [
     'rock', 'pop', 'alternative', 'indie', 'electronic', 'female vocalists', 'dance', '00s', 'alternative rock', 'jazz',
@@ -717,6 +920,86 @@ TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to 
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")
 PREDICTION_MODEL_PATH = os.environ.get("PREDICTION_MODEL_PATH", "/app/model/musicnn_prediction.onnx")
 EMBEDDING_DIMENSION = 200
+
+# --- Hyperbolic Explorer (Poincare ball over the MusiCNN embeddings) ---
+# proj(x) = tanh(||x|| / s) * (x / ||x||), R = ||proj(x)||. The scale s is
+# calibrated from the catalogue's real norm distribution (percentile
+# HYPERBOLIC_RADIUS_PERCENTILE) instead of hardcoded, because the bare formula
+# saturates tanh past ||x|| ~= 3 and flattens all radial separation. A value of
+# None means auto-calibrate once and persist the result in app_config.
+HYPERBOLIC_RADIUS_SCALE = float(os.environ.get("HYPERBOLIC_RADIUS_SCALE") or "0") or None
+HYPERBOLIC_RADIUS_PERCENTILE = float(os.environ.get("HYPERBOLIC_RADIUS_PERCENTILE", "95"))
+# Candidate over-fetch multiplier applied before the hyperbolic re-ranking and
+# de-duplication pass (roots / niche radius windows and the similar mode's
+# pre-dedup slice over the projected catalogue).
+HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFETCH", "4"))
+# Fraction of the radial range that roots/niche modes must move before a
+# candidate qualifies, so the two modes visibly differ from plain similar.
+# Roots only returns tracks at least this fraction deeper toward the origin
+# (radius < seed_radius * (1 - spread)); niche only tracks at least this
+# fraction of the remaining distance toward the boundary (radius >
+# seed_radius + (1 - seed_radius) * spread). The candidates are then ranked by
+# exact Poincare distance within that window. 0 keeps the old band-hugging
+# behaviour where every mode returns the tracks nearest to the seed's radius.
+HYPERBOLIC_RADIAL_SPREAD = float(os.environ.get("HYPERBOLIC_RADIAL_SPREAD", "0.15"))
+HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "50"))
+# Directory tree shape: when genre_subgenre.json is present and dimensionally
+# usable the root is a MAIN GENRE partition (nearest genre centroid), then a
+# SUBGENRE partition (nearest of that genre's subgenres), then named k-means
+# clusters for any subgenre still above the target leaf size - exactly three
+# levels (GENRE -> SUBGENRE -> NAMED CLUSTER), nothing deeper. Without usable
+# genre data the tree falls back to a legacy mood partition
+# (mood_centroids_real_080_clap.json) followed by a main-genre partition, then
+# the same named-cluster level. Only TARGET sizes are derived from the
+# catalogue size at cache-build time, so a 500-track library and a 500,000-track
+# library each get a browsable tree instead of one fixed shape.
+# Below this many tracks, a folder (mood, genre, subgenre) stops splitting and
+# lists its tracks directly instead of generating clusters.
+HYPERBOLIC_TARGET_LEAF_SIZE = int(os.environ.get("HYPERBOLIC_TARGET_LEAF_SIZE", "150"))
+# Minimum songs a named cluster must hold to survive tree build. Clusters below
+# this are pruned, and any subgenre left without at least one surviving cluster
+# is hidden entirely (a genre with no subgenres is hidden too). The tree is
+# built per server, so each server only shows genres/subgenres it can actually
+# back with a real cluster of songs.
+HYPERBOLIC_MIN_CLUSTER_SIZE = int(os.environ.get("HYPERBOLIC_MIN_CLUSTER_SIZE", "20"))
+
+# Duration (in seconds) to keep the Hyperbolic Explorer tree cache loaded after
+# last use. Unlike the other indexes it is a fully materialized Python object
+# tree (not disk-paged), so it is lazy-loaded when the /hyperbolic page opens
+# and auto-unloads after this idle period to free RAM.
+HYPERBOLIC_TREE_WARMUP_DURATION = int(os.environ.get("HYPERBOLIC_TREE_WARMUP_DURATION", "300"))
+
+# Geodesic Journey: the walk along the exact Poincare geodesic between two
+# songs. A geodesic in negatively curved space bows toward the origin, so the
+# walk descends through the region general enough to contain both endpoints
+# (the continuous analogue of their lowest common ancestor) and climbs back
+# out - which is what makes it different from the Sonic Path page's straight
+# line through raw space.
+# Number of songs in the walk INCLUDING both endpoints. Evenly spaced t on a
+# Poincare geodesic is evenly spaced hyperbolic arc length, so every step
+# covers the same musical distance.
+HYPERBOLIC_JOURNEY_DEFAULT_LENGTH = int(os.environ.get("HYPERBOLIC_JOURNEY_DEFAULT_LENGTH", "25"))
+# The walk ranks the whole projected catalogue by exact Poincare distance
+# directly against the embedding table - no IVF index and no cosine shortcut.
+# How much deeper than the true geodesic the walk dips toward the origin,
+# through a bump that is zero at both endpoints. 0 is the exact (shortest)
+# geodesic; higher values buy a longer detour through more general territory
+# without moving where the walk starts or ends.
+HYPERBOLIC_JOURNEY_ANCESTRY_DIVE = float(os.environ.get("HYPERBOLIC_JOURNEY_ANCESTRY_DIVE", "0.20"))
+# Samples of the ideal geodesic returned for the Poincare disk drawing. The
+# whole geodesic lies in the 2-plane spanned by its endpoints, so these are an
+# exact picture of it, not an approximation of a higher-dimensional curve.
+HYPERBOLIC_JOURNEY_PATH_SAMPLES = int(os.environ.get("HYPERBOLIC_JOURNEY_PATH_SAMPLES", "96"))
+# Disk-paged Poincare IVF index for the Hyperbolic Explorer: the projected
+# catalogue is partitioned by hyperbolic k-means into 8*sqrt(n) cells (the same
+# rule and the same IVF_NLIST_MAX / IVF_TRAIN_POINTS_PER_CELL / IVF_NPROBE knobs
+# as the other IVF indexes above), so the cell count grows with the library.
+# The cell directory and the coarse centroids live in memory; the cell vectors
+# stay in ivf_dir and are decoded on demand, bounded by HYPERBOLIC_INDEX_CACHE_MB
+# so the full projected set never sits in RAM.
+HYPERBOLIC_INDEX_CACHE_MB = int(os.environ.get("HYPERBOLIC_INDEX_CACHE_MB", "256"))
+# Exact nearest candidates per journey waypoint pulled from the Poincare index.
+HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP = int(os.environ.get("HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP", "60"))
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
@@ -842,6 +1125,11 @@ LYRICS_VAD_SPEECH_PAD_MS = int(os.environ.get("LYRICS_VAD_SPEECH_PAD_MS", "400")
 # time; changing them requires rebuilding the SemGrove index.
 SEM_GROVE_WEIGHT_LYRICS = float(os.environ.get("SEM_GROVE_WEIGHT_LYRICS", "0.75"))
 SEM_GROVE_WEIGHT_AUDIO  = float(os.environ.get("SEM_GROVE_WEIGHT_AUDIO",  "0.25"))
+# Default result count when the lyrics / SemGrove search APIs are called
+# without an explicit limit. Each mirrors its own input box on the search page.
+LYRICS_AXES_DEFAULT_LIMIT = int(os.environ.get("LYRICS_AXES_DEFAULT_LIMIT", "50"))
+LYRICS_TEXT_DEFAULT_LIMIT = int(os.environ.get("LYRICS_TEXT_DEFAULT_LIMIT", "50"))
+SEM_GROVE_DEFAULT_LIMIT = int(os.environ.get("SEM_GROVE_DEFAULT_LIMIT", "50"))
 
 # --- Sentinel vectors for tracks with no detectable lyrics ("instrumental") ---
 # These give us three things at once:
@@ -887,6 +1175,121 @@ CLAP_AUDIO_MEL_TRANSPOSE = os.environ.get("CLAP_AUDIO_MEL_TRANSPOSE", "false").l
 
 CLAP_TEXT_MODEL_PATH = os.environ.get("CLAP_TEXT_MODEL_PATH", "/app/model/clap_text_model.onnx")
 CLAP_EMBEDDING_DIMENSION = 512
+
+# Root of the files that ship inside the application: the source directory in a
+# normal checkout, and the unpacked bundle when running as a frozen build.
+def _bundle_data_root():
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# Sparse-autoencoder concept steering over the DCLAP space (arXiv:2608.08757).
+# Equations 6 and 7: the query embedding is encoded into sparse concept latents,
+# the chosen concept's coordinates are moved by alpha times a unit norm mask, and
+# the edited code is decoded back. Only the difference between the edited and the
+# unedited reconstruction is applied, because the autoencoder does not round trip
+# a text embedding exactly. The index is never touched: only the query moves, so
+# storage dtype and paging are unaffected.
+# The two ONNX graphs are downloaded into model/ by the Dockerfile from the
+# AudioMuse-AI-SAE release, like the other models. The concept catalogue is small
+# and ships in the repository at the project root, which is /app in the container.
+CLAP_SAE_STEERING_ENABLED = os.environ.get("CLAP_SAE_STEERING_ENABLED", "true").lower() == "true"
+CLAP_SAE_MODEL_PATH = os.environ.get(
+    "CLAP_SAE_MODEL_PATH", "/app/model/dclap_sae_k20_d1024_best_decoder.onnx"
+)
+CLAP_SAE_ENCODER_PATH = os.environ.get(
+    "CLAP_SAE_ENCODER_PATH", "/app/model/dclap_sae_k20_d1024_best_encoder.onnx"
+)
+# The concept catalogue ships inside the repository, so it resolves from the
+# bundle root the same way the other shipped JSON files do. Only the two ONNX
+# graphs are fetched from the AudioMuse-AI-SAE release.
+CLAP_SAE_CONCEPTS_PATH = os.environ.get(
+    "CLAP_SAE_CONCEPTS_PATH", os.path.join(_bundle_data_root(), "dclap_sae_concepts.json")
+)
+# A refinement may stack at most this many concepts; the paper steers one at a
+# time, so beyond a handful the edits start fighting each other.
+CLAP_SAE_MAX_TERMS = int(os.environ.get("CLAP_SAE_MAX_TERMS", "10"))
+
+# Neural audio fingerprint (Search by Recording, identify from any part of a
+# song): the ONNX encoder exported from the neural music fingerprinter of Araz,
+# Serra and Bogdanov (ISMIR 2025, triplet checkpoint). Like the MusiCNN graphs it
+# is downloaded from the model release into /app/model by the Dockerfiles, and the
+# native builds ship it in their model directory and point this variable there
+# (native-build/native_common/child_env.py). A missing file simply disables the
+# analysis stage and the page.
+# Runs through the same ONNX provider chain as MusiCNN and CLAP: CUDA on the GPU
+# images, the CPU everywhere else.
+# Master switch like CLAP_ENABLED, OFF by default: the stage adds 10 to 25 s of CPU
+# per track, so an installation opts in from the setup wizard (Machine Learning
+# Models) or with this variable. Like every wizard parameter it is written to
+# app_config on the first web start that lacks it and read from there afterwards
+# (setup_manager.persist_missing_config_values), so an upgrade never flips a choice
+# already made; a library that already holds neural fingerprints counts as having
+# chosen this one on (_apply_db_overrides infers it before that write). False skips
+# the neural fingerprint stage of the analysis and its index build, and the Search by
+# Recording page says it is off.
+NEURAL_FINGERPRINT_ENABLED = os.environ.get("NEURAL_FINGERPRINT_ENABLED", "false").lower() == "true"
+NEURAL_FINGERPRINT_MODEL_PATH = os.environ.get(
+    "NEURAL_FINGERPRINT_MODEL_PATH", "/app/model/neural_fingerprint.onnx"
+)
+# Product-quantisation codebook that turns each 128-number fingerprint vector into
+# 32 bytes (32 slices of 4 numbers, 256 centroids each), trained once on library
+# fingerprints (scripts/onnx_export/train_neural_fingerprint_codebook.py) and shipped
+# next to the model. Every stored blob carries the codebook's checksum: changing the
+# file invalidates the stored fingerprints, so keep the one the library was encoded with.
+NEURAL_FINGERPRINT_CODEBOOK_PATH = os.environ.get(
+    "NEURAL_FINGERPRINT_CODEBOOK_PATH", "/app/model/neural_fingerprint_pq.npz"
+)
+# Coarse cells probed per query vector when the fingerprint index is searched
+# (the index has about sqrt(rows) cells); more cells = better recall, slower query.
+NEURAL_FINGERPRINT_NPROBE = int(os.environ.get("NEURAL_FINGERPRINT_NPROBE", "12"))
+# Rows the k-means that places the cells is trained on, sampled 100 per track from
+# random tracks, and never fewer than 20 per cell (a million tracks gets about 22k
+# cells, so about 440k rows). Every track contributes hundreds of rows, so the cap the
+# other indexes use for whole-track vectors would mean training on the full library.
+NEURAL_FINGERPRINT_TRAIN_ROWS = int(os.environ.get("NEURAL_FINGERPRINT_TRAIN_ROWS", "200000"))
+# Index every n-th stored half-second row of a track: 1 indexes them all, 2 indexes
+# one per second, which halves the local pack (about 19 GB per million tracks at 1)
+# and the query work, at a recall cost on degraded clips that must be measured on
+# real recordings first. The stored fingerprints keep every row and the alignment
+# check reads them all whatever the stride. Changing it triggers a full rebuild.
+NEURAL_FINGERPRINT_INDEX_STRIDE = int(os.environ.get("NEURAL_FINGERPRINT_INDEX_STRIDE", "1"))
+# Threads that score a clip's segments in parallel in the web process; 0 = one per
+# CPU core, at most 8.
+NEURAL_FINGERPRINT_QUERY_THREADS = int(os.environ.get("NEURAL_FINGERPRINT_QUERY_THREADS", "0"))
+# RAM (MB) the web process keeps for fingerprint cells read from the ivf_cell table on
+# demand, like IVF_GLOBAL_CACHE_MB for the other indexes; least recently used cells are
+# dropped past it, and the whole cache is dropped when the recording search has been
+# idle for RECORDING_SEARCH_WARMUP_DURATION seconds. A query touches a few hundred
+# cells; a cell is about 40 bytes per indexed half second of the tracks it holds.
+NEURAL_FINGERPRINT_CACHE_MB = int(os.environ.get("NEURAL_FINGERPRINT_CACHE_MB", "1024"))
+# The worker appends new tracks to the existing cells; the centroids are retrained
+# (a full rebuild) once the library has grown this many times since they were trained.
+NEURAL_FINGERPRINT_RETRAIN_GROWTH = float(os.environ.get("NEURAL_FINGERPRINT_RETRAIN_GROWTH", "4.0"))
+# The best track counts as identified when the clip's segments, aligned on it, reach
+# this mean cosine similarity AND lead the next track by this much. Measured on four
+# real phone recordings: scores 0.48 to 0.68, leads 0.33 to 0.51; on a synthetic
+# degradation harsher than a phone the wrong top candidates stayed below 0.26 with
+# leads under 0.09.
+NEURAL_FINGERPRINT_MIN_SCORE = float(os.environ.get("NEURAL_FINGERPRINT_MIN_SCORE", "0.4"))
+NEURAL_FINGERPRINT_MIN_LEAD = float(os.environ.get("NEURAL_FINGERPRINT_MIN_LEAD", "0.15"))
+# Strength grid (alpha). Each concept mask is L2 normalised, so alpha is a fixed
+# length step in latent space and means the same for every concept. The grid stops
+# at 5: beyond that the edit stops refining the query and starts replacing it, and
+# an instrument concept begins returning instrumental material that has lost the
+# genre and the vocals the query asked for.
+# Strength values the refinement UI offers. A step moves the query by the same
+# amount whatever the concept or the collection: measured across queries and
+# concepts, a step of 3 lands at cosine 0.992 to 0.994 of the original, a spread
+# of 0.002, so the scale needs no per-collection calibration. Within this range a
+# concept reorders the results it is given; past roughly 8 it stops refining the
+# query and substitutes its own, which is why the range stops at 5. The reference
+# implementation's own grid stops at 2.0.
+CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0]
+CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "3.0"))
+# Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
+CLAP_SAE_IDLE_UNLOAD_SECONDS = int(os.environ.get("CLAP_SAE_IDLE_UNLOAD_SECONDS", "300"))
 # CPU threading for CLAP analysis:
 # - False (default): Use ONNX internal threading (auto-detects all CPU cores, recommended)
 # - True: Use Python ThreadPoolExecutor with auto-calculated threads: (physical_cores - 1) + (logical_cores // 2)
@@ -928,6 +1331,29 @@ CLAP_TOP_QUERIES_COUNT = int(os.environ.get("CLAP_TOP_QUERIES_COUNT", "1000"))
 # Duration (in seconds) to keep CLAP model loaded for text search after last use
 # Model auto-unloads after this period of inactivity to free ~500MB RAM
 CLAP_TEXT_SEARCH_WARMUP_DURATION = int(os.environ.get("CLAP_TEXT_SEARCH_WARMUP_DURATION", "300"))
+# Default result count when /api/clap/search is called without an explicit
+# limit. Mirrors the value the CLAP search page ships in its own input box.
+CLAP_SEARCH_DEFAULT_LIMIT = int(os.environ.get("CLAP_SEARCH_DEFAULT_LIMIT", "50"))
+
+# --- Search by Recording ---
+# Result count when /api/recording_search/search is called without one; also the
+# value the page's count box starts on.
+RECORDING_SEARCH_DEFAULT_N_RESULTS = int(os.environ.get("RECORDING_SEARCH_DEFAULT_N_RESULTS", "100"))
+# Seconds the browser records before it stops by itself.
+RECORDING_SEARCH_RECORD_SECONDS = int(os.environ.get("RECORDING_SEARCH_RECORD_SECONDS", "20"))
+# An uploaded clip longer than this is cut to its first seconds before embedding.
+RECORDING_SEARCH_MAX_CLIP_SECONDS = int(os.environ.get("RECORDING_SEARCH_MAX_CLIP_SECONDS", "60"))
+# Upload size ceiling for one clip. The upload is streamed to a temporary file and
+# only the first RECORDING_SEARCH_MAX_CLIP_SECONDS are embedded, so a big file costs
+# transfer time and disk, never RAM.
+RECORDING_SEARCH_MAX_UPLOAD_MB = int(os.environ.get("RECORDING_SEARCH_MAX_UPLOAD_MB", "1024"))
+# RMS level (dBFS) every clip is normalised to before embedding. The mel front ends
+# carry no per-clip normalisation, so a quiet recording lands far from its own song;
+# -14 dBFS is the median level of an analysed library.
+RECORDING_SEARCH_TARGET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_TARGET_LEVEL_DB", "-14.0"))
+# Seconds the neural fingerprint pack and its encoder session stay loaded in the web
+# process after the last recording search before they are unloaded to free RAM.
+RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_DURATION", "300"))
 
 # Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
 # loaded after last use. Auto-unloads after this idle period to free RAM.
@@ -943,8 +1369,12 @@ IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosi
 # query reads only the nearest IVF_NPROBE cells, so the Flask container's resident
 # index memory is bounded by IVF_QUERY_CACHE_MB per index instead of growing with
 # the library size. Cell vectors are quantized per IVF_STORAGE_DTYPE (coarse
-# centroids stay float32, so cell selection / recall is unaffected).
-IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored cell-vector precision: 'i8' (int8; angular only, euclidean/dot auto-fall to f16), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
+# centroids stay float32, so cell selection / recall is unaffected). The same
+# setting also sizes the Hyperbolic Explorer's disk-paged Poincare index bands,
+# which take it literally (i8 stays i8 there, no f16 downgrade) and absorb the
+# coarser grid by overfetching the band scan and re-ranking those candidates on
+# the exact float32 poincare_embedding rows before returning.
+IVF_STORAGE_DTYPE = os.environ.get("IVF_STORAGE_DTYPE", "i8").lower()  # Stored vector precision for EVERY index: 'i8' (int8; the IVF indexes fall back to f16 for euclidean/dot, the Poincare index keeps i8), 'f16', or 'f32' (no quantization). Smaller = less RAM/IO; distances are computed directly in that dtype via NumKong with a NumPy fallback. Changing this takes effect on the next index rebuild.
 IVF_NLIST_MAX = int(os.environ.get("IVF_NLIST_MAX", "8192"))  # Upper cap on number of IVF cells (coarse centroids)
 IVF_TRAIN_POINTS_PER_CELL = int(os.environ.get("IVF_TRAIN_POINTS_PER_CELL", "50"))  # Target training vectors per cell; sample = this x nlist, capped at n_items (FAISS floor ~39)
 IVF_MAX_CELL_MB = int(os.environ.get("IVF_MAX_CELL_MB", "12"))  # Oversized cells are split so no single cell exceeds this
@@ -972,6 +1402,15 @@ elif os.path.isdir("/app"):
 else:
     _ivf_disk_cache_default = os.path.join(tempfile.gettempdir(), "audiomuse_ivf_cache")
 IVF_DISK_CACHE_DIR = os.environ.get("IVF_DISK_CACHE_DIR", "") or _ivf_disk_cache_default
+# Where the self-signed certificate of the built-in HTTPS lives; same placement
+# rule as the IVF cache so a native build keeps it across restarts.
+if APP_DATA_DIR:
+    _https_cert_dir_default = os.path.join(APP_DATA_DIR, "tls")
+elif os.path.isdir("/app"):
+    _https_cert_dir_default = "/app/tls"
+else:
+    _https_cert_dir_default = os.path.join(tempfile.gettempdir(), "audiomuse_tls")
+FLASK_HTTPS_CERT_DIR = os.environ.get("FLASK_HTTPS_CERT_DIR", "") or _https_cert_dir_default
 
 # --- Pathfinding Constants ---
 # The distance metric to use for pathfinding. Options: 'angular', 'euclidean'.
@@ -992,12 +1431,19 @@ PATH_LCORE_MULTIPLIER = int(os.environ.get("PATH_LCORE_MULTIPLIER", "3"))
 # in potentially shorter paths). Can be overridden via env var PATH_FIX_SIZE.
 PATH_FIX_SIZE = os.environ.get("PATH_FIX_SIZE", "False").lower() == 'true'
 
+
+
 # Path to the JSON file containing mood centroids for the path-to-mood feature.
-MOOD_CENTROIDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mood_centroids_real_080_clap.json')
+MOOD_CENTROIDS_FILE = os.path.join(_bundle_data_root(), 'mood_centroids_real_080_clap.json')
+
+# Path to the JSON file containing genre -> subgenre centroids used by the
+# Hyperbolic Explorer tree's genre levels (main genre, then subgenre). Built
+# offline by query/brainstorm_genre_subgenre_080.py from the live catalogue.
+GENRE_SUBGENRE_FILE = os.path.join(_bundle_data_root(), 'genre_subgenre.json')
 
 # --- Song Alchemy Defaults ---
 # Number of similar songs to return when creating the Alchemy result (default 100, max 200)
-ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "100"))
+ALCHEMY_DEFAULT_N_RESULTS = int(os.environ.get("ALCHEMY_DEFAULT_N_RESULTS", "50"))
 ALCHEMY_MAX_N_RESULTS = int(os.environ.get("ALCHEMY_MAX_N_RESULTS", "200"))
 # Temperature for probabilistic sampling in Song Alchemy (softmax temperature)
 ALCHEMY_TEMPERATURE = float(os.environ.get("ALCHEMY_TEMPERATURE", "1.0"))
@@ -1018,8 +1464,13 @@ ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"
 # Mood-specific models (danceability, mood_aggressive, etc.) have been removed.
 
 # --- Energy Normalization Range ---
-ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.01"))
-ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.15"))
+# The stored energy value is a mean per-frame loudness on a dBFS-linear 0..1 scale
+# (a -60 dBFS frame is 0.0, a full-scale frame is 1.0), so these bounds are the
+# music-like band of that scale, not raw RMS amplitude. Measured over quiet
+# ambient through modern loud masters, real material lands in roughly 0.32..0.93;
+# the bounds below cover that band unclipped so consumers get the full 0..1 spread.
+ENERGY_MIN = float(os.getenv("ENERGY_MIN", "0.30"))
+ENERGY_MAX = float(os.getenv("ENERGY_MAX", "0.95"))
 
 # --- Mood/Feature Score Matching ---
 # A 0-1 mood/other-feature score at or above this counts as the tag applying.
@@ -1112,11 +1563,18 @@ SONIC_FINGERPRINT_TOP_N_SONGS = int(os.environ.get("SONIC_FINGERPRINT_TOP_N_SONG
 # Max tracks a single album may contribute to the seed pool, so one large album
 # (e.g. a 100+ track DJ mix) cannot dominate the fingerprint - see issue #603.
 SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM = int(os.environ.get("SONIC_FINGERPRINT_MAX_SONGS_PER_ALBUM", "3"))
-SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "100"))
+SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", "50"))
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
     "Sonic Fingerprint by AudioMuse-AI",
 )
+
+# --- Cron Scheduler Retry ---
+# A scheduled run that is blocked by a live queue-guard task is retried every
+# CRON_RETRY_INTERVAL_MINUTES up to CRON_RETRY_MAX_MINUTES after the first
+# block, then recorded as skipped (fail-safe: never run on expiry).
+CRON_RETRY_MAX_MINUTES = int(os.environ.get("CRON_RETRY_MAX_MINUTES", "240")) # Max minutes a blocked scheduled run waits in the retry list
+CRON_RETRY_INTERVAL_MINUTES = int(os.environ.get("CRON_RETRY_INTERVAL_MINUTES", "10")) # Minutes between re-attempts of blocked scheduled runs
 
 # --- Database Cleaning Safety ---
 CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report
@@ -1154,6 +1612,33 @@ DUPLICATE_DISTANCE_THRESHOLD_COSINE = float(os.getenv("DUPLICATE_DISTANCE_THRESH
 DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS", "0.05"))
 DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN", "0.15"))
 DUPLICATE_DISTANCE_CHECK_LOOKBACK = int(os.getenv("DUPLICATE_DISTANCE_CHECK_LOOKBACK", "1"))
+# Per-space duplicate thresholds for the searches that had no distance filter at all.
+# Each index lives in its own geometry, so one shared number cannot serve them: the values
+# below were measured on a 199915 track catalogue by comparing, per space, how many genuinely
+# different neighbours a threshold drops against how many known same-recording pairs it
+# catches. The audio filter above (0.01 cosine) drops 0.24% of real neighbours, and that is
+# the tolerance each value here was matched to.
+# Lyrics text search (768-dim GTE embedding, cosine). 0.01 catches only half of the known
+# duplicates for the same cost as 0.05, which catches three quarters, so 0.05 it is. Note
+# that most of the effect is collapsing tracks whose lyrics embedding is byte-identical
+# (instrumentals and failed transcriptions, 17.9% of that catalogue): they are one single
+# point in this space, so a run of them can only ever be ranked arbitrarily.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_TEXT", "0.05"))
+# Lyrics axis search (27-dim axis vector, cosine). DISABLED ON PURPOSE, and 0.0 means off.
+# Axis distances are compressed into a very narrow band (median gap between consecutive
+# results 0.014), so even 0.0025 drops 18% of real neighbours and 0.01 drops 28%. Songs that
+# share an axis profile exactly are what a By Axis search is asking for, not duplicates.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS", "0.0"))
+# Hyperbolic search and hyperbolic journey (Poincare disk, arccosh distance, NOT cosine).
+# Distances here run an order of magnitude larger: the closest two distinct neighbours ever
+# come is 0.093, so 0.01 never fires. 0.30 drops 0.22% of real neighbours, matching the audio
+# filter, and catches 95% of known same-recording pairs.
+DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC", "0.30"))
+# CLAP text search (512-dim CLAP embedding, cosine). CLAP is an audio-derived space and
+# measures almost identically to the plain audio index, so it takes the same 0.01: that drops
+# 0.12% of real neighbours (nothing at all on real text queries) and catches 75% of known
+# same-recording pairs. 0.02 would catch 90% but costs 0.67%, over the audio budget.
+DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP", "0.01"))
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
 # recording for catalogue identity. Tightened to 1s: two songs that merely sound alike but
 # differ in length by more than this are kept separate. Unknown duration = not the same.
@@ -1174,15 +1659,15 @@ CATALOGUE_ID_SCHEME_VERSION = int(os.getenv("CATALOGUE_ID_SCHEME_VERSION", "4"))
 FPCALC_BINARY = os.getenv("FPCALC", "fpcalc")
 # Compute and store a fingerprint for every newly analyzed track.
 CHROMAPRINT_COLLECTION_ENABLED = os.getenv("CHROMAPRINT_COLLECTION_ENABLED", "True").lower() == "true"
-# Albums (per server) whose already-analyzed tracks get a fingerprint back-filled each analysis
-# run. Editable in the setup wizard (advanced section) and applied on the next analysis.
-CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN = int(os.getenv("CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN", "1000"))
-# Seconds between progress writes (and cancellation polls) inside the backfill loop. The loop
-# downloads and fingerprints one track at a time, so a 1000-album run is hours of work: without
-# a periodic write the task row's timestamp freezes, the UI looks hung at 99% and Cancel is
-# ignored. Reclaim is advisory-lock based, so this cadence no longer affects whether the row is
-# reaped - it only drives the UI and the cancellation poll.
-CHROMAPRINT_BACKFILL_REPORT_SECONDS = int(os.getenv("CHROMAPRINT_BACKFILL_REPORT_SECONDS", "15"))
+# Mappings handed a stored fingerprint per statement. The hand-over is one set-based
+# INSERT..SELECT, but an unbounded one over a large catalogue copies gigabytes of BYTEA and
+# exceeds the 10 minute statement_timeout, which cancels it and leaves swept tracks with no
+# fingerprint at all. Chunking keeps every statement short, so a slow database makes the
+# hand-over take longer instead of making it fail. It does NOT commit as it goes and cannot:
+# the whole hand-over shares the one transaction that writes the mappings, on a temp table
+# that is ON COMMIT DROP. A failure mid-loop unwinds to the savepoint and the mappings still
+# stand; the next sweep retries the hand-over.
+CHROMAPRINT_INHERIT_BATCH_SIZE = int(os.getenv("CHROMAPRINT_INHERIT_BATCH_SIZE", "2000"))
 # Use stored fingerprints in the duplicate/identity decision (skipped per-pair when either is absent).
 CHROMAPRINT_GATE_ENABLED = os.getenv("CHROMAPRINT_GATE_ENABLED", "True").lower() == "true"
 # Fraction of matching bits (best alignment) at or above which two fingerprints are the same recording.
@@ -1228,6 +1713,12 @@ MOOD_SIMILARITY_ENABLE = os.environ.get("MOOD_SIMILARITY_ENABLE", "False").lower
 ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 
 # --- Instant Playlist Optimization ---
+# How many songs the instant playlist targets when the caller sends no count, and
+# the ceiling the chat page puts on its own input box. The max is a FRONTEND-only
+# bound (the input's max= attribute): the API applies the default and the floor of
+# 1 but never the ceiling, so a direct API caller can ask for any number.
+INSTANT_PLAYLIST_DEFAULT_N_RESULTS = int(os.environ.get("INSTANT_PLAYLIST_DEFAULT_N_RESULTS", "50"))
+INSTANT_PLAYLIST_MAX_N_RESULTS = int(os.environ.get("INSTANT_PLAYLIST_MAX_N_RESULTS", "200"))
 # Max songs from a single artist in the instant playlist (diversity enforcement)
 MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
 # Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)
@@ -1295,13 +1786,39 @@ def _apply_db_overrides():
             _setup_manager.ensure_table()
             _overrides = _setup_manager.get_raw_overrides()
         _excluded_override_keys = globals().get('SETUP_BOOTSTRAP_EXCLUDED_KEYS', set())
+        _unusable_rows = []
         for _key, _value in _overrides.items():
             # Skip any keys that are explicitly excluded from overrides (Postgres)
-            if _key in _excluded_override_keys:
+            if _key in _excluded_override_keys or _key not in globals():
+                continue
+            # A row may only replace a value it can be cast back to. A tuple or set
+            # constant, or the literal 'None' that str(None) leaves behind, would
+            # turn the global into a string (TASK_STATUS_LIVE as a string once broke
+            # every queue SQL at startup): such rows are ignored here and deleted by
+            # the web process in prune_obsolete_config_values.
+            if not _setup_manager.is_persistable_value(globals()[_key]) or (
+                globals()[_key] is None and _value == 'None'
+            ):
+                _unusable_rows.append(_key)
                 continue
             # Read the value from the db and override the variable
-            if _key in globals():
-                globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+            globals()[_key] = _setup_manager.cast_value(globals()[_key], _value)
+        if _unusable_rows:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Ignoring %d app_config rows that cannot replace their config value: %s",
+                len(_unusable_rows), ", ".join(sorted(_unusable_rows)),
+            )
+
+        # A library that already holds neural fingerprints ran the stage under the
+        # old default: it keeps Search by Recording on until its owner turns it off.
+        # Only an unset flag is inferred (no app_config row, no environment value);
+        # the web process writes every parameter still missing from app_config at
+        # startup (setup_manager.persist_missing_config_values), so this check runs
+        # only on the boots before that row exists, in the worker and in Flask alike.
+        if 'NEURAL_FINGERPRINT_ENABLED' not in _overrides and 'NEURAL_FINGERPRINT_ENABLED' not in os.environ:
+            if _setup_manager.neural_fingerprints_exist():
+                globals()['NEURAL_FINGERPRINT_ENABLED'] = True
 
         # Media-server settings live ONLY in the music_servers registry: project
         # its default row onto the module globals so every legacy config read

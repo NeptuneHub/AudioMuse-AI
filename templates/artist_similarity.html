@@ -193,10 +193,10 @@
                     Number of similar artists:
                     <span class="info-tooltip" tabindex="0">
                         <span class="info-icon"></span>
-                        <span class="tooltip-text">How many similar artists to find. Try 10 for quick discovery, or 20-30 to explore deeper into similar sounds. More results = broader musical exploration.</span>
+                        <span class="tooltip-text">How many similar artists to find. Try 10-20 for quick discovery, or 50+ to explore deeper into similar sounds. More results = broader musical exploration.</span>
                     </span>
                 </label>
-                <input type="number" id="n" name="n" value="10" min="1" max="50">
+                <input type="number" id="n" name="n" value="{{ artist_similarity_n_default }}" min="{{ artist_similarity_n_default|min_bound(1) }}" max="{{ artist_similarity_n_default|max_bound(200) }}">
             </div>
             <div>
                 <label for="show_component_matches" class="label-with-tooltip">

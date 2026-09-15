@@ -20,8 +20,13 @@ Main Features:
 * A second live main task is refused by the unique index, and a sweep still fits
 * A cancelled row cannot be claimed, and a claimed row cannot be claimed twice
 * A finished root keeps one recap row with no func and no payload
+* A parent ends its own live child, NEW or RUNNING, through end_child, never
+  another parent's, and a child already terminal is not ended twice
 * A fan-out stores its shared body once, counted on the driver, not on a stand-in
 * The backlog counts only NEW rows and drops a row the moment it is claimed
+* The worker table lists every worker that has a live connection, claim or
+  listen, from every container, plus a RUNNING row the queue still believes;
+  only a RUNNING row bound to the worker makes it busy
 """
 
 import json
@@ -345,6 +350,48 @@ class TestAdmissionIsAUniqueIndexNotALock:
             _enqueue(queue_db, 'main-2', task_type='main_clustering')
         queue_db.rollback()
 
+    def test_upgrade_retires_conflicting_live_roots_before_recreating_the_index(
+        self, queue_db
+    ):
+        # Simulate a pre-upgrade state: no one-live-main index, and a live batch
+        # root alongside a live sonic-fingerprint root (the gap this feature
+        # closes). ensure_schema must retire every live main root but the newest
+        # before it can build the unique index, or the CREATE would fail.
+        with queue_db.cursor() as cur:
+            cur.execute(f"DROP INDEX IF EXISTS {sql.MAIN_INDEX_NAME}")
+        queue_db.commit()
+
+        for task_id, task_type in (
+            ('analysis-live', 'main_analysis'),
+            ('fingerprint-live', 'sonic_fingerprint'),
+        ):
+            with queue_db.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO task_status (task_id, task_type, status) "
+                    "VALUES (%s, %s, %s)",
+                    (task_id, task_type, config.TASK_STATUS_RUNNING),
+                )
+            queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            sql.ensure_schema(cur)
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "SELECT task_id FROM task_status "
+                "WHERE parent_task_id IS NULL AND status = %s",
+                (config.TASK_STATUS_RUNNING,),
+            )
+            live = cur.fetchall()
+        assert len(live) == 1, (
+            'the upgrade retire must leave exactly one live main root'
+        )
+
+        with pytest.raises(psycopg2.errors.UniqueViolation):
+            _enqueue(queue_db, 'main-3', task_type='main_clustering')
+        queue_db.rollback()
+
     def test_a_sweep_and_a_main_task_coexist(self, queue_db):
         assert _enqueue(queue_db, 'main-1', task_type='main_analysis')
         assert _enqueue(queue_db, 'sweep-1', task_type='server_sweep')
@@ -431,6 +478,34 @@ class TestAFinishedRootIsOneRow:
         assert parsed['message'] == 'Analysed 3900 albums, 12 failed'
         assert 'log' not in parsed, 'details must never grow a log list again'
 
+    def test_a_missing_history_table_never_undoes_the_terminal_row(
+        self, queue_db, shared_pg_dsn
+    ):
+        _enqueue(queue_db, 'nohist-1')
+        worker = _bare_worker(shared_pg_dsn)
+        worker.identity = 'w-nohist'
+        try:
+            with worker._conn.cursor() as cur:
+                sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w-nohist')
+            worker._conn.commit()
+            with queue_db.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS task_history")
+            queue_db.commit()
+            worker.finalize(
+                {'task_id': 'nohist-1'}, config.TASK_STATUS_SUCCESS, None,
+                result={'message': 'Analysed 3 albums.'},
+            )
+        finally:
+            worker._conn.close()
+
+        status, _attempts, _max, func, _payload, _worker = _row(queue_db, 'nohist-1')
+        assert status == config.TASK_STATUS_SUCCESS, (
+            'record_task_history rolls back on failure; while it shared the terminal '
+            "write's transaction that rollback undid the verdict, the row stayed "
+            'RUNNING under a live idle worker, and every start answered 409'
+        )
+        assert func is None
+
 
 class TestChildrenAreReapedByTheirParent:
     def test_a_terminal_child_is_deleted_and_its_result_returned_once(self, queue_db):
@@ -465,6 +540,86 @@ class TestChildrenAreReapedByTheirParent:
             assert sql.reap_children(cur, 'parent-1') == []
             assert [c['task_id'] for c in sql.live_children(cur, 'parent-1')] == ['kid-1']
         queue_db.commit()
+
+
+class TestAParentEndsTheChildItGaveUpOn:
+    def test_a_queued_child_is_ended_and_the_reap_returns_the_parents_message(
+        self, queue_db
+    ):
+        import taskqueue
+
+        _enqueue(queue_db, 'parent-1', task_type='main_analysis')
+        _enqueue(queue_db, 'kid-1', task_type='album_analysis', parent_task_id='parent-1')
+
+        ended = taskqueue.end_child(
+            'kid-1', 'parent-1', config.TASK_STATUS_FAIL, 'the parent gave up',
+            conn=queue_db,
+        )
+        queue_db.commit()
+
+        assert ended is True
+        status, _attempts, _max, func, payload, _worker = _row(queue_db, 'kid-1')
+        assert status == config.TASK_STATUS_FAIL, (
+            'a give-up victim may never have been claimed, so a NEW child must be '
+            'endable; finish_task only accepts a RUNNING row bound to a worker'
+        )
+        assert func is None, 'a terminal child is never runnable'
+        assert payload is None, 'a terminal child is never runnable'
+        with queue_db.cursor() as cur:
+            reaped = sql.reap_children(cur, 'parent-1')
+        queue_db.commit()
+        assert [(r['task_id'], r['details']['message']) for r in reaped] == [
+            ('kid-1', 'the parent gave up')
+        ]
+
+    def test_a_running_child_is_ended_too(self, queue_db):
+        _enqueue(queue_db, 'parent-1', task_type='main_clustering', queue=sql.QUEUE_HIGH)
+        _enqueue(queue_db, 'kid-1', task_type='clustering_batch', parent_task_id='parent-1')
+        with queue_db.cursor() as cur:
+            claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w-kid')
+            assert claimed['task_id'] == 'kid-1'
+            ended = sql.end_child(
+                cur, 'kid-1', 'parent-1', config.TASK_STATUS_REVOKED,
+                {'message': 'stalled'}, time.time(),
+            )
+        queue_db.commit()
+
+        assert ended is True
+        assert _row(queue_db, 'kid-1')[0] == config.TASK_STATUS_REVOKED
+
+    def test_another_parents_child_cannot_be_ended(self, queue_db):
+        _enqueue(queue_db, 'parent-1', task_type='main_analysis')
+        _enqueue(queue_db, 'sweep-1', task_type='server_sweep')
+        _enqueue(queue_db, 'kid-1', task_type='album_analysis', parent_task_id='parent-1')
+
+        with queue_db.cursor() as cur:
+            ended = sql.end_child(
+                cur, 'kid-1', 'sweep-1', config.TASK_STATUS_FAIL, {'message': 'x'}, 1.0,
+            )
+        queue_db.commit()
+
+        assert ended is False
+        assert _row(queue_db, 'kid-1')[0] == config.TASK_STATUS_NEW
+
+    def test_a_child_that_is_already_terminal_is_not_ended_twice(self, queue_db):
+        _enqueue(queue_db, 'parent-1', task_type='main_analysis')
+        _enqueue(queue_db, 'kid-1', task_type='album_analysis', parent_task_id='parent-1')
+        with queue_db.cursor() as cur:
+            first = sql.end_child(
+                cur, 'kid-1', 'parent-1', config.TASK_STATUS_FAIL,
+                {'message': 'first verdict'}, 1.0,
+            )
+            second = sql.end_child(
+                cur, 'kid-1', 'parent-1', config.TASK_STATUS_REVOKED,
+                {'message': 'second verdict'}, 2.0,
+            )
+            reaped = sql.reap_children(cur, 'parent-1')
+        queue_db.commit()
+
+        assert (first, second) == (True, False)
+        assert [(r['status'], r['details']['message']) for r in reaped] == [
+            (config.TASK_STATUS_FAIL, 'first verdict')
+        ], 'the first verdict stands; a later give-up cannot rewrite it'
 
 
 class TestReclaimWaitsOutTheGracePeriod:
@@ -548,7 +703,405 @@ class TestALiveWorkerSessionProtectsARowWhoseLockIsGone:
         )
 
 
-class TestAttemptsCountsWorkerDeathsNotClaims:
+class TestAWedgedMainTaskIsNotLeftHoldingTheQueue:
+    @staticmethod
+    def _held_by_a_live_worker(queue_db, shared_pg_dsn, task_id, silent_minutes,
+                               task_type='main_analysis', parent_task_id=None):
+        identity = f'audiomuse-worker-high-host-{abs(hash(task_id)) % 999}-ab12'
+        _enqueue(
+            queue_db, task_id, task_type=task_type, queue=sql.QUEUE_HIGH,
+            parent_task_id=parent_task_id,
+        )
+        holder = _fresh(shared_pg_dsn, identity)
+        with holder.cursor() as cur:
+            sql.claim(cur, sql.QUEUE_HIGH, time.time(), worker_id=identity)
+            sql.hold(cur, task_id)
+        holder.commit()
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET timestamp = NOW() - make_interval(mins => %s) "
+                "WHERE task_id = %s",
+                (silent_minutes, task_id),
+            )
+        queue_db.commit()
+        return holder
+
+    def _nudge(self, shared_pg_dsn):
+        from taskqueue import maintenance
+
+        conn = _fresh(shared_pg_dsn)
+        try:
+            return maintenance.nudge_wedged_main_tasks(conn)
+        finally:
+            conn.close()
+
+    def test_a_main_task_silent_past_the_limit_with_a_live_worker_is_cancelled(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'wedged-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['wedged-1'], (
+                'its worker still answers Postgres so reclaim will never take this '
+                'row, and the one-live-main index means every other main task is '
+                'locked out until somebody ends that worker'
+            )
+        finally:
+            holder.close()
+
+    def test_one_nudge_alone_never_terminates_a_backend(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'firstpass-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['firstpass-1']
+            with holder.cursor() as cur:
+                cur.execute("SELECT 1")
+                assert cur.fetchone()[0] == 1, (
+                    'a worker that can hear the cancel ends itself, and killing its '
+                    'connection first would take down a tree that was already going'
+                )
+        finally:
+            holder.close()
+
+    def test_a_task_that_ignores_the_cancel_has_its_backend_terminated(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'stubborn-1',
+            int(config.QUEUE_WEDGED_MAIN_TASK_MINUTES * 2) + 10,
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['stubborn-1']
+            with pytest.raises(psycopg2.Error):
+                with holder.cursor() as cur:
+                    cur.execute("SELECT 1")
+        finally:
+            holder.close()
+
+    def test_a_heartbeat_keeps_one_long_step_from_looking_wedged(
+        self, queue_db, shared_pg_dsn
+    ):
+        from tasks.recovery import _beat_once
+
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'building-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        try:
+            beat = _fresh(shared_pg_dsn)
+            try:
+                assert _beat_once(beat, 'building-1') is True
+            finally:
+                beat.close()
+            assert self._nudge(shared_pg_dsn) == [], (
+                'one index build is a single opaque call that writes no row while '
+                'it runs, so without the heartbeat a big-library IVF or artist-GMM '
+                'build is indistinguishable from a wedge and gets cancelled'
+            )
+        finally:
+            holder.close()
+
+    def test_a_heartbeat_stops_once_the_row_leaves_running(
+        self, queue_db, shared_pg_dsn
+    ):
+        from tasks.recovery import _beat_once
+
+        _enqueue(queue_db, 'gone-1', task_type='main_analysis', queue=sql.QUEUE_HIGH)
+        beat = _fresh(shared_pg_dsn)
+        try:
+            assert _beat_once(beat, 'gone-1') is False, (
+                'the row is NEW, not RUNNING: a heartbeat that kept bumping a row '
+                'this process no longer owns would hold off the reclaim that does'
+            )
+            assert _beat_once(beat, 'never-existed') is False
+        finally:
+            beat.close()
+
+    def test_a_main_task_that_reported_recently_is_left_alone(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'busy-1',
+            max(0, config.QUEUE_WEDGED_MAIN_TASK_MINUTES - 10),
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == [], (
+                'a run that is still writing progress is working, however slowly, and '
+                'killing it would charge an attempt against a healthy task'
+            )
+        finally:
+            holder.close()
+
+    def test_a_child_row_is_never_nudged_however_silent_it_is(
+        self, queue_db, shared_pg_dsn
+    ):
+        _enqueue(queue_db, 'root-1', task_type='main_clustering', queue=sql.QUEUE_HIGH)
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'kid-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+            task_type='main_clustering', parent_task_id='root-1',
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == [], (
+                'a silent child belongs to the stall valve, which gives up on that '
+                'batch alone; ending the worker from here would take the whole run '
+                'down with it'
+            )
+        finally:
+            holder.close()
+
+    def test_a_task_whose_worker_is_gone_is_left_to_the_ordinary_reclaim(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'dead-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+        )
+        holder.close()
+
+        assert self._nudge(shared_pg_dsn) == [], (
+            'reclaim already requeues a task whose worker died, and nudging it too '
+            'would cancel a task that is about to be resumed'
+        )
+
+
+    def test_a_wedged_plugin_task_is_nudged_even_though_its_name_is_open_ended(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'wedged-plugin-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+            task_type='plugin.demo.sync',
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == ['wedged-plugin-1'], (
+                'get_queue_blocking_task ORs in plugin.%, so a live plugin task '
+                'refuses every cron start and every manual batch start. Nothing '
+                'watched it before: it is absent from NUDGE_TASK_TYPES because '
+                'the namespace is open, and reclaim needs the worker to DIE'
+            )
+        finally:
+            holder.close()
+
+    def test_the_prefix_match_does_not_catch_a_task_type_nobody_watches(
+        self, queue_db, shared_pg_dsn
+    ):
+        holder = self._held_by_a_live_worker(
+            queue_db, shared_pg_dsn, 'planner-1',
+            config.QUEUE_WEDGED_MAIN_TASK_MINUTES + 10,
+            task_type='provider_migration_planner',
+        )
+        try:
+            assert self._nudge(shared_pg_dsn) == [], (
+                'the planner holds no admission index and refuses no start, and '
+                'session_discard cancels a live one rather than blocking on it, '
+                'so cancelling it from here would end a job nothing is waiting on'
+            )
+        finally:
+            holder.close()
+
+
+class TestARetryWaitsAndAWorkerDeathDoesNot:
+    def _claim_and_hold(self, shared_pg_dsn, task_id, worker_id='w1'):
+        holder = _fresh(shared_pg_dsn, worker_id)
+        with holder.cursor() as cur:
+            claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=worker_id)
+            if claimed is not None:
+                sql.hold(cur, task_id)
+        holder.commit()
+        return holder, claimed
+
+    def _next_run_at(self, conn, task_id):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT next_run_at, next_run_at > NOW() FROM task_status WHERE task_id = %s",
+                (task_id,),
+            )
+            return cur.fetchone()
+
+    def test_a_delayed_row_is_not_claimable_before_its_time_and_is_after(
+        self, queue_db, shared_pg_dsn
+    ):
+        _enqueue(queue_db, 'delayed-1', max_attempts=3)
+        holder, claimed = self._claim_and_hold(shared_pg_dsn, 'delayed-1')
+        assert claimed is not None
+        with holder.cursor() as cur:
+            sql.release(cur, 'delayed-1')
+            status = sql.requeue_or_fail(
+                cur, 'delayed-1', time.time(), {'message': 'raised'}, delay_seconds=3600,
+            )
+        holder.commit()
+        holder.close()
+        assert status == config.TASK_STATUS_NEW
+
+        scheduled, in_future = self._next_run_at(queue_db, 'delayed-1')
+        assert scheduled is not None
+        assert in_future
+
+        too_early = _fresh(shared_pg_dsn, 'w2')
+        try:
+            with too_early.cursor() as cur:
+                assert sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w2') is None, (
+                    'a retry that fires the instant the row is back is the same '
+                    'deterministic failure three times in a row; the wait is the point'
+                )
+            too_early.commit()
+            with queue_db.cursor() as cur:
+                cur.execute(
+                    "UPDATE task_status SET next_run_at = NOW() - interval '1 second' "
+                    "WHERE task_id = %s",
+                    ('delayed-1',),
+                )
+            queue_db.commit()
+            with too_early.cursor() as cur:
+                claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w2')
+            too_early.commit()
+            assert claimed is not None
+            assert claimed['task_id'] == 'delayed-1'
+            assert claimed['attempts'] == 1
+        finally:
+            too_early.close()
+
+    def test_a_worker_death_reclaim_is_never_delayed(self, queue_db, shared_pg_dsn):
+        from taskqueue import maintenance
+
+        _enqueue(queue_db, 'dies-1', max_attempts=3)
+        holder, _claimed = self._claim_and_hold(shared_pg_dsn, 'dies-1')
+        with holder.cursor() as cur:
+            sql.release(cur, 'dies-1')
+            sql.requeue_or_fail(
+                cur, 'dies-1', time.time(), {'message': 'raised'}, delay_seconds=3600,
+            )
+        holder.commit()
+        holder.close()
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET next_run_at = NOW() - interval '1 second' "
+                "WHERE task_id = %s",
+                ('dies-1',),
+            )
+        queue_db.commit()
+
+        dead, claimed = self._claim_and_hold(shared_pg_dsn, 'dies-1', worker_id='dead')
+        assert claimed is not None
+        dead.close()
+        _age_row(queue_db, 'dies-1')
+        conn = _fresh(shared_pg_dsn)
+        try:
+            maintenance.reclaim_orphans(conn)
+        finally:
+            conn.close()
+
+        scheduled, _in_future = self._next_run_at(queue_db, 'dies-1')
+        status, attempts, _max, _func, _payload, _worker = _row(queue_db, 'dies-1')
+        assert status == config.TASK_STATUS_NEW
+        assert attempts == 2
+        assert scheduled is None, (
+            'a task whose worker died resumes at once, as it always has; the backoff '
+            'is for a task that raised, and reclaim passes no delay'
+        )
+
+    def test_the_uncharged_requeue_clears_a_stale_delay(self, queue_db, shared_pg_dsn):
+        _enqueue(queue_db, 'blip-1', max_attempts=3)
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET status = %s, worker_id = 'w1', "
+                "next_run_at = NOW() + interval '1 hour' WHERE task_id = %s",
+                (config.TASK_STATUS_RUNNING, 'blip-1'),
+            )
+            assert sql.requeue_uncharged(cur, 'blip-1', worker_id='w1')
+        queue_db.commit()
+
+        scheduled, _in_future = self._next_run_at(queue_db, 'blip-1')
+        assert scheduled is None
+
+    def test_worker_deaths_and_raises_spend_one_budget(self, queue_db, shared_pg_dsn):
+        from taskqueue import maintenance
+
+        _enqueue(queue_db, 'budget-1', max_attempts=3)
+        for _death in (1, 2):
+            dead, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='dead')
+            assert claimed is not None
+            dead.close()
+            _age_row(queue_db, 'budget-1')
+            conn = _fresh(shared_pg_dsn)
+            try:
+                maintenance.reclaim_orphans(conn)
+            finally:
+                conn.close()
+
+        holder, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='w3')
+        assert claimed is not None
+        assert claimed['attempts'] == 2
+        with holder.cursor() as cur:
+            sql.release(cur, 'budget-1')
+            third = sql.requeue_or_fail(
+                cur, 'budget-1', time.time(), {'message': 'raised'}, delay_seconds=0,
+            )
+        holder.commit()
+        holder.close()
+        assert third == config.TASK_STATUS_NEW, 'the third bad ending still earns a restart'
+
+        holder, claimed = self._claim_and_hold(shared_pg_dsn, 'budget-1', worker_id='w4')
+        assert claimed is not None
+        assert claimed['attempts'] == 3
+        with holder.cursor() as cur:
+            sql.release(cur, 'budget-1')
+            fourth = sql.requeue_or_fail(
+                cur, 'budget-1', time.time(), {'message': 'raised again'}, delay_seconds=0,
+            )
+        holder.commit()
+        holder.close()
+        assert fourth == config.TASK_STATUS_FAIL, (
+            'two worker deaths and two raises are four bad endings on ONE counter; '
+            'nobody may quietly give application errors a budget of their own'
+        )
+
+
+class TestTheSchemaUpgradeAddsTheNewestColumn:
+    def test_an_install_at_the_previous_revision_gets_next_run_at_on_boot(
+        self, queue_db
+    ):
+        with queue_db.cursor() as cur:
+            cur.execute("ALTER TABLE task_status DROP COLUMN next_run_at")
+        queue_db.commit()
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'task_status' AND column_name = 'shared_payload'"
+            )
+            assert cur.fetchone() is not None, 'the previous revision already had this'
+
+        with queue_db.cursor() as cur:
+            sql.ensure_schema(cur)
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'task_status' AND column_name = 'next_run_at'"
+            )
+            assert cur.fetchone() is not None, (
+                'ensure_schema runs the ALTER block only when the probed column is '
+                'absent; every existing install has shared_payload, so a probe left '
+                'pointing at it never adds next_run_at and the first claim after the '
+                'upgrade raises UndefinedColumn'
+            )
+        _enqueue(queue_db, 'upgraded-1')
+        with queue_db.cursor() as cur:
+            claimed = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w1')
+        queue_db.commit()
+        assert claimed is not None
+        assert claimed['task_id'] == 'upgraded-1'
+
+
+class TestAttemptsCountsWorkerDeathsAndRaisesNotClaims:
     def test_a_requeue_and_reclaim_burns_one_attempt_per_death(
         self, queue_db, shared_pg_dsn
     ):
@@ -1120,6 +1673,130 @@ class TestTheSharedBodyIsWrittenOnceNotOncePerChild:
         queue_db.commit()
 
 
+class TestTheWorkerSnapshotListsWhatTheQueueBelieves:
+    def test_a_running_row_whose_worker_has_no_connection_is_still_a_busy_worker(
+        self, queue_db
+    ):
+        _enqueue(queue_db, 'ghost-1', task_type='main_analysis', queue=sql.QUEUE_HIGH)
+        with queue_db.cursor() as cur:
+            claimed = sql.claim(
+                cur, sql.QUEUE_HIGH, time.time(),
+                worker_id='audiomuse-worker-high-ghost-host-1-beef',
+            )
+        queue_db.commit()
+        assert claimed is not None
+
+        with queue_db.cursor() as cur:
+            workers = sql.worker_snapshot(cur)
+
+        ghost = [w for w in workers if w['current_job_id'] == 'ghost-1']
+        assert len(ghost) == 1
+        assert ghost[0]['state'] == 'busy'
+        assert ghost[0]['queues'] == ['high']
+        assert ghost[0]['started_at'] is None
+
+    def test_both_workers_of_one_container_are_listed_and_only_the_working_one_is_busy(
+        self, queue_db, shared_pg_dsn
+    ):
+        host = 'audiomuse-ai-worker-0'
+        high = f'audiomuse-worker-high-{host}-7-c0de'
+        default = f'audiomuse-worker-default-{host}-8-f00d'
+        _enqueue(queue_db, 'album-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        conns = [
+            _fresh(shared_pg_dsn, name)
+            for name in (
+                high, high + sql.WORKER_LISTEN_SUFFIX,
+                default, default + sql.WORKER_LISTEN_SUFFIX,
+            )
+        ]
+        try:
+            with conns[2].cursor() as cur:
+                sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=default)
+            conns[2].commit()
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            for conn in conns:
+                conn.close()
+
+        mine = [w for w in workers if w['hostname'] == host]
+        assert len(mine) == 2, 'a listen connection is the same worker, not a third row'
+        by_queue = {w['queues'][0]: w for w in mine}
+        assert by_queue['high']['state'] == 'idle'
+        assert by_queue['high']['current_job_id'] is None
+        assert by_queue['high']['started_at'] is not None
+        assert by_queue['default']['state'] == 'busy'
+        assert by_queue['default']['current_job_id'] == 'album-1'
+        assert by_queue['default']['current_task_type'] == 'album_analysis'
+
+    def test_a_worker_whose_only_connection_is_its_listener_is_still_listed(
+        self, queue_db, shared_pg_dsn
+    ):
+        identity = 'audiomuse-worker-high-lonely-host-9-abcd'
+        listener = _fresh(shared_pg_dsn, identity + sql.WORKER_LISTEN_SUFFIX)
+        try:
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            listener.close()
+
+        lonely = [w for w in workers if w['hostname'] == 'lonely-host']
+        assert len(lonely) == 1
+        assert lonely[0]['queues'] == ['high']
+        assert lonely[0]['state'] == 'idle'
+        assert lonely[0]['started_at'] is not None
+
+    def test_a_busy_worker_whose_claim_connection_dropped_is_listed_once_as_busy(
+        self, queue_db, shared_pg_dsn
+    ):
+        identity = 'audiomuse-worker-high-dropped-host-3-d00d'
+        _enqueue(queue_db, 'dropped-1', task_type='main_analysis', queue=sql.QUEUE_HIGH)
+        claim_conn = _fresh(shared_pg_dsn, identity)
+        with claim_conn.cursor() as cur:
+            sql.claim(cur, sql.QUEUE_HIGH, time.time(), worker_id=identity)
+        claim_conn.commit()
+        claim_conn.close()
+
+        listener = _fresh(shared_pg_dsn, identity + sql.WORKER_LISTEN_SUFFIX)
+        try:
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            listener.close()
+
+        dropped = [w for w in workers if w['hostname'] == 'dropped-host']
+        assert len(dropped) == 1, 'the listener and the RUNNING row are one worker, not two rows'
+        assert dropped[0]['state'] == 'busy'
+        assert dropped[0]['current_job_id'] == 'dropped-1'
+        assert dropped[0]['started_at'] is not None
+
+    def test_a_worker_with_a_stale_running_row_shows_its_newest_job(
+        self, queue_db, shared_pg_dsn
+    ):
+        identity = 'audiomuse-worker-default-twice-host-5-beef'
+        _enqueue(queue_db, 'twice-a', task_type='album_analysis')
+        _enqueue(queue_db, 'twice-b', task_type='album_analysis')
+        claim_conn = _fresh(shared_pg_dsn, identity)
+        try:
+            with claim_conn.cursor() as cur:
+                first = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=identity)
+            claim_conn.commit()
+            _age_row(queue_db, first['task_id'])
+            with claim_conn.cursor() as cur:
+                second = sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id=identity)
+            claim_conn.commit()
+            with queue_db.cursor() as cur:
+                workers = sql.worker_snapshot(cur)
+        finally:
+            claim_conn.close()
+
+        twice = [w for w in workers if w['hostname'] == 'twice-host']
+        assert len(twice) == 1
+        assert twice[0]['state'] == 'busy'
+        assert twice[0]['current_job_id'] == second['task_id']
+        assert second['task_id'] != first['task_id']
+
+
 class TestQueueBacklogCountsWhatIsActuallyWaiting:
     def test_an_empty_queue_reports_zero(self, queue_db):
         with queue_db.cursor() as cur:
@@ -1140,7 +1817,7 @@ class TestQueueBacklogCountsWhatIsActuallyWaiting:
         assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 2
         assert by_name[sql.QUEUE_HIGH]['pending_count'] == 1
 
-    def test_a_claimed_row_no_longer_counts_toward_the_backlog(self, queue_db):
+    def test_a_claimed_row_counts_as_running_instead_of_pending(self, queue_db):
         _enqueue(queue_db, 'a-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
         with queue_db.cursor() as cur:
             sql.claim(cur, sql.QUEUE_DEFAULT, time.time(), worker_id='w-1')
@@ -1151,3 +1828,27 @@ class TestQueueBacklogCountsWhatIsActuallyWaiting:
 
         by_name = {row['queue_name']: row for row in backlog}
         assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 0
+        assert by_name[sql.QUEUE_DEFAULT]['running_count'] == 1, (
+            'the dashboard cards read this; a queue whose only work is already '
+            'claimed used to show 0 and look idle while the analysis ran'
+        )
+
+    def test_a_row_waiting_out_its_retry_delay_is_neither_pending_nor_running(
+        self, queue_db
+    ):
+        _enqueue(queue_db, 'a-1', task_type='album_analysis', queue=sql.QUEUE_DEFAULT)
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "UPDATE task_status SET next_run_at = NOW() + interval '1 hour' "
+                "WHERE task_id = %s",
+                ('a-1',),
+            )
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            backlog = sql.queue_backlog(cur)
+
+        by_name = {row['queue_name']: row for row in backlog}
+        assert by_name[sql.QUEUE_DEFAULT]['pending_count'] == 0
+        assert by_name[sql.QUEUE_DEFAULT]['running_count'] == 0
+        assert by_name[sql.QUEUE_DEFAULT]['delayed_count'] == 1

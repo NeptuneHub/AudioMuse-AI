@@ -25,6 +25,7 @@ internal detail leaks to the frontend.
 |-------|--------|
 | 1000–1099 | Configuration / Setup |
 | 1100–1199 | Music Server Connection |
+| 1200–1299 | Task Queue (blocked starts) |
 | 2000–2099 | Analysis / Model |
 | 3000–3099 | Index / Similarity |
 | 4000–4099 | Database |
@@ -54,12 +55,13 @@ internal detail leaks to the frontend.
 | 4001 | Database Error | `OperationalError` in a task or endpoint (DB down / connection dropped) | classify map + `OperationalError` branches ([tasks/analysis/main.py](../tasks/analysis/main.py), [tasks/cleaning.py](../tasks/cleaning.py), data/auth endpoints) | PostgreSQL is unreachable or dropped the connection - confirm the DB is up, credentials are valid, and the connection pool isn't exhausted. |
 | 4002 | Database Error | A psycopg2 `DatabaseError` subclass (query failure), or the default for a failed DB-backed endpoint ([app_sync.py](../app_sync.py), [app_external.py](../app_external.py), [app_auth.py](../app_auth.py) count/list) | classify map + endpoint defaults | A query failed rather than the connection - inspect the container log for the failing statement. |
 | 4101 | Backup Error | `pg_dump` reports a server version mismatch (#540) | [app_backup.py](../app_backup.py) | Match the `pg_dump` client version to the PostgreSQL server version. |
-| 4102 | Backup Error | `pg_dump` exits non-zero, is not installed, or timed out (600 s) | [app_backup.py](../app_backup.py) | Ensure `pg_dump` is installed and on PATH, the DB is reachable, and the dump fits the timeout. |
+| 4102 | Backup Error | `pg_dump` exits non-zero, is not installed, or timed out (3600 s) | [app_backup.py](../app_backup.py) | Ensure `pg_dump` is installed and on PATH, the DB is reachable, and the dump fits the timeout. |
 | 4103 | Restore Error | A restore chunk upload fails, the restore runner is missing, or the restore itself fails | [app_backup.py](../app_backup.py) restore path | Check the container log; verify the dump is intact and the PostgreSQL version is compatible (see #702). |
 | 5001 | Lyrics Error | An HTTP lyrics endpoint (axis/text search, warmup, cache refresh) fails | [app_lyrics.py](../app_lyrics.py) | Check the log; confirm the lyrics model is available and the DB is reachable. |
 | 5002 | Lyrics Transcription Error | The analysis-time lyrics pipeline (ASR transcription + embedding) fails for a track | [tasks/analysis/song.py](../tasks/analysis/song.py) `run_lyrics_for_track` | Per-track lyrics failure (skipped, best-effort); check the log for the model/ASR error. |
 | 6001 | Clustering Error | A clustering batch / main task fails | [tasks/clustering.py](../tasks/clustering.py), [app_clustering.py](../app_clustering.py) | Check the log for the clustering failure; verify embeddings/index are present and parameters are valid. |
 | 6002 | Cleaning Error | The cleaning task fails | [tasks/cleaning.py](../tasks/cleaning.py) | Check the log; if it was a DB outage it surfaces as 4001 instead. |
+| 1201 | Task In Progress | A manual start (analysis, clustering, cleaning, provider migration) is refused because a queue-guard task (analysis, clustering, cleaning, provider migration, sonic fingerprint or any plugin task) is already live | [app_analysis.py](../app_analysis.py), [app_clustering.py](../app_clustering.py), [app_provider_migration.py](../app_provider_migration.py) | Wait for the running task to finish, or let the scheduled retry (up to `CRON_RETRY_MAX_MINUTES`) pick it up. |
 | 9999 | Unknown Error | Any failed task that didn't record a structured error (legacy / un-migrated jobs), or any otherwise-unhandled route exception | [app.py](../app.py) `/api/status` fallback and the global `errorhandler(Exception)` | Open the container log - the generic message intentionally hides specifics from the frontend. Migrate the call site to record a structured code. |
 
 ## Errors that are defined but not yet wired
@@ -103,6 +105,7 @@ structured body with it):
 | Code range | HTTP status |
 |------------|-------------|
 | 1100–1199 (music server connection / auth) | 502 Bad Gateway |
+| 1200–1299 (task queue / blocked starts) | 409 Conflict |
 | 1000–1099 (configuration / setup) | 400 Bad Request |
 | 3000–3099 (index / similarity) | 503 Service Unavailable |
 | 4000–4099 (database) | 503 Service Unavailable |

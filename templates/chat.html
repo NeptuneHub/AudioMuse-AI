@@ -12,9 +12,11 @@
         transition: all 0.15s ease !important;
         color: var(--text-muted) !important;
         font-weight: 400 !important;
-        white-space: nowrap !important;
+        white-space: normal !important;
+        overflow-wrap: break-word !important;
+        min-width: 0 !important;
         box-shadow: var(--shadow-input) !important;
-        line-height: 1 !important;
+        line-height: 1.25 !important;
         display: inline-block !important;
         margin: 0 !important;
     }
@@ -36,20 +38,8 @@
         border-radius: 0.375rem !important;
         border: 1px dashed var(--border-color-darker) !important;
         display: grid !important;
-        grid-template-columns: repeat(5, 1fr) !important;
+        grid-template-columns: repeat(auto-fit, minmax(min(8rem, 100%), 1fr)) !important;
         gap: 0.2rem !important;
-    }
-
-    @media (max-width: 768px) {
-        .suggestions-container {
-            grid-template-columns: repeat(3, 1fr) !important;
-        }
-    }
-
-    @media (max-width: 480px) {
-        .suggestions-container {
-            grid-template-columns: repeat(2, 1fr) !important;
-        }
     }
 
     .pipeline-stepper {
@@ -263,6 +253,16 @@
                     <button type="button" class="suggestion-btn" data-text="Sad jazz from the 90s in minor key">💃 Genre / Mood / Year</button>
                 </div>
             </div>
+            <div>
+                <label for="numResults" class="label-with-tooltip">
+                    Number of songs:
+                    <span class="info-tooltip">
+                        <span class="info-icon"></span>
+                        <span class="tooltip-text" id="numResultsHelp">How many songs the generated playlist should contain. Higher numbers give a longer playlist but may include songs that match your request less closely. Try 50 for a normal playlist, or 20-30 for a quick mix.</span>
+                    </span>
+                </label>
+                <input id="numResults" name="numResults" type="number" aria-describedby="numResultsHelp" value="{{ instant_playlist_n_results_default }}" min="{{ instant_playlist_n_results_default|min_bound(1) }}" max="{{ instant_playlist_n_results_default|max_bound(instant_playlist_max_n_results) }}" />
+            </div>
         </div>
 
         <!-- Submit Button -->
@@ -301,6 +301,8 @@
         // --- Self-Executing Anonymous Function to Encapsulate Code ---
         (() => {
             let globalConfig = {};
+            let defaultN = {{ instant_playlist_n_results_default }};
+            let maxN = {{ instant_playlist_max_n_results }};
             let loadingTimer = null;
             let liveState = null;
             const CHAT_URL = "{{ url_for('chat_bp.chat_playlist_api') }}";
@@ -320,6 +322,7 @@
             const mistralModelSelect = document.getElementById('mistralModel');
             const playlistForm = document.getElementById('playlistForm');
             const userInput = document.getElementById('userInput');
+            const numResultsInput = document.getElementById('numResults');
             const submitButton = document.getElementById('submitChat');
             const responseArea = document.getElementById('responseArea');
             const submitButtonText = submitButton.querySelector('span');
@@ -364,6 +367,12 @@
 
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
+
+                if (globalConfig.instant_playlist_default_n_results) defaultN = globalConfig.instant_playlist_default_n_results;
+                if (globalConfig.instant_playlist_max_n_results) maxN = globalConfig.instant_playlist_max_n_results;
+                numResultsInput.max = Math.max(defaultN, maxN);
+                numResultsInput.min = Math.min(defaultN, 1);
+                numResultsInput.value = defaultN;
             }
 
             /**
@@ -414,10 +423,12 @@
 
                 setLoadingState(true);
 
+                const nInput = parseInt(numResultsInput.value, 10);
                 const payload = {
                     userInput: userInput.value,
                     ai_provider: aiProviderSelect.value,
-                    ai_model: null
+                    ai_model: null,
+                    n: Math.min(Math.max(Number.isNaN(nInput) ? defaultN : nInput, 1), maxN)
                 };
 
                 if (payload.ai_provider === 'OLLAMA') {
@@ -1097,10 +1108,12 @@
                     title.textContent = `Generated Playlist (${responseData.query_results.length} songs)`;
                     resultsDiv.appendChild(title);
 
+                    const songScroll = document.createElement('div');
+                    songScroll.style.maxHeight = '400px';
+                    songScroll.style.overflowY = 'auto';
+
                     const songList = document.createElement('ol');
                     songList.className = 'song-list';
-                    songList.style.maxHeight = '400px';
-                    songList.style.overflowY = 'auto';
                     
                     document.getElementById('playlistItemIds').value = ''; // Clear previous item IDs
 
@@ -1111,7 +1124,8 @@
                         const currentItemIds = document.getElementById('playlistItemIds').value;
                         document.getElementById('playlistItemIds').value = currentItemIds ? `${currentItemIds},${song.item_id}` : song.item_id;
                     });
-                    resultsDiv.appendChild(songList);
+                    songScroll.appendChild(songList);
+                    resultsDiv.appendChild(songScroll);
                     responseArea.appendChild(resultsDiv);
                     createPlaylistSection.classList.remove('hidden'); // Show the create playlist form
                 } else if (responseData.executed_query) {

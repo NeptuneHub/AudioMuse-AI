@@ -31,34 +31,6 @@ import service_roles
 from native_common import frozen_children
 
 
-def _role_from_argv():
-    for arg in sys.argv[1:]:
-        if arg.startswith("--role="):
-            return arg.split("=", 1)[1]
-    return None
-
-
-def _command_from_argv():
-    for arg in sys.argv[1:]:
-        if not arg.startswith("-"):
-            return arg
-    return None
-
-
-def _run_flask():
-    import waitress
-    import app as app_module
-
-    waitress.serve(
-        app_module.app,
-        host="0.0.0.0",
-        port=8000,
-        threads=8,
-        max_request_body_size=6 * 1024 * 1024 * 1024,
-        channel_timeout=300,
-    )
-
-
 _NO_LONGDOUBLE_WARMUP_ROLES = {
     service_roles.ROLE_MAINTENANCE,
     service_roles.ROLE_RESTART_LISTENER,
@@ -73,7 +45,7 @@ def _run_role(role):
             numeric_bootstrap.warmup_scipy_longdouble()
         except Exception:
             pass
-    service_roles.run_role(role, _run_flask)
+    service_roles.run_role(role, service_roles.serve_flask)
 
 
 _INSTANCE_LOCK = None
@@ -178,21 +150,10 @@ def main():
     except Exception:
         pass
 
-    if frozen_children.run_frozen_child():
+    if frozen_children.dispatch_child_invocation(_run_role):
         return
 
-    if "--run-restore" in sys.argv:
-        i = sys.argv.index("--run-restore")
-        from app_backup import _run_restore_runner
-
-        sys.exit(_run_restore_runner(sys.argv[i + 1], sys.argv[i + 2]))
-
-    role = _role_from_argv()
-    if role:
-        _run_role(role)
-        return
-
-    unknown = _command_from_argv()
+    unknown = service_roles.command_from_argv()
     if unknown is not None:
         print(f"Unknown argument: {unknown}", file=sys.stderr)
         print("Usage: AudioMuse-AI [--role=<role>]", file=sys.stderr)

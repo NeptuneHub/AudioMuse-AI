@@ -49,6 +49,8 @@ ERR_LYRICS_TRANSCRIPTION = 5002
 ERR_CLUSTERING_FAILED = 6001
 ERR_CLEANING_FAILED = 6002
 
+ERR_TASK_IN_PROGRESS = 1201
+
 UNKNOWN_ERROR_CODE = 9999
 
 ERROR_REGISTRY = {
@@ -147,6 +149,10 @@ ERROR_REGISTRY = {
     ERR_CLEANING_FAILED: {
         "error_class": "Cleaning Error",
         "default_message": "Database cleaning failed.",
+    },
+    ERR_TASK_IN_PROGRESS: {
+        "error_class": "Task In Progress",
+        "default_message": "Another queue job is already running.",
     },
     UNKNOWN_ERROR_CODE: {
         "error_class": "Unknown Error",

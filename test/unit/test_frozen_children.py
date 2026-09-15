@@ -281,3 +281,62 @@ def test_the_module_path_loky_spawns_its_workers_from_is_dispatched(
 
     assert frozen_children.run_frozen_child(argv, frozen=True) is True
     assert ran_module[0][0] == popen_loky_posix.__name__
+
+
+def test_dispatch_child_invocation_short_circuits_on_a_spawned_child(
+    frozen_children, monkeypatch
+):
+    monkeypatch.setattr(frozen_children, 'run_frozen_child', lambda: True)
+    ran = []
+    assert frozen_children.dispatch_child_invocation(lambda role: ran.append(role)) is True
+    assert ran == []
+
+
+def test_dispatch_child_invocation_runs_the_role_named_in_argv(
+    frozen_children, monkeypatch
+):
+    monkeypatch.setattr(frozen_children, 'run_frozen_child', lambda: False)
+    monkeypatch.setattr(sys, 'argv', [EXE, '--role=worker-default'], raising=False)
+    ran = []
+    assert frozen_children.dispatch_child_invocation(lambda role: ran.append(role)) is True
+    assert ran == ['worker-default']
+
+
+def test_dispatch_child_invocation_runs_the_restore_runner_for_restore_argv(
+    frozen_children, monkeypatch
+):
+    monkeypatch.setattr(frozen_children, 'run_frozen_child', lambda: False)
+    monkeypatch.setattr(
+        sys, 'argv', [EXE, '--run-restore', 'restore.log', 'backup.tar'], raising=False
+    )
+    import app_backup
+
+    calls = []
+    monkeypatch.setattr(app_backup, '_run_restore_runner', lambda *a: calls.append(a) or 0)
+    with pytest.raises(SystemExit):
+        frozen_children.dispatch_child_invocation(lambda role: None)
+    assert calls == [('restore.log', 'backup.tar')]
+
+
+def test_dispatch_child_invocation_returns_false_with_no_spawn_or_role(
+    frozen_children, monkeypatch
+):
+    monkeypatch.setattr(frozen_children, 'run_frozen_child', lambda: False)
+    monkeypatch.setattr(sys, 'argv', [EXE], raising=False)
+    ran = []
+    assert frozen_children.dispatch_child_invocation(lambda role: ran.append(role)) is False
+    assert ran == []
+
+
+def test_role_from_argv_reads_the_role_flag(monkeypatch):
+    import service_roles
+
+    monkeypatch.setattr(service_roles.sys, 'argv', [EXE, '--role=worker-default'], raising=False)
+    assert service_roles.role_from_argv() == 'worker-default'
+
+
+def test_command_from_argv_reads_the_first_non_flag_argument(monkeypatch):
+    import service_roles
+
+    monkeypatch.setattr(service_roles.sys, 'argv', [EXE, 'restore', '--flag'], raising=False)
+    assert service_roles.command_from_argv() == 'restore'

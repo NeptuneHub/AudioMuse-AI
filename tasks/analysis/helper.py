@@ -22,7 +22,9 @@ Main Features:
   content identity via the embedding signature, confirmed by exact cosine plus
   track-duration agreement and settled against the DB so concurrent workers
   converge on one catalogue row per recording.
-* make_task_reporter: the one task_status reporter every analysis task uses
+* make_task_reporter is resolved lazily from tasks.task_run, the one reporter
+  every task uses; the lazy hop keeps helper -> task_run off the eager import
+  graph so the analysis chain stays inside the depth ceiling
   (one status_message, optional progress rescaling and DB throttling).
 * flush_pending_track_maps: per-track map-row flush, so a killed worker cannot
   strand an analyzed track without its server mapping.
@@ -36,33 +38,30 @@ import numpy as np
 
 from config import (
     ANALYSIS_MONITOR_DB_INTERVAL,
-    TASK_STATUS_RUNNING,
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAIL,
 )
 from database import (
     get_db,
-    save_task_status,
-    MAX_LOG_ENTRIES_STORED,
     get_analysis_exclusions,
 )
-from psycopg2 import OperationalError
 from psycopg2 import sql as pgsql
 from sanitization import sanitize_string_for_db
 
-from error import error_manager
-from error.error_dictionary import ERR_DB_CONNECTION
 
 _SONG_EXPORTS = frozenset((
     'analysis_server_identity', 'catalog_item_id', 'provider_item_id',
     'compute_other_features_str', 'ensure_musicnn_sessions',
     'load_musicnn_sessions', 'persist_clap_embedding', 'persist_musicnn_results',
-    'refresh_other_features', 'run_clap_for_track', 'run_lyrics_for_track',
-    'run_song_analyzed_hook', 'zero_other_features', 'ZERO_OTHER_FEATURES',
+    'refresh_base_features', 'refresh_other_features', 'run_clap_for_track',
+    'run_lyrics_for_track', 'run_song_analyzed_hook', 'zero_other_features',
+    'ZERO_OTHER_FEATURES',
 ))
 
 
 def __getattr__(name):
+    if name == 'make_task_reporter':
+        from ..task_run import make_task_reporter
+
+        return make_task_reporter
     if name in _SONG_EXPORTS:
         from . import song
 
@@ -85,65 +84,6 @@ def _bind_server_context(server_id):
 
 
 logger = logging.getLogger(__name__)
-
-
-def make_task_reporter(task_id, task_type, initial_message,
-                        parent_task_id=None, sub_type_identifier=None,
-                        base_details=None, prefix=None,
-                        progress_base=0.0, progress_span=100.0,
-                        downgrade_terminal=False, min_db_interval=0.0):
-    base = dict(base_details or {})
-    state = {'progress': 0, 'last_db': float('-inf')}
-    label = prefix or f"{task_type}-{task_id}"
-    logs = [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {initial_message}"]
-
-    try:
-        save_task_status(
-            task_id, task_type, TASK_STATUS_RUNNING,
-            parent_task_id=parent_task_id, sub_type_identifier=sub_type_identifier,
-            progress=int(progress_base),
-            details={
-                **base, "message": initial_message, "status_message": initial_message,
-                "log": list(logs),
-            },
-        )
-    except OperationalError as e:
-        error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
-        raise
-
-    def report(message, progress, **kwargs):
-        state['progress'] = progress
-        logger.info(f"[{label}] {message}")
-        task_state = kwargs.get('task_state', TASK_STATUS_RUNNING)
-        details = {**base, **kwargs, "message": message, "status_message": message}
-        if downgrade_terminal and task_state in (TASK_STATUS_SUCCESS, TASK_STATUS_FAIL):
-            task_state = TASK_STATUS_RUNNING
-        if task_state == TASK_STATUS_SUCCESS:
-            details["log"] = [f"Task completed successfully. Final status: {message}"]
-        else:
-            logs.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
-            if len(logs) > MAX_LOG_ENTRIES_STORED:
-                del logs[:-MAX_LOG_ENTRIES_STORED]
-            details["log"] = logs
-        scaled = int(progress_base + (progress or 0) * progress_span / 100.0)
-        now = time.monotonic()
-        throttled = (
-            min_db_interval
-            and task_state == TASK_STATUS_RUNNING
-            and 'task_state' not in kwargs
-            and now - state['last_db'] < min_db_interval
-        )
-        if throttled:
-            return
-        state['last_db'] = now
-        save_task_status(
-            task_id, task_type, task_state,
-            parent_task_id=parent_task_id, sub_type_identifier=sub_type_identifier,
-            progress=scaled, details=details,
-        )
-
-    report.state = state
-    return report
 
 
 def _str_ids(ids):
@@ -211,8 +151,20 @@ def get_existing_track_ids(track_ids):
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id "
-            f"WHERE s.item_id IN %s AND {_WORK_ANALYZED}",
+            f"WHERE s.item_id IN %s AND {_MUSICNN_ANALYZED}",
             (tuple(_str_ids(track_ids)),),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
+def get_missing_base_ids(track_ids):
+    if not track_ids:
+        return set()
+    ids = _str_ids(track_ids)
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT s.item_id FROM score s WHERE s.item_id IN %s AND NOT ({_BASE_ANALYZED})",
+            (tuple(ids),),
         )
         return {row[0] for row in cur.fetchall()}
 
@@ -289,31 +241,51 @@ class TrackPlan(NamedTuple):
     musicnn: bool
     clap: bool
     lyrics: bool
+    base: bool = False
+    neural: bool = False
 
     @property
     def any_stage(self):
-        return self.musicnn or self.clap or self.lyrics
+        return self.musicnn or self.clap or self.lyrics or self.base or self.neural
 
     @property
     def needs_audio(self):
-        return self.musicnn or self.clap
+        return self.musicnn or self.clap or self.base or self.neural
 
     def describe(self):
         wanted = [
             name
-            for name, on in (('MusiCNN', self.musicnn), ('CLAP', self.clap), ('Lyrics', self.lyrics))
+            for name, on in (
+                ('MusiCNN', self.musicnn),
+                ('CLAP', self.clap),
+                ('Lyrics', self.lyrics),
+                ('Base', self.base),
+                ('Neural fingerprint', self.neural),
+            )
             if on
         ]
         return ' + '.join(wanted) if wanted else 'nothing'
 
 
 def plan_track_stages(track_id, existing_ids, missing_clap_ids, missing_lyrics_ids,
-                      lyrics_enabled):
+                      missing_base_ids, lyrics_enabled, missing_neural_ids=frozenset()):
+    musicnn = track_id not in existing_ids
     return TrackPlan(
-        track_id not in existing_ids,
+        musicnn,
         track_id in missing_clap_ids,
         bool(lyrics_enabled) and track_id in missing_lyrics_ids,
+        bool(not musicnn and track_id in missing_base_ids),
+        track_id in missing_neural_ids,
     )
+
+
+def get_missing_neural_ids(track_ids):
+    from database import get_ids_with_neural_fingerprint
+
+    ids = _str_ids(track_ids)
+    if not ids:
+        return set()
+    return set(ids) - get_ids_with_neural_fingerprint(ids)
 
 
 def replan_for_catalogue_row(plan, item_id):
@@ -321,6 +293,8 @@ def replan_for_catalogue_row(plan, item_id):
         False,
         plan.clap and bool(get_missing_ids_in_table('clap_embedding', [item_id])),
         plan.lyrics and bool(get_missing_ids_in_table('lyrics_embedding', [item_id])),
+        bool(get_missing_base_ids([item_id])),
+        plan.neural and bool(get_missing_neural_ids([item_id])),
     )
 
 
@@ -394,13 +368,14 @@ def _prior_moods_for_lyrics(track_ids, existing_ids, missing_lyrics_ids, top_n_m
 
 
 def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
-    from .. import clap_analyzer
+    from .. import clap_analyzer, neural_fingerprint
 
     attach_catalog_item_ids(tracks)
     from .song import catalog_item_id
 
     track_ids = [catalog_item_id(t) for t in tracks]
     existing_ids = get_existing_track_ids(track_ids)
+    missing_base_ids = get_missing_base_ids(track_ids)
     missing_clap_ids = (
         get_missing_ids_in_table('clap_embedding', track_ids)
         if clap_analyzer.is_clap_available()
@@ -409,12 +384,17 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
     missing_lyrics_ids = (
         get_missing_ids_in_table('lyrics_embedding', track_ids) if lyrics_enabled else set()
     )
+    missing_neural_ids = (
+        get_missing_neural_ids(track_ids) if neural_fingerprint.is_available() else set()
+    )
     logger.info(
-        "Feature plan for album '%s': MusiCNN=%d, DCLAP=%d, Lyrics=%d of %d tracks.",
+        "Feature plan for album '%s': Base=%d, MusiCNN=%d, DCLAP=%d, Lyrics=%d, Neural fingerprint=%d of %d tracks.",
         album_name,
+        len(missing_base_ids),
         len(tracks) - len(existing_ids),
         len(missing_clap_ids),
         len(missing_lyrics_ids),
+        len(missing_neural_ids),
         len(tracks),
     )
     clap_label_embeddings = _album_clap_label_embeddings(
@@ -423,7 +403,10 @@ def build_album_plan(album_name, tracks, top_n_moods, lyrics_enabled):
     prior_moods = _prior_moods_for_lyrics(
         track_ids, existing_ids, missing_lyrics_ids, top_n_moods, lyrics_enabled, album_name
     )
-    return existing_ids, missing_clap_ids, missing_lyrics_ids, clap_label_embeddings, prior_moods
+    return (
+        existing_ids, missing_clap_ids, missing_lyrics_ids, missing_base_ids,
+        clap_label_embeddings, prior_moods, missing_neural_ids,
+    )
 
 
 def load_album_analysis_exclusions(tracks):
@@ -479,12 +462,14 @@ def raise_album_failures(failed_tracks, map_flush_errors, total_tracks_in_album)
         raise RuntimeError(" | ".join(failure_reasons))
 
 
-def album_feature_needs(masks, done_bits, clap_available, lyrics_enabled):
+def album_feature_needs(masks, done_bits, clap_available, lyrics_enabled, neural_available=False):
     album_done = sum(1 for m in masks if m & done_bits == done_bits)
     needs_musicnn = any(not m & WORK_MUSICNN for m in masks)
     needs_clap = clap_available and any(not m & WORK_CLAP for m in masks)
     needs_lyrics = lyrics_enabled and any(not m & WORK_LYRICS for m in masks)
-    return album_done, needs_musicnn, needs_clap, needs_lyrics
+    needs_base = any(not m & WORK_BASE for m in masks)
+    needs_neural = neural_available and any(not m & WORK_NEURAL for m in masks)
+    return album_done, needs_musicnn, needs_clap, needs_lyrics, needs_base, needs_neural
 
 
 WORK_MUSICNN = 1
@@ -496,17 +481,30 @@ WORK_CLAP = 2
 WORK_LYRICS = 4
 
 
-def work_done_bits(clap_available, lyrics_enabled):
+WORK_BASE = 8
+
+
+WORK_NEURAL = 16
+
+
+def work_done_bits(clap_available, lyrics_enabled, neural_available=False):
     return (
         WORK_MUSICNN
+        | WORK_BASE
         | (WORK_CLAP if clap_available else 0)
         | (WORK_LYRICS if lyrics_enabled else 0)
+        | (WORK_NEURAL if neural_available else 0)
     )
 
 
-_WORK_ANALYZED = (
-    "s.other_features IS NOT NULL AND s.energy IS NOT NULL "
-    "AND s.mood_vector IS NOT NULL AND s.tempo IS NOT NULL"
+_BASE_ANALYZED = (
+    "s.tempo IS NOT NULL AND s.energy IS NOT NULL "
+    "AND s.key IS NOT NULL AND s.scale IS NOT NULL"
+)
+
+
+_MUSICNN_ANALYZED = (
+    "s.mood_vector IS NOT NULL AND s.other_features IS NOT NULL"
 )
 
 
@@ -524,13 +522,25 @@ def _work_feature_parts(clap_available, lyrics_enabled, key_column):
     return selects, " ".join(joins)
 
 
-def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics):
+def _work_tail_selects(neural_available):
+    tail = f"({_BASE_ANALYZED})"
+    if neural_available:
+        tail += ", (e.neural_fingerprint IS NOT NULL)"
+    return tail
+
+
+def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_base,
+                     has_neural=True):
     key = str(provider_id)
     mask = WORK_MUSICNN if has_musicnn else 0
     if has_clap:
         mask |= WORK_CLAP
     if has_lyrics:
         mask |= WORK_LYRICS
+    if has_base:
+        mask |= WORK_BASE
+    if has_neural:
+        mask |= WORK_NEURAL
     work_map[key] = work_map.get(key, 0) | mask
 
 
@@ -541,16 +551,18 @@ def _work_map_scan(cur, sql, params, work_map, chunk_size):
         rows = cur.fetchall()
         if not rows:
             return
-        for provider_id, has_musicnn, has_clap, has_lyrics in rows:
-            _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics)
+        for row in rows:
+            _apply_work_bits(work_map, *row)
         last = str(rows[-1][0])
 
 
-def _work_sql(clap_available, lyrics_enabled):
+def _work_sql(clap_available, lyrics_enabled, neural_available=False):
+    tail = _work_tail_selects(neural_available)
     mapped_selects, mapped_joins = _work_feature_parts(clap_available, lyrics_enabled, 'm.item_id')
     mapped_sql = (
         "SELECT m.provider_track_id, "
-        f"(e.item_id IS NOT NULL AND {_WORK_ANALYZED}), {', '.join(mapped_selects)} "
+        f"(e.item_id IS NOT NULL AND {_MUSICNN_ANALYZED}), "
+        f"{', '.join(mapped_selects)}, {tail} "
         "FROM track_server_map m "
         "JOIN score s ON s.item_id = m.item_id "
         "LEFT JOIN embedding e ON e.item_id = m.item_id "
@@ -559,11 +571,11 @@ def _work_sql(clap_available, lyrics_enabled):
     )
     legacy_selects, legacy_joins = _work_feature_parts(clap_available, lyrics_enabled, 's.item_id')
     legacy_sql = (
-        f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)} "
+        f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)}, {tail} "
         "FROM score s "
         "JOIN embedding e ON e.item_id = s.item_id "
         f"{legacy_joins} "
-        f"WHERE s.item_id NOT LIKE 'fp\\_%%' AND {_WORK_ANALYZED}"
+        f"WHERE s.item_id NOT LIKE E'fp\\\\_%%' AND {_MUSICNN_ANALYZED}"
     )
     return mapped_sql, legacy_sql
 
@@ -574,8 +586,9 @@ def _is_default_server(server_id):
     return server_id is None or str(server_id) == str(registry.get_default_server_id() or '')
 
 
-def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=20000):
-    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled)
+def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=20000,
+                         neural_available=False):
+    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled, neural_available)
     work_map = {}
     with get_db() as conn, conn.cursor() as cur:
         if server_id:
@@ -594,11 +607,12 @@ def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=2
     return work_map
 
 
-def album_work_masks(provider_ids, server_id, clap_available, lyrics_enabled):
+def album_work_masks(provider_ids, server_id, clap_available, lyrics_enabled,
+                     neural_available=False):
     ids = _str_ids(provider_ids)
     if not ids:
         return {}
-    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled)
+    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled, neural_available)
     work_map = {}
     with get_db() as conn, conn.cursor() as cur:
         if server_id:
@@ -678,7 +692,7 @@ def refresh_fingerprint_index(resolver, force=False):
                 return resolver
             cur.execute(
                 "SELECT item_id, created_at, duration FROM score "
-                "WHERE created_at > %s AND item_id LIKE 'fp\\_%%' "
+                "WHERE created_at > %s AND item_id LIKE E'fp\\\\_%%' "
                 "AND length(item_id) = %s "
                 "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
                 "ORDER BY created_at",
@@ -721,7 +735,7 @@ def load_fingerprint_index():
         watermark = cur.fetchone()[0]
         cur.execute(
             "SELECT item_id, duration FROM score "
-            "WHERE item_id LIKE 'fp\\_%%' AND length(item_id) = %s "
+            "WHERE item_id LIKE E'fp\\\\_%%' AND length(item_id) = %s "
             "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9'",
             (CANONICAL_ID_LEN,),
         )
@@ -810,12 +824,15 @@ def claim_new_canonical_id(resolver, minted_id, embedding, duration=None, finger
         candidate = mint_canonical_id(signature, taken)
 
 
-def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False):
-    parts = ["MusiCNN"]
+def build_feature_status_parts(clap_available, lyrics_enabled, include_check_marks=False,
+                               neural_available=False):
+    parts = ["Base", "MusiCNN"]
     if clap_available:
         parts.append("CLAP")
     if lyrics_enabled:
         parts.append("Lyrics")
+    if neural_available:
+        parts.append("Neural fingerprint")
     if include_check_marks:
         return [f"{p}: OK" for p in parts]
     return parts

@@ -26,6 +26,8 @@ Main Features:
 import sys
 import types
 
+import taskqueue
+
 from unittest.mock import MagicMock
 
 from flask import Flask
@@ -84,7 +86,8 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     rebuilds = rebuild_calls if rebuild_calls is not None else []
 
-    def _fake_run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
+    def _fake_run_all_index_builds(log_fn=None, progress_start=95, progress_end=98,
+                                   task_id=None):
         rebuilds.append((progress_start, progress_end))
         if log_fn:
             log_fn("Similarity indexes rebuilt.", progress_end)
@@ -98,17 +101,20 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     fake_dup_repair.split_chromaprint_false_merges = lambda conn=None: cp_result
     monkeypatch.setitem(sys.modules, 'tasks.duplicate_repair', fake_dup_repair)
 
-    fake_app_helper = types.ModuleType('app_helper')
-    fake_app_helper.get_db = lambda: get_db_cm
-    fake_app_helper.get_task_info_from_db = lambda _task_id: task_info
-    fake_app_helper.save_task_status = (
-        lambda task_id, task_type, status, progress=None, details=None:
+    import database as db_module
+    from tasks import task_run as task_run_module
+    monkeypatch.setattr(db_module, 'get_db', lambda: get_db_cm)
+    monkeypatch.setattr(db_module, 'get_task_info_from_db', lambda _task_id: task_info)
+
+    def _record_status(task_id, task_type, status, progress=None, details=None, **_kwargs):
         statuses.append((status, progress, details))
-    )
-    monkeypatch.setitem(sys.modules, 'app_helper', fake_app_helper)
+        return True
+
+    monkeypatch.setattr(db_module, 'save_task_status', _record_status)
+    monkeypatch.setattr(task_run_module, 'save_task_status', _record_status)
 
     monkeypatch.setattr(
-        cleaning.taskqueue, 'current_task_id',
+        taskqueue, 'current_task_id',
         lambda: current_job.id if current_job is not None else None,
     )
     monkeypatch.setattr(
@@ -152,8 +158,25 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
         lambda db, server_id, count: counts.append((server_id, count)),
     )
 
-    result = cleaning.identify_and_clean_orphaned_albums_task(clean_catalogue)
+    try:
+        result = cleaning.identify_and_clean_orphaned_albums_task(clean_catalogue)
+    except cleaning.CleaningIncomplete as exc:
+        summary = (statuses[-1][2] or {}).get('final_summary_details') or {}
+        result = {'status': 'FAIL', 'message': str(exc), **summary}
     return result, statuses, pruned_calls
+
+
+class TestAPartialRunIsNotRetriedByTheQueue:
+    def test_an_unread_server_is_a_permanent_failure_the_next_cron_run_retries(self):
+        from taskqueue import TaskFailed
+        from tasks import cleaning
+
+        assert issubclass(cleaning.CleaningIncomplete, TaskFailed), (
+            'a plain raise would cost QUEUE_MAX_ATTEMPTS full runs, each one a '
+            'whole-catalogue fetch per server plus the full index rebuild with the '
+            'one-live-main slot held, to reach the identical outcome; the run '
+            'completed, the summary is on the row, and tomorrow is the retry'
+        )
 
 
 class TestCleaningRefreshesTrackCounts:
@@ -190,21 +213,30 @@ class TestCleaningRefreshesTrackCounts:
 
 
 def test_dequeued_cleaning_with_wiped_claim_stops_before_writing(monkeypatch):
+    import pytest
+    from taskqueue import TaskCancelled
+
     job = MagicMock(id='cleaning-cancelled')
+    monkeypatch.setattr('tasks.task_run._read_task_statuses', lambda _conn, ids: {})
+    counts = []
+    servers = [_server('s1', 'One', default=True)]
 
-    result, statuses, pruned = _run_cleaning(
-        monkeypatch,
-        servers=[_server('s1', 'One', default=True)],
-        tracks_by_server={'s1': [{'id': 'a1'}]},
-        reverse_by_server={'s1': {'a1': 'fp_1'}},
-        db_track_ids={'fp_1'},
-        current_job=job,
-        task_info=None,
+    with pytest.raises(TaskCancelled):
+        _run_cleaning(
+            monkeypatch,
+            servers=servers,
+            tracks_by_server={'s1': [{'id': 'a1'}]},
+            reverse_by_server={'s1': {'a1': 'fp_1'}},
+            db_track_ids={'fp_1'},
+            current_job=job,
+            task_info=None,
+            stored_counts=counts,
+        )
+
+    assert counts == [], (
+        'the shared cancel check is forced once before the first report, so a '
+        'row the cancel wiped fetches nothing, prunes nothing and writes nothing'
     )
-
-    assert result['status'] == config.TASK_STATUS_REVOKED
-    assert statuses == []
-    assert pruned == []
 
 
 class TestCleaningSkipsUnreadableServers:
@@ -225,7 +257,11 @@ class TestCleaningSkipsUnreadableServers:
         assert 'One' in result['failed_servers']
         assert pruned == [('s2', ['n1'])]
         assert result['unbound_mappings'] == 3
-        assert statuses[-1][0] == config.TASK_STATUS_FAILURE
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING, (
+            'the task narrates the summary on its last progress write and then '
+            "raises; FAIL itself is the queue's row to write, and its retry"
+        )
+        assert 'One' in statuses[-1][2]['final_summary_details']['failed_servers']
 
     def test_zero_tracks_skips_that_server_and_reports_no_orphans(self, monkeypatch):
         result, statuses, pruned = _run_cleaning(
@@ -264,7 +300,7 @@ class TestCleaningOrphanHandling:
         assert result['deleted_count'] == 0
         assert result['unbound_mappings'] == 0
         assert pruned == [('s1', ['j1', 'j2']), ('s2', ['n1'])]
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING
 
     def test_tracks_on_no_server_are_deleted_when_view_is_complete(self, monkeypatch):
         result, statuses, pruned = _run_cleaning(
@@ -292,7 +328,7 @@ class TestCleaningOrphanHandling:
             for t in album['tracks']
         }
         assert reported == {'fp_3', 'fp_4'}
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING
 
     def test_index_rebuild_runs_inline_before_a_cleaning_run_completes(self, monkeypatch):
         rebuilds = []
@@ -379,4 +415,4 @@ class TestCleaningLegacyFallback:
         assert result['orphaned_tracks_count'] == 0
         assert result['unbound_mappings'] == 0
         assert pruned == []
-        assert statuses[-1][0] == config.TASK_STATUS_SUCCESS
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING

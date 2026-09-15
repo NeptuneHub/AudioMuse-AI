@@ -170,7 +170,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // The countdown itself is the shared one in restart_wait.js. Only the ceiling
     // differs here: a restore stops Flask, replaces the database and brings the
     // services back, which can take far longer than any other restart.
-    const RESTORE_MAX_WAIT_SECONDS = 30 * 60;
+    const RESTORE_MAX_WAIT_SECONDS = 60 * 60;
 
     // Restore backup via chunked file upload (1GB chunks)
     restoreBtn.addEventListener('click', async () => {

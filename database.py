@@ -18,6 +18,11 @@ Main Features:
   connection the server closed and reconnects on the next call.
 * Task-status and history persistence with sanitized fields and capped rows; a
   status write the row refuses ends the transaction with a ROLLBACK.
+* record_root_recap is the ONE root-finish bookkeeping (the task_history line
+  and the collapse to a single recap row) shared by save_task_status, the
+  worker's terminal write and the migration handshake recovery. It must run
+  AFTER the terminal row is committed: record_task_history rolls back on
+  failure, and in the worker that rollback used to undo the verdict itself.
 * stage_pending_task_row is the one way to stage a placeholder row that a later
   taskqueue.enqueue on the same transaction adopts (returns True only for a row
   this call created).
@@ -38,6 +43,7 @@ from psycopg2 import sql
 from psycopg2.extras import DictCursor, Json, execute_values
 
 import config
+import task_types
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,75 @@ _TERMINAL_STATUSES = list(TASK_STATUS_TERMINAL)
 TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
+TEXT_SEARCH_QUERIES_DDL = """
+    CREATE TABLE IF NOT EXISTS text_search_queries (
+        id SERIAL PRIMARY KEY,
+        query_text TEXT NOT NULL,
+        score REAL NOT NULL,
+        rank INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(rank)
+    )
+"""
+
+TEXT_SEARCH_QUERIES_RANK_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank "
+    "ON text_search_queries(rank)"
+)
+
+DEFAULT_TEXT_SEARCH_QUERIES = [
+    "female vocal romantic trap",
+    "synth indie pop raspy",
+    "sad hard rock male vocal",
+    "funk falsetto energetic",
+    "groovy sax blues",
+    "classical relaxed piano",
+    "belting jazz happy",
+    "tabla afrobeat fast-paced",
+    "harmonized vocals slow-paced electronica",
+    "autotuned gospel excited",
+    "breathy aggressive house",
+    "smooth folk mid-tempo",
+    "deep voice r&b dark",
+    "punk guitar angry",
+    "metal choir dreamy",
+    "chant reggae trumpet",
+    "high-pitched brass hip-hop",
+    "disco whispered drum machine",
+    "happy whispered indie pop",
+    "synth energetic raspy",
+    "rock slow-paced cello",
+    "falsetto jazz excited",
+    "r&b male vocal romantic",
+    "harmonized vocals dark trap",
+    "smooth blues sax",
+    "high-pitched fast-paced soul",
+    "female vocal sad hip-hop",
+    "congas aggressive soul",
+    "mid-tempo afrobeat autotuned",
+    "belting funk groovy",
+    "angry alternative breathy",
+    "gospel choir steelpan",
+    "viola relaxed folk",
+    "dreamy rhodes metal",
+    "acoustic guitar country chant",
+    "deep voice orchestra reggae",
+    "fast-paced synth progressive rock",
+    "hard rock raspy romantic",
+    "fast-paced electric guitar progressive rock",
+    "hard rock aggressive breathy",
+    "rock high-pitched energetic",
+    "autotuned energetic hip-hop",
+    "raspy fast-paced blues",
+    "belting electronica energetic",
+    "whispered indie pop aggressive",
+    "harmonized vocals aggressive synth",
+    "orchestra whispered romantic",
+    "belting mid-tempo progressive rock",
+    "autotuned pop mid-tempo",
+    "pop energetic synthesizer",
+]
+
 # Serializes the whole check-cleanup-claim sequence every main-task start runs.
 # Session scoped rather than transaction scoped on purpose: clean_up_previous_main_tasks
 # commits in the middle of that sequence, and a transaction lock would be released
@@ -75,12 +150,12 @@ GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 # sonic_fingerprint is deliberately NOT here: a running fingerprint blocked an
 # analysis or clustering start on main, and quietly excluding it here let the two
 # run concurrently over the same catalogue.
-SELF_MANAGED_TASK_TYPES = (
-    'server_sweep', 'alchemy_radio', 'worker_control',
-    'provider_migration_planner',
-)
+SELF_MANAGED_TASK_TYPES = task_types.SELF_MANAGED_TASK_TYPES
 
-SELF_MANAGED_TASK_TYPE_PREFIXES = ('plugin.',)
+SELF_MANAGED_TASK_TYPE_PREFIXES = task_types.SELF_MANAGED_TASK_TYPE_PREFIXES
+_BLOCKING_TASK_TYPE_PATTERNS = [
+    prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
+]
 
 # Rows that must never refuse a batch start. A restart handshake, the inline radio
 # and the migration PLANNER are machinery, not work that touches the catalogue.
@@ -88,11 +163,9 @@ SELF_MANAGED_TASK_TYPE_PREFIXES = ('plugin.',)
 # write the mappings a cleaning or a migration rewrites, so they must still block.
 # The starts used to pass an empty tuple, which excluded NOTHING, so a restart
 # handshake in flight answered 409 to a cleaning the user had just asked for.
-NON_BLOCKING_TASK_TYPES = (
-    'worker_control', 'alchemy_radio', 'provider_migration_planner',
-)
+NON_BLOCKING_TASK_TYPES = task_types.NON_BLOCKING_TASK_TYPES
 
-INLINE_FLASK_TASK_TYPES = ('alchemy_radio',)
+INLINE_FLASK_TASK_TYPES = task_types.INLINE_FLASK_TASK_TYPES
 
 USERS_PASSWORD_CHANGED_AT_DDL = (
     "ALTER TABLE IF EXISTS audiomuse_users "
@@ -293,7 +366,7 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
         return
     if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
         return
-    if not task_type or task_type == 'unknown':
+    if not task_type or task_type == 'unknown' or task_type in task_types.SIDE_JOB_TASK_TYPES:
         return
 
     duration_s = None
@@ -309,17 +382,19 @@ def _maybe_record_task_history(db, task_id, task_type, status, parent_task_id, d
             duration_s = max(0.0, float(end) - float(row[0]))
     except Exception:
         pass
-    record_task_history(task_id, task_type, status, duration_s, details=details)
+    record_task_history(
+        task_id, task_type, status, duration_seconds=duration_s, details=details, conn=db,
+    )
 
 
-def _collapse_finished_task(db, task_id, task_type, parent_task_id, status):
+def collapse_finished_task(db, task_id, task_type, parent_task_id, status):
     if parent_task_id is not None or not task_type:
         return 0
     if status not in (TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED):
         return 0
     from taskqueue.sql import CONTROL_TASK_TYPE, TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD
 
-    if task_type == CONTROL_TASK_TYPE:
+    if task_type == CONTROL_TASK_TYPE or task_type in task_types.SIDE_JOB_TASK_TYPES:
         return 0
     try:
         with db.cursor() as cur:
@@ -343,6 +418,16 @@ def _collapse_finished_task(db, task_id, task_type, parent_task_id, status):
             sanitize_for_log(task_id), sanitize_for_log(status), deleted,
         )
     return deleted
+
+
+def record_root_recap(db, task_id, task_type, parent_task_id, status, details, now=None):
+    if parent_task_id is not None:
+        return 0
+    _maybe_record_task_history(
+        db, task_id, task_type, status, parent_task_id, details,
+        time.time() if now is None else now,
+    )
+    return collapse_finished_task(db, task_id, task_type, parent_task_id, status)
 
 
 def save_task_status(
@@ -405,7 +490,7 @@ def save_task_status(
                               WHEN EXCLUDED.status = ANY(%s) THEN NULL
                               ELSE task_status.payload
                           END
-            WHERE task_status.status IS DISTINCT FROM %s
+            WHERE COALESCE(task_status.status, '') <> ALL(%s)
             RETURNING parent_task_id
         """,
             (
@@ -429,7 +514,7 @@ def save_task_status(
                 current_unix_time,
                 _TERMINAL_STATUSES,
                 _TERMINAL_STATUSES,
-                TASK_STATUS_REVOKED,
+                _TERMINAL_STATUSES,
             ),
         )
         written = cur.rowcount > 0
@@ -456,20 +541,22 @@ def save_task_status(
 
     if not written:
         logger.info(
-            "Discarded the %s report for task %s (parent %s): the row is REVOKED, or "
-            "it does not exist and its parent is missing or already terminal.",
+            "Discarded the %s report for task %s (parent %s): the row is already "
+            "terminal, or it does not exist and its parent is missing or terminal. A "
+            "terminal row is the queue's verdict and no later report may regress it.",
             status, task_id, parent_task_id,
         )
         return False
 
     try:
-        _maybe_record_task_history(
-            db, task_id, task_type, status, stored_parent_task_id, details, current_unix_time
+        record_root_recap(
+            db, task_id, task_type, stored_parent_task_id, status, details, current_unix_time
         )
-    except Exception as e_hist:
-        logger.debug(f"history record skipped for {task_id}: {e_hist}")
-
-    _collapse_finished_task(db, task_id, task_type, stored_parent_task_id, status)
+    except Exception:
+        logger.exception(
+            "Wrote %s for task %s but could not record its history or collapse the table",
+            status, sanitize_for_log(task_id),
+        )
     return True
 
 
@@ -572,12 +659,22 @@ def get_score_data_by_ids(item_ids_list):
         FROM score s
         WHERE s.item_id IN %s
     """
+    guarded = getattr(conn, 'autocommit', False) is False
     try:
+        if guarded:
+            cur.execute("SAVEPOINT score_data_by_ids")
         cur.execute(query, (tuple(item_ids_list),))
         rows = cur.fetchall()
+        if guarded:
+            cur.execute("RELEASE SAVEPOINT score_data_by_ids")
     except Exception:
         logger.exception("Error fetching score data by IDs")
         rows = []
+        if guarded:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT score_data_by_ids")
+            except Exception:
+                logger.exception("Could not roll back to the savepoint after the failed score data fetch")
     finally:
         cur.close()
     return [dict(row) for row in rows]
@@ -635,12 +732,15 @@ def load_map_projection(index_name, force_reload=False):
         if row and row[0] is not None:
             proj_blob, id_map_json = row[0], row[1]
         else:
-            import re
-            from tasks.index_build_helpers import reassemble_segmented_id_map
+            from tasks.index_build_helpers import (
+                collect_segment_names,
+                reassemble_segmented_id_map,
+                segment_like_pattern,
+            )
 
             cur.execute(
-                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE '\\'",
-                (index_name.replace('_', r'\_') + r"\_%\_%",),
+                "SELECT index_name, projection_data, id_map_json FROM map_projection_data WHERE index_name LIKE %s ESCAPE E'\\\\'",
+                (segment_like_pattern(index_name),),
             )
             candidates = cur.fetchall()
             if not candidates:
@@ -648,23 +748,20 @@ def load_map_projection(index_name, force_reload=False):
                     f"Map projection '{index_name}' not found in the database. Cache will be empty."
                 )
                 return None, None
-            seg_pattern = re.compile(rf"^{re.escape(index_name)}_(\d+)_(\d+)$")
-            parts = []
-            total_expected = None
-            for name, part_blob, part_id_map in candidates:
-                m = seg_pattern.match(name)
-                if not m:
-                    continue
-                part_no = int(m.group(1))
-                total = int(m.group(2))
-                if total_expected is None:
-                    total_expected = total
-                elif total_expected != total:
-                    logger.error(
-                        f"Map projection segment total mismatch for '{index_name}' ({total_expected} vs {total}). Aborting load."
-                    )
-                    return None, None
-                parts.append((part_no, part_blob, part_id_map))
+            try:
+                total_expected, parsed = collect_segment_names(
+                    index_name, [row[0] for row in candidates]
+                )
+            except ValueError:
+                logger.exception(
+                    f"Map projection segment total mismatch for '{index_name}'. Aborting load."
+                )
+                return None, None
+            rows_by_name = {row[0]: row for row in candidates}
+            parts = [
+                (part_no, rows_by_name[part_name][1], rows_by_name[part_name][2])
+                for part_no, part_name in parsed
+            ]
             if total_expected is None or len(parts) != total_expected:
                 logger.error(
                     f"Incomplete map projection segments for '{index_name}': expected {total_expected}, found {len(parts)}. Aborting load."
@@ -749,6 +846,30 @@ def _clamp_rating(rating):
         return None
 
 
+def _persist_hyperbolic_inline(item_id, embedding_vector, cur):
+    try:
+        from tasks.hyperbolic_manager import compute_hyperbolic_projection
+
+        proj, radius = compute_hyperbolic_projection(embedding_vector, auto_calibrate=False)
+        if proj is None or radius is None:
+            return
+        embedding_blob = np.asarray(proj, dtype=np.float32).tobytes()
+        cur.execute(
+            """
+            INSERT INTO embedding (item_id, poincare_embedding, hyperbolic_radius)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET
+                poincare_embedding = EXCLUDED.poincare_embedding,
+                hyperbolic_radius = EXCLUDED.hyperbolic_radius
+        """,
+            (item_id, psycopg2.Binary(embedding_blob), float(radius)),
+        )
+    except Exception:
+        logger.debug(
+            "Could not persist hyperbolic projection inline for %s", item_id, exc_info=True
+        )
+
+
 def save_track_analysis_and_embedding(
     item_id,
     title,
@@ -828,6 +949,7 @@ def save_track_analysis_and_embedding(
             """,
                 (item_id, psycopg2.Binary(embedding_blob)),
             )
+            _persist_hyperbolic_inline(item_id, embedding_vector, cur)
 
         conn.commit()
     except Exception:
@@ -862,6 +984,179 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         raise
     finally:
         cur.close()
+
+
+def save_neural_fingerprint(item_id, blob):
+    if not blob:
+        return False
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE embedding SET neural_fingerprint = %s WHERE item_id = %s",
+            (psycopg2.Binary(bytes(blob)), item_id),
+        )
+        saved = cur.rowcount > 0
+        conn.commit()
+        return saved
+    except Exception:
+        conn.rollback()
+        logger.exception(f"Error saving the neural fingerprint for {item_id}")
+        raise
+    finally:
+        cur.close()
+
+
+def get_ids_with_neural_fingerprint(item_ids):
+    ids = [str(i) for i in item_ids]
+    if not ids:
+        return set()
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT item_id FROM embedding WHERE item_id = ANY(%s) AND neural_fingerprint IS NOT NULL",
+            (ids,),
+        )
+        return {row[0] for row in cur.fetchall()}
+    finally:
+        cur.close()
+
+
+def set_hyperbolic_projection(item_id, poincare_embedding, hyperbolic_radius):
+    if poincare_embedding is None or hyperbolic_radius is None:
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        embedding_blob = np.asarray(poincare_embedding, dtype=np.float32).tobytes()
+        cur.execute(
+            """
+            INSERT INTO embedding (item_id, poincare_embedding, hyperbolic_radius)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET
+                poincare_embedding = EXCLUDED.poincare_embedding,
+                hyperbolic_radius = EXCLUDED.hyperbolic_radius
+        """,
+            (item_id, psycopg2.Binary(embedding_blob), float(hyperbolic_radius)),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception(f"Error saving hyperbolic projection for {item_id}")
+        raise
+    finally:
+        cur.close()
+
+
+STAGED_MAPS_SCOPE = "incoming_track_server_map"
+
+
+def _chromaprint_inherit_sql(scope_table):
+    return (
+        "WITH targets AS ("
+        "  SELECT m.item_id, m.server_id, m.provider_track_id "
+        "  FROM " + scope_table + " m "
+        "  LEFT JOIN chromaprint c ON c.server_id = m.server_id "
+        "    AND c.provider_track_id = m.provider_track_id "
+        "  WHERE (m.server_id, m.provider_track_id) > (%s, %s) "
+        "    AND c.fingerprint IS NULL "
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM track_server_map d "
+        "      WHERE d.item_id = m.item_id AND d.server_id = m.server_id "
+        "        AND d.provider_track_id <> m.provider_track_id"
+        "    )"
+        "    AND EXISTS ("
+        "      SELECT 1 FROM track_server_map o "
+        "      JOIN chromaprint oc ON oc.server_id = o.server_id "
+        "        AND oc.provider_track_id = o.provider_track_id "
+        "      WHERE o.item_id = m.item_id AND oc.fingerprint IS NOT NULL "
+        "        AND NOT EXISTS ("
+        "          SELECT 1 FROM track_server_map od "
+        "          WHERE od.item_id = o.item_id AND od.server_id = o.server_id "
+        "            AND od.provider_track_id <> o.provider_track_id"
+        "        )"
+        "    )"
+        "  ORDER BY m.server_id, m.provider_track_id "
+        "  LIMIT %s"
+        "), src AS ("
+        "  SELECT DISTINCT ON (o.item_id) o.item_id, "
+        "         o.server_id AS src_server_id, "
+        "         o.provider_track_id AS src_provider_track_id "
+        "  FROM (SELECT DISTINCT item_id FROM targets) t "
+        "  JOIN track_server_map o ON o.item_id = t.item_id "
+        "  JOIN chromaprint cp ON cp.server_id = o.server_id "
+        "    AND cp.provider_track_id = o.provider_track_id "
+        "  WHERE cp.fingerprint IS NOT NULL "
+        "    AND NOT EXISTS ("
+        "      SELECT 1 FROM track_server_map od "
+        "      WHERE od.item_id = o.item_id AND od.server_id = o.server_id "
+        "        AND od.provider_track_id <> o.provider_track_id"
+        "    )"
+        "  ORDER BY o.item_id, o.server_id, o.provider_track_id"
+        "), ins AS ("
+        "  INSERT INTO chromaprint (server_id, provider_track_id, fingerprint, updated_at) "
+        "  SELECT t.server_id, t.provider_track_id, cp.fingerprint, now() "
+        "  FROM targets t "
+        "  JOIN src ON src.item_id = t.item_id "
+        "  JOIN chromaprint cp ON cp.server_id = src.src_server_id "
+        "    AND cp.provider_track_id = src.src_provider_track_id "
+        "  ON CONFLICT (server_id, provider_track_id) DO UPDATE "
+        "    SET fingerprint = EXCLUDED.fingerprint, updated_at = now() "
+        "    WHERE chromaprint.fingerprint IS NULL "
+        "  RETURNING server_id, provider_track_id"
+        ") "
+        "SELECT t.server_id, t.provider_track_id, "
+        "       (i.provider_track_id IS NOT NULL) AS inherited "
+        "FROM targets t "
+        "LEFT JOIN ins i ON i.server_id = t.server_id "
+        "  AND i.provider_track_id = t.provider_track_id "
+        "ORDER BY t.server_id, t.provider_track_id"
+    )
+
+
+def _inherit_chromaprints_in_batches(cur, scope_table):
+    statement = _chromaprint_inherit_sql(scope_table)
+    batch = max(1, config.CHROMAPRINT_INHERIT_BATCH_SIZE)
+    at_server, at_track = '', ''
+    total = 0
+    while True:
+        cur.execute(statement, (at_server, at_track, batch))
+        rows = cur.fetchall()
+        if not rows:
+            return total
+        total += sum(1 for row in rows if row[2])
+        at_server, at_track = str(rows[-1][0]), str(rows[-1][1])
+        if len(rows) < batch:
+            return total
+
+
+def inherit_chromaprints_from_staged_maps(cur, staged_rows=0):
+    try:
+        cur.execute("SAVEPOINT chromaprint_inherit")
+        if staged_rows > max(1, config.CHROMAPRINT_INHERIT_BATCH_SIZE):
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS incoming_track_server_map_keyset "
+                "ON " + STAGED_MAPS_SCOPE + " (server_id, provider_track_id)"
+            )
+            cur.execute("ANALYZE " + STAGED_MAPS_SCOPE)
+        inherited = _inherit_chromaprints_in_batches(cur, STAGED_MAPS_SCOPE)
+        cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        return inherited
+    except Exception:
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT chromaprint_inherit")
+            cur.execute("RELEASE SAVEPOINT chromaprint_inherit")
+        except Exception:
+            logger.debug(
+                "Could not unwind the chromaprint inherit savepoint", exc_info=True
+            )
+        logger.exception(
+            "Could not hand the stored Chromaprints to the mappings just written; "
+            "the mappings stand and the next run retries the hand-over"
+        )
+        return 0
 
 
 def persist_chromaprint(server_id, provider_track_id, fingerprint):
@@ -1095,6 +1390,25 @@ def purge_media_keys_from_app_config(cur):
     return cur.rowcount or 0
 
 
+_UPGRADED_CONFIG_DEFAULTS = (
+    ('FLASK_READY_TIMEOUT_SECONDS', ('180', '180.0'), '3600.0'),
+)
+
+
+def upgrade_stored_config_defaults(cur):
+    cur.execute("SELECT to_regclass('public.app_config') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return 0
+    upgraded = 0
+    for key, old_values, new_value in _UPGRADED_CONFIG_DEFAULTS:
+        cur.execute(
+            "UPDATE app_config SET value = %s WHERE key = %s AND value = ANY(%s)",
+            (new_value, key, list(old_values)),
+        )
+        upgraded += cur.rowcount or 0
+    return upgraded
+
+
 def missing_required_creds(server_type, creds):
     """Required-but-empty credential keys for ``server_type``."""
     server_type = (server_type or '').strip().lower()
@@ -1231,6 +1545,37 @@ def _migrate_artist_mapping_to_server_map(cur):
         logger.info("Dropped the empty legacy artist_mapping table.")
 
 
+_SCORE_LEGACY_ID_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
+    "WHERE item_id NOT LIKE E'fp\\\\_%'"
+)
+
+
+def _score_old_scheme_index_sql():
+    from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+
+    return (
+        "CREATE INDEX idx_score_old_scheme ON score (item_id) "
+        "WHERE item_id LIKE E'fp\\\\_%%' AND length(item_id) = %d "
+        "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
+        "AND left(item_id, %d) <> '%s'"
+        % (CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD)
+    )
+
+
+def _ensure_column(cur, table, column, definition):
+    cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = %s AND column_name = %s)",
+        (table, column),
+    )
+    if cur.fetchone()[0]:
+        return False
+    logger.info("Adding '%s' column to '%s' table.", column, table)
+    cur.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+    return True
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -1258,48 +1603,13 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_score_created_at ON score (created_at)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'energy')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'energy' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN energy REAL")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'other_features')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'other_features' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN other_features TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'album' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN album TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'album_artist')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'album_artist' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN album_artist TEXT")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'year')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'year' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN year INTEGER")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'rating')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'rating' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN rating INTEGER")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'file_path')"
-            )
-            if not cur.fetchone()[0]:
-                logger.info("Adding 'file_path' column to 'score' table.")
-                cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            _ensure_column(cur, 'score', 'energy', 'energy REAL')
+            _ensure_column(cur, 'score', 'other_features', 'other_features TEXT')
+            _ensure_column(cur, 'score', 'album', 'album TEXT')
+            _ensure_column(cur, 'score', 'album_artist', 'album_artist TEXT')
+            _ensure_column(cur, 'score', 'year', 'year INTEGER')
+            _ensure_column(cur, 'score', 'rating', 'rating INTEGER')
+            _ensure_column(cur, 'score', 'file_path', 'file_path TEXT')
             cur.execute(
                 "ALTER TABLE score ADD COLUMN IF NOT EXISTS duration DOUBLE PRECISION"
             )
@@ -1392,20 +1702,10 @@ def init_db():
                 "((COALESCE(NULLIF(album_artist, ''), author)), album)"
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_score_author ON score (author)")
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_score_legacy_item_id ON score (item_id) "
-                "WHERE item_id NOT LIKE 'fp\\_%'"
-            )
-            from tasks.simhash import CANONICAL_ID_LEN, CURRENT_ID_HEAD
+            cur.execute(_SCORE_LEGACY_ID_INDEX_SQL)
             cur.execute("DROP INDEX IF EXISTS idx_score_null_duration")
             cur.execute("DROP INDEX IF EXISTS idx_score_old_scheme")
-            cur.execute(
-                "CREATE INDEX idx_score_old_scheme ON score (item_id) "
-                "WHERE item_id LIKE 'fp\\_%%' AND length(item_id) = %d "
-                "AND substring(item_id from 4 for 1) BETWEEN '1' AND '9' "
-                "AND left(item_id, %d) <> '%s'"
-                % (CANONICAL_ID_LEN, len(CURRENT_ID_HEAD), CURRENT_ID_HEAD)
-            )
+            cur.execute(_score_old_scheme_index_sql())
 
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS playlist (id SERIAL PRIMARY KEY, playlist_name TEXT, item_id TEXT, title TEXT, author TEXT, UNIQUE (playlist_name, item_id))"
@@ -1456,39 +1756,26 @@ def init_db():
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')"
+            _ensure_column(cur, 'embedding', 'embedding', 'embedding BYTEA')
+            _ensure_column(cur, 'embedding', 'poincare_embedding', 'poincare_embedding BYTEA')
+            _ensure_column(
+                cur, 'embedding', 'hyperbolic_radius',
+                'hyperbolic_radius DOUBLE PRECISION',
             )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')"
+            _ensure_column(cur, 'lyrics_embedding', 'embedding', 'embedding BYTEA')
+            _ensure_column(cur, 'lyrics_embedding', 'axis_vector', 'axis_vector BYTEA')
+            _ensure_column(
+                cur, 'lyrics_embedding', 'updated_at',
+                'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
             )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN embedding BYTEA")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'axis_vector')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE lyrics_embedding ADD COLUMN axis_vector BYTEA")
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'updated_at')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute(
-                    "ALTER TABLE lyrics_embedding ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
-                )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS clap_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
-            cur.execute(
-                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'clap_embedding' AND column_name = 'embedding')"
-            )
-            if not cur.fetchone()[0]:
-                cur.execute("ALTER TABLE clap_embedding ADD COLUMN embedding BYTEA")
+            _ensure_column(cur, 'clap_embedding', 'embedding', 'embedding BYTEA')
+            cur.execute("ALTER TABLE embedding ADD COLUMN IF NOT EXISTS neural_fingerprint BYTEA")
             cur.execute("DROP TABLE IF EXISTS voyager_index_data")
             cur.execute("DROP TABLE IF EXISTS clap_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_index_data")
@@ -1521,6 +1808,28 @@ def init_db():
             )
             cur.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_task_type ON cron (task_type)"
+            )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS cron_retry ("
+                "task_type TEXT PRIMARY KEY, "
+                "retry_until DOUBLE PRECISION, "
+                "attempts INTEGER DEFAULT 0, "
+                "first_blocked_at DOUBLE PRECISION, "
+                "blocker_task_id TEXT, "
+                "blocker_task_type TEXT)"
+            )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_retry_task_type "
+                "ON cron_retry (task_type)"
+            )
+            cur.execute(
+                "ALTER TABLE cron_retry ADD COLUMN IF NOT EXISTS first_blocked_at DOUBLE PRECISION"
+            )
+            cur.execute(
+                "ALTER TABLE cron_retry DROP COLUMN IF EXISTS created_at"
+            )
+            cur.execute(
+                "ALTER TABLE cron_retry DROP COLUMN IF EXISTS last_attempt_at"
             )
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS audiomuse_users (id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
@@ -1591,87 +1900,18 @@ def init_db():
                     PRIMARY KEY (session_id, new_id)
                 )
             """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS text_search_queries (
-                    id SERIAL PRIMARY KEY,
-                    query_text TEXT NOT NULL,
-                    score REAL NOT NULL,
-                    rank INTEGER NOT NULL,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(rank)
-                )
-            """)
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_text_search_queries_rank ON text_search_queries(rank)"
-            )
+            cur.execute(TEXT_SEARCH_QUERIES_DDL)
+            cur.execute(TEXT_SEARCH_QUERIES_RANK_INDEX_DDL)
 
             cur.execute("SELECT COUNT(*) FROM text_search_queries")
             count = cur.fetchone()[0]
 
             if count == 0:
-                default_queries = [
-                    "female vocal romantic trap",
-                    "synth indie pop raspy",
-                    "sad hard rock male vocal",
-                    "funk falsetto energetic",
-                    "groovy sax blues",
-                    "classical relaxed piano",
-                    "belting jazz happy",
-                    "tabla afrobeat fast-paced",
-                    "harmonized vocals slow-paced electronica",
-                    "autotuned gospel excited",
-                    "breathy aggressive house",
-                    "smooth folk mid-tempo",
-                    "deep voice r&b dark",
-                    "punk guitar angry",
-                    "metal choir dreamy",
-                    "chant reggae trumpet",
-                    "high-pitched brass hip-hop",
-                    "disco whispered drum machine",
-                    "happy whispered indie pop",
-                    "synth energetic raspy",
-                    "rock slow-paced cello",
-                    "falsetto jazz excited",
-                    "r&b male vocal romantic",
-                    "harmonized vocals dark trap",
-                    "smooth blues sax",
-                    "high-pitched fast-paced soul",
-                    "female vocal sad hip-hop",
-                    "congas aggressive soul",
-                    "mid-tempo afrobeat autotuned",
-                    "belting funk groovy",
-                    "angry alternative breathy",
-                    "gospel choir steelpan",
-                    "viola relaxed folk",
-                    "dreamy rhodes metal",
-                    "acoustic guitar country chant",
-                    "deep voice orchestra reggae",
-                    "fast-paced synth progressive rock",
-                    "hard rock raspy romantic",
-                    "fast-paced electric guitar progressive rock",
-                    "hard rock aggressive breathy",
-                    "rock high-pitched energetic",
-                    "autotuned energetic hip-hop",
-                    "raspy fast-paced blues",
-                    "belting electronica energetic",
-                    "whispered indie pop aggressive",
-                    "harmonized vocals aggressive synth",
-                    "orchestra whispered romantic",
-                    "belting mid-tempo progressive rock",
-                    "autotuned pop mid-tempo",
-                    "pop energetic synthesizer",
-                ]
-
-                for rank, query in enumerate(default_queries, start=1):
-                    cur.execute(
-                        """
-                        INSERT INTO text_search_queries (query_text, score, rank, created_at)
-                        VALUES (%s, %s, %s, NOW())
-                    """,
-                        (query, 1.0, rank),
-                    )
-
-                logger.info(f"Inserted {len(default_queries)} default DCLAP search queries")
+                insert_default_text_search_queries(cur)
+                logger.info(
+                    "Inserted %d default DCLAP search queries",
+                    len(DEFAULT_TEXT_SEARCH_QUERIES),
+                )
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS music_servers (
@@ -1690,12 +1930,7 @@ def init_db():
                 "ON music_servers (is_default) WHERE is_default"
             )
             cur.execute("ALTER TABLE music_servers DROP COLUMN IF EXISTS enabled")
-            cur.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'music_servers' AND column_name = 'track_count'"
-            )
-            if not cur.fetchone():
-                cur.execute("ALTER TABLE music_servers ADD COLUMN track_count INTEGER")
+            _ensure_column(cur, 'music_servers', 'track_count', 'track_count INTEGER')
             cur.execute("SAVEPOINT ms_unique_name")
             try:
                 cur.execute(
@@ -1761,8 +1996,12 @@ def init_db():
             _seed_registry_from_legacy_config(cur)
             _drop_unconfigured_servers(cur)
             _migrate_artist_mapping_to_server_map(cur)
-            _scrub_control_chars_from_map_ids(cur)
             _migrate_playlist_server_column(cur)
+            upgraded_defaults = upgrade_stored_config_defaults(cur)
+            if upgraded_defaults:
+                logger.info(
+                    "Raised %d stored parameter(s) still holding an old default", upgraded_defaults
+                )
             removed_media_keys = purge_media_keys_from_app_config(cur)
             if removed_media_keys:
                 logger.info(
@@ -1783,24 +2022,83 @@ def init_db():
 
 
 def connect_raw(application_name=None, keepalive_idle_seconds=None,
-                keepalive_interval_seconds=None, keepalive_count=None):
+                keepalive_interval_seconds=None, keepalive_count=None,
+                read_only=False):
     idle = int(keepalive_idle_seconds or 600)
     interval = int(keepalive_interval_seconds or 30)
     count = int(keepalive_count or 3)
+    options = (
+        '{} -c tcp_keepalives_idle={} -c tcp_keepalives_interval={} '
+        '-c tcp_keepalives_count={}'.format(_CONNECT_OPTIONS, idle, interval, count)
+    )
+    if read_only:
+        options += ' -c default_transaction_read_only=on'
     kwargs = {
         'connect_timeout': 30,
         'keepalives': 1,
         'keepalives_idle': idle,
         'keepalives_interval': interval,
         'keepalives_count': count,
-        'options': '{} -c tcp_keepalives_idle={} -c tcp_keepalives_interval={} '
-                   '-c tcp_keepalives_count={}'.format(
-                       _CONNECT_OPTIONS, idle, interval, count
-                   ),
+        'options': options,
     }
     if application_name:
         kwargs['application_name'] = application_name
     return psycopg2.connect(config.DATABASE_URL, **kwargs)
+
+
+_LEGACY_AI_CHAT_ROLE = 'ai_user'
+_LEGACY_AI_CHAT_DEFAULT_PASSWORD = 'ChangeThisSecurePassword123!'
+
+
+def _legacy_ai_chat_role_login_error():
+    try:
+        psycopg2.connect(
+            config.DATABASE_URL,
+            user=_LEGACY_AI_CHAT_ROLE,
+            password=_LEGACY_AI_CHAT_DEFAULT_PASSWORD,
+            connect_timeout=10,
+        ).close()
+    except psycopg2.OperationalError as exc:
+        return ' '.join(str(exc).split())
+    return None
+
+
+def disable_legacy_ai_chat_role():
+    conn = connect_raw(application_name='audiomuse-legacy-role-check')
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rolcanlogin, rolname = current_user FROM pg_roles WHERE rolname = %s",
+                (_LEGACY_AI_CHAT_ROLE,),
+            )
+            row = cur.fetchone()
+            if row is None or not row[0] or row[1]:
+                return False
+            refused = _legacy_ai_chat_role_login_error()
+            if refused is not None:
+                logger.warning(
+                    "Legacy AI chat role %s is still login-enabled and did not accept the "
+                    "shipped default password (%s); left untouched. If it is no longer "
+                    "used, run: ALTER ROLE %s NOLOGIN",
+                    _LEGACY_AI_CHAT_ROLE, refused, _LEGACY_AI_CHAT_ROLE,
+                )
+                return False
+            try:
+                cur.execute(
+                    sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(_LEGACY_AI_CHAT_ROLE))
+                )
+            except psycopg2.errors.InsufficientPrivilege:
+                logger.warning(
+                    "Legacy AI chat role %s still accepts its shipped default password and "
+                    "this database user may not alter roles; run as a superuser: "
+                    "ALTER ROLE %s NOLOGIN",
+                    _LEGACY_AI_CHAT_ROLE, _LEGACY_AI_CHAT_ROLE,
+                )
+                return False
+            return True
+    finally:
+        conn.close()
 
 
 def _migrate_file_path_to_track_server_map(cur):
@@ -1829,57 +2127,6 @@ def _migrate_file_path_to_track_server_map(cur):
             "Moved %d file path(s) onto the default server's map rows and cleared "
             "%d shared score.file_path value(s).", moved, cleared,
         )
-
-
-_MAP_ID_SCRUB_MARKER = 'map_id_c0_scrub_v1'
-
-
-def _scrub_control_chars_from_map_ids(cur):
-    cur.execute("SELECT 1 FROM app_config WHERE key = %s", (_MAP_ID_SCRUB_MARKER,))
-    if cur.fetchone():
-        return
-    controls = ''.join(
-        chr(c) for c in (*range(0x01, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20))
-    )
-    klass = '[' + controls + ']'
-    cur.execute(
-        "DELETE FROM track_server_map t WHERE t.provider_track_id ~ %s AND ("
-        "regexp_replace(t.provider_track_id, %s, '', 'g') = '' "
-        "OR EXISTS (SELECT 1 FROM track_server_map c WHERE c.server_id = t.server_id "
-        "AND c.provider_track_id = regexp_replace(t.provider_track_id, %s, '', 'g')) "
-        "OR t.provider_track_id > (SELECT MIN(d.provider_track_id) FROM track_server_map d "
-        "WHERE d.server_id = t.server_id AND d.provider_track_id ~ %s "
-        "AND regexp_replace(d.provider_track_id, %s, '', 'g') = "
-        "regexp_replace(t.provider_track_id, %s, '', 'g')))",
-        (klass, klass, klass, klass, klass, klass),
-    )
-    dropped = cur.rowcount
-    cur.execute(
-        "UPDATE track_server_map SET provider_track_id = "
-        "regexp_replace(provider_track_id, %s, '', 'g'), updated_at = now() "
-        "WHERE provider_track_id ~ %s",
-        (klass, klass),
-    )
-    rewritten = cur.rowcount
-    cur.execute(
-        "DELETE FROM artist_server_map WHERE artist_name ~ %s OR provider_artist_id ~ %s",
-        (klass, klass),
-    )
-    artist_rows = cur.rowcount
-    cur.execute("DELETE FROM chromaprint WHERE provider_track_id ~ %s", (klass,))
-    chroma_rows = cur.rowcount
-    if dropped or rewritten or artist_rows or chroma_rows:
-        logger.warning(
-            "Scrubbed control characters from legacy map rows: %d track map ids "
-            "rewritten, %d colliding/empty track rows dropped, %d artist rows and "
-            "%d chromaprint rows removed (they re-populate on the next sweep/analysis)",
-            rewritten, dropped, artist_rows, chroma_rows,
-        )
-    cur.execute(
-        "INSERT INTO app_config (key, value) VALUES (%s, %s) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        (_MAP_ID_SCRUB_MARKER, 'done'),
-    )
 
 
 def _ensure_track_server_map_key(cur):
@@ -2017,6 +2264,46 @@ def ensure_plugins_table(conn=None):
     finally:
         if own:
             db.close()
+
+
+def insert_default_text_search_queries(cur, queries=None):
+    queries = DEFAULT_TEXT_SEARCH_QUERIES if queries is None else queries
+    for rank, query in enumerate(queries, start=1):
+        cur.execute(
+            "INSERT INTO text_search_queries (query_text, score, rank, created_at) "
+            "VALUES (%s, %s, %s, NOW())",
+            (query, 1.0, rank),
+        )
+    return len(queries)
+
+
+def ensure_text_search_queries_table():
+    db = None
+    try:
+        db = get_db()
+        with db.cursor() as cur:
+            cur.execute(_ADVISORY_LOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
+            try:
+                cur.execute(TEXT_SEARCH_QUERIES_DDL)
+                cur.execute(TEXT_SEARCH_QUERIES_RANK_INDEX_DDL)
+                db.commit()
+            finally:
+                try:
+                    db.rollback()
+                    cur.execute(_ADVISORY_UNLOCK_SQL, (_SCHEMA_ADVISORY_LOCK,))
+                except Exception:
+                    logger.exception("Failed to release the schema advisory lock")
+        db.commit()
+        logger.info("Ensured text_search_queries table exists")
+        return True
+    except Exception:
+        logger.exception("Failed to create text_search_queries table")
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                logger.debug("text_search_queries ensure rollback failed", exc_info=True)
+        return False
 
 
 _PLUGIN_META_COLUMNS = (
@@ -2453,6 +2740,103 @@ def get_active_main_task(
     return dict(active_task) if active_task else None
 
 
+def get_queue_blocking_task(conn=None):
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
+    try:
+        cur.execute(
+            "SELECT task_id, task_type, status, details "
+            "FROM task_status "
+            "WHERE status IN %s AND parent_task_id IS NULL "
+            "AND (task_type = ANY(%s) OR task_type LIKE ANY(%s)) "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (
+                non_terminal_statuses,
+                list(task_types.BATCH_GATE_TASK_TYPES),
+                _BLOCKING_TASK_TYPE_PATTERNS,
+            ),
+        )
+        active_task = cur.fetchone()
+    finally:
+        cur.close()
+    return dict(active_task) if active_task else None
+
+
+def record_cron_retry(task_type, retry_until, first_blocked_at, blocker_task_id=None, blocker_task_type=None, conn=None):
+    db = conn or get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO cron_retry "
+            "(task_type, retry_until, first_blocked_at, blocker_task_id, blocker_task_type) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (task_type) DO UPDATE SET "
+            "blocker_task_id = EXCLUDED.blocker_task_id, "
+            "blocker_task_type = EXCLUDED.blocker_task_type",
+            (task_type, retry_until, first_blocked_at, blocker_task_id, blocker_task_type),
+        )
+        db.commit()
+
+
+def bump_cron_retry(task_type, blocker_task_id=None, blocker_task_type=None, conn=None):
+    db = conn or get_db()
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE cron_retry SET attempts = attempts + 1, "
+            "blocker_task_id = %s, blocker_task_type = %s "
+            "WHERE task_type = %s",
+            (blocker_task_id, blocker_task_type, task_type),
+        )
+        db.commit()
+
+
+def list_pending_cron_retries(conn=None):
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT task_type, retry_until, attempts, first_blocked_at, blocker_task_id, blocker_task_type "
+            "FROM cron_retry ORDER BY task_type"
+        )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        cur.close()
+
+
+def cron_retry_task_already_done(cron_task_type, first_blocked_at, conn=None):
+    queue_type = {
+        'analysis': 'main_analysis',
+        'clustering': 'main_clustering',
+        'sonic_fingerprint': 'sonic_fingerprint',
+    }.get(cron_task_type)
+    if queue_type is None and task_types.matches(
+        cron_task_type, prefixes=task_types.PREFIXES
+    ):
+        queue_type = cron_task_type
+    if queue_type is None:
+        return False
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM task_status "
+            "WHERE task_type = %s AND status = %s "
+            "AND start_time >= %s)",
+            (queue_type, TASK_STATUS_SUCCESS, first_blocked_at),
+        )
+        return bool(cur.fetchone()[0])
+    finally:
+        cur.close()
+
+
+def clear_cron_retry(task_type, conn=None):
+    db = conn or get_db()
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM cron_retry WHERE task_type = %s", (task_type,))
+        db.commit()
+
+
 def get_child_tasks_from_db(parent_task_id):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -2661,19 +3045,19 @@ def like_contains_pattern(value):
 def save_map_projection(index_name, id_map, projection_array):
     conn = get_db()
     try:
+        from tasks.index_build_helpers import segment_like_pattern, store_ivf_index_segmented
+
         blob = projection_array.astype(np.float32).tobytes()
         if not blob:
             logger.info(f"Map projection '{index_name}' has no data; clearing existing store.")
             with conn.cursor() as cur:
                 cur.execute(
-                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE '\\'",
-                    (index_name, index_name.replace('_', r'\_') + r"\_%\_%"),
+                    "DELETE FROM map_projection_data WHERE index_name = %s OR index_name LIKE %s ESCAPE E'\\\\'",
+                    (index_name, segment_like_pattern(index_name)),
                 )
             conn.commit()
             return
         embedding_dim = projection_array.shape[1] if projection_array.ndim == 2 else 0
-        from tasks.index_build_helpers import store_ivf_index_segmented
-
         store_ivf_index_segmented(
             conn,
             target_table="map_projection_data",

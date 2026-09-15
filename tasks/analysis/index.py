@@ -6,14 +6,41 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Similarity index rebuilds: the visible queue task and the eight build steps.
+"""Similarity index rebuilds: the visible queue task and the nine build steps.
 
 Main Features:
 * _run_all_index_builds: audio IVF (fatal), CLAP text, lyrics, lyrics axes,
-  SemGrove, artist similarity, song map and artist map; non-fatal failures are
-  recorded through the central error registry at WARNING and the run continues.
+  SemGrove, artist similarity, song map, artist map and the Hyperbolic Explorer
+  projection backfill + tree build (computed and persisted here, worker-side,
+  exactly like the map's UMAP fit - the Flask process only ever loads the
+  persisted result via the index-reload NOTIFY, never reclusters); non-fatal
+  failures are recorded through the central error registry at WARNING and the
+  run continues.
 * rebuild_all_indexes_task: the queue entry point, reporting into task_status and
   re-raising on failure so its enqueue-time Retry policy actually fires.
+* The shared g.db connection is CLOSED between build steps. A Postgres backend
+  never returns memory to the OS while its session lives, so running all nine
+  builds on one connection made that single backend accumulate the union of
+  every step's peak: measured on a real server, one connection writing 200MB of
+  index blobs climbed to 145MB RSS and stayed there, while a fresh connection
+  per build peaked at 69MB and released it on close. Recycling costs one cheap
+  reconnect per step and keeps Postgres' idle footprint flat after an analysis.
+* Every step runs under a row_heartbeat on the task's own row. The wedged-main
+  nudge reads task_status.timestamp and nothing else, but a step is ONE opaque
+  call that writes no row while it runs, so on a big library the IVF, artist-GMM
+  or hyperbolic backfill outlived QUEUE_WEDGED_MAIN_TASK_MINUTES and had a
+  perfectly healthy analysis cancelled out from under it. The heartbeat also
+  names the running step at WARNING each time it fires, so a step that really is
+  stuck is loud rather than silent. It bumps from this process, so a worker that
+  actually dies stops bumping and reclaim still takes the row, and it is BOUNDED:
+  a build that never returns stops being propped up after several windows, or the
+  nudge could never fire and one wedged rebuild would lock out every main task.
+* After the nine builds finish, the worker issues a CHECKPOINT on its own
+  connection and closes it. Postgres only releases WAL segments and flushed
+  dirty buffers at a checkpoint, so without it the hundreds of MB written as
+  index blobs keep the WAL and buffer cache inflated after the run; forcing the
+  checkpoint (plus the per-step recycle) leaves Postgres back at its idle floor
+  once the worker's child process exits.
 """
 
 import gc
@@ -24,29 +51,57 @@ import taskqueue
 
 from flask_app import app
 from app_helper import (
-    get_db,
     build_and_store_map_projection,
     build_and_store_artist_projection,
-    TASK_STATUS_SUCCESS,
-    TASK_STATUS_FAILURE,
 )
+from database import close_db, get_db
+from config import QUEUE_WEDGED_MAIN_TASK_MINUTES
 
 from error import error_manager
 from error.error_dictionary import ERR_INDEX_BUILD
 
 from ..memory_utils import release_memory_to_os
+from ..recovery import row_heartbeat, slow_step_budget_minutes
 from .helper import make_task_reporter
 
 
 logger = logging.getLogger(__name__)
 
 
-def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
+def _recycle_db_connection():
+    try:
+        close_db()
+    except Exception:
+        logger.debug("Index-build connection recycle failed", exc_info=True)
+
+
+def _checkpoint_postgres():
+    try:
+        db = get_db()
+        try:
+            with db.cursor() as cur:
+                cur.execute("CHECKPOINT")
+            db.commit()
+        finally:
+            close_db()
+    except Exception:
+        logger.debug("Post-analysis Postgres CHECKPOINT failed", exc_info=True)
+
+
+def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_id=None):
     from ..ivf_manager import build_and_store_ivf_index
     from ..clap_text_search import build_and_store_clap_index
     from ..lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from ..sem_grove_manager import build_and_store_sem_grove_index
     from ..artist_gmm_manager import build_and_store_artist_index
+    from ..hyperbolic_manager import backfill_hyperbolic_columns, build_hyperbolic_tree_cache
+    from ..hyperbolic_index import build_and_store_hyperbolic_index
+    from ..neural_fingerprint_index import build_and_store_neural_fingerprint_index
+
+    def _build_hyperbolic():
+        backfill_hyperbolic_columns()
+        build_hyperbolic_tree_cache()
+        build_and_store_hyperbolic_index(get_db())
 
     steps = (
         ("IVF index rebuilt", "Building IVF audio index...",
@@ -65,6 +120,10 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
          lambda: build_and_store_map_projection('main_map'), False),
         ("Artist component projection rebuilt", "Building artist component projection...",
          lambda: build_and_store_artist_projection('artist_map'), False),
+        ("Hyperbolic Explorer projections rebuilt", "Building hyperbolic projections...",
+         _build_hyperbolic, False),
+        ("Neural fingerprint index rebuilt", "Building neural fingerprint index...",
+         lambda: build_and_store_neural_fingerprint_index(get_db()), False),
     )
     span = max(0, progress_end - progress_start)
 
@@ -77,28 +136,36 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
             logger.debug("Index-build progress callback failed", exc_info=True)
 
     safe_log("Rebuilding similarity indexes...", progress_start)
-    for index, (label, banner, build, fatal) in enumerate(steps):
-        safe_log(
-            f"{banner} ({index + 1}/{len(steps)})",
-            progress_start + (span * index) // len(steps),
-        )
-        try:
-            build()
-            logger.info(f"OK {label}")
-        except Exception as e:
-            error_manager.record(
-                error_manager.classify(e, ERR_INDEX_BUILD),
-                f"{label}: {e}", exc=e, logger=logger, level=logging.WARNING,
+    running = ['the index rebuild']
+    with row_heartbeat(
+        task_id, lambda: running[0],
+        stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+    ):
+        for index, (label, banner, build, fatal) in enumerate(steps):
+            running[0] = f"{label} ({index + 1}/{len(steps)})"
+            safe_log(
+                f"{banner} ({index + 1}/{len(steps)})",
+                progress_start + (span * index) // len(steps),
             )
-            if fatal:
-                raise
-        finally:
-            gc.collect()
+            try:
+                build()
+                logger.info(f"OK {label}")
+            except Exception as e:
+                error_manager.record(
+                    error_manager.classify(e, ERR_INDEX_BUILD),
+                    f"{label}: {e}", exc=e, logger=logger, level=logging.WARNING,
+                )
+                if fatal:
+                    raise
+            finally:
+                _recycle_db_connection()
+                gc.collect()
     try:
         taskqueue.publish_event('index-reload')
     except Exception as e:
         logger.warning(f'Could not publish reload message: {e}')
 
+    _checkpoint_postgres()
     release_memory_to_os()
 
 
@@ -108,45 +175,37 @@ def rebuild_all_indexes_task(parent_task_id=None):
     current_task_id = claimed_task_id or str(uuid.uuid4())
 
     with app.app_context():
-        if claimed_task_id and parent_task_id:
-            from app_helper import get_task_statuses
-            from config import TASK_STATUS_REVOKED
+        from ..task_run import TaskCancelled, cancel_guard
 
-            statuses = get_task_statuses([parent_task_id])
-            if parent_task_id not in statuses or statuses.get(parent_task_id) in (
-                TASK_STATUS_SUCCESS,
-                TASK_STATUS_FAILURE,
-                TASK_STATUS_REVOKED,
-            ):
-                logger.info(
-                    "Index rebuild %s will not start because parent %s was cancelled.",
-                    current_task_id,
-                    parent_task_id,
+        with cancel_guard(claimed_task_id, parent_task_id) as cancel:
+            cancel(force=True)
+            log_and_update = make_task_reporter(
+                current_task_id, "index_rebuild",
+                "Index rebuild started.", parent_task_id=parent_task_id,
+                prefix=f"IndexRebuild-{current_task_id}",
+            )
+
+            def report_between_builds(message, progress, **kwargs):
+                cancel()
+                return log_and_update(message, progress, **kwargs)
+
+            try:
+                _run_all_index_builds(
+                    log_fn=report_between_builds, progress_start=0, progress_end=99,
+                    task_id=current_task_id,
                 )
-                return {
-                    "status": TASK_STATUS_REVOKED,
-                    "message": "Parent analysis was cancelled.",
-                }
-        log_and_update = make_task_reporter(
-            current_task_id, "index_rebuild",
-            "Index rebuild started.", parent_task_id=parent_task_id,
-            prefix=f"IndexRebuild-{current_task_id}",
-        )
-        try:
-            _run_all_index_builds(
-                log_fn=log_and_update, progress_start=0, progress_end=99
-            )
-        except Exception as e:
-            err = error_manager.from_exception(
-                e, code=error_manager.classify(e, ERR_INDEX_BUILD), logger=logger
-            )
-            log_and_update(
-                "Index rebuild failed. Check the container logs for details.",
-                100, task_state=TASK_STATUS_FAILURE, error=err,
-            )
-            raise
-        log_and_update(
-            "All similarity indexes rebuilt.", 100, task_state=TASK_STATUS_SUCCESS
-        )
+            except TaskCancelled:
+                raise
+            except Exception as e:
+                err = error_manager.from_exception(
+                    e, code=error_manager.classify(e, ERR_INDEX_BUILD), logger=logger
+                )
+                log_and_update(
+                    "Index rebuild failed. Check the container logs for details.",
+                    log_and_update.state['progress'], error=err,
+                )
+                raise
+        message = "All similarity indexes rebuilt."
+        log_and_update(message, 100)
         logger.info("OK Index rebuild task completed successfully")
-        return {"status": "SUCCESS", "message": "All indexes rebuilt"}
+        return {"message": message}

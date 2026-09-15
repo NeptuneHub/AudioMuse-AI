@@ -10,9 +10,34 @@
 
 Run as python -m taskqueue.worker --queue high or --queue default. The
 claim is a single UPDATE whose subquery takes FOR UPDATE SKIP LOCKED, so N
-workers racing need no coordination. The job runs IN THIS PROCESS - cancelling
-means ending the process, the worker recycles after QUEUE_MAX_JOBS, and the
-ONNX models stay warm for its whole life.
+workers racing need no coordination.
+
+In the container (a non-frozen Linux process) the job runs in a FORKED CHILD
+that reports its outcome over a pipe and exits, so all the memory the job
+allocated - ONNX models, the transformers stack, numpy buffers - is returned
+to the OS the moment the job ends, exactly like the old RQ fork-per-job
+worker. The child inherits the claim by copy but only
+the parent ever touches the claim connection and the advisory lock; the child
+opens its own database connections through the task's app context and leaves
+through os._exit, so the parent's sockets are never written or closed by the
+child. A child that dies without reporting (OOM kill, segfault) fails the job
+with its signal or exit code instead of taking the whole worker down. The
+child binds itself to the parent's death (PR_SET_PDEATHSIG on Linux; a
+getppid() watchdog thread on other POSIX platforms), so a worker killed
+uncleanly cannot leave an orphaned job still writing after the task's
+advisory lock died with the parent and reclaim handed the row to another
+worker. Config is hydrated in the parent before forking so a first-success
+refresh latches in the worker instead of being thrown away with the child.
+
+Frozen native builds (Windows, macOS, Linux) run the job in the worker
+process itself (the shape the old SimpleWorker had) instead of forking:
+macOS cannot fork and keep its CoreML/Metal sessions alive, and Windows
+cannot fork at all. Any heavy analysis models the job loaded are unloaded
+again when it finishes (_unload_job_models): the sessions are dropped and
+the heap trimmed, keeping an idle worker at the library floor instead of the
+loaded-model footprint. Either way cancelling means ending the worker's
+process tree, which includes the job child, and the worker recycles after
+QUEUE_MAX_JOBS.
 
 Liveness is the advisory lock held on the task's own connection; if the process
 dies the lock dies with it, so no heartbeat is needed. ensure_hold retakes
@@ -26,21 +51,64 @@ ordering reason.
 
 Main Features:
 * Claim/drain loop that blocks on LISTEN when no work exists
-* A cancel notification ends the process tree in about 50ms
+* Fork-per-job in the container gives every byte of job memory back to the
+  OS; frozen native builds run the job in-process and unload the models
+  after each job
+* A cancel notification ends the process tree in about 50ms. The held-task check
+  and the claim share one lock, and a stopping worker claims nothing, so the kill
+  grace period can never pick up a new job that the exit then orphans
+* The claim connection is re-checked at every listener poll while a job runs:
+  one Postgres dropped mid-job is reopened and the task lock re-taken at once,
+  and a lock that meanwhile went to a reclaim ends this worker as the duplicate
+  it has become, instead of running unlocked until the job ends
 * Boot reclaims orphaned tasks bounded by QUEUE_MAX_ATTEMPTS
 * A lost connection (SQLSTATE class 08, 57Pxx, InterfaceError) requeues the row
   without charging an attempt, up to UNCHARGED_REQUEUE_LIMIT free passes,
   then charges and fails as usual
+* The queue writes EVERY terminal row and decides EVERY retry (taskqueue.retry):
+  a task that raises is requeued with a backoff until QUEUE_MAX_ATTEMPTS is
+  spent, a task that raises TaskFailed is failed at once, a task that raises
+  TaskCancelled is revoked, and a job child the kernel killed is retried like
+  any other failure. The retry is requeued only AFTER the worker has dropped
+  its hold on the task: requeue_or_fail publishes the same reclaim notice a
+  maintenance reclaim does, and on_reclaimed ends a worker whose held task and
+  attempt number match that notice, so requeueing while still holding would
+  make the worker end itself on every retry
+* The terminal row carries the message the task returned and the log its
+  progress reports built up, so the dashboard recap reads exactly as it did
+  when tasks wrote that row themselves; and because tasks used to write that
+  row through save_task_status, the worker now also records task_history and
+  collapses the finished rows to the one recap, which that path did for them.
+  The terminal row is COMMITTED first and that bookkeeping runs after it on
+  its own transactions: record_task_history rolls back on failure, and while
+  the two shared one transaction that rollback silently undid the verdict and
+  left the row RUNNING under a worker that had already moved on
+* The payload is checked against the function's signature before the call, and a
+  func outside ALLOWED_FUNCS never resolves: both are permanent failures, not
+  three wasted retries. A verdict the task declared (TaskFailed, TaskCancelled)
+  is logged as one line; the traceback is kept for the exceptions it did not
+* A declared verdict's message is the task's own recap line and is kept whole
+  (up to _VERDICT_SUMMARY_LIMIT); the text of an unexpected exception is cut at
+  _SUMMARY_LIMIT, because a traceback's first line is all the dashboard needs
+* A shared payload that is gone or no longer matches its token cannot come back
+  on a retry, so that failure is permanent too, decided here rather than by
+  making sql.SharedPayloadUnavailable a TaskFailed: sql must stay a leaf of the
+  package, and importing its sibling would lengthen the eager import chain
 """
 
+import inspect
 import logging
 import os
+import pickle
+import signal
 import sys
 import threading
 import time
 
 import queue_names
 import service_roles
+
+from cpu_budget import detect_cpu_count
 
 _QUEUE_FLAG = '--queue'
 
@@ -56,10 +124,15 @@ def _queue_from_argv(argv=None):
 
 
 def _apply_thread_caps(queue):
-    cpu_count = os.cpu_count() or 2
     if queue == queue_names.QUEUE_HIGH:
+        cpu_count, source = detect_cpu_count(
+            os.cpu_count() or 1, 1, label='High-priority worker'
+        )
         cap = max(1, cpu_count // 3)
     else:
+        cpu_count, source = detect_cpu_count(
+            os.cpu_count() or 2, 2, label='Default worker'
+        )
         cap = max(2, cpu_count // 2)
     for key in (
         'OMP_NUM_THREADS',
@@ -71,6 +144,7 @@ def _apply_thread_caps(queue):
         os.environ[key] = str(cap)
     os.environ.setdefault('GOMP_SPINCOUNT', '0')
     os.environ.setdefault('OMP_WAIT_POLICY', 'passive')
+    print(f"{queue} worker CPU thread cap = {cap} ({cpu_count} CPUs from {source})")
     return cap
 
 
@@ -82,12 +156,13 @@ if _UNPARSED_QUEUE not in queue_names.QUEUE_NAMES:
 QUEUE = _UNPARSED_QUEUE
 service_roles.declare_worker_role(force=True)
 THREAD_CAP = _apply_thread_caps(QUEUE)
-print(f"{QUEUE} worker CPU thread cap = {THREAD_CAP}")
 
 import config  # noqa: E402
+from . import retry  # noqa: E402
 from . import sql  # noqa: E402
+from .errors import TaskCancelled, TaskFailed  # noqa: E402
 from .listen import Listener  # noqa: E402
-from .process import stop_hard, sweep_stale_temp_dirs  # noqa: E402
+from .process import stop_hard, stopping_reason, sweep_stale_temp_dirs  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +170,11 @@ logger = logging.getLogger(__name__)
 APPLICATION_NAME_LIMIT = 63
 
 UNCHARGED_REQUEUE_LIMIT = 3
+
+_OPTIONAL_JOB_MODELS = (
+    ('tasks.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
+    ('lyrics', 'is_lyrics_loaded', 'unload_lyrics_models'),
+)
 
 
 def build_identity(queue, hostname, pid):
@@ -126,6 +206,7 @@ class Worker:
         self._abandoned = []
         self._uncharged = {}
         self._claim_txn = threading.Lock()
+        self._fork_jobs = hasattr(os, 'fork') and not getattr(sys, 'frozen', False)
 
     def reconnect(self):
         try:
@@ -161,22 +242,24 @@ class Worker:
             return
         if channel != sql.CHANNEL_CANCEL:
             return
-        held = self._held_task_id
-        if held is None:
-            return
-        if payload in (sql.CANCEL_ALL, held, self._held_parent_id):
-            stop_hard(f"task {held} was cancelled")
+        with self._claim_txn:
+            held = self._held_task_id
+            if held is None:
+                return
+            if payload in (sql.CANCEL_ALL, held, self._held_parent_id):
+                stop_hard(f"task {held} was cancelled")
 
     def on_reclaimed(self, payload):
         notice = sql.decode_reclaim(payload)
         if notice is None:
             return
-        held = self._held_task_id
-        if held is None or notice['task_id'] != held:
-            return
-        if notice['worker_id'] != self.identity or notice['attempts'] != self._held_attempts:
-            return
-        stop_hard(f"task {held} was reclaimed while this worker was still running it")
+        with self._claim_txn:
+            held = self._held_task_id
+            if held is None or notice['task_id'] != held:
+                return
+            if notice['worker_id'] != self.identity or notice['attempts'] != self._held_attempts:
+                return
+            stop_hard(f"task {held} was reclaimed while this worker was still running it")
 
     def on_listener_ready(self, conn):
         with self._claim_txn:
@@ -222,6 +305,12 @@ class Worker:
             stop_hard(f"task {task_id} was reclaimed while this worker's connection was down")
         return True
 
+    def on_listener_idle(self):
+        with self._claim_txn:
+            held = self._held_task_id
+            if held is not None:
+                self.ensure_hold(held)
+
     def start_listener(self):
         self._listener = Listener(
             (sql.CHANNEL_JOB, sql.CHANNEL_CANCEL, sql.CHANNEL_RECLAIM),
@@ -229,11 +318,14 @@ class Worker:
             application_name=f"{self.identity}{sql.WORKER_LISTEN_SUFFIX}",
             name=f"listen-{self.queue}",
             on_ready=self.on_listener_ready,
+            on_idle=self.on_listener_idle,
         )
         self._listener.start()
 
     def claim(self):
         with self._claim_txn:
+            if stopping_reason() is not None:
+                return None
             try:
                 with self._conn.cursor() as cur:
                     job = sql.claim(cur, self.queue, time.time(), worker_id=self.identity)
@@ -263,12 +355,7 @@ class Worker:
         return False
 
     def _requeue_charging_an_attempt(self, cur, task_id):
-        row = sql.current_row(cur, task_id)
-        if (
-            row is None
-            or row['status'] != config.TASK_STATUS_RUNNING
-            or row['worker_id'] not in (None, self.identity)
-        ):
+        if not self._still_mine(sql.current_row(cur, task_id)):
             return self._forget_abandoned(task_id)
         status = sql.requeue_or_fail(
             cur, task_id, time.time(),
@@ -384,41 +471,32 @@ class Worker:
                 stop_hard(f"recycling after {self._jobs_done} jobs")
 
     def run_job(self, job):
-        from . import resolve_func, set_current_task_id
+        from . import set_current_task_id
 
         task_id = job['task_id']
         set_current_task_id(task_id)
         logger.info(
-            "Running %s (%s) after %d worker loss(es) of an allowed %d",
-            task_id, job['func'], job['attempts'], job['max_attempts'],
+            "Running %s (%s), attempt %d; %d restart(s) allowed",
+            task_id, job['func'], job['attempts'] + 1, job['max_attempts'],
         )
         started = time.time()
-        result = None
-        try:
-            self.hydrate_config()
-            func = resolve_func(job['func'])
-            result = func(*job['args'], **self.hydrate_shared(job['kwargs']))
-        except Exception as exc:
-            logger.exception("Task %s raised", task_id)
-            outcome, summary = config.TASK_STATUS_FAIL, _error_summary(exc)
-            if _is_connectivity_error(exc):
-                logger.warning(
-                    "Task %s lost its database connection; putting its row back "
-                    "on the queue instead of failing it.", task_id,
-                )
-                outcome = None
-                if task_id not in self._abandoned:
-                    self._abandoned.append(task_id)
+        outcome, summary, result = self._execute(job)
+        if outcome is None:
+            if task_id not in self._abandoned:
+                self._abandoned.append(task_id)
         else:
-            outcome, summary = config.TASK_STATUS_SUCCESS, None
-        if outcome is not None:
             self._uncharged.pop(task_id, None)
+        verdict = retry.decide(job, outcome)
+        if outcome == retry.FAIL_RETRYABLE and verdict != retry.RETRY and stopping_reason() is None:
+            _log_retry_verdict(job, summary, config.TASK_STATUS_FAIL, 0.0)
         try:
             with self._claim_txn:
-                if outcome is not None:
-                    self.finalize(job, outcome, summary, result=result)
+                if outcome is not None and verdict != retry.RETRY:
+                    self.finalize(job, retry.row_status(outcome), summary, result=result)
                 set_current_task_id(None)
                 self._clear_held()
+                if verdict == retry.RETRY:
+                    self._requeue_for_retry(job, summary)
                 try:
                     with self._conn.cursor() as cur:
                         sql.release(cur, task_id)
@@ -427,6 +505,207 @@ class Worker:
                     logger.exception("Could not release the hold on %s", task_id)
         finally:
             logger.info("Finished %s in %.1fs", task_id, time.time() - started)
+
+    def _execute(self, job):
+        task_id = job['task_id']
+        try:
+            kwargs = self.hydrate_shared(job['kwargs'])
+        except sql.SharedPayloadUnavailable as exc:
+            return self._failure(task_id, TaskFailed(str(exc)))
+        except Exception as exc:
+            _log_raised(task_id, exc)
+            return self._failure(task_id, exc)
+        if self._fork_jobs:
+            return self._run_in_child(job, kwargs)
+        try:
+            return self._attempt(job, kwargs)
+        finally:
+            self._unload_job_models()
+
+    def _attempt(self, job, kwargs, hydrate=True):
+        task_id = job['task_id']
+        try:
+            if hydrate:
+                self.hydrate_config()
+            func = _callable_for(job, kwargs)
+            result = func(*job['args'], **kwargs)
+        except Exception as exc:
+            _log_raised(task_id, exc)
+            return self._failure(task_id, exc)
+        return config.TASK_STATUS_SUCCESS, None, result
+
+    def _failure(self, task_id, exc):
+        if _is_connectivity_error(exc):
+            logger.warning(
+                "Task %s lost its database connection; putting its row back "
+                "on the queue instead of failing it.", task_id,
+            )
+            return None, _error_summary(exc), None
+        if isinstance(exc, TaskCancelled):
+            logger.info("Task %s stopped at its cancel check: %s", task_id, exc)
+            return retry.REVOKED_BY_TASK, _error_summary(exc), None
+        if isinstance(exc, TaskFailed):
+            logger.error(
+                "Task %s failed permanently and will not be retried: %s", task_id, exc
+            )
+            return retry.FAIL_PERMANENT, _error_summary(exc), None
+        return retry.FAIL_RETRYABLE, _error_summary(exc), None
+
+    def _requeue_for_retry(self, job, summary):
+        task_id = job['task_id']
+        delay = retry.backoff_seconds(job['attempts'] + 1)
+        details = _terminal_details(config.TASK_STATUS_FAIL, summary, None)
+        for attempt in (1, 2):
+            try:
+                if self._conn is None or self._conn.closed:
+                    self.connect()
+                with self._conn.cursor() as cur:
+                    row = sql.current_row(cur, task_id)
+                    if not self._still_mine(row):
+                        (logger.error if stopping_reason() is None else logger.info)(
+                            "Not retrying %s: its row is no longer this worker's RUNNING "
+                            "row (%s), so something else already decided its fate.",
+                            task_id, row and row['status'],
+                        )
+                        self._safe_rollback()
+                        return
+                    status = sql.requeue_or_fail(
+                        cur, task_id, time.time(), details, delay_seconds=delay,
+                    )
+            except Exception:
+                self._safe_rollback()
+                if attempt == 1:
+                    logger.warning(
+                        "Could not requeue %s for a retry; retrying once on a fresh "
+                        "connection", task_id, exc_info=True,
+                    )
+                    self._drop_claim_conn()
+                    continue
+                logger.exception(
+                    "Could not requeue %s for a retry; its row stays RUNNING for "
+                    "reclaim to pick up", task_id,
+                )
+                return
+            self._safe_commit()
+            _log_retry_verdict(job, summary, status, delay)
+            return
+
+    def _still_mine(self, row):
+        return (
+            row is not None
+            and row['status'] == config.TASK_STATUS_RUNNING
+            and row['worker_id'] in (None, self.identity)
+        )
+
+    def _run_in_child(self, job, kwargs):
+        task_id = job['task_id']
+        self.hydrate_config()
+        try:
+            read_fd, write_fd = os.pipe()
+        except OSError as exc:
+            logger.exception("Could not open the report pipe for %s", task_id)
+            return retry.FAIL_RETRYABLE, _error_summary(exc), None
+        parent_pid = os.getpid()
+        try:
+            pid = os.fork()
+        except OSError as exc:
+            os.close(read_fd)
+            os.close(write_fd)
+            logger.exception("Could not fork the job process for %s", task_id)
+            return retry.FAIL_RETRYABLE, _error_summary(exc), None
+        if pid == 0:
+            self._child_main(job, kwargs, read_fd, write_fd, parent_pid)
+        os.close(write_fd)
+        payload = b''
+        try:
+            with os.fdopen(read_fd, 'rb') as pipe:
+                payload = pipe.read()
+        except Exception:
+            logger.exception("Reading the job process report for %s failed", task_id)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                logger.debug("SIGKILL to the job process failed", exc_info=True)
+        try:
+            _, status = os.waitpid(pid, 0)
+        except OSError:
+            logger.exception("Could not reap the job process for %s", task_id)
+            status = 0
+        return self._child_outcome(task_id, status, payload)
+
+    def _child_main(self, job, kwargs, read_fd, write_fd, parent_pid):
+        exit_code = 1
+        try:
+            _bind_to_parent_death(parent_pid)
+            os.close(read_fd)
+            _close_inherited_sockets(self)
+            # The parent already hydrated the worker config before forking;
+            # hydrating again here would throw that refresh away with the child.
+            payload = _encode_outcome(self._attempt(job, kwargs, hydrate=False))
+            with os.fdopen(write_fd, 'wb') as pipe:
+                pipe.write(payload)
+            exit_code = 0
+        except BaseException:
+            try:
+                logger.exception(
+                    "The job process for %s could not report back", job['task_id']
+                )
+            except BaseException:
+                pass
+        finally:
+            os._exit(exit_code)
+
+    def _child_outcome(self, task_id, status, payload):
+        if payload:
+            try:
+                outcome = pickle.loads(payload)
+            except Exception:
+                logger.exception("Could not decode the job process report for %s", task_id)
+            else:
+                if isinstance(outcome, tuple) and len(outcome) == 3:
+                    return outcome
+                logger.error("The job process report for %s is malformed", task_id)
+        reason = stopping_reason()
+        if reason is not None:
+            logger.info("Task %s: its job process was stopped by this worker (%s)", task_id, reason)
+            return retry.FAIL_RETRYABLE, f"The job process was stopped by this worker: {reason}", None
+        summary = _child_death_summary(status)
+        logger.error("Task %s: %s", task_id, summary)
+        return retry.FAIL_RETRYABLE, summary, None
+
+    def _unload_job_models(self):
+        if not self._unload_resident_models():
+            return
+        try:
+            from tasks.memory_utils import release_memory_to_os
+
+            release_memory_to_os()
+        except Exception:
+            logger.debug("Worker job-end heap trim failed", exc_info=True)
+
+    def _unload_resident_models(self):
+        if 'tasks.analysis.song' in sys.modules:
+            try:
+                from tasks.analysis.song import cleanup_optional_models
+
+                cleanup_optional_models(context="worker job end")
+            except Exception:
+                logger.debug("Worker job-end optional-model cleanup failed", exc_info=True)
+            return True
+        resident = False
+        for module_name, is_loaded_name, unload_name in _OPTIONAL_JOB_MODELS:
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            resident = True
+            try:
+                if getattr(module, is_loaded_name)():
+                    getattr(module, unload_name)()
+            except Exception:
+                logger.debug(
+                    "Worker job-end unload of %s failed", module_name, exc_info=True
+                )
+        return resident
 
     def _drop_claim_conn(self):
         try:
@@ -440,10 +719,12 @@ class Worker:
         with self._conn.cursor() as cur:
             row = sql.current_row(cur, task_id)
             if row is None or row['status'] != config.TASK_STATUS_RUNNING:
-                return False
+                _report_foreign_terminal(task_id, status, row)
+                return None
+            previous = sql.current_details(cur, task_id)
+            details = _terminal_details(status, error, result, previous=previous)
             written = sql.finish_task(
-                cur, task_id, status, _terminal_details(status, error, result),
-                time.time(), worker_id=self.identity,
+                cur, task_id, status, details, time.time(), worker_id=self.identity,
             )
         if written is None:
             logger.error(
@@ -451,7 +732,23 @@ class Worker:
                 "reclaimed and restarted elsewhere while this process was still on it.",
                 task_id,
             )
-        return True
+            return None
+        return row, details
+
+    def _record_and_collapse(self, task_id, row, status, details):
+        try:
+            from database import record_root_recap
+
+            record_root_recap(
+                self._conn, task_id, row.get('task_type'), row.get('parent_task_id'),
+                status, details,
+            )
+        except Exception:
+            logger.exception(
+                "Finished %s as %s but could not record its history or collapse the "
+                "table; the recap row itself is already committed", task_id, status,
+            )
+            self._safe_rollback()
 
     def finalize(self, job, status, error, result=None):
         task_id = job['task_id']
@@ -463,8 +760,8 @@ class Worker:
                         task_id,
                     )
                     self.connect()
-                if not self._write_terminal_row(task_id, status, error, result):
-                    return
+                recap = self._write_terminal_row(task_id, status, error, result)
+                self._conn.commit()
             except Exception:
                 self._safe_rollback()
                 if attempt == 1:
@@ -475,8 +772,9 @@ class Worker:
                     self._drop_claim_conn()
                     continue
                 logger.exception("Could not write the terminal row for %s", task_id)
-            else:
-                self._safe_commit()
+                return
+            if recap is not None:
+                self._record_and_collapse(task_id, recap[0], status, recap[1])
             return
 
     def _safe_rollback(self):
@@ -548,18 +846,122 @@ class Worker:
         return reclaim_orphans(self._conn, grace_seconds=0)
 
 
-def _final_message(status, error):
+def _callable_for(job, kwargs):
+    from . import UnknownTaskFunction, resolve_func
+
+    try:
+        func = resolve_func(job['func'])
+    except UnknownTaskFunction as exc:
+        raise TaskFailed(
+            f"{job['func']} is not a task function this worker may run; no retry "
+            "can change that"
+        ) from exc
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return func
+    try:
+        signature.bind(*job['args'], **kwargs)
+    except TypeError as exc:
+        raise TaskFailed(
+            f"{job['func']} cannot be called with the stored arguments ({exc}); no "
+            "retry can change that"
+        ) from exc
+    return func
+
+
+def _log_raised(task_id, exc):
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return
+    logger.exception("Task %s raised", task_id)
+
+
+def _log_retry_verdict(job, summary, status, delay):
+    attempt = job['attempts'] + 1
+    if status == config.TASK_STATUS_NEW:
+        logger.warning(
+            "Task %s failed on attempt %d (%s); restart %d of %d runs in %.0fs.",
+            job['task_id'], attempt, summary, attempt, job['max_attempts'], delay,
+        )
+        return
+    logger.error(
+        "Task %s failed on attempt %d (%s) with no restart left of %d; "
+        "the queue gave it %s.",
+        job['task_id'], attempt, summary, job['max_attempts'], status,
+    )
+
+
+def _report_foreign_terminal(task_id, status, row):
+    if row is None:
+        logger.info(
+            "Not finishing %s as %s: its row is gone, which is what a cancel does.",
+            task_id, status,
+        )
+        return
+    if row['status'] == config.TASK_STATUS_REVOKED:
+        logger.info(
+            "Not finishing %s as %s: it was revoked while it ran.", task_id, status,
+        )
+        return
+    if row['status'] == status:
+        logger.info(
+            "Not finishing %s again: its row is already %s, so the earlier write "
+            "landed even though its acknowledgement did not.", task_id, status,
+        )
+        return
+    if row['parent_task_id'] is not None and row['status'] == config.TASK_STATUS_FAIL:
+        logger.info(
+            "Not finishing %s as %s: its parent gave up on it and ended it as %s "
+            "before it returned.", task_id, status, row['status'],
+        )
+        return
+    logger.error(
+        "Not finishing %s as %s: its row is already %s. A task wrote its own "
+        "terminal row, so the queue could not record this attempt's verdict or "
+        "retry it; the task must return or raise instead.",
+        task_id, status, row['status'],
+    )
+
+
+def _final_message(status, error, summary=None):
+    supplied = None
+    if isinstance(summary, dict):
+        supplied = summary.get('status_message') or summary.get('message')
+    if isinstance(supplied, str) and supplied.strip():
+        return supplied
     if status == config.TASK_STATUS_SUCCESS:
         return "Task completed successfully."
+    if status == config.TASK_STATUS_REVOKED:
+        return error or "Task was cancelled."
     return error or "Task failed. Check the container logs for details."
 
 
-def _terminal_details(status, error, result):
-    details = {'message': _final_message(status, error)}
-    if error:
+def _terminal_log(previous_log, status, message):
+    if status == config.TASK_STATUS_SUCCESS:
+        return [f"Task completed successfully. Final status: {message}"]
+    from database import MAX_LOG_ENTRIES_STORED
+
+    log = list(previous_log) if isinstance(previous_log, list) else []
+    log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+    if len(log) > MAX_LOG_ENTRIES_STORED:
+        del log[:-MAX_LOG_ENTRIES_STORED]
+    return log
+
+
+def _terminal_details(status, error, result, previous=None):
+    details = dict(previous) if isinstance(previous, dict) else {}
+    if status == config.TASK_STATUS_SUCCESS:
+        details.pop('error', None)
+    summary = result if isinstance(result, dict) else None
+    if summary:
+        details.update({key: value for key, value in summary.items() if key != 'status'})
+        details['final_summary_details'] = summary
+    message = _final_message(status, error, summary)
+    details['message'] = message
+    details['status_message'] = message
+    if error and not isinstance(details.get('error'), dict):
         details['error'] = error
-    if isinstance(result, dict):
-        details['final_summary_details'] = result
+    details['log'] = _terminal_log(details.get('log'), status, message)
     return details
 
 
@@ -628,9 +1030,108 @@ def _is_connectivity_error(exc):
     )
 
 
+_SUMMARY_LIMIT = 500
+_VERDICT_SUMMARY_LIMIT = 4000
+
+
 def _error_summary(exc):
     text = str(exc).strip() or exc.__class__.__name__
-    return text[:500]
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return text[:_VERDICT_SUMMARY_LIMIT]
+    return text[:_SUMMARY_LIMIT]
+
+
+def _close_inherited_sockets(worker):
+    conns = [worker._conn]
+    listener = getattr(worker, "_listener", None)
+    if listener is not None:
+        conns.append(getattr(listener, "_conn", None))
+    for conn in conns:
+        if conn is None:
+            continue
+        try:
+            fd = conn.fileno()
+        except Exception:
+            continue
+        if not isinstance(fd, int) or fd < 0:
+            continue
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+
+
+def _encode_outcome(outcome):
+    status, summary, result = outcome
+    if not isinstance(result, dict):
+        result = None
+    try:
+        return pickle.dumps((status, summary, result))
+    except Exception:
+        logger.exception(
+            "The task result could not be pickled; reporting the outcome without it"
+        )
+        return pickle.dumps((status, summary, None))
+
+
+_PR_SET_PDEATHSIG = 1
+_PARENT_WATCHDOG_INTERVAL = 1.0
+
+
+def _bind_to_parent_death(parent_pid):
+    if sys.platform == 'linux':
+        if not _bind_linux_pdeathsig(parent_pid):
+            _watch_parent_death(parent_pid)
+    else:
+        _watch_parent_death(parent_pid)
+
+
+def _bind_linux_pdeathsig(parent_pid):
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library('c')
+        if not libc_name:
+            return False
+        ctypes.CDLL(libc_name, use_errno=True).prctl(
+            _PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0
+        )
+    except Exception:
+        logger.debug("Could not bind the job process to the worker's death", exc_info=True)
+        return False
+    if os.getppid() != parent_pid:
+        os._exit(1)
+    return True
+
+
+def _watch_parent_death(parent_pid):
+    def _watch():
+        while True:
+            try:
+                if os.getppid() != parent_pid:
+                    os._exit(1)
+            except Exception:
+                pass
+            time.sleep(_PARENT_WATCHDOG_INTERVAL)
+
+    threading.Thread(
+        target=_watch, name='worker-parent-watchdog', daemon=True
+    ).start()
+
+
+def _child_death_summary(status):
+    code = os.waitstatus_to_exitcode(status)
+    if code < 0:
+        return (
+            f"The job process died on signal {-code} before it could report back. "
+            "This usually means the system ran out of memory. "
+            "Check the container logs for details."
+        )
+    return (
+        f"The job process exited with code {code} without reporting back. "
+        "Check the container logs for details."
+    )
 
 
 def main():
@@ -670,6 +1171,14 @@ def main():
     worker.ensure_schema()
     worker.reclaim_orphans()
     worker.start_listener()
+    if worker._fork_jobs:
+        logger.info(
+            "Jobs run in a forked child process; job memory returns to the OS at job end."
+        )
+    else:
+        logger.info(
+            "Jobs run in the worker process; analysis models are unloaded after each job."
+        )
     logger.info("Worker %s ready; recycling after %s jobs.", worker.identity, worker.max_jobs)
     worker.run_forever()
 

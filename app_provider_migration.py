@@ -17,11 +17,19 @@ Main Features:
 * Full wizard flow: session start, probe test, library select, album search,
   source-path refresh, dry-run, manual match/skip, finalize, and execute, with
   status polling for the async queue jobs.
-* Target credentials stay in ``migration_session.target_creds`` (never read
-  from ``config``), so the live provider keeps working throughout; a successful
-  execute writes the new settings to ``app_config`` and restarts via
-  ``restart_manager``. ``provider_probe`` is lazily imported to avoid loading
-  ``tasks/__init__.py`` at module import.
+* Target credentials stay in ``migration_session.target_creds``, so the live
+  provider keeps working throughout; a successful execute writes them as the
+  default ``music_servers`` row and restarts via ``restart_manager``.
+  ``provider_probe`` is lazily imported to avoid loading ``tasks/__init__.py``
+  at module import.
+* Probe, session start and execute all refuse target credentials missing a
+  field the registry requires: a provider borrows the live config for a blank
+  field, so an empty form would probe fine and then wipe the default server.
+* The dry run matches every file the default server holds for a song, so the
+  extra files of a song kept as duplicates are carried to the target too.
+* A session refuses a target that is already registered as a secondary server:
+  migrating to it would leave two server rows on one library, so every batch
+  task would write it twice. That server is made the default instead.
 """
 
 import csv
@@ -36,15 +44,15 @@ from psycopg2 import sql as pgsql
 # App-level singletons (the DB connection and the task queue). Importing here keeps
 # the blueprint file self-contained - the rest of the app doesn't need to hand
 # anything in.
-from app_helper import cancel_job_and_children_recursive
+from app_helper import cancel_job_and_children_recursive, queue_busy_error_body
 from app_logging import sanitize_log_value
 from config import TASK_STATUS_PENDING, TASK_STATUS_FAILURE
 from database import (
     GLOBAL_CANCEL_EPOCH_KEY,
-    NON_BLOCKING_TASK_TYPES,
     get_app_config_value,
     get_db,
     get_active_main_task,
+    get_queue_blocking_task,
     save_task_status,
     main_task_start_lock,
 )
@@ -52,6 +60,7 @@ from tasks.provider_migration_tasks import (
     MIGRATION_TASK_TYPE,
     MIGRATION_PLANNER_TASK_TYPE,
     _ADVISORY_LOCK_KEY,
+    incomplete_creds_error,
 )
 import config
 import taskqueue
@@ -261,14 +270,16 @@ def _live_planner_job_id(cur):
 def _completed_sessions_safe_to_prune(cur):
     cur.execute(
         "SELECT id, state->>'exec_task_id', "
-        "COALESCE((state->>'restart_acknowledged')::boolean, false) "
+        "COALESCE((state->>'restart_acknowledged')::boolean, false), "
+        "state->>'restart_request_id' "
         "FROM migration_session "
         "WHERE status = 'completed'"
     )
     rows = cur.fetchall() or []
+    legacy = [row[0] for row in rows if not row[1] and not row[3]]
     job_ids = [row[1] for row in rows if row[1]]
     if not job_ids:
-        return []
+        return legacy
     try:
         jobs = _task_statuses_by_id(job_ids)
     except Exception:
@@ -276,10 +287,10 @@ def _completed_sessions_safe_to_prune(cur):
             "COULD NOT CHECK COMPLETED MIGRATION RETRIES. Keeping every completion "
             "tombstone so a delayed retry can still prove the swap was applied"
         )
-        return []
-    return [
+        return legacy
+    return legacy + [
         session_id
-        for session_id, job_id, restart_acknowledged in rows
+        for session_id, job_id, restart_acknowledged, _request_id in rows
         if restart_acknowledged
         and job_id
         and not _task_is_live(jobs.get(job_id))
@@ -567,6 +578,15 @@ def _detect_source_path_format():
 
 def _current_provider_creds():
     import config as cfg
+    from tasks.mediaserver import registry
+
+    try:
+        default = registry.get_default_server()
+    except Exception:
+        logger.exception("Could not read the default server; using the config projection")
+        default = None
+    if default and default.get('server_type'):
+        return default['server_type'].lower(), dict(default.get('creds') or {})
 
     t = (getattr(cfg, 'MEDIASERVER_TYPE', '') or '').lower()
     if t == 'jellyfin':
@@ -607,9 +627,10 @@ def _overrides_by_catalogue_id(by_provider_id):
     overrides = {}
     for provider_id in sorted(by_provider_id):
         catalogue_id = canonical_of.get(provider_id, provider_id)
-        if catalogue_id not in overrides:
-            overrides[catalogue_id] = by_provider_id[provider_id]
-    return overrides
+        path = by_provider_id[provider_id]
+        if path and path not in overrides.setdefault(catalogue_id, []):
+            overrides[catalogue_id].append(path)
+    return {catalogue_id: paths for catalogue_id, paths in overrides.items() if paths}
 
 
 def _apply_source_path_overrides(old_rows, overrides):
@@ -617,8 +638,10 @@ def _apply_source_path_overrides(old_rows, overrides):
         return old_rows
     for r in old_rows:
         real = overrides.get(r.get('item_id'))
-        if real:
-            r['file_path'] = real
+        paths = [real] if isinstance(real, str) else [p for p in (real or []) if p]
+        if paths:
+            r['file_path'] = paths[0]
+            r['file_paths'] = paths
     return old_rows
 
 
@@ -708,7 +731,7 @@ def session_start():
                 session_id:
                   type: integer
       400:
-        description: Unsupported target_type.
+        description: Unsupported target_type, or target_creds missing a field the provider requires.
       409:
         description: A migration is queued or executing.
     """
@@ -722,6 +745,13 @@ def session_start():
     ok, reason = _validate_probe_url(target_creds)
     if not ok:
         return jsonify({'error': f'target_creds url is not allowed: {reason}'}), 400
+
+    creds_error = incomplete_creds_error(target_type, target_creds)
+    if creds_error:
+        return jsonify({'error': creds_error}), 400
+    registered = _registered_secondary_server(target_type, target_creds)
+    if registered is not None:
+        return jsonify(_registered_server_error(registered)), 409
 
     import config
 
@@ -771,6 +801,49 @@ def session_start():
         row = cur.fetchone()
     db.commit()
     return jsonify({'session_id': row[0]})
+
+
+def _normalized_server_url(url):
+    return str(url or '').strip().rstrip('/').lower()
+
+
+def _registered_server_error(registered):
+    return {
+        'error': (
+            f"'{registered['name']}' is already added as a server with this address. "
+            "Make it the default server from the setup page instead of migrating to it."
+        )
+    }
+
+
+def _registered_secondary_server(target_type, target_creds):
+    from tasks.mediaserver import registry
+
+    wanted = _normalized_server_url((target_creds or {}).get('url'))
+    if not wanted:
+        return None
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute("SAVEPOINT migration_target_check")
+        try:
+            servers = list(registry.list_servers(db))
+        except Exception:
+            logger.exception("Could not list the registered servers for the migration target check")
+            with db.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT migration_target_check")
+            return None
+        with db.cursor() as cur:
+            cur.execute("RELEASE SAVEPOINT migration_target_check")
+    except Exception:
+        logger.exception("Could not isolate the migration target check")
+        return None
+    for server in servers:
+        if server.get('is_default') or server.get('server_type') != target_type:
+            continue
+        if _normalized_server_url((server.get('creds') or {}).get('url')) == wanted:
+            return server
+    return None
 
 
 def _source_provider_id_map(canonical_ids):
@@ -856,7 +929,8 @@ def session_get(session_id):
         # and the whole orphan list went out over the API verbatim.
         cur.execute(
             "SELECT id, source_type, target_type, status, "
-            "(state #- '{dry_run,matches}' #- '{source_path_overrides}' "
+            "(state #- '{dry_run,matches}' #- '{dry_run,extra_matches}' "
+            "#- '{source_path_overrides}' "
             "#- '{post_migration,orphans}') "
             "FROM migration_session WHERE id = %s",
             (session_id,),
@@ -1053,6 +1127,18 @@ def probe_test():
         return jsonify(
             {'ok': False, 'error': reason, 'path_format': 'none', 'sample_count': 0, 'warnings': []}
         ), 200
+    creds_error = incomplete_creds_error(t, creds)
+    if creds_error:
+        return jsonify(
+            {
+                'ok': False,
+                'error': creds_error,
+                'incomplete_creds': True,
+                'path_format': 'none',
+                'sample_count': 0,
+                'warnings': [],
+            }
+        ), 200
     try:
         result = provider_probe.test_connection(t, creds)
     except NotImplementedError:
@@ -1133,11 +1219,10 @@ def libraries_list():
     if session is None:
         return jsonify({'error': 'session not found'}), 404
     target_type, creds = session
-    state = _load_state(session_id) or {}
-    selected = state.get('selected_libraries')
     try:
         result = provider_probe.list_libraries(target_type, creds)
     except Exception as e:
+        selected = (_load_state(session_id) or {}).get('selected_libraries')
         logger.warning("libraries_list failed for session %s: %s", session_id, e, exc_info=True)
         return jsonify(
             {
@@ -1147,6 +1232,7 @@ def libraries_list():
                 'error': 'Failed to list libraries. Check the container logs for details.',
             }
         ), 200
+    selected = (_load_state(session_id) or {}).get('selected_libraries')
     return jsonify(
         {
             'libraries': result.get('libraries', []),
@@ -1563,10 +1649,12 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
         old_rows,
         new_tracks,
         allow_title_artist_only=allow_title_artist_only,
+        duration_tolerance=config.DURATION_TOLERANCE_SECONDS,
     )
 
     state_dry_run = {
         'matches': result['matches'],
+        'extra_matches': result.get('extra_matches') or {},
         'tier_counts': result['tier_counts'],
         'unmatched_albums': _albums_payload(result['unmatched_by_album']),
         # Full count so the wizard can warn when the rendered list is a sample.
@@ -1596,6 +1684,7 @@ def run_dry_run_core(session_id, allow_title_artist_only=False):
     return {
         'tier_counts': result['tier_counts'],
         'matched': len(result['matches']),
+        'duplicate_files': len(result.get('extra_matches') or {}),
         'unmatched': len(result['unmatched']),
         'unmatched_albums_count': len(result['unmatched_by_album']),
     }
@@ -1940,14 +2029,14 @@ def _execute_locked(db, session_id, confirmation_text):
             ), 409
         cur.execute(
             "SELECT target_type, status, "
-            "(id = (SELECT MAX(id) FROM migration_session)) "
+            "(id = (SELECT MAX(id) FROM migration_session)), target_creds "
             "FROM migration_session WHERE id = %s",
             (session_id,),
         )
         row = cur.fetchone()
     if not row:
         return jsonify({'error': 'session not found'}), 404
-    target_type, status, is_current_session = row[0], row[1], row[2]
+    target_type, status, is_current_session, raw_creds = row
 
     with db.cursor() as planning:
         if _migration_job_in_flight(planning, keys=_PLANNER_TASK_KEYS):
@@ -1977,17 +2066,21 @@ def _execute_locked(db, session_id, confirmation_text):
                 f'expected "dry_run_ready".'
             }
         ), 400
-
-    active = get_active_main_task(exclude_task_types=NON_BLOCKING_TASK_TYPES)
-    if active:
+    creds_error = incomplete_creds_error(target_type, _session_state(raw_creds))
+    if creds_error:
         return jsonify(
-            {
-                'error': 'Another task is running. Wait for it to finish before migrating.',
-                'task_id': active['task_id'],
-                'task_type': active['task_type'],
-                'status': active['status'],
-            }
-        ), 409
+            {'error': f'{creds_error} Discard this migration and start again with every field filled in.'}
+        ), 400
+    registered = _registered_secondary_server(target_type, _session_state(raw_creds))
+    if registered is not None:
+        return jsonify(_registered_server_error(registered)), 409
+
+    # A migration rewrites track_server_map the same way a sweep does, so it has
+    # to keep blocking on a live sweep too, not just the queue-guard types -
+    # the same reasoning the cleaning start already applies.
+    active = get_queue_blocking_task() or get_active_main_task(task_type='server_sweep')
+    if active:
+        return jsonify(queue_busy_error_body(active, 'the provider migration')), 409
 
     job_id = str(uuid.uuid4())
     save_task_status(
@@ -2076,7 +2169,7 @@ def execute():
                 task_id:
                   type: string
       400:
-        description: Missing backup confirmation, wrong confirmation phrase, or session not in `dry_run_ready` state.
+        description: Missing backup confirmation, wrong confirmation phrase, session not in `dry_run_ready` state, or incomplete target credentials.
       404:
         description: Session not found.
     """
@@ -2154,6 +2247,13 @@ def job_status(task_id):
                 status:
                   type: string
                   enum: [NEW, RUNNING, SUCCESS, FAIL, REVOKED]
+                message:
+                  type: string
+                  nullable: true
+                  description: |
+                    The task's own progress line. NEW after RUNNING is the
+                    worker restart the migration itself requests: the row is
+                    requeued uncharged and resumes on the fresh worker.
                 result:
                   nullable: true
                 error:
@@ -2203,6 +2303,7 @@ def job_status(task_id):
             {
                 'id': task_id,
                 'status': status,
+                'message': details.get('status_message') or details.get('message'),
                 'result': (
                     details.get('final_summary_details')
                     or details.get('result')
@@ -2516,6 +2617,7 @@ def _fetch_session_creds(session_id, *, require_plannable=False):
             )
         cur.execute(query, (session_id,))
         row = cur.fetchone()
+    db.commit()
     if not row:
         return None
     target_type, creds_raw = row
@@ -2551,18 +2653,27 @@ def _load_score_rows_as_dicts():
         with db.cursor() as cur:
             cur.execute(pgsql.SQL("SELECT {} FROM score").format(_SCORE_COLS))
             rows = cur.fetchall() or []
+        db.commit()
         return [_row_to_score_dict(r) for r in rows]
     with db.cursor() as cur:
         cur.execute(
-            "SELECT s.item_id, (SELECT p.file_path FROM track_server_map p "
+            "SELECT s.item_id, NULL, s.title, s.author, s.album, s.album_artist, "
+            "ARRAY(SELECT p.file_path FROM track_server_map p "
             "WHERE p.item_id = s.item_id AND p.server_id = %s "
-            "AND p.file_path IS NOT NULL LIMIT 1), "
-            "s.title, s.author, s.album, s.album_artist "
+            "AND p.file_path IS NOT NULL ORDER BY p.provider_track_id), s.duration "
             "FROM score s WHERE " + registry.availability_sql('s'),
             (default_id, default_id, True),
         )
         rows = cur.fetchall() or []
-    return [_row_to_score_dict(r) for r in rows]
+    db.commit()
+    loaded = []
+    for r in rows:
+        paths = [p for p in (r[6] or []) if p]
+        row = _row_to_score_dict((r[0], paths[0] if paths else None) + tuple(r[2:6]))
+        row['file_paths'] = paths
+        row['duration'] = r[7] if len(r) > 7 else None
+        loaded.append(row)
+    return loaded
 
 
 def _load_score_rows_by_ids(item_ids):
@@ -2672,15 +2783,23 @@ def _load_rows_for_album(album_key):
         album_key[0] if album_key else None,
         album_key[1] if album_key and len(album_key) > 1 else None,
     )
+    from tasks.mediaserver import registry
+
     db = get_db()
+    default = registry.get_default_server(db)
+    available = ''
+    params = (target_artist, target_album)
+    if default is not None:
+        available = " AND " + registry.availability_sql('score')
+        params = params + (default['server_id'], True)
     with db.cursor() as cur:
         cur.execute(
             pgsql.SQL(
                 "SELECT {} FROM score "
                 "WHERE COALESCE(NULLIF(album_artist, ''), author) IS NOT DISTINCT FROM %s "
-                "AND album IS NOT DISTINCT FROM %s"
+                "AND album IS NOT DISTINCT FROM %s" + available
             ).format(_SCORE_COLS),
-            (target_artist, target_album),
+            params,
         )
         rows = cur.fetchall() or []
     return [_row_to_score_dict(r) for r in rows]
@@ -2825,8 +2944,17 @@ def _mark_album_skipped(session_id, old_album_key):
 
 
 def _count_score_rows():
+    from tasks.mediaserver import registry
+
     db = get_db()
+    default = registry.get_default_server(db)
     with db.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM score")
+        if default is None:
+            cur.execute("SELECT COUNT(*) FROM score")
+        else:
+            cur.execute(
+                "SELECT COUNT(*) FROM score s WHERE " + registry.availability_sql('s'),
+                (default['server_id'], True),
+            )
         row = cur.fetchone()
     return int(row[0] or 0) if row else 0

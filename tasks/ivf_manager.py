@@ -37,6 +37,8 @@ from psycopg2.extras import DictCursor
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
+from cpu_budget import usable_cpu_count
+
 from config import (
     EMBEDDING_DIMENSION,
     INDEX_NAME,
@@ -56,6 +58,8 @@ from config import (
     IVF_LAZY_LOAD_RETRY_SECONDS,
 )
 from database import like_contains_pattern
+
+from .search_shaping import apply_artist_cap, dedup_by_content
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +135,7 @@ except Exception:
 _thread_pool = None
 _thread_pool_lock = threading.Lock()
 
-MAX_WORKER_THREADS = max(1, (os.cpu_count() or 1) - 1)
+MAX_WORKER_THREADS = max(1, (usable_cpu_count() or os.cpu_count() or 1) - 1)
 BATCH_SIZE_VECTOR_OPS = 50
 BATCH_SIZE_DB_OPS = 100
 SCORE_DETAIL_COLUMNS = 'title, author'
@@ -283,7 +287,7 @@ def load_ivf_index_for_querying(force_reload=False):
     _neighbor_result_cache.clear()
     _max_distance_cache.clear()
 
-    from app_helper import get_db
+    from database import get_db
     from .paged_ivf import load_paged_ivf_index
 
     conn = get_db()
@@ -332,7 +336,7 @@ def ensure_ivf_index_loaded():
 def build_and_store_ivf_index(db_conn=None):
     if db_conn is None:
         try:
-            from app_helper import get_db
+            from database import get_db
 
             db_conn = get_db()
         except Exception:
@@ -410,15 +414,6 @@ def _normalize_string(text: str) -> str:
     if not text:
         return ""
     return text.strip().lower()
-
-
-def _is_same_song(title1, artist1, title2, artist2):
-    norm_title1 = _normalize_string(title1)
-    norm_title2 = _normalize_string(title2)
-    norm_artist1 = _normalize_string(artist1)
-    norm_artist2 = _normalize_string(artist2)
-
-    return norm_title1 == norm_title2 and norm_artist1 == norm_artist2
 
 
 def _is_too_close(current_song, current_vector, window_songs, threshold, metric_name, details_map):
@@ -727,7 +722,7 @@ def _radius_walk_get_candidates(
     eliminate_duplicates: bool,
     mood_similarity: bool | None = None,
 ) -> list:
-    from app_helper import get_score_data_by_ids
+    from database import get_score_data_by_ids
 
     if not initial_results:
         return []
@@ -829,49 +824,6 @@ def _execute_radius_walk(n: int, candidate_data: list, eliminate_duplicates: boo
         max_songs_per_artist=MAX_SONGS_PER_ARTIST,
         get_distance_fn=get_direct_distance,
     )
-
-
-def _dedup_by_content(songs, item_details):
-    unique_songs = []
-    added_songs_details = []
-    for song in songs:
-        current_details = item_details.get(song['item_id'])
-        if not current_details:
-            continue
-
-        is_duplicate = any(
-            _is_same_song(
-                current_details['title'], current_details['author'], added['title'], added['author']
-            )
-            for added in added_songs_details
-        )
-
-        if not is_duplicate:
-            unique_songs.append(song)
-            added_songs_details.append(current_details)
-    return unique_songs
-
-
-def _apply_artist_cap(songs, author_resolver, warn_missing=False):
-    if MAX_SONGS_PER_ARTIST is None or MAX_SONGS_PER_ARTIST <= 0:
-        return songs
-
-    artist_counts = {}
-    capped = []
-    for song in songs:
-        author = author_resolver(song)
-        if not author:
-            if warn_missing:
-                logger.warning(
-                    f"Could not find author for item_id {song['item_id']} during artist deduplication. Skipping."
-                )
-            continue
-
-        current_count = artist_counts.get(author, 0)
-        if current_count < MAX_SONGS_PER_ARTIST:
-            capped.append(song)
-            artist_counts[author] = current_count + 1
-    return capped
 
 
 def _load_target_for_neighbor_search(target_item_id, get_score_data_by_ids):
@@ -988,7 +940,7 @@ def _apply_artist_cap_by_ids(songs, get_score_data_by_ids):
     track_details_list = get_score_data_by_ids(item_ids_to_check)
     details_map = {d['item_id']: {'author': d['author']} for d in track_details_list}
 
-    return _apply_artist_cap(
+    return apply_artist_cap(
         songs,
         lambda song: details_map.get(song['item_id'], {}).get('author'),
         warn_missing=True,
@@ -1086,7 +1038,7 @@ def _find_nearest_neighbors_by_id_impl(
     if ivf_index is not None:
         ivf_index.begin_request()
 
-    from app_helper import get_db, get_score_data_by_ids
+    from database import get_db, get_score_data_by_ids
 
     db_conn = get_db()
 
@@ -1166,7 +1118,7 @@ def _find_nearest_neighbors_by_vector_impl(
         ivf_index.begin_request()
     _clear_request_f32()
 
-    from app_helper import get_db
+    from database import get_db
 
     db_conn = get_db()
 
@@ -1209,10 +1161,10 @@ def _find_nearest_neighbors_by_vector_impl(
     item_ids = [r['item_id'] for r in distance_filtered_results]
     item_details = _fetch_details_map(db_conn, item_ids, SCORE_DETAIL_COLUMNS)
 
-    unique_songs_by_content = _dedup_by_content(distance_filtered_results, item_details)
+    unique_songs_by_content = dedup_by_content(distance_filtered_results, item_details)
 
     if eliminate_duplicates:
-        final_results = _apply_artist_cap(
+        final_results = apply_artist_cap(
             unique_songs_by_content,
             lambda song: (item_details.get(song['item_id']) or {}).get('author'),
         )
@@ -1255,7 +1207,7 @@ def get_max_distance_for_id(target_item_id: str):
 
 
 def get_item_id_by_title_and_artist(title: str, artist: str):
-    from app_helper import get_db
+    from database import get_db
 
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -1300,8 +1252,9 @@ def search_tracks_unified(
     item_id_filter: set | None = None,
     server_id: str | None = None,
     include_legacy_default: bool = False,
+    extra_where: tuple | None = None,
 ):
-    from app_helper import get_db
+    from database import get_db
     from psycopg2.extras import DictCursor
 
     conn = get_db()
@@ -1347,6 +1300,12 @@ def search_tracks_unified(
             id_filter_sql = f" AND item_id IN ({id_placeholders})"
             id_filter_params = list(item_id_filter)
 
+        extra_sql = ""
+        extra_params: list = []
+        if extra_where:
+            extra_sql = f" AND ({extra_where[0]})"
+            extra_params = list(extra_where[1])
+
         availability_sql = ""
         availability_params: list = []
         if server_id:
@@ -1358,6 +1317,7 @@ def search_tracks_unified(
         all_params = (
             params[: len(tokens)]
             + id_filter_params
+            + extra_params
             + availability_params
             + params[len(tokens) :]
         )
@@ -1365,7 +1325,7 @@ def search_tracks_unified(
         query = f"""
             SELECT item_id, title, author, album, album_artist
             FROM score
-            WHERE {where_sql}{id_filter_sql}{availability_sql}
+            WHERE {where_sql}{id_filter_sql}{extra_sql}{availability_sql}
             ORDER BY ({score_sql}) DESC,
                      title,
                      author,
