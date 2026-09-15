@@ -578,7 +578,7 @@ var ADVANCED_SECTIONS = [
     {
         title: 'Cleaning & Scheduled Tasks',
         items: [
-            'CLEANING_SAFETY_LIMIT', 'CLEANING_CATALOGUE', 'SWEEP_PRUNE_MIN_FETCH_RATIO',
+            'CLEANING_SAFETY_LIMIT', 'CLEANING_CATALOGUE',
             'CRON_RETRY_MAX_MINUTES', 'CRON_RETRY_INTERVAL_MINUTES'
         ]
     },

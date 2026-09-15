@@ -27,7 +27,7 @@ import math
 import threading
 import time
 
-from tasks.song_alchemy import song_alchemy
+from tasks.song_alchemy import anchor_embedding_tag, embedding_tags_match, song_alchemy
 from app_helper import attach_song_features
 import app_server_context
 import config
@@ -387,12 +387,74 @@ def _parse_anchor_exclusions(payload):
         if distance is not None:
             try:
                 distance = float(distance)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None, 'Anchor exclusion distance must be a number'
             if not math.isfinite(distance):
                 return None, 'Anchor exclusion distance must be a finite number'
         parsed.append({'vector': vector, 'distance': distance})
     return parsed, None
+
+
+def _is_finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _is_embedding_vector(value):
+    return (
+        isinstance(value, list)
+        and len(value) == int(config.EMBEDDING_DIMENSION)
+        and all(_is_finite_number(number) for number in value)
+    )
+
+
+def _parse_anchor_inclusions(payload):
+    inclusions = payload.get('inclusions')
+    if not inclusions:
+        return None, None
+    if not isinstance(inclusions, list):
+        return None, 'Anchor inclusions must be a list'
+    current = anchor_embedding_tag()
+    run_embedding = payload.get('inclusions_embedding')
+    if run_embedding is not None and not embedding_tags_match(run_embedding, current):
+        return None, (
+            'These inclusions were computed with a different embedding model. '
+            'Run the alchemy again and save the anchor from the new run.'
+        )
+    dimension = int(config.EMBEDDING_DIMENSION)
+    parsed = []
+    for entry in inclusions:
+        if not isinstance(entry, dict):
+            return None, 'Each anchor inclusion must be an object'
+        if not _is_embedding_vector(entry.get('vector')):
+            return None, f'Each anchor inclusion needs a vector of {dimension} finite numbers'
+        try:
+            weight = float(entry.get('weight', 1.0))
+        except (TypeError, ValueError, OverflowError):
+            return None, 'Anchor inclusion weight must be a number'
+        if not math.isfinite(weight) or weight < 0:
+            return None, 'Anchor inclusion weight must be a finite number, 0 or greater'
+        seed = entry.get('seed', False)
+        if not isinstance(seed, bool):
+            return None, 'Anchor inclusion seed must be true or false'
+        group = entry.get('group')
+        if group is not None and (isinstance(group, bool) or not isinstance(group, int) or group < 0):
+            return None, 'Anchor inclusion group must be a whole number, 0 or greater'
+        signature = entry.get('signature')
+        if signature is not None and not (
+            isinstance(signature, list)
+            and len(signature) == 2
+            and all(isinstance(part, str) for part in signature)
+        ):
+            return None, 'Anchor inclusion signature must be a [title, artist] pair'
+        parsed.append(
+            {'vector': entry['vector'], 'weight': weight, 'seed': seed, 'group': group, 'signature': signature}
+        )
+    return {**current, 'points': parsed}, None
 
 
 @alchemy_bp.route('/api/anchors', methods=['POST'])
@@ -402,7 +464,7 @@ def create_anchor():
     ---
     tags:
       - Alchemy
-    summary: Persist an anchor (named centroid plus exclusions) for later reuse in path-finding or alchemy.
+    summary: Persist an anchor (named centroid plus every include point and exclusion) for later reuse in path-finding or alchemy.
     requestBody:
       required: true
       content:
@@ -418,7 +480,7 @@ def create_anchor():
                 items:
                   type: number
                   format: float
-                description: Embedding vector representing the anchor.
+                description: Embedding vector representing the anchor (EMBEDDING_DIMENSION finite numbers).
               exclusions:
                 type: array
                 description: |
@@ -438,11 +500,52 @@ def create_anchor():
                       type: number
                       format: float
                       description: Exclusion radius around the vector.
+              inclusions:
+                type: array
+                description: |
+                  Every ADD point of the run being saved, not averaged (from the
+                  alchemy response `inclusions` field). When present the anchor
+                  is searched around each point instead of the single centroid,
+                  so re-runs and radios keep the geometry of the original run.
+                  The server stamps them with the current embedding model and
+                  dimension; after a model change the anchor is ignored until
+                  it is saved again.
+                items:
+                  type: object
+                  required: [vector]
+                  properties:
+                    vector:
+                      type: array
+                      items:
+                        type: number
+                        format: float
+                    weight:
+                      type: number
+                      format: float
+                      description: Relative weight of the point (default 1.0).
+                    seed:
+                      type: boolean
+                      description: True when the point is an input song, which is then kept out of the results.
+                    group:
+                      type: integer
+                      description: Index of the run input the point came from, so a re-run picks the same query points.
+                    signature:
+                      type: array
+                      items:
+                        type: string
+                      description: Lower-cased [title, artist] of a seed song, so its other copies stay out of the results too.
+              inclusions_embedding:
+                type: object
+                description: |
+                  The `inclusions_embedding` of the alchemy response the inclusions came
+                  from. When it names a different embedding model than the current one
+                  the save is refused, so a page left open across a model change cannot
+                  store old vectors under the new model.
     responses:
       200:
         description: Anchor saved.
       400:
-        description: Missing or invalid name/centroid/exclusions.
+        description: Missing or invalid name/centroid/inclusions/exclusions.
       500:
         description: Database failure.
     """
@@ -456,10 +559,18 @@ def create_anchor():
         return json_error(ERR_INVALID_REQUEST, 'Anchor name is required')
     if not centroid or not isinstance(centroid, list):
         return json_error(ERR_INVALID_REQUEST, 'Anchor centroid is required and must be a list')
+    if not _is_embedding_vector(centroid):
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f'Anchor centroid must be a list of {int(config.EMBEDDING_DIMENSION)} finite numbers',
+        )
     exclusions, exclusions_error = _parse_anchor_exclusions(payload)
     if exclusions_error:
         return json_error(ERR_INVALID_REQUEST, exclusions_error)
-    anchor = save_alchemy_anchor(name, centroid, exclusions)
+    inclusions, inclusions_error = _parse_anchor_inclusions(payload)
+    if inclusions_error:
+        return json_error(ERR_INVALID_REQUEST, inclusions_error)
+    anchor = save_alchemy_anchor(name, centroid, exclusions, inclusions=inclusions)
     if not anchor:
         return json_error(ERR_DB_QUERY, 'Failed to save anchor', http_status=500)
     return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})

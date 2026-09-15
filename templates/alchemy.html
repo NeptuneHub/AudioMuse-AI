@@ -918,6 +918,10 @@
 
                 const payload = { items: valid, n, temperature };
                 payload.subtract_distance = parseFloat(subtractSlider.value);
+                window.lastAddCentroidVector = null;
+                window.lastAlchemyExclusions = [];
+                window.lastAlchemyInclusions = [];
+                window.lastAlchemyInclusionsEmbedding = null;
 
                 const resp = await fetch("{{ url_for('alchemy_bp.alchemy_api') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const data = await readJsonBody(resp);
@@ -931,9 +935,11 @@
                 if(data.results && data.results.length > 0) {
                     window.currentResultIds = data.results.map(r => r.item_id).filter(Boolean);
                     wrapper.innerHTML = renderSongList(data.results, { metric: songDistanceBadge });
-                    // Save centroid + exclusions from alchemy for potential anchor actions (not returned in anchors list)
+                    // Save centroid + inclusions + exclusions from alchemy for potential anchor actions (not returned in anchors list)
                     window.lastAddCentroidVector = data.add_centroid_vector || null;
                     window.lastAlchemyExclusions = data.exclusions || [];
+                    window.lastAlchemyInclusions = data.inclusions || [];
+                    window.lastAlchemyInclusionsEmbedding = data.inclusions_embedding || null;
                     // Show results, playlist creator, and save-anchor control for this run
                     alchemyHasRun = true;
                     resultsSection.classList.remove('hidden');
@@ -1546,7 +1552,7 @@
                 const resp = await fetch('/api/anchors', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, centroid: window.lastAddCentroidVector, exclusions: window.lastAlchemyExclusions || [] }),
+                    body: JSON.stringify({ name, centroid: window.lastAddCentroidVector, exclusions: window.lastAlchemyExclusions || [], inclusions: window.lastAlchemyInclusions || [], inclusions_embedding: window.lastAlchemyInclusionsEmbedding }),
                 });
                 const resData = await readJsonBody(resp);
                 if (!resp.ok || resData === null || resData.error) throw new Error(apiErrorText(resData, `Failed to save anchor (HTTP ${resp.status})`));

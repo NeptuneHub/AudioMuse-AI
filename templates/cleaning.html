@@ -147,9 +147,8 @@
                     const lastTask = await response.json();
                     if (lastTask && lastTask.task_id && lastTask.task_type === 'cleaning') {
                         displayTaskStatus(lastTask);
-                        // If it was successful and has results, show them
-                        if (AudioMuseTaskStatus.isSuccess(lastTask.status || lastTask.state) &&
-                            lastTask.details?.final_summary_details) {
+                        // If it finished (even incomplete) with results, show them
+                        if (lastTask.details?.final_summary_details) {
                             displayCleaningResults(lastTask.details.final_summary_details);
                             cleaningResults.style.display = 'block';
                             saveTaskStateToStorage();
@@ -342,6 +341,10 @@
 
                                 // Handle completion based on final status
                                 const finalStatus = (finalStatusData.state || finalStatusData.status || '').toUpperCase();
+                                if (AudioMuseTaskStatus.isLive(finalStatus)) {
+                                    saveTaskStateToStorage();
+                                    return;
+                                }
                                 if (AudioMuseTaskStatus.isSuccess(finalStatus)) {
                                     handleCleaningComplete(finalStatusData);
                                 } else if (AudioMuseTaskStatus.isFailure(finalStatus)
@@ -458,6 +461,16 @@
             // RESET UI BUTTONS immediately
             resetCleaningUI();
 
+            const summary = data.details?.final_summary_details;
+            if (summary) {
+                displayCleaningResults(summary);
+                cleaningResults.style.display = 'block';
+                saveTaskStateToStorage();
+                displayTaskStatus(data);
+                const unread = (summary.failed_servers || []).join(', ') || 'a server';
+                alert(`Cleaning finished incomplete: ${unread} could not be read, so its songs were kept. Everything else was cleaned; see the summary below.`);
+                return;
+            }
             const structured = (typeof formatErrorText === 'function') ? formatErrorText(data.details?.error) : '';
             alert(`Cleaning failed: ${structured || data.details?.error_message || 'Unknown error'}`);
         }
@@ -470,13 +483,22 @@
             if ((data.unbound_mappings || 0) > 0 || (data.orphaned_tracks_count || 0) > 0 || chromaprintSplits > 0) {
                 const orphans = data.orphaned_tracks_count || 0;
                 const deleted = data.deleted_count || 0;
+                const deletedAlbums = data.deleted_albums_count || 0;
+                const remaining = data.remaining_orphans_count || 0;
+                const albumLimit = data.cleaning_safety_limit;
                 let orphanMsg;
-                if (deleted > 0) {
-                    orphanMsg = `Cleanup finished. Deleted ${deleted} track(s) that were on no server; their analysis is re-created if the files return.`;
+                if (deleted > 0 && remaining > 0) {
+                    orphanMsg = `Cleanup finished. Deleted ${deleted} track(s) from ${deletedAlbums} album(s) that were on no server; ${remaining} more are deleted by the next run(s) (at most ${albumLimit} albums per run).`;
+                } else if (deleted > 0) {
+                    orphanMsg = `Cleanup finished. Deleted ${deleted} track(s) from ${deletedAlbums} album(s) that were on no server; their analysis is re-created if the files return.`;
                 } else if (orphans > 0 && data.catalogue_deletion === false) {
                     orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server and were KEPT - catalogue cleaning is off for this run. Tick "Also delete orphans from the catalogue" to remove them.`;
+                } else if (orphans > 0 && (data.failed_servers || []).length > 0) {
+                    orphanMsg = `Cleanup finished incomplete. ${orphans} track(s) look orphaned but none were deleted because ${data.failed_servers.join(', ')} could not be read; re-run when every server is reachable.`;
+                } else if (orphans > 0 && typeof albumLimit === 'number' && albumLimit <= 0) {
+                    orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server and none were deleted because CLEANING_SAFETY_LIMIT is ${albumLimit}; raise it to delete them.`;
                 } else if (orphans > 0) {
-                    orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server but were NOT deleted this run (a server could not be read completely, or an implausibly large share looked orphaned); re-run when every server is reachable.`;
+                    orphanMsg = `Cleanup finished. ${orphans} track(s) are on no server and were not deleted this run; re-run when every server is reachable.`;
                 } else if (chromaprintSplits > 0 && (data.unbound_mappings || 0) === 0) {
                     orphanMsg = `Cleanup finished. Thanks to Chromaprint, ${chromaprintSplits} false merge(s) were split into separate songs.`;
                 } else {
@@ -493,6 +515,7 @@
                     <p><strong>Stale server mappings unbound:</strong> ${data.unbound_mappings}</p>
                     <p><strong>Catalogue tracks on no server:</strong> ${orphans}</p>
                     <p><strong>Orphaned tracks deleted:</strong> ${deleted}</p>
+                    ${remaining > 0 && deleted > 0 ? `<p><strong>Orphaned tracks left for the next run:</strong> ${remaining}</p>` : ''}
                     ${chromaprintLine}
                     <p style="color: var(--color-success); font-weight: bold;">${orphanMsg}</p>
                 `;

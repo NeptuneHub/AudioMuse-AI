@@ -19,15 +19,34 @@ Main Features:
 * Temperature controls exploration, with a zero-temperature single-song shortcut
   to plain nearest-neighbours; subtracted regions are filtered by distance and a
   2D projection of the centroid is returned for the UI.
-* Returns the subtract vectors with their exclusion radius as `exclusions` so a
-  saved anchor can persist them; ADD-ed anchors re-apply their stored exclusions
-  (each at its saved radius), which keeps anchor re-runs and radios reproducible.
+* Returns the subtract vectors with their exclusion radius as `exclusions` and
+  every ADD point, not averaged, with its weight as `inclusions` so a saved
+  anchor can persist both; an anchor used as input contributes each stored
+  include point (its centroid when it has none) on whichever side it is placed,
+  and an ADD-ed anchor also re-applies its stored exclusions at their saved
+  radius, which keeps anchor re-runs and radios equal to the original run.
+* Stored song seeds of an anchor (on either side) are kept out of the results by
+  a metric-independent same-embedding test (cosine within twice the int8
+  rounding error of the index) and by their stored [title, artist] signature,
+  mirroring how a live run drops its input songs by id and signature.
+* Every exported point carries the index of the run input it came from; when a
+  run has more points than ALCHEMY_MAX_ANCHOR_POINTS, inputs are ranked by
+  total weight, then the stored groups inside an anchor, each taking its
+  heaviest point before the remaining slots are filled by point weight, so a
+  many-point anchor competes like a single song and a re-run of a saved anchor
+  queries the same points as the run it was saved from.
+* Anchors are loaded once per run; one whose centroid size differs from the
+  embedding dimension, or whose include points are stamped with another
+  embedding model file (SHA-256 prefix) or dimension, is ignored everywhere in
+  the run with a warning. A model file that cannot be read yields no
+  fingerprint, and then only the dimension is compared.
 * Governed by config: ALCHEMY_DEFAULT_N_RESULTS (50) when the caller names no
   count, ALCHEMY_TEMPERATURE (1.0), and the metric-dependent subtract cutoffs
   ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0). There is no upper
   bound on n_results here: ALCHEMY_MAX_N_RESULTS only caps the page's input box.
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -43,6 +62,7 @@ from .ivf_manager import (
     get_vector_by_id,
     _filter_by_distance,
 )
+from .ivf_quant import I8_SCALE
 from .alchemy_projections import (
     _project_to_2d,
     _project_with_discriminant,
@@ -237,6 +257,7 @@ def _song_anchor_points(item_id) -> List[dict]:
             'source_id': item_id,
             'comp_idx': 0,
             'label': None,
+            'seed': True,
         }
     ]
 
@@ -256,21 +277,141 @@ def _artist_anchor_points(item_id) -> List[dict]:
     ]
 
 
-def _anchor_anchor_points(item_id) -> List[dict]:
-    from database import get_alchemy_anchor_by_id
+_embedding_fingerprints: dict = {}
 
-    anchor = get_alchemy_anchor_by_id(item_id)
-    if not (anchor and anchor.get('centroid') and isinstance(anchor.get('centroid'), list)):
+
+def anchor_embedding_tag() -> dict:
+    path = str(config.EMBEDDING_MODEL_PATH)
+    fingerprint = _embedding_fingerprints.get(path)
+    if fingerprint is None:
+        try:
+            digest = hashlib.sha256()
+            with open(path, 'rb') as model_file:
+                for chunk in iter(lambda: model_file.read(1 << 20), b''):
+                    digest.update(chunk)
+            fingerprint = digest.hexdigest()[:16]
+            _embedding_fingerprints[path] = fingerprint
+        except OSError as exc:
+            logger.warning(
+                "Cannot read the embedding model %s to fingerprint anchors (%s); anchors are "
+                "matched on the embedding dimension only until it is readable.",
+                path, exc,
+            )
+    return {'embedding_model_sha256': fingerprint, 'dimension': int(config.EMBEDDING_DIMENSION)}
+
+
+def embedding_tags_match(saved, current) -> bool:
+    if not isinstance(saved, dict) or saved.get('dimension') != current.get('dimension'):
+        return False
+    saved_model = saved.get('embedding_model_sha256')
+    current_model = current.get('embedding_model_sha256')
+    return saved_model is None or current_model is None or saved_model == current_model
+
+
+def anchor_embedding_problem(anchor) -> str | None:
+    dimension = int(config.EMBEDDING_DIMENSION)
+    centroid = anchor.get('centroid')
+    if not isinstance(centroid, list) or len(centroid) != dimension:
+        size = len(centroid) if isinstance(centroid, list) else 0
+        return f"its centroid has {size} values but the embedding has {dimension}"
+    stored = anchor.get('inclusions')
+    if isinstance(stored, dict):
+        current = anchor_embedding_tag()
+        saved = {key: stored.get(key) for key in current}
+        if not embedding_tags_match(saved, current):
+            return f"it was saved with embedding {saved} but the library now uses {current}"
+    return None
+
+
+def _load_usable_anchor(item_id, anchor_cache) -> dict | None:
+    key = str(item_id)
+    if key not in anchor_cache:
+        from database import get_alchemy_anchor_by_id
+
+        anchor = get_alchemy_anchor_by_id(item_id)
+        problem = anchor_embedding_problem(anchor) if anchor else None
+        if problem:
+            logger.warning(
+                "Ignoring anchor '%s' (id %s): %s. Run the alchemy again and re-save the anchor.",
+                anchor.get('name'), item_id, problem,
+            )
+            anchor = None
+        anchor_cache[key] = anchor
+    return anchor_cache[key]
+
+
+def _stored_vector(entry) -> np.ndarray | None:
+    if not isinstance(entry, dict) or not isinstance(entry.get('vector'), list):
+        return None
+    try:
+        vector = np.array(entry['vector'], dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if vector.shape != (int(config.EMBEDDING_DIMENSION),) or not np.all(np.isfinite(vector)):
+        return None
+    return vector
+
+
+def _stored_inclusion_points(stored) -> List[dict]:
+    entries = stored.get('points') if isinstance(stored, dict) else None
+    points = []
+    for entry in entries if isinstance(entries, list) else []:
+        vector = _stored_vector(entry)
+        if vector is None:
+            continue
+        try:
+            weight = float(entry.get('weight', 1.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(weight) or weight < 0:
+            continue
+        group = entry.get('group')
+        signature = entry.get('signature')
+        points.append(
+            {
+                'vector': vector,
+                'weight': weight,
+                'seed': entry.get('seed') is True,
+                'group': group if isinstance(group, int) and not isinstance(group, bool) else None,
+                'signature': tuple(signature)
+                if isinstance(signature, list)
+                and len(signature) == 2
+                and all(isinstance(part, str) for part in signature)
+                else None,
+            }
+        )
+    return points
+
+
+def _anchor_anchor_points(item_id, anchor_cache=None) -> List[dict]:
+    anchor = _load_usable_anchor(item_id, {} if anchor_cache is None else anchor_cache)
+    if anchor is None:
         return []
+    points = _stored_inclusion_points(anchor.get('inclusions'))
+    if not points:
+        points = [
+            {
+                'vector': np.array(anchor['centroid'], dtype=float),
+                'weight': 1.0,
+                'seed': False,
+                'group': None,
+                'signature': None,
+            }
+        ]
+    total = sum(p['weight'] for p in points)
     return [
         {
-            'vector': np.array(anchor['centroid'], dtype=float),
-            'weight': 1.0,
+            'vector': p['vector'],
+            'weight': p['weight'] / total if total > 0 else 1.0 / len(points),
             'source_type': 'anchor',
             'source_id': item_id,
-            'comp_idx': 0,
+            'comp_idx': idx,
             'label': anchor.get('name', 'Anchor'),
+            'seed': p['seed'],
+            'group': p['group'],
+            'signature': p['signature'],
         }
+        for idx, p in enumerate(points)
     ]
 
 
@@ -305,50 +446,94 @@ def _playlist_anchor_points(item_id) -> List[dict]:
     ]
 
 
-def _anchor_exclusion_points(items: List[dict]) -> List[dict]:
-    from database import get_alchemy_anchor_by_id
-
+def _anchor_exclusion_points(items: List[dict], anchor_cache=None) -> List[dict]:
+    anchor_cache = {} if anchor_cache is None else anchor_cache
     points = []
     for item in items or []:
         if (item.get('type') or '').lower() != 'anchor' or not item.get('id'):
             continue
-        anchor = get_alchemy_anchor_by_id(item['id'])
+        anchor = _load_usable_anchor(item['id'], anchor_cache)
         for entry in (anchor or {}).get('exclusions') or []:
-            if not isinstance(entry, dict):
-                continue
-            vector = entry.get('vector')
-            if not isinstance(vector, list) or not vector:
+            vector = _stored_vector(entry)
+            if vector is None:
                 continue
             try:
-                parsed_vector = np.array(vector, dtype=float)
                 distance = entry.get('distance')
                 if distance is not None:
                     distance = float(distance)
             except (TypeError, ValueError):
                 continue
-            points.append({'vector': parsed_vector, 'distance': distance})
+            points.append({'vector': vector, 'distance': distance})
     return points
 
 
 _ANCHOR_POINT_HANDLERS = {
     'song': _song_anchor_points,
     'artist': _artist_anchor_points,
-    'anchor': _anchor_anchor_points,
     'mood': _mood_anchor_points,
     'playlist': _playlist_anchor_points,
 }
 
 
-def _gather_anchor_points(items: List[dict]) -> List[dict]:
+def _gather_anchor_points(items: List[dict], anchor_cache=None) -> List[dict]:
+    anchor_cache = {} if anchor_cache is None else anchor_cache
     points = []
     for item in items or []:
         item_id = item.get('id')
         if not item_id:
             continue
-        handler = _ANCHOR_POINT_HANDLERS.get(item.get('type', 'song').lower())
+        item_type = item.get('type', 'song').lower()
+        if item_type == 'anchor':
+            points.extend(_anchor_anchor_points(item_id, anchor_cache))
+            continue
+        handler = _ANCHOR_POINT_HANDLERS.get(item_type)
         if handler:
             points.extend(handler(item_id))
     return points
+
+
+def _export_inclusions(points: List[dict], signature_by_id: dict) -> List[dict]:
+    groups: dict = {}
+    exported = []
+    for point in points:
+        group = groups.setdefault(_group_key(point), len(groups))
+        if point.get('source_type') == 'song':
+            signature = signature_by_id.get(point.get('source_id'))
+        else:
+            signature = point.get('signature')
+        exported.append(
+            {
+                'vector': np.asarray(point['vector'], dtype=float).tolist(),
+                'weight': float(point['weight']),
+                'seed': bool(point.get('seed')),
+                'group': group,
+                'signature': list(signature) if signature else None,
+            }
+        )
+    return exported
+
+
+def _unit_rows(matrix: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return matrix / norms
+
+
+def _drop_stored_seeds(candidate_ids: List[str], seed_vectors: List[np.ndarray], vector_of) -> List[str]:
+    positions, rows = [], []
+    for position, cid in enumerate(candidate_ids):
+        vector = vector_of(cid)
+        if vector is not None:
+            positions.append(position)
+            rows.append(np.asarray(vector, dtype=np.float64))
+    if not rows:
+        return candidate_ids
+    seeds = _unit_rows(np.vstack(seed_vectors).astype(np.float64))
+    candidates = _unit_rows(np.vstack(rows))
+    same_embedding_cosine = 1.0 - (0.5 * math.sqrt(seeds.shape[1]) / float(I8_SCALE)) ** 2
+    is_seed = (candidates @ seeds.T).max(axis=1) >= same_embedding_cosine
+    dropped = {positions[row] for row in np.flatnonzero(is_seed)}
+    return [cid for position, cid in enumerate(candidate_ids) if position not in dropped]
 
 
 def _compute_centroid_from_points(points: List[dict]) -> np.ndarray:
@@ -364,10 +549,34 @@ def _compute_centroid_from_points(points: List[dict]) -> np.ndarray:
     return np.sum(vectors_array * weights_array[:, np.newaxis], axis=0)
 
 
+def _input_key(point) -> tuple:
+    return (point.get('source_type'), str(point.get('source_id')))
+
+
+def _group_key(point) -> tuple:
+    return (point.get('source_type'), str(point.get('source_id')), point.get('group'))
+
+
 def _select_query_points(points: List[dict], max_points: int) -> List[dict]:
     if len(points) <= max_points:
         return points
-    return sorted(points, key=lambda p: p['weight'], reverse=True)[:max_points]
+    chosen = set()
+    for key_of in (_input_key, _group_key):
+        totals, leaders = {}, {}
+        for position, point in enumerate(points):
+            key = key_of(point)
+            totals[key] = totals.get(key, 0.0) + point['weight']
+            if key not in leaders or point['weight'] > points[leaders[key]]['weight']:
+                leaders[key] = position
+        for key in sorted(totals, key=lambda k: totals[k], reverse=True):
+            if len(chosen) >= max_points:
+                break
+            chosen.add(leaders[key])
+    for position in sorted(range(len(points)), key=lambda i: points[i]['weight'], reverse=True):
+        if len(chosen) >= max_points:
+            break
+        chosen.add(position)
+    return sorted((points[i] for i in sorted(chosen)), key=lambda p: p['weight'], reverse=True)
 
 
 def _multi_query_candidates(points: List[dict], n_results: int) -> List[str]:
@@ -413,10 +622,13 @@ def song_alchemy(
     if not add_items or len(add_items) < 1:
         raise ValueError("At least one item must be in the ADD set")
 
-    add_anchor_points = _gather_anchor_points(add_items)
+    anchor_cache: dict = {}
+    add_anchor_points = _gather_anchor_points(add_items, anchor_cache)
     if not add_anchor_points:
         return {"results": [], "filtered_out": [], "centroid_2d": None}
-    sub_anchor_points = _gather_anchor_points(subtract_items) if subtract_items else []
+    sub_anchor_points = (
+        _gather_anchor_points(subtract_items, anchor_cache) if subtract_items else []
+    )
 
     add_centroid = _compute_centroid_from_points(add_anchor_points)
     subtract_centroid = (
@@ -477,6 +689,14 @@ def song_alchemy(
         sub_set = set(subtract_song_ids)
         candidate_ids = [cid for cid in candidate_ids if cid not in sub_set]
 
+    anchor_seed_points = [
+        p for p in add_anchor_points + sub_anchor_points
+        if p['source_type'] == 'anchor' and p.get('seed')
+    ]
+    anchor_seed_vectors = [p['vector'] for p in anchor_seed_points]
+    if anchor_seed_vectors:
+        candidate_ids = _drop_stored_seeds(candidate_ids, anchor_seed_vectors, _vec)
+
     if subtract_distance is None:
         if config.PATH_DISTANCE_METRIC == 'angular':
             threshold = config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
@@ -485,7 +705,7 @@ def song_alchemy(
     else:
         threshold = subtract_distance
 
-    anchor_exclusions = _anchor_exclusion_points(add_items)
+    anchor_exclusions = _anchor_exclusion_points(add_items, anchor_cache)
     exclusion_checks = [(p['vector'], threshold) for p in sub_anchor_points]
     exclusion_checks.extend(
         (p['vector'], threshold if p['distance'] is None else p['distance'])
@@ -566,12 +786,10 @@ def song_alchemy(
 
         anchor_items = [item for item in items if item.get('type') == 'anchor']
         if anchor_items:
-            from database import get_alchemy_anchor_by_id
-
             for item in anchor_items:
                 anchor_id = item['id']
-                anchor = get_alchemy_anchor_by_id(anchor_id)
-                if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
+                anchor = _load_usable_anchor(anchor_id, anchor_cache)
+                if anchor is not None:
                     proj_vectors.append(np.array(anchor['centroid'], dtype=float))
                     proj_ids.append(f'__{marker}_anchor__{anchor_id}')
                     meta.append(
@@ -800,13 +1018,8 @@ def song_alchemy(
             vec = get_vector_by_id(item_id)
         elif isinstance(pid, str) and pid.startswith(('__add_anchor__', '__sub_anchor__')):
             anchor_id = pid.replace('__add_anchor__', '').replace('__sub_anchor__', '')
-            from database import get_alchemy_anchor_by_id
-
-            anchor = get_alchemy_anchor_by_id(anchor_id)
-            if anchor and anchor.get('centroid') and isinstance(anchor['centroid'], list):
-                vec = np.array(anchor['centroid'], dtype=float)
-            else:
-                vec = None
+            anchor = _load_usable_anchor(anchor_id, anchor_cache)
+            vec = np.array(anchor['centroid'], dtype=float) if anchor is not None else None
         elif isinstance(pid, str) and pid.startswith(('__add_mood__', '__sub_mood__')):
             mood_id = pid.split('__', 3)[-1]
             vec = _get_mood_centroid_vector(mood_id)
@@ -898,11 +1111,16 @@ def song_alchemy(
 
     seed_song_ids = [sid for sid in (add_song_ids + subtract_song_ids) if sid]
     seen_signatures = set()
+    signature_by_id = {}
     if seed_song_ids:
         for sd in get_score_data_by_ids(seed_song_ids):
-            seen_signatures.add(
-                ((sd.get('title') or '').strip().lower(), (sd.get('author') or '').strip().lower())
+            signature = (
+                (sd.get('title') or '').strip().lower(),
+                (sd.get('author') or '').strip().lower(),
             )
+            seen_signatures.add(signature)
+            signature_by_id[sd.get('item_id')] = signature
+    seen_signatures.update(p['signature'] for p in anchor_seed_points if p.get('signature'))
     deduped_ids = []
     for cid in candidate_ids:
         d = details_map.get(cid)
@@ -1061,5 +1279,7 @@ def song_alchemy(
             {'vector': np.asarray(vec, dtype=float).tolist(), 'distance': float(limit)}
             for vec, limit in exclusion_checks
         ],
+        'inclusions': _export_inclusions(add_anchor_points, signature_by_id),
+        'inclusions_embedding': anchor_embedding_tag(),
         'projection': projection_used,
     }

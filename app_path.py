@@ -119,6 +119,15 @@ def _resolve_anchor_to_song_id(anchor_id, other_song_id=None, pct=100):
         anchor = None
     if not anchor or not anchor.get('centroid'):
         return None
+    from tasks.song_alchemy import anchor_embedding_problem
+
+    problem = anchor_embedding_problem(anchor)
+    if problem:
+        logger.warning(
+            "Anchor id %s cannot be a path endpoint: %s. Run the alchemy again and re-save it.",
+            anchor_id, problem,
+        )
+        return None
     try:
         centroid = anchor['centroid']
         if not isinstance(centroid, list):
