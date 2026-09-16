@@ -279,6 +279,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'SUPERVISORCTL_CMD',
     'SUPERVISOR_CONF',
     'DISABLE_FLASK_RESTART',
+    'ALCHEMY_ANCHOR_MAX_STORED_POINTS',
     # Per-endpoint result-count defaults. These DO reach the UI: each search page
     # renders one of them into its count input's value= attribute, so they are the
     # number the box starts on as well as the fallback for a direct API caller that
@@ -1456,6 +1457,7 @@ ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DIS
 ALCHEMY_PLAYLIST_MAX_SONGS = int(os.environ.get("ALCHEMY_PLAYLIST_MAX_SONGS", "500"))
 ALCHEMY_PLAYLIST_MAX_CENTROIDS = int(os.environ.get("ALCHEMY_PLAYLIST_MAX_CENTROIDS", "10"))
 ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"))
+ALCHEMY_ANCHOR_MAX_STORED_POINTS = 50 * ALCHEMY_MAX_ANCHOR_POINTS
 
 
 # --- Other Feature Labels (computed via CLAP text-audio similarity) ---
@@ -1834,6 +1836,7 @@ def _apply_db_overrides():
                     globals()[_field] = _ms_creds.get(_cred_key, '') or ''
             DB_DEFAULT_SERVER_PROJECTED = True
 
+        globals()['ALCHEMY_ANCHOR_MAX_STORED_POINTS'] = 50 * globals()['ALCHEMY_MAX_ANCHOR_POINTS']
         HEADERS = _compute_headers()
         DB_OVERRIDES_LOADED = True
     except Exception:

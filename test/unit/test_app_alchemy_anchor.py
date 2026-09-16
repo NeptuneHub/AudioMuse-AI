@@ -269,6 +269,50 @@ class TestCreateAnchorInclusionsValidation:
         }
 
     @patch('database.save_alchemy_anchor')
+    def test_points_over_the_ceiling_keep_half_per_side_and_still_save(self, mock_save, client, monkeypatch):
+        monkeypatch.setattr(config, 'ALCHEMY_ANCHOR_MAX_STORED_POINTS', 4)
+        mock_save.return_value = {'id': 3, 'name': 'A'}
+        inclusions = [
+            {'vector': VECTOR_A, 'weight': 0.2},
+            {'vector': VECTOR_A, 'weight': 0.9},
+            {'vector': VECTOR_A, 'weight': 0.5},
+        ]
+        exclusions = [{'vector': [0.0, float(i)]} for i in range(3)]
+        response = client.post(
+            '/api/anchors',
+            json={'name': 'A', 'centroid': CENTROID, 'inclusions': inclusions, 'exclusions': exclusions},
+        )
+        assert response.status_code == 200
+        assert response.get_json()['dropped_points'] == {'inclusions': 1, 'exclusions': 1}
+        saved_exclusions = mock_save.call_args.args[2]
+        saved_inclusions = mock_save.call_args.kwargs['inclusions']
+        assert [e['vector'] for e in saved_exclusions] == [[0.0, 0.0], [0.0, 1.0]], 'first exclusions kept'
+        assert [p['weight'] for p in saved_inclusions['points']] == [0.9, 0.5], 'heaviest points kept'
+
+    @patch('database.save_alchemy_anchor')
+    def test_points_within_the_ceiling_are_all_stored_whatever_the_split(self, mock_save, client, monkeypatch):
+        monkeypatch.setattr(config, 'ALCHEMY_ANCHOR_MAX_STORED_POINTS', 4)
+        mock_save.return_value = {'id': 3, 'name': 'A'}
+        response = client.post(
+            '/api/anchors',
+            json={
+                'name': 'A', 'centroid': CENTROID,
+                'inclusions': [{'vector': VECTOR_A, 'weight': 0.1 * (i + 1)} for i in range(3)],
+                'exclusions': [{'vector': [0.0, 1.0]}],
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json()['dropped_points'] == {'inclusions': 0, 'exclusions': 0}
+        assert len(mock_save.call_args.kwargs['inclusions']['points']) == 3
+        assert len(mock_save.call_args.args[2]) == 1
+        response = client.post(
+            '/api/anchors',
+            json={'name': 'A', 'centroid': CENTROID, 'inclusions': [{'vector': VECTOR_A} for _ in range(4)]},
+        )
+        assert response.status_code == 200
+        assert len(mock_save.call_args.kwargs['inclusions']['points']) == 4
+
+    @patch('database.save_alchemy_anchor')
     def test_inclusions_from_a_run_under_another_model_are_refused(self, mock_save, client):
         stale = {**anchor_embedding_tag(), 'embedding_model_sha256': 'another-model'}
         response = client.post(

@@ -1879,6 +1879,9 @@ class TestSweepAlignment:
 
         score_update = next(sql for sql, _p in executed if 'UPDATE score' in sql)
         assert 'file_path' not in score_update
+        order_by = score_update.split('ORDER BY', 1)[1]
+        assert 'CASE m.match_tier' in order_by, 'the strongest-tier file must feed the metadata refresh'
+        assert order_by.index('CASE m.match_tier') < order_by.index('m.provider_track_id')
 
         map_update = next(
             sql for sql, _p in executed if 'UPDATE track_server_map' in sql
@@ -2383,6 +2386,56 @@ class TestSweepAlignment:
             MagicMock(), lambda *a, **k: None, 5, 95, lambda: None,
         )
         assert stored == {'s1': 1}
+
+    def test_an_empty_fetch_from_a_mapped_server_fails_that_server_instead_of_counting_zero(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: {'nav1', 'nav2'})
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: [])
+        stored = {}
+        monkeypatch.setattr(
+            sync, '_store_server_track_count',
+            lambda db, sid, count: stored.update({sid: count}),
+        )
+        pruned = []
+        monkeypatch.setattr(
+            sync, 'prune_stale_mappings',
+            lambda db, sid, present, **k: pruned.append(sid) or 0,
+        )
+
+        with pytest.raises(RuntimeError, match=r'N1 returned no tracks while the catalogue still holds songs for it \(2 mapped\)'):
+            sync._sweep_one(
+                {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+                MagicMock(), lambda *a, **k: None, 5, 95, lambda: None, full_refresh=True,
+            )
+
+        assert stored == {}, 'a failed lookup must not overwrite the stored track count with 0'
+        assert pruned == []
+
+    def test_an_empty_fetch_from_the_unmapped_default_server_fails_it_too(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 3)
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: [])
+        stored = {}
+        monkeypatch.setattr(
+            sync, '_store_server_track_count',
+            lambda db, sid, count: stored.update({sid: count}),
+        )
+
+        with pytest.raises(RuntimeError, match='returned no tracks while the catalogue still holds songs'):
+            sync._sweep_one(
+                {'server_id': 's0', 'server_type': 'navidrome', 'name': 'Main', 'creds': {}, 'is_default': True},
+                MagicMock(), lambda *a, **k: None, 5, 95, lambda: None, full_refresh=True,
+            )
+
+        assert stored == {}
 
     def test_a_small_fetch_still_prunes_with_no_ratio_guard(self, monkeypatch):
         from tasks import multiserver_sync as sync

@@ -203,8 +203,8 @@ def _acquire_backup_create_lock():
     except FileNotFoundError:
         pass
     except OSError:
-        logger.exception("Could not inspect the backup lock; failing closed.")
-        return False
+        logger.exception("Could not inspect the backup lock in %s.", BACKUP_DIR)
+        return None
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
@@ -213,8 +213,8 @@ def _acquire_backup_create_lock():
     except FileExistsError:
         return False
     except OSError:
-        logger.exception("Could not take the backup lock; failing closed.")
-        return False
+        logger.exception("Could not take the backup lock: %s is not writable.", BACKUP_DIR)
+        return None
 
 
 def _release_backup_create_lock():
@@ -731,11 +731,24 @@ def create_backup():
                 error:
                   type: string
     """
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    if not _acquire_backup_create_lock():
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+    except OSError:
+        logger.exception("Backup directory %s cannot be created", BACKUP_DIR)
+        held = None
+    else:
+        held = _acquire_backup_create_lock()
+    if held is None:
+        return json_error(
+            ERR_BACKUP_FAILED,
+            'The backup directory is not writable, so no backup can be created. '
+            'Check the container logs.',
+        )
+    if not held:
         return json_error(
             ERR_CONFLICT,
-            'A backup is already being created. Wait for it to finish, then download it.',
+            'A backup is already being created. Wait for it to finish; '
+            'starting again afterwards replaces it with a fresh dump.',
         )
     try:
         return _create_backup_locked()

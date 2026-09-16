@@ -370,12 +370,44 @@ def list_anchors():
         )
 
 
-def _parse_anchor_exclusions(payload):
+def _anchor_point_allowance(payload):
+    cap = int(config.ALCHEMY_ANCHOR_MAX_STORED_POINTS)
+    total = sum(
+        len(payload.get(key)) for key in ('inclusions', 'exclusions')
+        if isinstance(payload.get(key), list)
+    )
+    return None if total <= cap else cap // 2
+
+
+def _dropped_anchor_points(payload, limit):
+    dropped = {'inclusions': 0, 'exclusions': 0}
+    if limit is None:
+        return dropped
+    for key in dropped:
+        value = payload.get(key)
+        if isinstance(value, list):
+            dropped[key] = max(0, len(value) - limit)
+    return dropped
+
+
+def _heaviest_first(entries, limit):
+    def weight_of(entry):
+        try:
+            return float(entry.get('weight', 1.0)) if isinstance(entry, dict) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    return sorted(entries, key=weight_of, reverse=True)[:limit]
+
+
+def _parse_anchor_exclusions(payload, limit=None):
     exclusions = payload.get('exclusions')
     if not exclusions:
         return None, None
     if not isinstance(exclusions, list):
         return None, 'Anchor exclusions must be a list'
+    if limit is not None:
+        exclusions = exclusions[:limit]
     parsed = []
     for entry in exclusions:
         if not isinstance(entry, dict):
@@ -412,12 +444,14 @@ def _is_embedding_vector(value):
     )
 
 
-def _parse_anchor_inclusions(payload):
+def _parse_anchor_inclusions(payload, limit=None):
     inclusions = payload.get('inclusions')
     if not inclusions:
         return None, None
     if not isinstance(inclusions, list):
         return None, 'Anchor inclusions must be a list'
+    if limit is not None:
+        inclusions = _heaviest_first(inclusions, limit)
     current = anchor_embedding_tag()
     run_embedding = payload.get('inclusions_embedding')
     if run_embedding is not None and not embedding_tags_match(run_embedding, current):
@@ -564,16 +598,25 @@ def create_anchor():
             ERR_INVALID_REQUEST,
             f'Anchor centroid must be a list of {int(config.EMBEDDING_DIMENSION)} finite numbers',
         )
-    exclusions, exclusions_error = _parse_anchor_exclusions(payload)
+    limit = _anchor_point_allowance(payload)
+    exclusions, exclusions_error = _parse_anchor_exclusions(payload, limit)
     if exclusions_error:
         return json_error(ERR_INVALID_REQUEST, exclusions_error)
-    inclusions, inclusions_error = _parse_anchor_inclusions(payload)
+    inclusions, inclusions_error = _parse_anchor_inclusions(payload, limit)
     if inclusions_error:
         return json_error(ERR_INVALID_REQUEST, inclusions_error)
     anchor = save_alchemy_anchor(name, centroid, exclusions, inclusions=inclusions)
     if not anchor:
         return json_error(ERR_DB_QUERY, 'Failed to save anchor', http_status=500)
-    return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}})
+    dropped = _dropped_anchor_points(payload, limit)
+    if dropped['inclusions'] or dropped['exclusions']:
+        logger.warning(
+            "Anchor %s kept the %s heaviest include points and the first %s exclusions; "
+            "%s and %s were dropped over the %s-point ceiling.",
+            anchor['id'], limit, limit, dropped['inclusions'], dropped['exclusions'],
+            config.ALCHEMY_ANCHOR_MAX_STORED_POINTS,
+        )
+    return jsonify({'anchor': {'id': anchor['id'], 'name': anchor['name']}, 'dropped_points': dropped})
 
 
 @alchemy_bp.route('/api/anchors/<int:anchor_id>', methods=['DELETE'])

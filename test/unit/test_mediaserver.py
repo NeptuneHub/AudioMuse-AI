@@ -1700,6 +1700,44 @@ class TestNavidromeGetAllSongsApplyFilter:
         with pytest.raises(RuntimeError, match='folder 1'):
             get_all_songs(user_creds={'url': 'http://nav', 'user': 'u', 'password': 'p'}, apply_filter=True)
 
+    @patch('tasks.mediaserver.navidrome._get_target_music_folder_ids', return_value={'1'})
+    @patch('tasks.mediaserver.navidrome._navidrome_request_ex')
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_a_failed_album_read_raises_instead_of_returning_a_partial_catalogue(
+        self, mock_request, mock_request_ex, _folders
+    ):
+        from tasks.mediaserver.navidrome import get_all_songs
+
+        albums = [{'id': 'al1', 'name': 'Album 1'}, {'id': 'al2', 'name': 'Album 2'}]
+        mock_request.return_value = {'albumList2': {'album': albums}}
+        mock_request_ex.side_effect = [
+            ({'album': {'id': 'al1', 'song': [{'id': 's1', 'title': 't', 'path': 'a/1.flac'}]}}, None),
+            (None, {'code': 0, 'message': 'connection reset'}),
+        ]
+
+        with pytest.raises(RuntimeError, match='album al2'):
+            get_all_songs(user_creds={'url': 'http://nav', 'user': 'u', 'password': 'p'}, apply_filter=True)
+
+        assert [c.args[0] for c in mock_request_ex.call_args_list] == ['getAlbum', 'getAlbum']
+
+    @patch('tasks.mediaserver.navidrome._get_target_music_folder_ids', return_value={'1', '2'})
+    @patch('tasks.mediaserver.navidrome._navidrome_request_ex')
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_the_folder_filtered_listing_uses_the_given_credentials(self, mock_request, mock_request_ex, _folders):
+        from tasks.mediaserver.navidrome import get_all_songs
+
+        mock_request.return_value = {'albumList2': {'album': [{'id': 'al1', 'name': 'Album 1'}]}}
+        mock_request_ex.return_value = ({'album': {'id': 'al1', 'song': [{'id': 's1', 'title': 't'}]}}, None)
+        creds = {'url': 'http://target:4533', 'user': 'u', 'password': 'p'}
+
+        songs = get_all_songs(user_creds=creds, apply_filter=True)
+
+        assert len(songs) == 2
+        listing_calls = [c for c in mock_request.call_args_list if c.args[0] == 'getAlbumList2']
+        assert len(listing_calls) == 2
+        for c in listing_calls + mock_request_ex.call_args_list:
+            assert c.kwargs.get('user_creds') == creds, 'an unregistered target has no bound server to fall back on'
+
     @patch('tasks.mediaserver.navidrome._navidrome_request')
     def test_an_empty_last_page_is_the_normal_end_of_the_listing(self, mock_request):
         from tasks.mediaserver.navidrome import get_all_songs

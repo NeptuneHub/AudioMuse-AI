@@ -50,7 +50,7 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   clean_catalogue=True, rebuild_calls=None,
                   chromaprint_split_result=None, current_job=None,
                   task_info=None, album_by_id=None, mapped_by_server=None,
-                  unmapped_ids=None, deleted_calls=None):
+                  unmapped_ids=None, deleted_calls=None, title_by_id=None):
     from tasks import cleaning
     from tasks import multiserver_sync
 
@@ -58,6 +58,7 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
     pruned_calls = []
     authors = author_by_id or {}
     albums = album_by_id or {}
+    titles = title_by_id or {}
     mapped = mapped_by_server or {}
     deletes = deleted_calls if deleted_calls is not None else []
 
@@ -80,7 +81,7 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
         if sql and sql.startswith('SELECT item_id, title, author, album, album_artist FROM score'):
             return [
                 (
-                    item_id, f'Title {item_id}',
+                    item_id, titles.get(item_id, f'Title {item_id}'),
                     authors.get(item_id, f'Artist {item_id}'),
                     albums.get(item_id, f'Album {item_id}'), None,
                 )
@@ -521,6 +522,30 @@ class TestCleaningOrphanHandling:
         assert result['orphaned_albums_count'] == 2
         assert result['remaining_orphans_count'] == 1
         assert [a['album'] for a in result['orphaned_albums']] == ['Big']
+
+    def test_untagged_orphans_group_per_artist_under_unknown_album(self, monkeypatch):
+        from tasks import cleaning
+
+        monkeypatch.setattr(cleaning, 'CLEANING_SAFETY_LIMIT', 1)
+        deleted = []
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True)],
+            tracks_by_server={'s1': [{'id': 'j1'}]},
+            reverse_by_server={'s1': {'j1': 'fp_1'}},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4'},
+            author_by_id={'fp_2': 'Band', 'fp_3': 'Band', 'fp_4': 'Solo'},
+            album_by_id={'fp_2': None, 'fp_3': None, 'fp_4': ''},
+            title_by_id={'fp_2': None, 'fp_3': None, 'fp_4': None},
+            deleted_calls=deleted,
+        )
+        assert sorted(deleted) == ['fp_2', 'fp_3'], 'the untagged pile of one artist is one album'
+        assert result['deleted_albums_count'] == 1
+        assert result['orphaned_albums_count'] == 2
+        assert result['remaining_orphans_count'] == 1
+        assert result['orphaned_albums'][0]['album'] == 'Unknown Album'
+        assert result['orphaned_albums'][0]['artist'] == 'Band'
+        assert not any('fp_' in a['album'] or 'fp_' in a['artist'] for a in result['orphaned_albums'])
 
 
 class TestCleaningLegacyFallback:

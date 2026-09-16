@@ -678,6 +678,8 @@ class TestSongAlchemy:
 
         assert result['results'] == []
         mock_dependencies['multi_query_ids'].assert_not_called()
+        assert [(a['id'], a['name']) for a in result['ignored_anchors']] == [(7, 'Anchor 7')]
+        assert result['ignored_anchors'][0]['problem'].startswith('it was saved with embedding')
 
     def test_song_alchemy_mismatched_anchor_drops_its_exclusions_too(self, mock_dependencies):
         anchor = self._tagged_anchor(
@@ -703,6 +705,7 @@ class TestSongAlchemy:
         assert result['exclusions'] == []
         assert [p for p in result['add_points'] if p.get('type') == 'anchor'] == []
         assert loader.call_count == 1
+        assert [a['id'] for a in result['ignored_anchors']] == [7]
 
     def test_ignored_anchor_warning_cannot_forge_log_lines(self, mock_dependencies, caplog):
         anchor = {'id': 7, 'name': 'evil\nFAKE ERROR line', 'centroid': [0.5, 0.5, 0.5], 'exclusions': None}
@@ -726,6 +729,7 @@ class TestSongAlchemy:
 
         assert result['results'] == []
         mock_dependencies['multi_query_ids'].assert_not_called()
+        assert result['ignored_anchors'][0]['problem'].startswith('its centroid has 3 values')
 
     def test_song_alchemy_loads_each_anchor_once_per_run(self, mock_dependencies):
         anchor = self._tagged_anchor([{'vector': [1.0, 0.0], 'weight': 1.0}])

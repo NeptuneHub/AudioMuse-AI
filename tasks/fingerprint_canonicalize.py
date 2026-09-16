@@ -216,7 +216,9 @@ def _confirm_slice(fetch, ids, left_slice, right_slice, duration_of):
                 "FROM track_server_map m JOIN chromaprint c "
                 "ON c.server_id = m.server_id "
                 "AND c.provider_track_id = m.provider_track_id "
-                "WHERE m.item_id = ANY(%s) AND c.fingerprint IS NOT NULL",
+                "WHERE m.item_id = ANY(%s) AND c.fingerprint IS NOT NULL "
+                "ORDER BY m.item_id, " + registry.match_tier_rank_sql('m.match_tier')
+                + ", m.provider_track_id",
                 (wanted,),
             )
             for item_id, blob in fetch.fetchall():

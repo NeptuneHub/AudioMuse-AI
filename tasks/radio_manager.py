@@ -31,6 +31,8 @@ Main Features:
 
 import logging
 
+from app_logging import sanitize_log_value
+
 from .song_alchemy import song_alchemy
 from .mediaserver import create_or_replace_playlist, create_playlist
 
@@ -91,6 +93,13 @@ def run_radio_playlists(server_scope="all", report=None):
                             if row.get('item_id')
                         ]
                         if not item_ids:
+                            ignored = outcome.get('ignored_anchors') or []
+                            if ignored:
+                                raise ValueError(
+                                    f"anchor '{sanitize_log_value(str(ignored[0].get('name')))}' "
+                                    f"was ignored: {sanitize_log_value(str(ignored[0].get('problem')))}. "
+                                    "Run the alchemy again and re-save the anchor."
+                                )
                             raise ValueError("no tracks available on this server")
                         try:
                             if create_or_replace_playlist(playlist_name, item_ids) is None:

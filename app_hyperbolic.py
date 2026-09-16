@@ -511,16 +511,20 @@ def hyperbolic_tree_api():
         # a server already sees only that server's genres/subgenres/clusters.
         server_id = app_server_context.resolve_request_server_id()
         node, _flat = build_hyperbolic_tree(node_id, server_id=server_id)
-        if node.get("leaf"):
-            tree = tree_for_server(server_id)
-            tree_nodes = tree.get("nodes") or {}
-            tree_flat_ids = tree.get("flat_ids") or {}
-            subtree_ids = _tree_subtree_ids(node["id"], tree_nodes, tree_flat_ids)
-            mapping = app_server_context.translate_ids_for_request(subtree_ids)
+        tree = tree_for_server(server_id)
+        tree_nodes = tree.get("nodes") or {}
+        tree_flat_ids = tree.get("flat_ids") or {}
+        is_leaf = bool(node.get("leaf"))
+        if is_leaf:
+            wanted_ids = _tree_subtree_ids(node["id"], tree_nodes, tree_flat_ids)
+        else:
+            wanted_ids = _payload_track_ids(node)
+        if wanted_ids or is_leaf:
+            mapping = app_server_context.translate_ids_for_request(wanted_ids)
             node = _translate_tree_ids(
                 node, mapping,
                 tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,
-                present_ids=set(mapping),
+                present_ids=set(mapping) if is_leaf else None,
             )
         if node is None:
             node = {
@@ -659,6 +663,19 @@ def _tree_subtree_ids(node_id, nodes, flat_ids):
     return ids
 
 
+def _payload_track_ids(node):
+    ids = set()
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        if current.get("type") == "track" and current.get("id"):
+            ids.add(current["id"])
+        stack.extend(current.get("items") or [])
+    return ids
+
+
 def _subtree_has_present_track(n, present_ids, tree_nodes, tree_flat_ids):
     stack = [n.get("id")]
     seen = set()
@@ -681,7 +698,10 @@ def _translate_track_node(n, mapping):
     translated = mapping.get(n["id"])
     if translated is None:
         return None
-    return {**n, "id": translated}
+    node = {**n, "id": translated}
+    if str(node.get("name") or "").startswith("fp_"):
+        node["name"] = translated
+    return node
 
 
 def _translate_folder_node(n, mapping, tree_nodes, tree_flat_ids, present_ids):

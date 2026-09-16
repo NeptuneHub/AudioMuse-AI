@@ -410,9 +410,9 @@ def _refresh_mapped_metadata(db, server_id):
         "  FROM track_server_map m "
         "  JOIN sweep_track_meta i ON i.provider_track_id = m.provider_track_id "
         "  WHERE m.server_id = %s "
-        "  ORDER BY m.item_id, m.provider_track_id"
+        "  ORDER BY m.item_id, {}, m.provider_track_id"
         ") i WHERE s.item_id = i.item_id AND ({})"
-    ).format(set_parts, changed_parts)
+    ).format(set_parts, pgsql.SQL(registry.match_tier_rank_sql('m.match_tier')), changed_parts)
     cur = db.cursor()
     try:
         cur.execute(query, (server_id,))
@@ -488,9 +488,16 @@ def _sweep_one(server, db, report, base, span, cancel, task_id=None,
 
     target_total = len(target_tracks)
     present_ids = {str(t['id']) for t in target_tracks if t.get('id')}
+    already_mapped = _already_mapped_ids(db, server_id)
+    if not present_ids and (already_mapped or (server.get('is_default') and total_local)):
+        raise RuntimeError(
+            f"{server['name']} returned no tracks while the catalogue still holds songs for it "
+            f"({len(already_mapped)} mapped); an empty list is what a failed library lookup "
+            "returns, so nothing was aligned, pruned or counted for it. Remove and re-add the "
+            "server if its library really is empty now."
+        )
     artist_maps = _collect_artist_maps(target_tracks)
     _stage_track_metadata(db, target_tracks)
-    already_mapped = _already_mapped_ids(db, server_id)
 
     def _drain_candidates(tracks):
         while tracks:

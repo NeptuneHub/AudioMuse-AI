@@ -323,6 +323,9 @@ def anchor_embedding_problem(anchor) -> str | None:
     return None
 
 
+_IGNORED_ANCHORS_KEY = '__ignored_anchors__'
+
+
 def _load_usable_anchor(item_id, anchor_cache) -> dict | None:
     key = str(item_id)
     if key not in anchor_cache:
@@ -336,6 +339,9 @@ def _load_usable_anchor(item_id, anchor_cache) -> dict | None:
                 sanitize_log_value(str(anchor.get('name'))),
                 sanitize_log_value(str(item_id)),
                 sanitize_log_value(problem),
+            )
+            anchor_cache.setdefault(_IGNORED_ANCHORS_KEY, []).append(
+                {'id': item_id, 'name': anchor.get('name'), 'problem': problem}
             )
             anchor = None
         anchor_cache[key] = anchor
@@ -625,9 +631,18 @@ def song_alchemy(
         raise ValueError("At least one item must be in the ADD set")
 
     anchor_cache: dict = {}
+
+    def _empty_outcome():
+        return {
+            "results": [],
+            "filtered_out": [],
+            "centroid_2d": None,
+            "ignored_anchors": anchor_cache.get(_IGNORED_ANCHORS_KEY, []),
+        }
+
     add_anchor_points = _gather_anchor_points(add_items, anchor_cache)
     if not add_anchor_points:
-        return {"results": [], "filtered_out": [], "centroid_2d": None}
+        return _empty_outcome()
     sub_anchor_points = (
         _gather_anchor_points(subtract_items, anchor_cache) if subtract_items else []
     )
@@ -666,7 +681,7 @@ def song_alchemy(
     else:
         candidate_ids = _multi_query_candidates(add_anchor_points, n_results)
     if not candidate_ids:
-        return {"results": [], "filtered_out": [], "centroid_2d": None}
+        return _empty_outcome()
 
     vec_cache: dict = {}
 
@@ -1283,5 +1298,6 @@ def song_alchemy(
         ],
         'inclusions': _export_inclusions(add_anchor_points, signature_by_id),
         'inclusions_embedding': anchor_embedding_tag(),
+        'ignored_anchors': anchor_cache.get(_IGNORED_ANCHORS_KEY, []),
         'projection': projection_used,
     }
