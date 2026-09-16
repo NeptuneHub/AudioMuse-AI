@@ -18,9 +18,13 @@ Main Features:
 * ``build_and_store_map_projection`` / ``build_and_store_artist_projection``
   compute a 2D projection and persist it; ``attach_song_features`` /
   ``top_stratified_genre`` enrich API result rows.
-* Shared blueprint helpers: ``index_error_body`` builds the structured API
-  error body and ``probe_catalogue_canonical_ids`` probes score for canonical
-  fp_ ids (None on probe failure so callers pick their own fail-closed policy).
+* Shared blueprint helpers: ``queue_busy_response`` / ``queue_race_response``
+  answer a refused start with the structured task-in-progress error, and
+  ``probe_catalogue_canonical_ids`` probes score for canonical
+  fp_ ids (None on probe failure so callers pick their own fail-closed policy),
+  and ``catalogue_has_canonical_ids`` memoizes that probe (a failure fails
+  closed for the TTL); the map cache build seeds the memo from the ids it just
+  loaded via ``remember_catalogue_canonical_ids``.
 """
 
 import json
@@ -32,8 +36,10 @@ from psycopg2.extras import DictCursor
 import numpy as np
 
 import database
+import task_types
 import taskqueue
 from taskqueue.sql import CONTROL_TASK_TYPE
+from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
 from database import (
     get_db,
     coerce_db_details,
@@ -55,7 +61,8 @@ from config import (
 )
 
 from error import error_manager
-from error.error_dictionary import ERR_TASK_IN_PROGRESS, UNKNOWN_ERROR_CODE
+from error.error_dictionary import ERR_TASK_ENQUEUE_FAILED, ERR_TASK_IN_PROGRESS
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -81,30 +88,24 @@ def max_bound(value, ceiling):
 # the build_and_store_* helpers below and read by database.load_*_projection.
 
 
-def index_error_body(code, message):
-    payload = error_manager.build(code)
-    payload["error"] = message
-    return payload
-
-
-def queue_busy_error_body(active_task, action):
-    payload = error_manager.build(
+def queue_busy_response(active_task, action):
+    return json_error(
         ERR_TASK_IN_PROGRESS,
         f"Another queue job ({active_task['task_type']}) is still running. "
         f"Wait for it to finish before starting {action}.",
+        task_id=active_task["task_id"],
+        status=active_task["status"],
     )
-    payload["error"] = payload["error_message"]
-    payload["task_id"] = active_task["task_id"]
-    payload["status"] = active_task["status"]
-    return payload
 
 
-def queue_race_error_body(exc_message, active_task):
-    payload = error_manager.build(ERR_TASK_IN_PROGRESS, exc_message)
-    payload["error"] = payload["error_message"]
-    payload["task_id"] = active_task["task_id"] if active_task else None
-    payload["status"] = active_task["status"] if active_task else None
-    return payload
+def queue_race_response(exc, active_task):
+    return json_error(
+        ERR_TASK_IN_PROGRESS,
+        exc.user_message,
+        http_status=exc.status_code,
+        task_id=active_task["task_id"] if active_task else None,
+        status=active_task["status"] if active_task else None,
+    )
 
 
 def admit_and_enqueue_main_task(
@@ -128,17 +129,17 @@ def admit_and_enqueue_main_task(
             blocking_gate() if blocking_gate else database.get_queue_blocking_task()
         )
         if active_task:
-            return jsonify(queue_busy_error_body(active_task, busy_label)), 409
+            return queue_busy_response(active_task, busy_label)
 
         database.clean_up_previous_main_tasks()
         try:
             enqueue()
         except taskqueue.TaskAlreadyRunning as exc:
             active = race_read() if race_read else database.get_active_main_task()
-            return jsonify(queue_race_error_body(exc.user_message, active)), exc.status_code
-        except Exception:
+            return queue_race_response(exc, active)
+        except Exception as exc:
             logger.exception("Could not queue the %s task", task_type)
-            return jsonify({"error": error_message}), 500
+            return json_exception(exc, ERR_TASK_ENQUEUE_FAILED, error_message)
     return jsonify(
         {"task_id": job_id, "task_type": task_type, "status": TASK_STATUS_NEW}
     ), 202
@@ -161,6 +162,30 @@ def probe_catalogue_canonical_ids():
             except Exception:
                 logger.exception("Rollback after failed canonical-id probe also failed")
         return None
+
+
+_HAS_CANONICAL_IDS = None
+_HAS_CANONICAL_CHECKED_AT = 0.0
+_HAS_CANONICAL_TTL = 60.0
+
+
+def remember_catalogue_canonical_ids(has_canonical):
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    _HAS_CANONICAL_IDS = bool(has_canonical)
+    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+
+
+def catalogue_has_canonical_ids():
+    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
+    if _HAS_CANONICAL_IDS:
+        return True
+    now = time.monotonic()
+    if _HAS_CANONICAL_CHECKED_AT and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
+        return _HAS_CANONICAL_IDS is not False
+    result = probe_catalogue_canonical_ids()
+    _HAS_CANONICAL_IDS = result
+    _HAS_CANONICAL_CHECKED_AT = now
+    return result is not False
 
 
 def sanitize_task_details(details, state, task_type=None):
@@ -220,17 +245,7 @@ def sanitize_task_details(details, state, task_type=None):
         ]
 
     if str(state or '').upper() in (TASK_STATUS_FAIL, 'FAILED', 'FAILURE'):
-        existing_error = details.get('error')
-        has_full_error = (
-            isinstance(existing_error, dict)
-            and 'error_code' in existing_error
-            and 'error_message' in existing_error
-        )
-        if not has_full_error:
-            if isinstance(existing_error, dict) and 'error_code' in existing_error:
-                details['error'] = error_manager.build(existing_error['error_code'])
-            else:
-                details['error'] = error_manager.build(UNKNOWN_ERROR_CODE)
+        details['error'] = error_manager.task_error_record(details)
         details.setdefault('error_message', details['error']['error_message'])
 
     return details
@@ -667,7 +682,9 @@ def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
         for row in snapshots:
             if row['task_id'] in protected_task_ids:
                 continue
-            if row['task_type'] in (CONTROL_TASK_TYPE, 'provider_migration_planner'):
+            if row['task_type'] in (
+                (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE) + task_types.SIDE_JOB_TASK_TYPES
+            ):
                 continue
             _record_one_cancellation(row, now_ts, reason)
     except Exception:

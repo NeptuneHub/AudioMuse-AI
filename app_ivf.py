@@ -33,8 +33,16 @@ from config import (
     SIMILARITY_RADIUS_DEFAULT,
     MOOD_CENTROIDS_FILE,
 )
-from app_helper import serialize_neighbor_results, index_error_body
-from error.error_dictionary import ERR_INDEX_EMPTY, UNKNOWN_ERROR_CODE
+from app_helper import serialize_neighbor_results
+from error.error_dictionary import (
+    ERR_INDEX_EMPTY,
+    ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_PLAYLIST,
+    ERR_NOT_FOUND,
+    ERR_PLAYLIST_REJECTED,
+    ERR_SEARCH_FAILED,
+    UNKNOWN_ERROR_CODE,
+)
 from tasks.ivf_manager import (
     find_nearest_neighbors_by_id,
     find_nearest_neighbors_by_vector,
@@ -42,6 +50,7 @@ from tasks.ivf_manager import (
     search_tracks_unified,
     get_item_id_by_title_and_artist,
 )
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +62,11 @@ _UNEXPECTED_ERROR_MSG = "An unexpected error occurred."
 def _neighbor_search_error_response(ctx, exc, is_runtime):
     if is_runtime:
         logger.exception(f"Runtime error finding neighbors for {ctx}: {exc}")
-        body = index_error_body(
+        return json_error(
             ERR_INDEX_EMPTY, "The similarity search service is currently unavailable."
         )
-        return jsonify(body), 503
     logger.exception(f"Unexpected error finding neighbors for {ctx}: {exc}")
-    body = index_error_body(UNKNOWN_ERROR_CODE, _UNEXPECTED_ERROR_MSG)
-    return jsonify(body), 500
+    return json_exception(exc, ERR_SEARCH_FAILED, _UNEXPECTED_ERROR_MSG)
 
 
 # Wrap the shared vector-neighbor search + error mapping
@@ -73,7 +80,7 @@ def _vector_neighbors_or_error(vector, num_neighbors, eliminate_duplicates, ctx,
     except Exception as e:
         return None, _neighbor_search_error_response(ctx, e, is_runtime=False)
     if not results:
-        return None, (jsonify({"error": empty_msg}), 404)
+        return None, json_error(ERR_NOT_FOUND, empty_msg)
     return results, None
 
 
@@ -281,7 +288,7 @@ def search_tracks_endpoint():
             selected_server_id, include_legacy = app_server_context.selected_server_scope()
         except ValueError:
             logger.warning("Invalid server selection.", exc_info=True)
-            return jsonify({'error': 'Invalid server selection.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
         raw_results = search_tracks_unified(
             search_query,
             limit=limit,
@@ -309,9 +316,9 @@ def search_tracks_endpoint():
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
         results = app_server_context.scope_results(results, limit, id_key='item_id')
         return jsonify(results)
-    except Exception:
+    except Exception as exc:
         logger.exception("Error during track search")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, "An error occurred during search.")), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")
 
 
 @ivf_bp.route('/api/mood_centroids', methods=['GET'])
@@ -336,11 +343,10 @@ def get_mood_centroids_endpoint():
     mood_filter = request.args.get('mood', '', type=str).strip().lower()
     if mood_filter:
         if mood_filter not in _MOOD_CENTROIDS_META:
-            return jsonify(
-                {
-                    "error": f"Unknown mood '{mood_filter}'. Available: {list(_MOOD_CENTROIDS_META.keys())}"
-                }
-            ), 400
+            return json_error(
+                ERR_INVALID_REQUEST,
+                f"Unknown mood '{mood_filter}'. Available: {list(_MOOD_CENTROIDS_META.keys())}",
+            )
         return jsonify({mood_filter: _MOOD_CENTROIDS_META[mood_filter]})
     return jsonify(_MOOD_CENTROIDS_META)
 
@@ -452,24 +458,23 @@ def get_similar_tracks_endpoint():
         app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     # --- Mood centroid mode: use centroid vector instead of a song ---
     if mood_param and centroid_index_param is not None:
         _ensure_mood_centroids_loaded()
         if mood_param not in _MOOD_CENTROIDS_DATA:
-            return jsonify(
-                {
-                    "error": f"Unknown mood '{mood_param}'. Available: {list(_MOOD_CENTROIDS_DATA.keys())}"
-                }
-            ), 400
+            return json_error(
+                ERR_INVALID_REQUEST,
+                f"Unknown mood '{mood_param}'. Available: {list(_MOOD_CENTROIDS_DATA.keys())}",
+            )
         centroids = _MOOD_CENTROIDS_DATA[mood_param]
         if centroid_index_param < 0 or centroid_index_param >= len(centroids):
-            return jsonify(
-                {
-                    "error": f"Invalid centroid_index {centroid_index_param} for mood '{mood_param}' (0-{len(centroids) - 1})."
-                }
-            ), 400
+            return json_error(
+                ERR_INVALID_REQUEST,
+                f"Invalid centroid_index {centroid_index_param} for mood '{mood_param}' "
+                f"(0-{len(centroids) - 1}).",
+            )
 
         centroid_vector = np.array(centroids[centroid_index_param]['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
@@ -489,9 +494,9 @@ def get_similar_tracks_endpoint():
 
         anchor = get_alchemy_anchor_by_id(anchor_id_param)
         if not anchor or not anchor.get('centroid'):
-            return jsonify(
-                {"error": f"Anchor with id {anchor_id_param} not found or has no centroid."}
-            ), 404
+            return json_error(
+                ERR_NOT_FOUND, f"Anchor with id {anchor_id_param} not found or has no centroid."
+            )
 
         anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(
@@ -512,20 +517,20 @@ def get_similar_tracks_endpoint():
         try:
             target_item_id = app_server_context.resolve_input_item_id(item_id)
         except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
+            return json_exception(exc, ERR_INVALID_REQUEST)
     elif title and artist:
         resolved_id = get_item_id_by_title_and_artist(title, artist)
         if not resolved_id:
-            return jsonify(
-                {"error": f"Track '{title}' by '{artist}' not found in the database."}
-            ), 404
+            return json_error(
+                ERR_NOT_FOUND, f"Track '{title}' by '{artist}' not found in the database."
+            )
         target_item_id = resolved_id
     else:
-        return jsonify(
-            {
-                "error": "Request must include either 'item_id' or both 'title' and 'artist', or 'mood' and 'centroid_index'."
-            }
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            "Request must include either 'item_id' or both 'title' and 'artist', "
+            "or 'mood' and 'centroid_index'.",
+        )
 
     try:
         neighbor_results = find_nearest_neighbors_by_id(
@@ -536,9 +541,9 @@ def get_similar_tracks_endpoint():
             radius_similarity=radius_similarity,
         )
         if not neighbor_results:
-            return jsonify(
-                {"error": "Target track not found in index or no similar tracks found."}
-            ), 404
+            return json_error(
+                ERR_NOT_FOUND, "Target track not found in index or no similar tracks found."
+            )
 
         return jsonify(_serialize_neighbor_results(neighbor_results, num_neighbors))
     except RuntimeError as e:
@@ -583,20 +588,22 @@ def get_max_distance_endpoint():
     """
     item_id = request.args.get('item_id')
     if not item_id:
-        return jsonify({"error": "Missing 'item_id' parameter."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Missing 'item_id' parameter.")
     # Echo the caller's own id in errors, never the resolved internal canonical id.
     raw_item_id = item_id
     try:
         item_id = app_server_context.resolve_input_item_id(item_id)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return json_exception(exc, ERR_INVALID_REQUEST)
 
     try:
         result = get_max_distance_for_id(item_id)
         if result is None:
-            return jsonify(
-                {"error": f"Item '{app_server_context.provider_echo_id(raw_item_id)}' not found in index or index unavailable."}
-            ), 404
+            return json_error(
+                ERR_NOT_FOUND,
+                f"Item '{app_server_context.provider_echo_id(raw_item_id)}' not found in index "
+                "or index unavailable.",
+            )
         # farthest_item_id comes from the internal index; expose the selected
         # server's provider id (None when that item is not on it), never the fp_ id.
         far_id = result.get('farthest_item_id')
@@ -607,17 +614,15 @@ def get_max_distance_endpoint():
         return jsonify(result)
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     except RuntimeError:
         logger.exception(f"Runtime error computing max distance for {item_id}")
-        return jsonify(
-            index_error_body(
-                ERR_INDEX_EMPTY, "The similarity search service is currently unavailable."
-            )
-        ), 503
-    except Exception:
+        return json_error(
+            ERR_INDEX_EMPTY, "The similarity search service is currently unavailable."
+        )
+    except Exception as exc:
         logger.exception(f"Unexpected error computing max distance for {item_id}")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, _UNEXPECTED_ERROR_MSG)), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, _UNEXPECTED_ERROR_MSG)
 
 
 @ivf_bp.route('/api/track', methods=['GET'])
@@ -658,7 +663,7 @@ def get_track_endpoint():
     """
     item_id = request.args.get('item_id')
     if not item_id:
-        return jsonify({"error": "Missing 'item_id' parameter."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Missing 'item_id' parameter.")
 
     try:
         from database import get_score_data_by_ids
@@ -669,7 +674,9 @@ def get_track_endpoint():
         canonical_id = app_server_context.resolve_input_item_id(item_id)
         details = get_score_data_by_ids([canonical_id])
         if not details:
-            return jsonify({"error": f"Item '{app_server_context.provider_echo_id(item_id)}' not found."}), 404
+            return json_error(
+                ERR_NOT_FOUND, f"Item '{app_server_context.provider_echo_id(item_id)}' not found."
+            )
         d = details[0]
         row = {
             "item_id": d.get('item_id'),
@@ -680,11 +687,13 @@ def get_track_endpoint():
         }
         scoped = app_server_context.scope_results([row], None, id_key='item_id')
         if not scoped:
-            return jsonify({"error": f"Item '{app_server_context.provider_echo_id(item_id)}' not found."}), 404
+            return json_error(
+                ERR_NOT_FOUND, f"Item '{app_server_context.provider_echo_id(item_id)}' not found."
+            )
         return jsonify(scoped[0]), 200
-    except Exception:
+    except Exception as exc:
         logger.exception(f"Unexpected error fetching track {item_id}")
-        return jsonify(index_error_body(UNKNOWN_ERROR_CODE, _UNEXPECTED_ERROR_MSG)), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, _UNEXPECTED_ERROR_MSG)
 
 
 @ivf_bp.route('/api/create_playlist', methods=['POST'])
@@ -719,7 +728,7 @@ def create_media_server_playlist():
     """
     data = request.get_json()
     if not data:
-        return jsonify({"error": "Invalid JSON payload"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Invalid JSON payload")
 
     # Debug log incoming payload to help trace client/server mismatch
     try:
@@ -731,7 +740,7 @@ def create_media_server_playlist():
     track_ids_raw = data.get('track_ids', [])
 
     if not isinstance(playlist_name, str) or not playlist_name:
-        return jsonify({"error": "Invalid or missing 'playlist_name'"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Invalid or missing 'playlist_name'")
 
     final_track_ids = []
     if isinstance(track_ids_raw, list):
@@ -746,7 +755,9 @@ def create_media_server_playlist():
                 final_track_ids.append(item_id)
 
     if not final_track_ids:
-        return jsonify({"error": "No valid track IDs were provided to create the playlist"}), 400
+        return json_error(
+            ERR_INVALID_REQUEST, "No valid track IDs were provided to create the playlist"
+        )
 
     # Optional user credentials may be provided by the client (e.g., from the Sonic Fingerprint UI)
     user_creds = data.get('user_creds') if isinstance(data, dict) else None
@@ -759,7 +770,7 @@ def create_media_server_playlist():
         server_id = resolve_request_server_id(data)
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({"error": "Invalid server selection."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Invalid server selection.")
 
     # The client posts back the ids it got from a list endpoint - the selected
     # server's provider ids (never the internal fp_ id). Canonicalize them so the
@@ -774,7 +785,7 @@ def create_media_server_playlist():
                 playlist_name, final_track_ids, server_id, user_creds=user_creds
             )
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return json_exception(exc, ERR_PLAYLIST_REJECTED)
         result = info['result']
         new_playlist_id = result.get('Id') if isinstance(result, dict) else result
         if not new_playlist_id:
@@ -783,9 +794,10 @@ def create_media_server_playlist():
                 "returned no playlist (see worker/container logs)",
                 playlist_name, server_id,
             )
-            return jsonify(
-                {"error": "The media server did not create the playlist; check container logs."}
-            ), 502
+            return json_error(
+                ERR_MEDIASERVER_PLAYLIST,
+                "The media server did not create the playlist; check container logs.",
+            )
         logger.info(
             f"Created playlist '{playlist_name}' on server {server_id} "
             f"({info['mapped']} mapped, {info['skipped']} unavailable)."
@@ -799,10 +811,11 @@ def create_media_server_playlist():
             }
         ), 201
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             f"Failed to create media server playlist '{playlist_name}'"
         )
-        return jsonify(
-            {"error": "An error occurred while creating the playlist on the media server."}
-        ), 500
+        return json_exception(
+            exc, UNKNOWN_ERROR_CODE,
+            "An error occurred while creating the playlist on the media server.",
+        )

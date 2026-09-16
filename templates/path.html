@@ -81,6 +81,12 @@
         #results-table-wrapper {
             overflow-x: auto;
         }
+        @media (max-width: 768px) {
+            #path-graph-box {
+                position: relative;
+                height: clamp(220px, 60vw, 360px);
+            }
+        }
 </style>
 {% endblock %}
 
@@ -316,7 +322,12 @@
                     try {
                         const params = new URLSearchParams({ search_query: acQuery, start: acOffset, end: acOffset + PAGE_SIZE });
                         const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                        const tracks = await response.json();
+                        const tracks = await readJsonBody(response);
+                        if (!response.ok || !Array.isArray(tracks)) {
+                            const sentinel = resultsEl.querySelector('.autocomplete-load-more');
+                            if (sentinel) sentinel.textContent = apiErrorText(tracks, `Search failed (HTTP ${response.status})`);
+                            return;
+                        }
                         if (tracks.length > 0) {
                             acOffset += tracks.length;
                             appendResults(tracks);
@@ -369,8 +380,18 @@
                         try {
                             const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
                             const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                            const tracks = await response.json();
+                            const tracks = await readJsonBody(response);
                             resultsEl.innerHTML = '';
+                            if (!response.ok || !Array.isArray(tracks)) {
+                                const itemDiv = document.createElement('div');
+                                itemDiv.className = 'autocomplete-item';
+                                const em = document.createElement('em');
+                                em.textContent = apiErrorText(tracks, `Search failed (HTTP ${response.status})`);
+                                itemDiv.appendChild(em);
+                                resultsEl.appendChild(itemDiv);
+                                resultsEl.classList.remove('hidden');
+                                return;
+                            }
                             acOffset = tracks.length;
                             if (tracks.length === 0) {
                                 resultsEl.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
@@ -920,6 +941,22 @@
                 };
             };
 
+            const narrowPathGraph = window.matchMedia('(max-width: 768px)');
+            const fitPathGraphToScreen = (chartConfig) => {
+                const phone = narrowPathGraph.matches;
+                const parent = pathGraphCanvas.parentElement;
+                if (phone && parent.id !== 'path-graph-box') {
+                    const box = document.createElement('div');
+                    box.id = 'path-graph-box';
+                    parent.insertBefore(box, pathGraphCanvas);
+                    box.appendChild(pathGraphCanvas);
+                } else if (!phone && parent.id === 'path-graph-box') {
+                    parent.parentElement.insertBefore(pathGraphCanvas, parent);
+                    parent.remove();
+                }
+                chartConfig.options.maintainAspectRatio = !phone;
+            };
+
             const updateChartView = (view = 'progression') => {
                 if (pathChart) pathChart.destroy();
                 if (currentPathData.length === 0) return;
@@ -942,6 +979,7 @@
                 }
 
                 if (chartConfig) {
+                    fitPathGraphToScreen(chartConfig);
                     pathChart = new Chart(pathGraphCanvas.getContext('2d'), chartConfig);
                 } else {
                     console.warn(`Chart view '${view}' could not be rendered.`);
@@ -1030,7 +1068,7 @@
                         let errorData;
                         try { errorData = await response.json(); }
                         catch (e) { throw new Error(`Server returned an error (HTTP ${response.status})`); }
-                        throw new Error(errorData.error || `An unknown server error occurred.`);
+                        throw new Error(apiErrorText(errorData, `An unknown server error occurred.`));
                     }
                     const data = await response.json();
                     if (!data.path || data.path.length <= 1) {
@@ -1127,8 +1165,8 @@
                             track_ids: currentTrackIds
                         }),
                     });
-                    const result = await response.json();
-                    if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                    const result = await readJsonBody(response);
+                    if (!response.ok || result === null) throw new Error(apiErrorText(result, `Server returned an error (HTTP ${response.status})`));
                     playlistStatusDiv.textContent = result.message;
                     playlistStatusDiv.className = 'status-success';
                 } catch (error) {

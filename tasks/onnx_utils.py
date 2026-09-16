@@ -24,7 +24,11 @@ Main Features:
   plain CPU session on any load failure.
 * run_inference / run_inference_with_oom_fallback: map feed keys and output
   names onto the session's actual input/output tensors, with an OOM path that
-  unloads the GPU session and re-runs on CPU.
+  unloads the GPU session and re-runs on CPU. Only an allocation failure the
+  model runtime itself raised takes that path: its session and arena are freed
+  before the CPU session loads, while host RAM running out (a MemoryError from
+  numpy or Python) frees nothing and would only load a second session into
+  memory that is already exhausted.
 """
 
 import logging
@@ -203,8 +207,10 @@ def run_inference_with_oom_fallback(
 ):
     try:
         return run_inference(session, feed_dict, output_tensor_name), session
-    except ort.capi.onnxruntime_pybind11_state.RuntimeException as e:
-        if "Failed to allocate memory" not in str(e):
+    except Exception as e:
+        from error.error_manager import is_model_out_of_memory
+
+        if not is_model_out_of_memory(e):
             raise
         logger.warning(
             f"GPU OOM for {file_basename} during {label} inference - falling back to CPU"

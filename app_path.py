@@ -22,8 +22,11 @@ Main Features:
 from flask import Blueprint, jsonify, request, render_template
 import logging
 import json
-from error import error_manager
-from error.error_dictionary import UNKNOWN_ERROR_CODE
+from error.error_dictionary import (
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_SEARCH_FAILED,
+)
 from tasks.path_manager import find_path_between_songs, get_distance
 from tasks.ivf_manager import get_vector_by_id, find_nearest_neighbors_by_vector
 from config import (
@@ -36,6 +39,7 @@ from app_helper import top_stratified_genre
 import app_server_context
 import numpy as np
 import math  # Import the math module
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -270,13 +274,13 @@ def find_path_endpoint():
         app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     try:
         resolved_endpoints = app_server_context.resolve_input_item_ids(
             [i for i in (start_song_id, end_song_id) if i]
         )
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return json_exception(exc, ERR_INVALID_REQUEST)
     if start_song_id:
         start_song_id = resolved_endpoints.get(start_song_id, start_song_id)
     if end_song_id:
@@ -292,25 +296,27 @@ def find_path_endpoint():
 
     # Cannot have more than one special endpoint among start/end (mood or anchor)
     if (start_mood or start_anchor) and (end_mood or end_anchor):
-        return jsonify(
-            {"error": "Only one endpoint can be a mood/anchor and the other a song."}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST, "Only one endpoint can be a mood/anchor and the other a song."
+        )
 
     # Validate mood values
     if start_mood and start_mood not in VALID_MOODS:
-        return jsonify(
-            {"error": f"Invalid mood '{start_mood}'. Valid: {', '.join(sorted(VALID_MOODS))}"}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f"Invalid mood '{start_mood}'. Valid: {', '.join(sorted(VALID_MOODS))}",
+        )
     if end_mood and end_mood not in VALID_MOODS:
-        return jsonify(
-            {"error": f"Invalid mood '{end_mood}'. Valid: {', '.join(sorted(VALID_MOODS))}"}
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f"Invalid mood '{end_mood}'. Valid: {', '.join(sorted(VALID_MOODS))}",
+        )
 
     # Each endpoint must have either a song ID, a mood, or an anchor
     if not start_song_id and not start_mood and not start_anchor:
-        return jsonify({"error": "Start endpoint must be a song, mood, or anchor."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Start endpoint must be a song, mood, or anchor.")
     if not end_song_id and not end_mood and not end_anchor:
-        return jsonify({"error": "End endpoint must be a song, mood, or anchor."}), 400
+        return json_error(ERR_INVALID_REQUEST, "End endpoint must be a song, mood, or anchor.")
 
     # Resolve mood/anchor to song IDs
     if start_anchor:
@@ -318,7 +324,9 @@ def find_path_endpoint():
             start_anchor, other_song_id=end_song_id, pct=mood_pct
         )
         if not resolved_id:
-            return jsonify({"error": f"Could not resolve anchor '{start_anchor}' to a song."}), 404
+            return json_error(
+                ERR_NOT_FOUND, f"Could not resolve anchor '{start_anchor}' to a song."
+            )
         start_song_id = resolved_id
         logger.info(f"Resolved start anchor '{start_anchor}' to song {start_song_id}")
     elif start_mood:
@@ -326,7 +334,7 @@ def find_path_endpoint():
             start_mood, end_song_id or start_song_id, pct=mood_pct
         )
         if not resolved_id:
-            return jsonify({"error": f"Could not resolve mood '{start_mood}' to a song."}), 404
+            return json_error(ERR_NOT_FOUND, f"Could not resolve mood '{start_mood}' to a song.")
         start_song_id = resolved_id
         logger.info(f"Resolved start mood '{start_mood}' ({mood_pct}%) to song {start_song_id}")
 
@@ -335,18 +343,18 @@ def find_path_endpoint():
             end_anchor, other_song_id=start_song_id, pct=mood_pct
         )
         if not resolved_id:
-            return jsonify({"error": f"Could not resolve anchor '{end_anchor}' to a song."}), 404
+            return json_error(ERR_NOT_FOUND, f"Could not resolve anchor '{end_anchor}' to a song.")
         end_song_id = resolved_id
         logger.info(f"Resolved end anchor '{end_anchor}' to song {end_song_id}")
     elif end_mood:
         resolved_id = _resolve_mood_to_song_id(end_mood, start_song_id or end_song_id, pct=mood_pct)
         if not resolved_id:
-            return jsonify({"error": f"Could not resolve mood '{end_mood}' to a song."}), 404
+            return json_error(ERR_NOT_FOUND, f"Could not resolve mood '{end_mood}' to a song.")
         end_song_id = resolved_id
         logger.info(f"Resolved end mood '{end_mood}' ({mood_pct}%) to song {end_song_id}")
 
     if start_song_id == end_song_id:
-        return jsonify({"error": "Start and end songs cannot be the same."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Start and end songs cannot be the same.")
 
     try:
         # parse optional path_fix_size override from request (query param)
@@ -370,18 +378,18 @@ def find_path_endpoint():
             )
 
             if not is_sem_grove_cache_loaded():
-                return jsonify(
-                    {
-                        "error": "The Lyrics (SemGrove) index is not loaded yet. Analyze lyrics and build the SemGrove index first."
-                    }
-                ), 404
+                return json_error(
+                    ERR_NOT_FOUND,
+                    "The Lyrics (SemGrove) index is not loaded yet. "
+                    "Analyze lyrics and build the SemGrove index first.",
+                )
             sem_ids = get_sem_grove_item_ids()
             if start_song_id not in sem_ids or end_song_id not in sem_ids:
-                return jsonify(
-                    {
-                        "error": "One or both selected songs are not in the Lyrics index (they need both lyrics and audio analysis)."
-                    }
-                ), 404
+                return json_error(
+                    ERR_NOT_FOUND,
+                    "One or both selected songs are not in the Lyrics index "
+                    "(they need both lyrics and audio analysis).",
+                )
             path, total_distance = find_path_between_songs(
                 start_song_id,
                 end_song_id,
@@ -399,9 +407,10 @@ def find_path_endpoint():
             )
 
         if not path:
-            return jsonify(
-                {"error": f"No path found between the selected songs within {max_steps} steps."}
-            ), 404
+            return json_error(
+                ERR_NOT_FOUND,
+                f"No path found between the selected songs within {max_steps} steps.",
+            )
 
         # --- CHANGED: Process embedding vectors for JSON response ---
         for song in path:
@@ -432,12 +441,10 @@ def find_path_endpoint():
 
         return jsonify({"path": path, "total_distance": final_distance})
 
-    except Exception:
+    except Exception as exc:
         logger.exception(
             f"Error finding path between {start_song_id} and {end_song_id}"
         )
-        body = {
-            **error_manager.build(UNKNOWN_ERROR_CODE),
-            "error": "An unexpected error occurred while finding the path.",
-        }
-        return jsonify(body), 500
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, "An unexpected error occurred while finding the path."
+        )

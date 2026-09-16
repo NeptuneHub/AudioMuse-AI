@@ -76,7 +76,7 @@ window.PlexLink = (function () {
                         return;
                     }
                     if (!result.ok) {
-                        setStatus(statusEl, 'pending', (result.data && result.data.error) || 'Unable to reach Plex, retrying...');
+                        setStatus(statusEl, 'pending', apiErrorText(result.data, 'Unable to reach Plex, retrying...'));
                     }
                     pollTimer = setTimeout(tick, 1500);
                 })
@@ -165,7 +165,7 @@ window.PlexLink = (function () {
             body: JSON.stringify({ client_id: cid })
         }).then(function (r) {
             return r.json().then(function (data) {
-                if (!r.ok) { throw new Error(data.error || 'Unable to start Plex linking.'); }
+                if (!r.ok) { throw new Error(apiErrorText(data, 'Unable to start Plex linking.')); }
                 return data;
             });
         }).then(function (data) {

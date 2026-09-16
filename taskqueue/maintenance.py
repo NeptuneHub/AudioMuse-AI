@@ -79,6 +79,8 @@ service_roles.declare_worker_role()
 import config  # noqa: E402
 from . import control  # noqa: E402
 from . import sql  # noqa: E402
+from error import error_manager  # noqa: E402
+from error.error_dictionary import ERR_TASK_INTERRUPTED, ERR_WORKER_LOST  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +164,7 @@ def _reclaim_one(conn, task_id):
                         "The worker running this task stopped unexpectedly. "
                         "It was restarted the allowed number of times."
                     ),
-                    'error': 'worker lost',
+                    'error': error_manager.build(ERR_WORKER_LOST),
                 },
             )
         conn.commit()
@@ -255,7 +257,7 @@ def fail_stale_inline_rows(conn):
             "This task ran inside the web process and that process stopped "
             "before it finished."
         ),
-        'error': 'inline task interrupted',
+        'error': error_manager.build(ERR_TASK_INTERRUPTED),
     })
     protected = _protected_migration_task_ids(conn)
     if protected is None:

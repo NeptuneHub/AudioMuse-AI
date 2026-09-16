@@ -80,6 +80,9 @@ _PUBLIC_API = frozenset((
     # The two things a task may raise to steer the queue's verdict; every other
     # exception is retried, so a task needs no other vocabulary.
     'TaskFailed', 'TaskCancelled',
+    # What the queue records on a row it failed because the worker died, so a
+    # status page can say the run was interrupted rather than that it failed.
+    'WORKER_LOST_ERROR',
     'TaskAlreadyRunning', 'UnknownTaskFunction', 'ALLOWED_FUNCS',
     'QUEUE_HIGH', 'QUEUE_DEFAULT', 'PRIORITY_FRONT', 'CANCEL_ALL',
 ))

@@ -45,6 +45,11 @@ import config
 from database import get_db, like_contains_pattern
 from tasks.mediaserver import registry
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
+from error.error_dictionary import (
+    ERR_INVALID_REQUEST,
+    ERR_SEARCH_FAILED,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 dashboard_bp = Blueprint('dashboard_bp', __name__)
@@ -293,12 +298,12 @@ def browse_api():
     if raw_server and raw_server.lower() != 'all':
         server = registry.get_server(raw_server) or registry.get_server_by_name(raw_server)
         if not server:
-            return jsonify({'error': 'Invalid server selection.'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
         server_id = server['server_id']
         server_name = server['name']
 
     if kind == 'songs' and filt == 'duplicates' and not server_id:
-        return jsonify({'error': 'The duplicates filter needs a server.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'The duplicates filter needs a server.')
     if kind != 'songs' and filt in ('duplicates', 'orphan'):
         filt = 'all'
     if filt == 'orphan':
@@ -342,9 +347,11 @@ def browse_api():
             # page to even if this page filled: never advertise an unreachable page.
             if offset + page_size > config.DASHBOARD_BROWSE_MAX_OFFSET:
                 has_more = False
-    except Exception:
+    except Exception as exc:
         logger.exception("dashboard browse query failed")
-        return jsonify({'error': 'Browse query failed; check the container logs.'}), 500
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, 'Browse query failed; check the container logs.'
+        )
 
     return jsonify({
         'kind': kind, 'filter': filt, 'server': server_name, 'page': page,

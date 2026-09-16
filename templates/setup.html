@@ -2,10 +2,13 @@
 
 {% block headAdditions %}
 <style>
-    label {
+    label, .ai-prompt-block-title {
         display: block;
         margin-bottom: 0.35rem;
         font-weight: 600;
+    }
+    .ai-prompt-block-title {
+        margin-top: 0;
     }
     input[type="text"], input[type="password"], select, textarea {
         width: 100%;
@@ -128,11 +131,71 @@
         border-color: var(--status-pending-border, #ecd8a9);
     }
     #advanced-config summary,
-    #lyrics-api-config summary {
+    #lyrics-api-config summary,
+    #ai-prompt-config summary {
         cursor: pointer;
     }
     #lyrics-api-config {
         margin-top: 1.5rem;
+    }
+    #ai-prompt-config {
+        margin-top: 1.5rem;
+    }
+    .ai-prompt-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        margin: 0.25rem 0 0.5rem;
+    }
+    #ai-prompt-config .ai-prompt-toolbar button {
+        width: auto;
+        padding: 0.45rem 0.95rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        background: var(--bg-input, #fff);
+        color: var(--text-main, #333);
+        border: 1px solid var(--border-color, #ccc);
+    }
+    .ai-prompt-help {
+        margin: 0 0 0.75rem;
+        font-size: 0.85rem;
+        color: var(--text-muted, #666);
+    }
+    .ai-prompt-preview {
+        margin: 0 0 1rem;
+        padding: 0.85rem 0.9rem;
+        border: 1px solid var(--border-color, #ccc);
+        border-radius: 8px;
+        background: var(--bg-code, #f5f5f7);
+        color: var(--text-main, #111);
+        font-size: 0.85rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 18rem;
+        overflow-y: auto;
+    }
+    .ai-prompt-titles {
+        margin: 0 0 1rem;
+        padding: 0.6rem 0.9rem 0.6rem 2.2rem;
+        border: 1px solid var(--border-color, #ccc);
+        border-radius: 8px;
+        background: var(--bg-card, #f8f9fb);
+        max-height: 26rem;
+        overflow-y: auto;
+    }
+    .ai-prompt-titles li {
+        padding: 0.3rem 0;
+        border-bottom: 1px solid var(--border-color, #eee);
+    }
+    .ai-prompt-titles li:last-child {
+        border-bottom: none;
+    }
+    .ai-prompt-title-meta {
+        margin-left: 0.5rem;
+        font-size: 0.8rem;
+        color: var(--text-muted, #666);
     }
     .advanced-section {
         margin-top: 0.75rem;
@@ -312,6 +375,92 @@
     .ml-model-row.is-locked .ml-model-role,
     .ml-model-row.is-locked .ml-model-name {
         opacity: 0.6;
+    }
+    @media (max-width: 640px) {
+        input[type="text"], input[type="password"], select, textarea {
+            font-size: 1rem;
+        }
+        #setup-form input[type="radio"],
+        #ms-make-default,
+        #ms-libraries-boxes input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+        }
+        #setup-form button.ml-model-details-toggle {
+            min-height: 32px;
+            margin-top: 0.25rem;
+        }
+        #advanced-config > summary,
+        #lyrics-api-config > summary,
+        #ai-prompt-config > summary {
+            padding: 0.55rem 0;
+        }
+        .ml-model-state,
+        .ml-model-coverage {
+            font-size: 0.75rem;
+        }
+        #music-servers-table {
+            min-width: 0 !important;
+        }
+        #music-servers-table,
+        #music-servers-table tbody {
+            display: block;
+            width: 100%;
+        }
+        #music-servers-table thead {
+            display: none;
+        }
+        #music-servers-table tbody tr {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            column-gap: 0.75rem;
+            row-gap: 0.2rem;
+            padding: 0.65rem 0;
+        }
+        #music-servers-table td {
+            display: block;
+            padding: 0 !important;
+            border: 0;
+            white-space: normal;
+            text-align: left !important;
+            overflow-wrap: anywhere;
+        }
+        #music-servers-table td.ms-cell-name {
+            grid-column: 1;
+            grid-row: 1;
+            font-weight: 600;
+        }
+        #music-servers-table td.ms-cell-type {
+            grid-column: 1;
+            grid-row: 2;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        #music-servers-table td.ms-cell-default {
+            grid-column: 2;
+            grid-row: 1;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        #music-servers-table td.ms-cell-default:not(:empty)::before {
+            content: attr(data-label) ": ";
+        }
+        #music-servers-table td.ms-cell-actions {
+            grid-column: 1 / -1;
+            grid-row: 3;
+            margin-top: 0.45rem;
+        }
+        #music-servers-table td.ms-cell-actions > div {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            white-space: normal !important;
+        }
+        #setup-form #music-servers-table td.ms-cell-actions button {
+            flex: 1 1 auto;
+            width: auto;
+            margin-right: 0 !important;
+        }
     }
 </style>
 {% endblock %}
@@ -718,6 +867,62 @@
                 </div>
             </details>
             {% endif %}
+
+            <details id="ai-prompt-config">
+                <summary>AI Prompt</summary>
+                <div class="notice" style="margin-top: 1rem;">
+                    Choose how AudioMuse-AI asks your AI provider to name the playlists created by clustering.
+                    It is used only when a provider is selected under
+                    <strong>Advanced configuration &rarr; AI Provider &amp; Playlist Naming</strong>.
+                </div>
+
+                <div class="section" style="margin-top: 1.5rem;">
+                    <h3 style="margin-bottom: 1rem;">Clustering Naming</h3>
+
+                    <label for="AI_NAMING_PROMPT_MODE">Naming style</label>
+                    <select id="AI_NAMING_PROMPT_MODE" name="AI_NAMING_PROMPT_MODE">
+                        <option value="concept">Word + genre</option>
+                        <option value="title">Full AI title</option>
+                    </select>
+
+                    <p id="ai-prompt-concept-help" class="ai-prompt-help">
+                        The AI picks one word from the mood and lyrics of each playlist and AudioMuse-AI adds the genre,
+                        for example "Joyful Soul". This style has no prompt to edit.
+                    </p>
+                    <p id="ai-prompt-title-help" class="ai-prompt-help" style="display:none;">
+                        The AI writes the whole playlist title from your prompt and a sample of the playlist songs,
+                        for example "Raindrops on the Windshield".
+                    </p>
+
+                    <div id="ai-prompt-title-panel" style="display:none;">
+                        <div class="ai-prompt-toolbar">
+                            <label for="AI_NAMING_TITLE_PROMPT" style="margin-bottom:0;">Prompt</label>
+                            <button type="button" id="ai-prompt-reset">Reset to default</button>
+                        </div>
+                        <textarea id="AI_NAMING_TITLE_PROMPT" name="AI_NAMING_TITLE_PROMPT" rows="12" spellcheck="false"></textarea>
+
+                        <p class="ai-prompt-block-title">Added automatically after your prompt</p>
+                        <p class="ai-prompt-help">
+                            You cannot edit this part. For every playlist AudioMuse-AI appends up to
+                            <span id="ai-prompt-max-songs">25</span> of its songs, then the last titles
+                            already used so the AI does not repeat them. Example:
+                        </p>
+                        <pre id="ai-prompt-song-block" class="ai-prompt-preview"></pre>
+                    </div>
+
+                    <div class="ai-prompt-toolbar">
+                        <button type="button" id="ai-prompt-preview-start">Preview titles</button>
+                        <button type="button" id="ai-prompt-preview-stop" style="display:none;">Stop</button>
+                        <span class="ai-prompt-help" style="margin:0;">
+                            Runs one quick K-Means clustering on up to <span id="ai-prompt-preview-max">10000</span> of your songs
+                            and names every playlist with the selected naming style. Nothing is saved.
+                            It runs like any batch task, so it cannot start while another task is running.
+                        </span>
+                    </div>
+                    <p id="ai-prompt-preview-status" class="inline-feedback" style="display:none; margin:0 0 0.75rem;"></p>
+                    <ol id="ai-prompt-preview-titles" class="ai-prompt-titles" style="display:none;"></ol>
+                </div>
+            </details>
 
             <div style="margin-top: 2rem;"></div>
             <div class="field-row">

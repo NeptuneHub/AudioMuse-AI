@@ -463,7 +463,7 @@ class TestSetupBarrierAllowsSetupApiSubtree:
         ],
     )
     def test_setup_api_subtree_reachable_during_first_run(self, app, monkeypatch, path, allowed):
-        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: True)
+        monkeypatch.setattr(app_auth, 'setup_status', lambda: (True, None))
         with app.test_request_context(path):
             result = app_auth.auth_setup_barrier()
         if allowed:
@@ -475,7 +475,7 @@ class TestSetupBarrierAllowsSetupApiSubtree:
     def test_setup_needed_flag_is_exposed_to_handlers(self, app, monkeypatch):
         from flask import g
 
-        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: True)
+        monkeypatch.setattr(app_auth, 'setup_status', lambda: (True, None))
         with app.test_request_context('/api/servers'):
             assert app_auth.auth_setup_barrier() is None
             assert g.setup_needed is True
@@ -486,7 +486,7 @@ class TestSetupBarrierAllowsSetupApiSubtree:
         from flask import g
 
         calls = []
-        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
+        monkeypatch.setattr(app_auth, 'setup_status', lambda: (False, None))
         monkeypatch.setattr(app_auth, '_jwt_secret_getter', lambda: 'jwt-secret-abc')
         monkeypatch.setattr(
             app_auth,
@@ -501,7 +501,7 @@ class TestSetupBarrierAllowsSetupApiSubtree:
 
     def test_auth_rejection_is_returned_without_reaching_the_admin_check(self, app, monkeypatch):
         calls = []
-        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
+        monkeypatch.setattr(app_auth, 'setup_status', lambda: (False, None))
         monkeypatch.setattr(app_auth, '_jwt_secret_getter', lambda: 'jwt-secret-abc')
 
         def _auth(secret):
@@ -518,8 +518,74 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             assert app_auth.auth_setup_barrier() == ('unauthorized-sentinel', 401)
         assert calls == ['auth']
 
+    def _unreadable_admin_count(self, monkeypatch, error):
+        import config as _cfg
+        from tasks.setup_manager import SetupManager
+
+        monkeypatch.setattr(SetupManager, '_is_valid_server_config', lambda self, cfg: True)
+        monkeypatch.setattr(_cfg, 'AUTH_ENABLED', True)
+
+        def _count():
+            raise error
+
+        monkeypatch.setattr(app_auth, 'count_admin_users', _count)
+
+    def test_a_lost_database_answers_503_not_setup_required(self, app, monkeypatch):
+        operational_error = type('OperationalError', (Exception,), {'__module__': 'psycopg2'})
+        self._unreadable_admin_count(monkeypatch, operational_error('server closed the connection'))
+
+        with app.test_request_context('/api/last_task'):
+            response, status = app_auth.auth_setup_barrier()
+            body = response.get_json()
+        with app.test_request_context('/dashboard'):
+            page = app_auth.auth_setup_barrier()
+
+        assert status == 503 and body['error_code'] == 4001, (
+            'a database outage used to answer every API call with 403 "Setup required" and '
+            'send every page to the setup wizard, as if the install had been wiped'
+        )
+        assert 'server closed' not in str(body)
+        assert page.status_code == 503 and page.mimetype == 'text/plain'
+
+    @pytest.mark.parametrize('path', ['/chat/api/chatPlaylist', '/external/get_score'])
+    def test_a_lost_database_answers_json_on_every_json_api_prefix(self, app, monkeypatch, path):
+        operational_error = type('OperationalError', (Exception,), {'__module__': 'psycopg2'})
+        self._unreadable_admin_count(monkeypatch, operational_error('server closed the connection'))
+
+        with app.test_request_context(path):
+            response, status = app_auth.auth_setup_barrier()
+            body = response.get_json()
+
+        assert status == 503 and body['error_code'] == 4001, (
+            'the chat page and external integrations call response.json(); a text/plain '
+            '503 hid the structured outage from them'
+        )
+
+    def test_the_outage_comes_back_from_the_same_call_that_saw_it(self, monkeypatch):
+        operational_error = type('OperationalError', (Exception,), {'__module__': 'psycopg2'})
+        failure = operational_error('down')
+        self._unreadable_admin_count(monkeypatch, failure)
+
+        with Flask(__name__).test_request_context('/'):
+            assert app_auth.setup_status() == (True, failure)
+            assert app_auth.check_setup_needed() is True
+            assert not hasattr(g, 'setup_check_error'), (
+                'a yes/no check must not leave the failure behind on flask.g for a later '
+                'caller to pick up'
+            )
+
+    def test_a_missing_users_table_still_opens_the_setup_wizard(self, app, monkeypatch):
+        from flask import g
+
+        database_error = type('DatabaseError', (Exception,), {'__module__': 'psycopg2'})
+        self._unreadable_admin_count(monkeypatch, database_error('relation does not exist'))
+
+        with app.test_request_context('/api/servers'):
+            assert app_auth.auth_setup_barrier() is None
+            assert g.setup_needed is True
+
     def test_admin_rejection_is_returned_when_auth_passes(self, app, monkeypatch):
-        monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
+        monkeypatch.setattr(app_auth, 'setup_status', lambda: (False, None))
         monkeypatch.setattr(app_auth, '_jwt_secret_getter', lambda: 'jwt-secret-abc')
         monkeypatch.setattr(app_auth, 'check_auth_needed', lambda secret: None)
         monkeypatch.setattr(app_auth, 'check_admin_needed', lambda: ('forbidden-sentinel', 403))

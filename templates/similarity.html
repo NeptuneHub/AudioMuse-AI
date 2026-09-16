@@ -28,6 +28,9 @@
             vertical-align: middle;
             transition: background-color 0.2s;
         }
+        @media (pointer: coarse) and (max-width: 768px) {
+            .mode-toggle-btn { min-height: 36px; padding: 6px 12px; }
+        }
         .mode-toggle-btn:hover {
             background: #2563EB;
         }
@@ -342,7 +345,11 @@
                     try {
                         const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
                         const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                        const tracks = await response.json();
+                        const tracks = await readJsonBody(response);
+                        if (!response.ok || !Array.isArray(tracks)) {
+                            showAutocompleteError(apiErrorText(tracks, 'Search failed (HTTP ' + response.status + ')'));
+                            return;
+                        }
                         autocompleteOffset = tracks.length;
                         showAutocomplete(tracks, false);
                     } catch (error) {
@@ -358,7 +365,12 @@
                 try {
                     const params = new URLSearchParams({ search_query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
                     const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                    const tracks = await response.json();
+                    const tracks = await readJsonBody(response);
+                    if (!response.ok || !Array.isArray(tracks)) {
+                        const sentinel = autocompleteResults.querySelector('.autocomplete-load-more');
+                        if (sentinel) sentinel.textContent = apiErrorText(tracks, 'Search failed (HTTP ' + response.status + ')');
+                        return;
+                    }
                     if (tracks.length > 0) {
                         autocompleteOffset += tracks.length;
                         showAutocomplete(tracks, true);
@@ -404,6 +416,20 @@
                         observer.observe(sentinel);
                     }
                 }
+                autocompleteResults.classList.remove('hidden');
+                searchInput.setAttribute('aria-expanded', 'true');
+            };
+
+            const showAutocompleteError = (message) => {
+                autocompleteResults.innerHTML = '';
+                activeIndex = -1;
+                searchInput.removeAttribute('aria-activedescendant');
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'autocomplete-item';
+                const em = document.createElement('em');
+                em.textContent = message;
+                itemDiv.appendChild(em);
+                autocompleteResults.appendChild(itemDiv);
                 autocompleteResults.classList.remove('hidden');
                 searchInput.setAttribute('aria-expanded', 'true');
             };
@@ -560,9 +586,9 @@
 
                 try {
                     const response = await fetch(`{{ url_for('ivf_bp.get_similar_tracks_endpoint') }}?${params}`);
-                    const data = await response.json();
+                    const data = await readJsonBody(response);
 
-                    if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+                    if (!response.ok || data === null) throw new Error(apiErrorText(data, `Server returned an error (HTTP ${response.status})`));
 
                     if (data.length === 0) {
                         statusDiv.textContent = 'No similar tracks found.';
@@ -673,8 +699,8 @@
                             track_ids: currentTrackIds
                         }),
                     });
-                    const result = await response.json();
-                    if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                    const result = await readJsonBody(response);
+                    if (!response.ok || result === null) throw new Error(apiErrorText(result, `Server returned an error (HTTP ${response.status})`));
                     playlistStatusDiv.textContent = result.message;
                     playlistStatusDiv.className = 'status-success';
                 } catch (error) {

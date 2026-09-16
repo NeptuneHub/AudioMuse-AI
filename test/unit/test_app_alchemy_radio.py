@@ -91,7 +91,8 @@ class TestCreateRadioValidation:
     def test_missing_anchor_id_returns_400(self, mock_create, client):
         response = client.post('/api/radios', json={'temperature': 1.0, 'n_results': 100})
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Radio anchor is required'}
+        assert response.get_json()['error'] == 'Radio anchor is required'
+        assert response.get_json()['error_code'] == 1003
         mock_create.assert_not_called()
 
     @patch('database.create_alchemy_radio')
@@ -126,7 +127,8 @@ class TestCreateRadioValidation:
             '/api/radios', json={'anchor_id': 5, 'temperature': 'hot', 'n_results': 100}
         )
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Radio temperature must be a number'}
+        assert response.get_json()['error'] == 'Radio temperature must be a number'
+        assert response.get_json()['error_code'] == 1003
         mock_create.assert_not_called()
 
     @patch('database.create_alchemy_radio')
@@ -135,7 +137,8 @@ class TestCreateRadioValidation:
             '/api/radios', json={'anchor_id': 5, 'temperature': -1, 'n_results': 100}
         )
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Radio temperature must be 0 or greater'}
+        assert response.get_json()['error'] == 'Radio temperature must be 0 or greater'
+        assert response.get_json()['error_code'] == 1003
         mock_create.assert_not_called()
 
     @patch('database.create_alchemy_radio')
@@ -149,7 +152,8 @@ class TestCreateRadioValidation:
                 content_type='application/json',
             )
             assert response.status_code == 400
-            assert response.get_json() == {'error': 'Radio temperature must be a finite number'}
+            assert response.get_json()['error'] == 'Radio temperature must be a finite number'
+            assert response.get_json()['error_code'] == 1003
         mock_create.assert_not_called()
 
     @patch('database.create_alchemy_radio')

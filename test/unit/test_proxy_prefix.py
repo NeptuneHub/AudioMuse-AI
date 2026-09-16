@@ -68,7 +68,7 @@ class TestStripDuplicatedScriptName:
 
 
 def _barrier_app(with_fix, monkeypatch):
-    monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: True)
+    monkeypatch.setattr(app_auth, 'setup_status', lambda: (True, None))
 
     app = Flask(__name__)
 

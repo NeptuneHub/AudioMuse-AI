@@ -21,10 +21,11 @@ Main Features:
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
-* The manager's ValueError (the clip is at fault) answers 400 and the index's
-  IndexUnavailable (the index or the model is not ready, with a curated
-  message) answers 503; everything else, any other RuntimeError included, is
-  a generic 500 with the detail only in the container log.
+* The manager's ValueError (the clip or the song is at fault) answers 400
+  ERR_RECORDING_REJECTED and the index's IndexUnavailable (the index or the model
+  is not ready) answers 503 ERR_RECORDING_INDEX_UNAVAILABLE, each registry message
+  naming what to fix; everything else, any other RuntimeError included, is a
+  generic 500. The exception text is only in the container log.
 * Results are scoped and id-translated to the selected server like every other
   per-server search page.
 * The page carries the built-in HTTPS state so that, on a plain-HTTP address,
@@ -36,6 +37,16 @@ from flask import Blueprint, render_template, request, jsonify
 import logging
 
 import app_server_context
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_INDEX_EMPTY,
+    ERR_INVALID_REQUEST,
+    ERR_PAYLOAD_TOO_LARGE,
+    ERR_RECORDING_INDEX_UNAVAILABLE,
+    ERR_RECORDING_REJECTED,
+    ERR_SEARCH_FAILED,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +106,7 @@ def _disabled_response():
 
     if is_enabled():
         return None
-    return jsonify({'error': DISABLED_MESSAGE, 'results': []}), 503
+    return json_error(ERR_INDEX_EMPTY, DISABLED_MESSAGE, results=[])
 
 
 def _requested_count(raw):
@@ -108,7 +119,7 @@ def _requested_count(raw):
 
 
 def _bad_count():
-    return jsonify({'error': 'Invalid "n_results" value.', 'results': []}), 400
+    return json_error(ERR_INVALID_REQUEST, 'Invalid "n_results" value.', results=[])
 
 
 def _run_search(search, label):
@@ -117,16 +128,15 @@ def _run_search(search, label):
     try:
         return search(), None
     except ValueError as exc:
-        logger.warning('%s rejected the request: %s', label, exc)
-        return None, (jsonify({'error': str(exc), 'results': []}), 400)
+        return None, json_exception(exc, ERR_RECORDING_REJECTED, results=[])
     except IndexUnavailable as exc:
-        logger.warning('%s unavailable: %s', label, exc)
-        return None, (jsonify({'error': str(exc), 'results': []}), 503)
-    except Exception:
+        return None, json_exception(exc, ERR_RECORDING_INDEX_UNAVAILABLE, results=[])
+    except Exception as exc:
         logger.exception('%s failed', label)
-        return None, (
-            jsonify({'error': 'An internal error occurred during the search. Check the container logs.', 'results': []}),
-            500,
+        return None, json_exception(
+            exc, ERR_SEARCH_FAILED,
+            'An internal error occurred during the search. Check the container logs.',
+            results=[],
         )
 
 
@@ -224,11 +234,11 @@ def recording_search_api():
         app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     upload = request.files.get('clip')
     if upload is None:
-        return jsonify({'error': 'Missing "clip" audio file.', 'results': []}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing "clip" audio file.', results=[])
 
     n_results = _requested_count(request.form.get('n_results'))
     if n_results is None:
@@ -236,9 +246,11 @@ def recording_search_api():
 
     limit_bytes = RECORDING_SEARCH_MAX_UPLOAD_MB * 1024 * 1024
     if request.content_length and request.content_length > limit_bytes:
-        return jsonify(
-            {'error': f'The clip is larger than {RECORDING_SEARCH_MAX_UPLOAD_MB} MB.', 'results': []}
-        ), 413
+        return json_error(
+            ERR_PAYLOAD_TOO_LARGE,
+            f'The clip is larger than {RECORDING_SEARCH_MAX_UPLOAD_MB} MB.',
+            results=[],
+        )
 
     payload, failure = _run_search(
         lambda: run_recording_search(upload.stream, upload.filename, n_results), 'Recording search'
@@ -302,14 +314,14 @@ def recording_search_by_track_api():
     data = request.get_json(silent=True) or {}
     item_id = str(data.get('item_id') or '').strip()
     if not item_id:
-        return jsonify({'error': 'Missing "item_id".', 'results': []}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Missing "item_id".', results=[])
     n_results = _requested_count(data.get('n_results'))
     if n_results is None:
         return _bad_count()
     try:
         canonical_id = app_server_context.resolve_input_item_id(item_id)
     except ValueError as exc:
-        return jsonify({'error': str(exc), 'results': []}), 400
+        return json_exception(exc, ERR_INVALID_REQUEST, results=[])
 
     payload, failure = _run_search(lambda: search_by_track(canonical_id, n_results), 'Recording search by track')
     if failure is not None:
@@ -349,6 +361,6 @@ def recording_search_warmup_api():
 
     try:
         return jsonify(warmup_recording_models())
-    except Exception:
+    except Exception as exc:
         logger.exception('Recording search warmup failed')
-        return jsonify({'error': 'Warmup failed.', 'loaded': False}), 500
+        return json_exception(exc, ERR_CACHE_REFRESH_FAILED, 'Warmup failed.', loaded=False)

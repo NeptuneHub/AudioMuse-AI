@@ -60,6 +60,7 @@ from app_helper import (
 from database import init_db, get_db, close_db, get_task_info_from_db, coerce_db_details, disable_legacy_ai_chat_role
 from taskqueue.sql import CONTROL_TASK_TYPE
 from tasks.provider_migration_tasks import MIGRATION_PLANNER_TASK_TYPE
+import task_types
 from config import (
     TASK_STATUS_PENDING,
     TASK_STATUS_STARTED,
@@ -73,9 +74,14 @@ from app_auth import (
     resolve_jwt_secret,
 )
 
-from error import error_manager
 from error.error_manager import AudioMuseError
-from error.error_dictionary import UNKNOWN_ERROR_CODE
+from error.error_dictionary import (
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_TASK_CANCEL_FAILED,
+    UNKNOWN_ERROR_CODE,
+)
+from error.responses import json_error, json_exception, json_http_exception, wants_json_error
 
 # NOTE: Annoy Manager import is moved to be local where used to prevent circular imports.
 
@@ -83,7 +89,17 @@ from error.error_dictionary import UNKNOWN_ERROR_CODE
 # WRITES them, because a rename that moved only one side left these filters
 # matching nothing: the handshake reappeared as a phantom dashboard task, and a
 # pending restart 409-blocked the next analysis or cleaning start.
-NON_USER_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
+# A side job (the setup wizard title preview) is left out of the last-task recap
+# but still shows as the running task: it refuses every batch start, so the
+# dashboard must show it and let its Stop end it.
+HIDDEN_ACTIVE_TASK_TYPES = (CONTROL_TASK_TYPE, MIGRATION_PLANNER_TASK_TYPE)
+NON_USER_TASK_TYPES = (
+    HIDDEN_ACTIVE_TASK_TYPES + task_types.SIDE_JOB_TASK_TYPES
+)
+
+_CANCEL_UNCONFIRMED_MESSAGE = (
+    "Cancellation could not be fully applied or confirmed; recovery tasks may remain active."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,17 +109,17 @@ def handle_audiomuse_error(err):
     app.logger.error(
         "[%s] %s: %s", err.code, err.error_class, err.error_message, exc_info=err.cause or err
     )
-    payload = {**err.to_dict(), "error": err.error_message}
-    return jsonify(payload), error_manager.http_status_for_code(err.code)
+    return json_exception(err, err.code)
 
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(err):
     if isinstance(err, HTTPException):
+        if wants_json_error(request.path):
+            return json_http_exception(err)
         return err
     app.logger.exception("Unhandled exception during request")
-    payload, status = error_manager.error_response(UNKNOWN_ERROR_CODE)
-    return jsonify(payload), status
+    return json_exception(err, UNKNOWN_ERROR_CODE)
 
 
 from app_logging import configure_logging
@@ -201,6 +217,18 @@ init_auth(app, setup_manager, _get_jwt_secret)
 def log_api_request():
     if request.path.startswith('/api/') and not request.path.startswith('/static/'):
         app.logger.info('API request: %s %s', request.method, request.path)
+
+
+@app.before_request
+def reject_non_object_json_body():
+    if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE') or not request.is_json:
+        return None
+    if not wants_json_error(request.path):
+        return None
+    body = request.get_json(silent=True)
+    if body is None or isinstance(body, dict):
+        return None
+    return json_error(ERR_INVALID_REQUEST, "The request body must be a JSON object.")
 
 
 @app.before_request
@@ -537,7 +565,7 @@ def get_task_status_endpoint(task_id):
     }
     db_task_info = get_task_info_from_db(task_id)
     if not db_task_info:
-        return jsonify(response), 404
+        return json_error(ERR_NOT_FOUND, response['status_message'], **response)
 
     details = coerce_db_details(db_task_info.get('details')) or {}
     response['state'] = db_task_info.get('status') or 'UNKNOWN'
@@ -617,16 +645,9 @@ def cancel_task_endpoint(task_id):
             "Cancellation of task %s could not be fully confirmed",
             sanitize_for_log(task_id),
         )
-        return jsonify(
-            {
-                "error": (
-                    "Cancellation could not be fully applied or confirmed; "
-                    "recovery tasks may remain active."
-                ),
-                "task_id": task_id,
-                "details": None,
-            }
-        ), 503
+        return json_error(
+            ERR_TASK_CANCEL_FAILED, _CANCEL_UNCONFIRMED_MESSAGE, task_id=task_id, details=None,
+        )
     return jsonify(
         {
             "message": f"Task {task_id} cancellation requested. {cancelled_count} cancellation actions attempted.",
@@ -681,9 +702,8 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
     # and revokes every row, so running it first and then reporting "nothing
     # found" would be a lie about a wipe that already happened.
     if not tasks_to_cancel:
-        return jsonify(
-            {"message": f"No active tasks of type '{task_type_prefix}' found to cancel."}
-        ), 404
+        nothing_to_cancel = f"No active tasks of type '{task_type_prefix}' found to cancel."
+        return json_error(ERR_NOT_FOUND, nothing_to_cancel, message=nothing_to_cancel)
 
     cancelled_main_task_ids = [r['task_id'] for r in tasks_to_cancel]
     # cancel_job_and_children_recursive re-raises when the tombstone commit fails.
@@ -700,16 +720,10 @@ def cancel_all_tasks_by_type_endpoint(task_type_prefix):
             "Bulk cancellation for %s could not be fully confirmed",
             sanitize_for_log(task_type_prefix),
         )
-        return jsonify(
-            {
-                "error": (
-                    "Cancellation could not be fully applied or confirmed; "
-                    "recovery tasks may remain active."
-                ),
-                "cancelled_main_tasks": cancelled_main_task_ids,
-                "details": None,
-            }
-        ), 503
+        return json_error(
+            ERR_TASK_CANCEL_FAILED, _CANCEL_UNCONFIRMED_MESSAGE,
+            cancelled_main_tasks=cancelled_main_task_ids, details=None,
+        )
 
     return jsonify(
         {
@@ -850,7 +864,7 @@ def get_active_tasks_endpoint():
         ORDER BY timestamp DESC
         LIMIT 1
     """,
-        (non_terminal_statuses, NON_USER_TASK_TYPES),
+        (non_terminal_statuses, HIDDEN_ACTIVE_TASK_TYPES),
     )
     active_main_task_row = cur.fetchone()
     cur.close()
@@ -886,6 +900,7 @@ def get_active_tasks_endpoint():
         task_item.pop('start_time', None)
         task_item.pop('end_time', None)
         task_item.pop('timestamp', None)
+        task_item['side_job'] = task_item.get('task_type') in task_types.SIDE_JOB_TASK_TYPES
 
         return jsonify(task_item), 200
     return jsonify({}), 200  # Return empty object if no active main task

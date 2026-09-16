@@ -100,6 +100,10 @@ from config import (
     MISTRAL_MODEL_NAME,
     ENABLE_CLUSTERING_EMBEDDINGS,
 )
+from error.error_dictionary import (
+    ERR_INVALID_REQUEST,
+)
+from error.responses import json_error
 
 cron_bp = Blueprint('cron_bp', __name__)
 
@@ -245,7 +249,7 @@ def save_cron_entry():
     # Expected fields: id (optional), name, task_type, cron_expr, enabled
     options = data.get('options') or {}
     if not isinstance(options, dict):
-        return jsonify({'error': "'options' must be a JSON object"}), 400
+        return json_error(ERR_INVALID_REQUEST, "'options' must be a JSON object")
 
     # Coerced, never None: cron_expr is NOT NULL, so a POST that omitted it used to
     # 500 rather than answer.
@@ -259,7 +263,7 @@ def save_cron_entry():
     if bool(data.get('enabled')):
         problem = _cron_expr_problem(cron_expr)
         if problem:
-            return jsonify({'error': problem}), 400
+            return json_error(ERR_INVALID_REQUEST, problem)
 
     db = get_db()
     cur = db.cursor()

@@ -28,7 +28,7 @@ import pytest
 import app_setup
 import config
 from error.error_manager import AudioMuseError
-from error.error_dictionary import ERR_CONFIG_MEDIASERVER_CREDENTIALS
+from error.error_dictionary import ERR_MEDIASERVER_AUTH, ERR_MEDIASERVER_TEST_FAILED
 
 
 BASELINE = {
@@ -137,7 +137,19 @@ class TestConnectionProbeSeesUserValues:
         )
         with pytest.raises(AudioMuseError) as excinfo:
             app_setup._test_media_server_connection(dict(USER_VALUES))
-        assert excinfo.value.code == ERR_CONFIG_MEDIASERVER_CREDENTIALS
+        assert excinfo.value.code == ERR_MEDIASERVER_AUTH, (
+            'a server that rejected the credentials is not "credentials are missing"'
+        )
+
+    def test_a_reachable_server_that_fails_the_probe_is_not_called_unreachable(
+        self, saved_config, monkeypatch
+    ):
+        self._fake_probe(
+            monkeypatch, {}, {'ok': False, 'error': 'No Plex music library (artist section) found'}
+        )
+        with pytest.raises(AudioMuseError) as excinfo:
+            app_setup._test_media_server_connection(dict(USER_VALUES))
+        assert excinfo.value.code == ERR_MEDIASERVER_TEST_FAILED
 
 
 class TestListLibrariesSeesUserValues:
@@ -222,3 +234,22 @@ class TestListLibrariesSeesUserValues:
         assert captured['NAVIDROME_USER'] == ''
         assert captured['NAVIDROME_PASSWORD'] == ''
         assert result['libraries'][0]['name'] == 'Music'
+
+
+class TestConnectionProbeAnswersWithPrewrittenText:
+    def _probe(self, monkeypatch, outcome):
+        def fake_test_connection():
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(app_setup.mediaserver, 'test_connection', fake_test_connection)
+
+    def test_a_raw_client_error_never_reaches_the_wizard(self, saved_config, monkeypatch):
+        leaky = 'HTTPSConnectionPool: /Items?api_key=user-token failed'
+        for outcome in (RuntimeError(leaky), {'ok': False, 'error': leaky},
+                        {'ok': False, 'error': leaky, 'auth_failed': True}):
+            self._probe(monkeypatch, outcome)
+            with pytest.raises(AudioMuseError) as excinfo:
+                app_setup._test_media_server_connection(dict(USER_VALUES))
+            assert 'user-token' not in excinfo.value.to_dict()['error_message'], outcome

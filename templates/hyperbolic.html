@@ -252,12 +252,15 @@
     /* Small screens: let the three tabs wrap and shrink, and size the two
        Poincare drawings to the viewport instead of their desktop pixels. */
     @media (max-width: 640px) {
-        .tabs { gap: 0.35rem; }
+        .tabs { gap: 0.35rem; flex-wrap: nowrap; }
         .tab-btn {
-            padding: 0.5rem 0.75rem;
-            font-size: 0.9rem;
-            flex: 1 1 auto;
-            white-space: nowrap;
+            padding: 0.5rem 0.3rem;
+            font-size: 0.85rem;
+            flex: 1 1 0;
+            min-width: 0;
+            white-space: normal;
+            line-height: 1.25;
+            text-align: center;
         }
         #hyper-ball,
         #hyper-journey-disk {
@@ -266,6 +269,26 @@
             aspect-ratio: 1 / 1;
         }
         .hyper-ball-side { min-width: 0; }
+        .tree-children { margin-left: 0.5rem; padding-left: 0.35rem; }
+
+        #journey-results,
+        #hyper-results-section {
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            box-shadow: none;
+            background: transparent;
+        }
+        .hyper-ball-panel,
+        .journey-profile-panel,
+        #journey-playlist-creator,
+        #hyper-playlist-creator {
+            padding: 0.75rem 0.5rem;
+        }
+        .journey-root-banner { padding: 0.75rem; }
+        #hyper-journey-disk .journey-label { font-size: calc(10px * var(--journey-label-scale, 1)); }
+        #hyper-journey-disk .journey-label-strong { font-size: calc(11px * var(--journey-label-scale, 1)); }
+        #hyper-journey-profile { min-width: 0; }
     }
 </style>
 {% endblock %}
@@ -524,6 +547,17 @@
             const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
                 (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 
+            const showAutocompleteError = (box, response, body) => {
+                box.innerHTML = '';
+                const item = document.createElement('div');
+                item.className = 'autocomplete-item';
+                const em = document.createElement('em');
+                em.textContent = apiErrorText(body, 'Search failed (HTTP ' + response.status + ')');
+                item.appendChild(em);
+                box.appendChild(item);
+                box.classList.remove('hidden');
+            };
+
             // Warm up the tree cache on page load (it is not loaded at Flask
             // startup - see tasks.hyperbolic_manager) so the Hierarchy Directory
             // tab has no cold-load delay on first browse.
@@ -574,7 +608,11 @@
                     try {
                         const params = new URLSearchParams({ search_query: query });
                         const response = await fetch('{{ url_for("ivf_bp.search_tracks_endpoint") }}?' + params.toString());
-                        const tracks = await response.json();
+                        const tracks = await readJsonBody(response);
+                        if (!response.ok || !Array.isArray(tracks)) {
+                            showAutocompleteError(autocompleteResults, response, tracks);
+                            return;
+                        }
                         autocompleteResults.innerHTML = '';
                         if (!tracks.length) {
                             autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No songs found</em></div>';
@@ -855,9 +893,9 @@
                             radial_spread: radialSpread
                         })
                     });
-                    const data = await response.json();
-                    if (!response.ok) {
-                        statusDiv.textContent = data.error || 'Search failed.';
+                    const data = await readJsonBody(response);
+                    if (!response.ok || data === null) {
+                        statusDiv.textContent = apiErrorText(data, `Search failed (HTTP ${response.status})`);
                         statusDiv.className = 'status-error';
                         similarSection.classList.add('hidden');
                         return;
@@ -904,9 +942,9 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ playlist_name: name, track_ids: trackIds })
                     });
-                    const data = await response.json();
-                    playlistStatus.className = response.ok ? 'status-success' : 'status-error';
-                    playlistStatus.textContent = data.message || data.error || 'Playlist request finished.';
+                    const data = await readJsonBody(response);
+                    playlistStatus.className = (response.ok && data !== null) ? 'status-success' : 'status-error';
+                    playlistStatus.textContent = (response.ok && data && data.message) || apiErrorText(data, `Server returned an error (HTTP ${response.status})`);
                 } catch (err) {
                     playlistStatus.className = 'status-error';
                     playlistStatus.textContent = 'Could not reach the playlist endpoint.';
@@ -947,9 +985,9 @@
                                 track_ids: trackItems.map(t => t.id)
                             })
                         });
-                        const data = await response.json();
-                        status.textContent = data.message || data.error || 'Playlist request finished.';
-                        status.className = 'tree-leaf-status ' + (response.ok ? 'status-success' : 'status-error');
+                        const data = await readJsonBody(response);
+                        status.textContent = (response.ok && data && data.message) || apiErrorText(data, `Server returned an error (HTTP ${response.status})`);
+                        status.className = 'tree-leaf-status ' + ((response.ok && data !== null) ? 'status-success' : 'status-error');
                     } catch (err) {
                         status.textContent = 'Could not reach the playlist endpoint.';
                         status.className = 'tree-leaf-status status-error';
@@ -1014,9 +1052,9 @@
                     try {
                         const params = new URLSearchParams({ node_id: node.id });
                         const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_tree_api") }}?' + params.toString());
-                        const data = await response.json();
-                        if (!response.ok) {
-                            children.innerHTML = `<div class="tree-error">${esc(data.error || 'Failed to load.')}</div>`;
+                        const data = await readJsonBody(response);
+                        if (!response.ok || data === null) {
+                            children.innerHTML = `<div class="tree-error">${esc(apiErrorText(data, `Failed to load (HTTP ${response.status})`))}</div>`;
                             return;
                         }
                         const sub = data.node;
@@ -1054,9 +1092,9 @@
                 treeContainer.innerHTML = '<div class="tree-loading">Loading tree...</div>';
                 try {
                     const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_tree_api") }}');
-                    const data = await response.json();
-                    if (!response.ok) {
-                        treeContainer.innerHTML = `<div class="tree-error">${esc(data.error || 'Failed to load the tree.')}</div>`;
+                    const data = await readJsonBody(response);
+                    if (!response.ok || data === null) {
+                        treeContainer.innerHTML = `<div class="tree-error">${esc(apiErrorText(data, `Failed to load the tree (HTTP ${response.status})`))}</div>`;
                         return;
                     }
                     renderTree(data.node);
@@ -1095,7 +1133,11 @@
                         try {
                             const params = new URLSearchParams({ search_query: query });
                             const response = await fetch('{{ url_for("ivf_bp.search_tracks_endpoint") }}?' + params.toString());
-                            const tracks = await response.json();
+                            const tracks = await readJsonBody(response);
+                            if (!response.ok || !Array.isArray(tracks)) {
+                                showAutocompleteError(box, response, tracks);
+                                return;
+                            }
                             box.innerHTML = '';
                             if (!tracks.length) {
                                 box.innerHTML = '<div class="autocomplete-item"><em>No songs found</em></div>';
@@ -1265,8 +1307,8 @@
                 const region = regionLabel(row.region);
                 journeyDiskReadout.innerHTML = '<strong>' + esc(trackLabel(row)) + '</strong>' +
                     (region ? '<br><span class="journey-readout-region">' + esc(region) + '</span>' : '') +
-                    '<br>Step ' + row.step + ' 00b7 R ' + Number(row.hyperbolic_radius).toFixed(3) +
-                    (row.is_endpoint ? ' 00b7 your pick' : ' 00b7 ' + Number(row.distance).toFixed(3) + ' from the ideal path');
+                    '<br>Step ' + row.step + ' \u00b7 R ' + Number(row.hyperbolic_radius).toFixed(3) +
+                    (row.is_endpoint ? ' \u00b7 your pick' : ' \u00b7 ' + Number(row.distance).toFixed(3) + ' from the ideal path');
             });
 
             const PROFILE = { left: 46, right: 18, top: 20, bottom: 36, width: 640, height: 240 };
@@ -1361,7 +1403,7 @@
                     const region = regionLabel(best.region);
                     journeyProfileReadout.innerHTML = '<strong>' + esc(trackLabel(best)) + '</strong>' +
                         (region ? '<br><span class="journey-readout-region">' + esc(region) + '</span>' : '') +
-                        '<br>Step ' + best.step + ' 00b7 R ' + Number(best.hyperbolic_radius).toFixed(3);
+                        '<br>Step ' + best.step + ' \u00b7 R ' + Number(best.hyperbolic_radius).toFixed(3);
                 };
                 hit.addEventListener('mousemove', move);
                 hit.addEventListener('touchmove', move, { passive: true });
@@ -1443,9 +1485,9 @@
                             ancestry_dive: clampDive(Number.parseFloat(diveInput.value))
                         })
                     });
-                    const data = await response.json();
-                    if (!response.ok) {
-                        journeyStatus.textContent = data.error || 'The path could not be built.';
+                    const data = await readJsonBody(response);
+                    if (!response.ok || data === null) {
+                        journeyStatus.textContent = apiErrorText(data, `The path could not be built (HTTP ${response.status})`);
                         journeyStatus.className = 'status-error';
                         journeySection.classList.add('hidden');
                         return;
@@ -1487,9 +1529,9 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ playlist_name: name, track_ids: trackIds })
                     });
-                    const data = await response.json();
-                    journeyPlaylistStatus.className = response.ok ? 'status-success' : 'status-error';
-                    journeyPlaylistStatus.textContent = data.message || data.error || 'Playlist request finished.';
+                    const data = await readJsonBody(response);
+                    journeyPlaylistStatus.className = (response.ok && data !== null) ? 'status-success' : 'status-error';
+                    journeyPlaylistStatus.textContent = (response.ok && data && data.message) || apiErrorText(data, `Server returned an error (HTTP ${response.status})`);
                 } catch (err) {
                     journeyPlaylistStatus.className = 'status-error';
                     journeyPlaylistStatus.textContent = 'Could not reach the playlist endpoint.';
@@ -1505,6 +1547,27 @@
                 renderJourneyProfile();
             });
             themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+            const narrowJourney = window.matchMedia('(max-width: 640px)');
+            const fitJourneyToWidth = () => {
+                const diskWidth = journeyDisk.getBoundingClientRect().width;
+                const labelScale = narrowJourney.matches && diskWidth > 0
+                    ? Math.min(1.6, Math.max(1, (DISK_CX * 2) / diskWidth)) : 1;
+                journeyDisk.style.setProperty('--journey-label-scale', labelScale.toFixed(3));
+                const boxWidth = narrowJourney.matches ? Math.round(journeyProfile.parentElement.clientWidth) : 0;
+                const profileWidth = boxWidth > 0 ? Math.max(280, Math.min(640, boxWidth)) : 640;
+                if (profileWidth === PROFILE.width) return;
+                PROFILE.width = profileWidth;
+                PROFILE.plotW = PROFILE.width - PROFILE.left - PROFILE.right;
+                journeyProfile.setAttribute('viewBox', `0 0 ${PROFILE.width} ${PROFILE.height}`);
+                if (journeyState.data) renderJourneyProfile();
+            };
+            if (window.ResizeObserver) {
+                const journeyResizeObserver = new ResizeObserver(fitJourneyToWidth);
+                journeyResizeObserver.observe(journeyDisk);
+                journeyResizeObserver.observe(journeyProfile.parentElement);
+            }
+            narrowJourney.addEventListener('change', fitJourneyToWidth);
 
             // Poincare ball: re-render the mode region whenever the mode changes
             // (before any search), and draw the initial preview. The radial

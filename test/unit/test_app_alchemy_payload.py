@@ -40,12 +40,22 @@ class TestAlchemyApiPayloadValidation:
     def test_items_without_any_add_op_returns_400(self, client):
         response = client.post('/api/alchemy', json={'items': [{'id': 'song-1', 'op': 'SUBTRACT'}]})
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Invalid request'}
+        assert response.get_json()['error'] == 'Invalid request'
+        assert response.get_json()['error_code'] == 1003
+
+    @pytest.mark.parametrize('items', ['abc', [1, 2], [{'op': 'ADD', 'id': 'a'}, 'b']])
+    def test_items_that_are_not_a_list_of_objects_return_400_not_500(self, client, items):
+        response = client.post('/api/alchemy', json={'items': items})
+        assert response.status_code == 400, (
+            'a string or scalar item used to reach i.get outside any try and answer 500'
+        )
+        assert response.get_json()['error_code'] == 1003
 
     def test_add_item_missing_id_returns_400(self, client):
         response = client.post('/api/alchemy', json={'items': [{'op': 'ADD', 'type': 'song'}]})
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Invalid request'}
+        assert response.get_json()['error'] == 'Invalid request'
+        assert response.get_json()['error_code'] == 1003
 
     @patch('app_alchemy.song_alchemy')
     def test_add_items_without_id_are_filtered_before_dispatch(self, mock_alchemy, client):

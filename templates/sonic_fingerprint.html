@@ -364,7 +364,7 @@
                     });
                     const data = await response.json();
 
-                    if (!response.ok) throw new Error(data.error || `HTTP error! status: ${response.status}`);
+                    if (!response.ok) throw new Error(apiErrorText(data, `HTTP error! status: ${response.status}`));
 
                     if (data.length === 0) {
                         statusDiv.textContent = 'Could not generate fingerprint. No recommendations found. Check credentials and listening history.';
@@ -424,7 +424,7 @@
                         body: JSON.stringify(payload),
                     });
                     const result = await response.json();
-                    if (!response.ok) throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                    if (!response.ok) throw new Error(apiErrorText(result, `HTTP error! status: ${response.status}`));
                     playlistStatusDiv.textContent = result.message;
                     playlistStatusDiv.className = 'status-success';
                 } catch (error) {

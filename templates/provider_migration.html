@@ -322,6 +322,15 @@
             transform: scale(1.15);
         }
         .mig-checkbox-row label { font-size: 1rem; }
+        .mig-loose-label { min-height: 44px; }
+        #mig-loose-match {
+            width: 22px;
+            height: 22px;
+            min-width: 22px;
+            flex: 0 0 auto;
+            margin: 0;
+            accent-color: var(--color-primary, #3b82f6);
+        }
         #main-content-inner,
         .mig-card,
         .mig-card * {
@@ -517,7 +526,7 @@
                 &ldquo;Report Real Path&rdquo; setting).
             </p>
             <div class="mig-row" style="align-items:center;">
-                <label style="display:flex; align-items:center; gap:0.4rem; margin:0;">
+                <label class="mig-loose-label" style="display:flex; align-items:center; gap:0.4rem; margin:0;">
                     <input type="checkbox" id="mig-loose-match">
                     <span id="mig-loose-match-label">Also match by title + artist (ignore album)</span>
                 </label>
@@ -639,6 +648,7 @@
 (function() {
     // ---------- State ----------
     let sessionId   = null;
+    let sessionTarget = null;
     let targetType  = '';
     let targetCreds = {};
     let unmatchedAlbums = [];
@@ -657,6 +667,7 @@
         exact_meta:   'via exact metadata',
         title_artist: 'via title + artist only',
         norm_meta:  'via normalized metadata',
+        title_duration: 'via title + artist + duration',
         manual:     'manually re-targeted',
         unknown:    '',
     };
@@ -703,7 +714,7 @@
             // raw HTML is unreadable in dark mode. Surface a short summary.
             data = { error: 'Server error (HTTP ' + res.status + '). Check the server logs for details.' };
         }
-        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        if (!res.ok) throw new Error(apiErrorText(data, 'Request failed: ' + res.status));
         return data;
     }
 
@@ -972,8 +983,9 @@
                 body: JSON.stringify({ type: targetType, creds: targetCreds })
             });
             if (!result.ok) {
-                showError($('mig-probe-result'),
-                    'Connection failed: ' + (result.error || 'unknown'));
+                showError($('mig-probe-result'), result.incomplete_creds
+                    ? result.error
+                    : 'Connection failed: ' + apiErrorText(result, 'unknown'));
                 resetFromStep(3);
                 return;
             }
@@ -987,14 +999,18 @@
             }
             $('mig-probe-result').innerHTML = html;
 
-            // Create/reuse session
-            if (!sessionId) {
+            // Reuse the session only while it targets exactly what was just tested;
+            // a changed provider, URL or credential starts a fresh one.
+            const testedTarget = JSON.stringify([targetType, targetCreds]);
+            if (!sessionId || sessionTarget !== testedTarget) {
+                if (sessionId) resetFromStep(3);
                 const s = await jsonFetch("{{ url_for('migration_bp.session_start') }}", {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ target_type: targetType, target_creds: targetCreds })
                 });
                 sessionId = s.session_id;
+                sessionTarget = testedTarget;
             }
             // Populate the library checkbox list once we have a session. Hidden
             // for providers without a listable folder API.
@@ -1048,7 +1064,7 @@
             renderSourceRefreshPanel(data);
             throw new Error('__source_refresh__');  // caught below, message discarded
         }
-        if (!res.ok) throw new Error(data.error || 'Request failed: ' + res.status);
+        if (!res.ok) throw new Error(apiErrorText(data, 'Request failed: ' + res.status));
         // The heavy fetch+match runs in a queue worker now; poll for the result.
         if (data.task_id) {
             return await pollMigrationJob(data.task_id);
@@ -1070,7 +1086,7 @@
                 return r;
             }
             if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
-                throw new Error(res.error || 'Background job failed. Check the container logs for details.');
+                throw new Error(apiErrorText(res, 'Background job failed. Check the container logs for details.'));
             }
             await new Promise(r => setTimeout(r, 2000));
         }
@@ -1140,6 +1156,9 @@
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="tail"><span class="mig-tier-num">' + (tc.tail || 0) + '</span>matched by path tail</div>';
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="exact_meta"><span class="mig-tier-num">' + (tc.exact_meta || 0) + '</span>matched by exact metadata</div>';
         html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="norm_meta"><span class="mig-tier-num">' + (tc.norm_meta || 0) + '</span>matched by normalized metadata</div>';
+        if (tc.title_duration) {
+            html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_duration"><span class="mig-tier-num">' + tc.title_duration + '</span>matched by title + artist + duration</div>';
+        }
         if ('title_artist' in tc) {
             html += '<div class="mig-tier-cell mig-tier-clickable" data-tier="title_artist"><span class="mig-tier-num">' + (tc.title_artist || 0) + '</span>matched by title + artist only</div>';
         }
@@ -1616,7 +1635,7 @@
                 if (AudioMuseTaskStatus.isFailure(s) || AudioMuseTaskStatus.isRevoked(s)) {
                     showError(statusEl,
                         '<strong>Migration failed.</strong><br>' +
-                        (res.error || 'Unknown error') +
+                        apiErrorText(res, 'Unknown error') +
                         '<br><br>Your database is unchanged (transaction rolled back). ' +
                         'Fix the issue and re-run the wizard. If you see corruption, ' +
                         'restore from the backup you made in step 1.'

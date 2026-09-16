@@ -135,14 +135,17 @@ function toggleAiConfig() {
 async function fetchConfig() {
     try {
         const response = await fetch(getConfigEndpointUrl);
-        const config = await response.json();
+        const config = await response.json().catch(() => null);
+        if (!response.ok || !config) {
+            throw new Error(apiErrorText(config, `HTTP ${response.status}`));
+        }
         renderConfig(config);
-        switchView('basic');
-        toggleAiConfig();
     } catch (error) {
         console.error('Error fetching config:', error);
-        showMessageBox('Error', 'Failed to load configuration. Please check the backend server.');
+        showMessageBox('Error', `Failed to load configuration: ${error.message}`, true);
     }
+    switchView('basic');
+    toggleAiConfig();
 }
 
 const ALGORITHM_LABELS = {
@@ -201,10 +204,28 @@ function updateCancelButtonState(isDisabled) {
     cancelTaskBtn.disabled = isDisabled;
 }
 
+function terminalTaskMessage(task, statusUpper) {
+    let outcome = `ended with status ${statusUpper}`;
+    if (AudioMuseTaskStatus.isSuccess(statusUpper)) {
+        outcome = 'completed successfully';
+    } else if (AudioMuseTaskStatus.isFailure(statusUpper)) {
+        outcome = 'failed';
+    } else if (AudioMuseTaskStatus.isRevoked(statusUpper)) {
+        outcome = 'was canceled';
+    }
+    const errorText = formatErrorText(task.details && task.details.error);
+    const sentence = `Task ${task.task_id} (${task.task_type_from_db || 'Unknown Type'}) ${outcome}.`;
+    return errorText ? `${sentence} ${errorText}` : sentence;
+}
+
 async function checkActiveTasks() {
     try {
         const response = await fetch(getActiveTasksEndpointUrl);
-        const mainActiveTask = await response.json(); 
+        if (!response.ok) {
+            const errorBody = await response.json().catch(() => null);
+            throw new Error(apiErrorText(errorBody, `HTTP ${response.status}`));
+        }
+        const mainActiveTask = await response.json();
 
         if (mainActiveTask && mainActiveTask.task_id) {
             currentTaskId = mainActiveTask.task_id;
@@ -216,9 +237,9 @@ async function checkActiveTasks() {
 
             if (AudioMuseTaskStatus.isTerminal(currentStatusUpper) && !previousStateWasTerminal) {
                 const alertTitle = AudioMuseTaskStatus.title(currentStatusUpper);
-                const alertMessage = `Task ${mainActiveTask.task_id} (${mainActiveTask.task_type_from_db || 'Unknown Type'}) has ${currentStatusUpper.toLowerCase()}.`;
+                const alertMessage = terminalTaskMessage(mainActiveTask, currentStatusUpper);
 
-                showMessageBox(alertTitle, alertMessage);
+                showMessageBox(alertTitle, alertMessage, AudioMuseTaskStatus.isFailure(currentStatusUpper));
             }
             lastPolledTaskDetails[currentTaskId] = { state: currentStatusUpper, ...mainActiveTask };
             disableTaskButtons(true);
@@ -228,6 +249,14 @@ async function checkActiveTasks() {
             const finishedTaskId = currentTaskId;
             const previousDetails = lastPolledTaskDetails[finishedTaskId];
             currentTaskId = null;
+
+            if (previousDetails?.side_job) {
+                delete lastPolledTaskDetails[finishedTaskId];
+                await fetchAndDisplayOverallLastTask();
+                disableTaskButtons(false);
+                updateCancelButtonState(true);
+                return true;
+            }
 
             try {
                 const finalStatusResponse = await fetch(getTaskStatusEndpointUrl.replace(':taskId:', encodeURIComponent(finishedTaskId)));
@@ -240,13 +269,15 @@ async function checkActiveTasks() {
 
                     if (finalStatusIsTerminal && !previousStateWasTerminal) {
                         const alertTitle = AudioMuseTaskStatus.title(upperFinalStatus);
-                        const alertMessage = `Task ${finalStatusData.task_id} (${finalStatusData.task_type_from_db || 'Unknown Type'}) has ${upperFinalStatus.toLowerCase()}.`;
+                        const alertMessage = terminalTaskMessage(finalStatusData, upperFinalStatus);
 
-                        showMessageBox(alertTitle, alertMessage);
+                        showMessageBox(alertTitle, alertMessage, AudioMuseTaskStatus.isFailure(upperFinalStatus));
                     }
                     displayTaskStatus(finalStatusData);
                 } else {
-                    showMessageBox('Task Finished', `Task ${finishedTaskId} is no longer active. Final status could not be retrieved.`);
+                    const finalErrorBody = await finalStatusResponse.json().catch(() => null);
+                    const finalErrorText = apiErrorText(finalErrorBody, `HTTP ${finalStatusResponse.status}`);
+                    showMessageBox('Task Finished', `Task ${finishedTaskId} is no longer active. Final status could not be retrieved: ${finalErrorText}`, true);
                     displayTaskStatus({ task_id: finishedTaskId, state: 'UNKNOWN', progress: 100 });
                 }
             } catch (e) {
@@ -385,19 +416,18 @@ async function startTask(taskType) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        const result = await response.json();
+        const result = await response.json().catch(() => ({}));
         if (response.ok && result.task_id) {
             currentTaskId = result.task_id;
             displayTaskStatus({ task_id: result.task_id, task_type: result.task_type, state: 'NEW', progress: 0, details: 'Task enqueued.' });
             lastPolledTaskDetails[result.task_id] = { state: 'NEW', task_type: result.task_type, task_id: result.task_id };
             updateCancelButtonState(false);
         } else {
-            const structured = (typeof formatErrorText === 'function' && result?.error_code) ? formatErrorText(result) : '';
-            throw new Error(structured || result.error || result.message || 'Failed to start task.');
+            throw new Error(apiErrorText(result, result.message || `Failed to start task (HTTP ${response.status}).`));
         }
     } catch (error) {
         console.error(`Error starting ${taskType} task:`, error);
-        showMessageBox('Error', `Failed to start ${taskType} task: ${error.message}`);
+        showMessageBox('Error', `Failed to start ${taskType} task: ${error.message}`, true);
         disableTaskButtons(false);
         updateCancelButtonState(true);
     }
@@ -408,16 +438,16 @@ async function cancelTask() {
     updateCancelButtonState(true);
     try {
         const response = await fetch(cancelTaskEndpointUrl.replace(':taskId:', encodeURIComponent(currentTaskId)), { method: 'POST' });
-        const result = await response.json();
+        const result = await response.json().catch(() => ({}));
         if (response.ok) {
             showMessageBox('Success', result.message);
             checkActiveTasks();
         } else {
-            throw new Error(result.message || 'Failed to cancel task.');
+            throw new Error(apiErrorText(result, result.message || `Failed to cancel task (HTTP ${response.status}).`));
         }
     } catch (error) {
         console.error('Error cancelling task:', error);
-        showMessageBox('Error', `Failed to cancel task: ${error.message}`);
+        showMessageBox('Error', `Failed to cancel task: ${error.message}`, true);
         updateCancelButtonState(false);
     }
 }
@@ -427,12 +457,15 @@ async function fetchPlaylists() {
     playlistsSection.style.display = 'block';
     try {
         const response = await fetch(getPlaylistsEndpointUrl);
-        if (!response.ok) throw new Error(`Server responded with ${response.status}`);
+        if (!response.ok) {
+            const errorBody = await response.json().catch(() => null);
+            throw new Error(apiErrorText(errorBody, `Server responded with ${response.status}`));
+        }
         const playlistsData = await response.json();
         renderPlaylists(playlistsData);
     } catch (error) {
         console.error('Error fetching playlists:', error);
-        playlistsContainer.innerHTML = `<p class="status-failure">Error fetching playlists: ${error.message}</p>`;
+        playlistsContainer.innerHTML = `<p class="status-failure">Error fetching playlists: ${escapeHtml(error.message)}</p>`;
     }
 }
 
@@ -477,17 +510,19 @@ function renderPlaylists(playlistsData) {
     }
 }
 
-function showMessageBox(title, message) {
+function showMessageBox(title, message, keepOpen = false) {
     const boxId = 'custom-message-box';
     document.getElementById(boxId)?.remove();
     const messageBox = document.createElement('div');
     messageBox.id = boxId;
-    messageBox.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1000; border: 1px solid #E5E7EB; max-width: 400px; text-align: left;';
+    messageBox.style.cssText = 'position: fixed; top: 20px; left: 20px; right: 20px; margin-left: auto; width: fit-content; background-color: #fff; color: #1F2937; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 1002; border: 1px solid #E5E7EB; max-width: 400px; text-align: left; overflow-wrap: anywhere;';
     messageBox.innerHTML = `<h3 style="font-weight: 600; margin-top:0; margin-bottom: 10px; color: #111827;">${escapeHtml(title)}</h3><p style="margin:0;">${escapeHtml(message)}</p><button style="position: absolute; top: 10px; right: 10px; background: none; border: none; font-size: 1.5rem; color: #9CA3AF; cursor: pointer;" onclick="this.parentNode.remove()">&times;</button>`;
-    
-    setTimeout(() => {
-        messageBox.remove();
-    }, 5000);
+
+    if (!keepOpen) {
+        setTimeout(() => {
+            messageBox.remove();
+        }, 5000);
+    }
 
     document.body.appendChild(messageBox);
 }
@@ -500,7 +535,8 @@ async function fetchAndDisplayOverallLastTask() {
             if (lastTask && lastTask.task_id) displayTaskStatus(lastTask);
             else displayTaskStatus({ state: 'IDLE', details: 'No previous task found.' });
         } else {
-            displayTaskStatus({ state: 'IDLE', details: 'Could not fetch last task status.' });
+            const errorBody = await response.json().catch(() => null);
+            displayTaskStatus({ state: 'IDLE', details: apiErrorText(errorBody, 'Could not fetch last task status.') });
         }
     } catch (error) {
         console.error('Error fetching last task status:', error);

@@ -13,36 +13,35 @@ and formatting helpers from ``error_manager`` so callers import structured
 error codes, classes, and messages from a single ``error`` namespace.
 
 Main Features:
-* Flattens the dictionary and manager symbols into one import surface.
+* Flattens the dictionary and manager symbols into one import surface, resolved
+  on first access (PEP 562) so importing any ``error.*`` module never loads the
+  whole package eagerly: every route module imports a code constant, and an
+  eager re-export here added two levels to each of their import chains.
 * Defines ``__all__`` to pin the package's stable public API.
 """
 
-from error.error_dictionary import (
-    ERROR_REGISTRY,
-    UNKNOWN_ERROR_CODE,
-    get_error_class,
-    get_default_message,
-)
-from error.error_manager import (
-    AudioMuseError,
-    build,
-    record,
-    classify,
-    from_exception,
-    http_status_for_code,
-    error_response,
-)
+import importlib
 
-__all__ = [
-    "ERROR_REGISTRY",
-    "UNKNOWN_ERROR_CODE",
-    "get_error_class",
-    "get_default_message",
-    "AudioMuseError",
-    "build",
-    "record",
-    "classify",
-    "from_exception",
-    "http_status_for_code",
-    "error_response",
-]
+_EXPORTS = {
+    "ERROR_REGISTRY": "error.error_dictionary",
+    "UNKNOWN_ERROR_CODE": "error.error_dictionary",
+    "get_error_class": "error.error_dictionary",
+    "get_default_message": "error.error_dictionary",
+    "AudioMuseError": "error.error_manager",
+    "build": "error.error_manager",
+    "record": "error.error_manager",
+    "classify": "error.error_manager",
+    "from_exception": "error.error_manager",
+    "http_status_for_code": "error.error_manager",
+    "is_out_of_memory": "error.error_manager",
+    "is_model_out_of_memory": "error.error_manager",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module 'error' has no attribute {name!r}")
+    return getattr(importlib.import_module(module_name), name)

@@ -55,9 +55,19 @@
     #backup-status {
         margin-top: 0.75rem;
         font-size: 0.95rem;
+        overflow-wrap: anywhere;
+    }
+    #restore-status,
+    #restore-file-name {
+        overflow-wrap: anywhere;
     }
     .size-col {
         white-space: nowrap;
+    }
+    @media (max-width: 768px) {
+        .restore-confirm-area input[type="text"] {
+            font-size: 1rem;
+        }
     }
 </style>
 {% endblock %}
@@ -170,7 +180,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // The countdown itself is the shared one in restart_wait.js. Only the ceiling
     // differs here: a restore stops Flask, replaces the database and brings the
     // services back, which can take far longer than any other restart.
-    const RESTORE_MAX_WAIT_SECONDS = 30 * 60;
+    const RESTORE_MAX_WAIT_SECONDS = 60 * 60;
 
     // Restore backup via chunked file upload (1GB chunks)
     restoreBtn.addEventListener('click', async () => {
@@ -211,7 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
 
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.error || `Chunk ${chunkNum} upload failed`);
+                if (!res.ok) throw new Error(apiErrorText(data, `Chunk ${chunkNum} upload failed`));
 
                 if (data.all_chunks_received) {
                     // Countdown from the instant the upload lands, exactly like the

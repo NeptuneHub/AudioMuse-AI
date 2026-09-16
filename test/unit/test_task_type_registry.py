@@ -67,13 +67,14 @@ class TestTheOneLiveMainIndexDoesNotMove:
 class TestEveryDerivedTupleMatchesWhatShipped:
     @pytest.mark.parametrize('derived,literal', [
         (sql.MAIN_TASK_TYPES, HISTORICAL_MAIN_TASK_TYPES),
-        (sql.NUDGE_TASK_TYPES, HISTORICAL_MAIN_TASK_TYPES + ('server_sweep',)),
+        (sql.NUDGE_TASK_TYPES, HISTORICAL_MAIN_TASK_TYPES + ('server_sweep', 'naming_preview')),
         (database.SELF_MANAGED_TASK_TYPES,
          ('server_sweep', 'alchemy_radio', 'worker_control',
-          'provider_migration_planner')),
+          'provider_migration_planner', 'naming_preview')),
         (database.SELF_MANAGED_TASK_TYPE_PREFIXES, ('plugin.',)),
         (database.INLINE_FLASK_TASK_TYPES, ('alchemy_radio',)),
         (task_types.NON_WORKER_TASK_TYPES, ('alchemy_radio', 'worker_control')),
+        (task_types.SIDE_JOB_TASK_TYPES, ('naming_preview',)),
     ])
     def test_the_derived_tuple_is_identical(self, derived, literal):
         assert derived == literal

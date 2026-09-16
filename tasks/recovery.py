@@ -544,6 +544,25 @@ RECOVERY = {
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
     },
+    'naming_preview': {
+        MAIN_WORKER_DIED: handled(
+            'taskqueue.maintenance.reclaim_orphans FAILS it on the first worker '
+            'loss because its type declares restarts=0, and a deliberate restart '
+            'that requeues it is caught by run_naming_preview_task itself: a row '
+            'that already started fails at once instead of repeating every AI call '
+            'with an unsaved prompt'
+        ),
+        MAIN_ROW_SILENT: handled(
+            'it blocks every batch start through get_queue_blocking_task, so '
+            'nudge_wedged_main_tasks watches it (watched_by_nudge) and restarts its '
+            'worker after QUEUE_WEDGED_MAIN_TASK_MINUTES unchanged. The preview '
+            'rewrites its row after every playlist, and the wizard Stop button runs '
+            'the global cancel'
+        ),
+        CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
+        CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
+        GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
+    },
     'alchemy_radio': {
         MAIN_WORKER_DIED: not_applicable(
             'it never runs on a worker: it is an inline Flask run '

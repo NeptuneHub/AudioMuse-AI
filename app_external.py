@@ -25,8 +25,13 @@ import logging
 from app_logging import sanitize_log_value
 # Import ivf_manager functions for track lookups
 from tasks.ivf_manager import search_tracks_unified
-from error import error_manager
-from error.error_dictionary import ERR_DB_QUERY
+from error.error_dictionary import (
+    ERR_DB_QUERY,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_SEARCH_FAILED,
+)
+from error.responses import json_error, json_exception
 # NOTE: The import of 'get_db' has been moved inside each function to prevent circular imports.
 
 logger = logging.getLogger(__name__)
@@ -51,8 +56,9 @@ def _resolve_external_id(raw_id):
 
 
 def _decode_embedding_bytes(payload):
-    if payload.get('embedding'):
-        payload['embedding'] = np.frombuffer(payload['embedding'], dtype=np.float32).tolist()
+    for column in ('embedding', 'poincare_embedding'):
+        if payload.get(column):
+            payload[column] = np.frombuffer(payload[column], dtype=np.float32).tolist()
 
 
 def _external_row_response(sql, label, decode=None):
@@ -61,7 +67,7 @@ def _external_row_response(sql, label, decode=None):
 
     raw_id = request.args.get('id')
     if not raw_id:
-        return jsonify({"error": "Missing 'id' parameter"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Missing 'id' parameter")
     safe_raw_id = sanitize_log_value(raw_id)
     try:
         try:
@@ -70,7 +76,7 @@ def _external_row_response(sql, label, decode=None):
             # The resolver's own text can carry internal detail, so it goes to
             # the log and the caller gets the parameter that was wrong.
             logger.warning("Could not resolve external id %s", safe_raw_id, exc_info=True)
-            return jsonify({"error": "Unknown or invalid 'server' parameter"}), 400
+            return json_error(ERR_INVALID_REQUEST, "Unknown or invalid 'server' parameter")
         row = None
         if item_id:
             db = get_db()
@@ -78,7 +84,7 @@ def _external_row_response(sql, label, decode=None):
                 cur.execute(sql, (item_id,))
                 row = cur.fetchone()
         if row is None:
-            return jsonify({"error": f"{label} not found for id: {raw_id}"}), 404
+            return json_error(ERR_NOT_FOUND, f"{label} not found for id: {raw_id}")
         # Convert DictRow to a standard dictionary for consistent JSON output;
         # echo the id the caller asked with so their key keeps matching.
         from app_server_context import provider_echo_id
@@ -89,8 +95,7 @@ def _external_row_response(sql, label, decode=None):
         return jsonify(payload)
     except Exception as e:
         logger.exception("Error fetching %s for id %s", label.lower(), safe_raw_id)
-        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
-        return jsonify(err), status
+        return json_exception(e, ERR_DB_QUERY)
 
 
 @external_bp.route('/get_score', methods=['GET'])
@@ -202,7 +207,7 @@ def search_tracks_endpoint():
 
     # Enforce minimum length constraint
     if len(search_query) < 1:
-        return jsonify({"error": "Query must be at least 1 character long"}), 400
+        return json_error(ERR_INVALID_REQUEST, "Query must be at least 1 character long")
 
     try:
         from app_server_context import resolve_request_server_id, selected_server_scope
@@ -213,7 +218,7 @@ def search_tracks_endpoint():
             selected_server_id, include_legacy = selected_server_scope()
         except ValueError:
             logger.warning("Invalid server selection.", exc_info=True)
-            return jsonify({"error": "Invalid server selection."}), 400
+            return json_error(ERR_INVALID_REQUEST, "Invalid server selection.")
         results = search_tracks_unified(
             search_query,
             server_id=selected_server_id,
@@ -221,10 +226,10 @@ def search_tracks_endpoint():
         )
         try:
             mapping = registry.translate_ids([r['item_id'] for r in results], server_id)
-        except Exception:
+        except Exception as exc:
             # Fail closed: never emit untranslated canonical ids to the client.
             logger.exception("External search id translation failed")
-            return jsonify({"error": "An error occurred during search."}), 500
+            return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")
         translated = []
         for r in results:
             if r['item_id'] not in mapping:
@@ -233,6 +238,6 @@ def search_tracks_endpoint():
             row['item_id'] = mapping[r['item_id']]
             translated.append(row)
         return jsonify(translated)
-    except Exception:
+    except Exception as exc:
         logger.exception("Error during external track search")
-        return jsonify({"error": "An error occurred during search."}), 500
+        return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")

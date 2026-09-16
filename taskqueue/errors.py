@@ -29,7 +29,13 @@ the eager-import ceiling.
 Main Features:
 * TaskFailed: permanent, the queue writes FAIL on the first attempt
 * TaskCancelled: the queue writes REVOKED and charges no attempt
+* WORKER_LOST_ERROR is the plain error text older releases recorded on a row
+  failed because its worker died; the queue now records the structured
+  ERR_WORKER_LOST record instead, and a reader still accepts this text for rows
+  written before that change
 """
+
+WORKER_LOST_ERROR = 'worker lost'
 
 
 class TaskFailed(Exception):

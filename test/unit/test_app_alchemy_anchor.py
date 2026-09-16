@@ -43,21 +43,24 @@ class TestCreateAnchorValidation:
     def test_whitespace_only_name_returns_400(self, mock_save, client):
         response = client.post('/api/anchors', json={'name': '   ', 'centroid': [0.1, 0.2]})
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Anchor name is required'}
+        assert response.get_json()['error'] == 'Anchor name is required'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
     def test_non_list_centroid_returns_400(self, mock_save, client):
         response = client.post('/api/anchors', json={'name': 'My Anchor', 'centroid': 'not-a-list'})
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Anchor centroid is required and must be a list'}
+        assert response.get_json()['error'] == 'Anchor centroid is required and must be a list'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
     def test_empty_list_centroid_returns_400(self, mock_save, client):
         response = client.post('/api/anchors', json={'name': 'My Anchor', 'centroid': []})
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Anchor centroid is required and must be a list'}
+        assert response.get_json()['error'] == 'Anchor centroid is required and must be a list'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
 
@@ -69,7 +72,8 @@ class TestCreateAnchorExclusionsValidation:
             json={'name': 'A', 'centroid': [0.1, 0.2], 'exclusions': 'nope'},
         )
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Anchor exclusions must be a list'}
+        assert response.get_json()['error'] == 'Anchor exclusions must be a list'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
@@ -79,7 +83,8 @@ class TestCreateAnchorExclusionsValidation:
             json={'name': 'A', 'centroid': [0.1, 0.2], 'exclusions': [[0.0, 1.0]]},
         )
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Each anchor exclusion must be an object'}
+        assert response.get_json()['error'] == 'Each anchor exclusion must be an object'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
@@ -89,7 +94,8 @@ class TestCreateAnchorExclusionsValidation:
             json={'name': 'A', 'centroid': [0.1, 0.2], 'exclusions': [{'distance': 0.2}]},
         )
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Each anchor exclusion needs a non-empty vector list'}
+        assert response.get_json()['error'] == 'Each anchor exclusion needs a non-empty vector list'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
@@ -103,7 +109,8 @@ class TestCreateAnchorExclusionsValidation:
             },
         )
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Anchor exclusion distance must be a number'}
+        assert response.get_json()['error'] == 'Anchor exclusion distance must be a number'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
@@ -117,7 +124,8 @@ class TestCreateAnchorExclusionsValidation:
             },
         )
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Anchor exclusion distance must be a finite number'}
+        assert response.get_json()['error'] == 'Anchor exclusion distance must be a finite number'
+        assert response.get_json()['error_code'] == 1003
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
@@ -160,5 +168,6 @@ class TestRenameAnchorValidation:
     def test_whitespace_only_name_returns_400(self, mock_update, client):
         response = client.put('/api/anchors/7', json={'name': '   '})
         assert response.status_code == 400
-        assert response.get_json() == {'error': 'Anchor name is required'}
+        assert response.get_json()['error'] == 'Anchor name is required'
+        assert response.get_json()['error_code'] == 1003
         mock_update.assert_not_called()

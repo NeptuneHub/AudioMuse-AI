@@ -101,6 +101,42 @@ class TestStartClustering:
 
         assert queued[0]['kwargs']['output_server_scope'] == 'all'
 
+    @pytest.mark.parametrize('field,value', [
+        ('clustering_runs', None), ('num_clusters_min', 'abc'), ('dbscan_eps_max', [1]),
+    ])
+    def test_a_non_numeric_parameter_answers_400_and_queues_nothing(
+        self, client, queued, field, value
+    ):
+        response = _start(client, **{field: value})
+
+        assert response.status_code == 400, (
+            'a form whose config failed to load posts null fields; int(None) used to '
+            'escape as a 500 instead of telling the user to reload'
+        )
+        assert response.get_json()['error_code'] == 1003
+        assert queued == []
+
+    @pytest.mark.parametrize('field', ['ai_model_provider', 'clustering_method', 'ollama_server_url'])
+    def test_a_text_parameter_of_the_wrong_type_answers_400_and_queues_nothing(
+        self, client, queued, field
+    ):
+        response = _start(client, **{field: 5})
+
+        assert response.status_code == 400, (
+            '.upper() on a number raised AttributeError, which the numeric guard did not '
+            'catch, so it escaped as a 500'
+        )
+        assert response.get_json()['error_code'] == 1003
+        assert queued == []
+
+    def test_a_null_text_parameter_falls_back_to_the_configured_default(self, client, queued):
+        response = _start(client, ai_model_provider=None)
+
+        assert response.status_code != 500
+        assert queued[0]['kwargs']['ai_model_provider_param'] == (
+            app_clustering.AI_MODEL_PROVIDER.upper()
+        )
+
     def test_auto_calibration_defaults_on(self, client, queued):
         _start(client)
 

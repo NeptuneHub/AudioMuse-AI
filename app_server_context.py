@@ -38,6 +38,10 @@ from flask import request
 
 logger = logging.getLogger(__name__)
 
+
+class UnknownServerError(ValueError):
+    pass
+
 _SECRET_CRED_KEYS = ('token', 'password', 'api_key')
 CRED_MASK = '__unchanged__'
 
@@ -74,7 +78,7 @@ def resolve_request_server_id(data=None):
         requested = str(requested)
     server = registry.get_server(requested) or registry.get_server_by_name(requested)
     if server is None:
-        raise ValueError(f"Unknown server '{requested}'")
+        raise UnknownServerError(f"Unknown server '{requested}'")
     return server['server_id']
 
 

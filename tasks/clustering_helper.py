@@ -47,6 +47,7 @@ except ImportError:
     logger.debug("GPU clustering module not available, using CPU only")
 
 
+import config
 from config import (
     STRATIFIED_GENRES,
     OTHER_FEATURE_LABELS,
@@ -69,7 +70,8 @@ from config import (
 )
 from .commons import score_vector
 
-from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
+from tasks.ai.api import clean_playlist_name, get_ai_playlist_name, get_ai_playlist_title
+from tasks.ai.prompts import normalize_naming_mode
 from tasks.ai.playlist_namer import build_naming_context, evidence_from_cluster_name
 
 from database import (
@@ -138,6 +140,20 @@ def _compose_name_from_ideas(context, avoid_names):
     return ''
 
 
+def _end_read_transaction():
+    from flask import g, has_app_context
+
+    if not has_app_context():
+        return
+    conn = g.get('db')
+    if conn is None or conn.closed:
+        return
+    try:
+        conn.commit()
+    except Exception:
+        logger.exception("Could not end the naming read transaction before the AI call")
+
+
 def _try_ai_name_playlist(
     original_name,
     songs,
@@ -154,9 +170,9 @@ def _try_ai_name_playlist(
     mistral_model,
     avoid_names=None,
     primary_genre=None,
+    naming_mode=None,
+    title_prompt=None,
 ):
-    if (ai_provider or 'NONE').upper() == 'NONE':
-        return original_name
     ai_config = {
         'provider': ai_provider,
         'ollama_url': ollama_url,
@@ -169,18 +185,69 @@ def _try_ai_name_playlist(
         'mistral_key': mistral_key,
         'mistral_model': mistral_model,
     }
+    return _name_playlist_with_ai_config(
+        original_name,
+        songs,
+        centroids,
+        ai_config,
+        avoid_names=avoid_names,
+        primary_genre=primary_genre,
+        naming_mode=naming_mode,
+        title_prompt=title_prompt,
+    )
+
+
+def _naming_lyric_axes(item_ids):
+    if not LYRICS_ENABLED:
+        return [], {}
+    try:
+        from lyrics.lyrics_transcriber import axis_columns
+
+        return list(axis_columns()), get_lyrics_axis_vectors(item_ids)
+    except Exception:
+        logger.exception("Could not load lyric axes for playlist naming")
+        return [], {}
+
+
+def _name_playlist_with_ai_config(
+    original_name,
+    songs,
+    centroids,
+    ai_config,
+    avoid_names=None,
+    primary_genre=None,
+    naming_mode=None,
+    title_prompt=None,
+):
+    if (ai_config.get('provider') or 'NONE').upper() == 'NONE':
+        return original_name
+    mode = normalize_naming_mode(
+        config.AI_NAMING_PROMPT_MODE if naming_mode is None else naming_mode
+    )
+    ai_avoid_names = [
+        name
+        for name in (avoid_names or [])
+        if '_' not in name.partition('_automatic')[0]
+    ]
+    if mode == 'title':
+        _end_read_transaction()
+        ai_title = get_ai_playlist_title(
+            config.AI_NAMING_TITLE_PROMPT if title_prompt is None else title_prompt,
+            songs,
+            ai_config,
+            used_titles=ai_avoid_names,
+        )
+        if ai_title:
+            return ai_title.strip().replace("\n", " ")
+        logger.warning(
+            "AI title naming failed for '%s'. Keeping the tag-based cluster name.",
+            original_name,
+        )
+        return original_name
     item_ids = [item_id for item_id, _title, _author in songs]
     score_rows = get_score_data_by_ids(item_ids)
-    axis_blobs = {}
-    columns = []
-    if LYRICS_ENABLED:
-        try:
-            from lyrics.lyrics_transcriber import axis_columns
-
-            columns = list(axis_columns())
-            axis_blobs = get_lyrics_axis_vectors(item_ids)
-        except Exception:
-            logger.exception("Could not load lyric axes for playlist naming")
+    columns, axis_blobs = _naming_lyric_axes(item_ids)
+    _end_read_transaction()
 
     context = build_naming_context(
         score_rows,
@@ -201,11 +268,6 @@ def _try_ai_name_playlist(
         context['ideas'],
         context['axis_labels'],
     )
-    ai_avoid_names = [
-        name
-        for name in (avoid_names or [])
-        if '_' not in name.partition('_automatic')[0]
-    ]
     naming_dimension = context['naming_dimension']
     naming_evidence = context['naming_evidence']
     if naming_evidence == 'general-purpose listening':

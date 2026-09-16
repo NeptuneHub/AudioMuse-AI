@@ -225,6 +225,14 @@ class TestSessionRecycler:
         assert recycler.should_recycle()
 
 
+def _runtime_error(message):
+    runtime_exception = type(
+        'RuntimeException', (Exception,),
+        {'__module__': 'onnxruntime.capi.onnxruntime_pybind11_state'},
+    )
+    return runtime_exception(message)
+
+
 class TestHandleOnnxMemoryError:
     def test_non_memory_error_reraises_same_object(self):
         err = ValueError("boom")
@@ -239,7 +247,7 @@ class TestHandleOnnxMemoryError:
         retry.assert_not_called()
 
     def test_memory_error_triggers_cleanup_and_returns_retry_result(self):
-        err = RuntimeError("BFCArena failed")
+        err = _runtime_error("BFCArena failed")
         cleanup = Mock()
         retry = Mock(return_value="retried")
 
@@ -252,7 +260,7 @@ class TestHandleOnnxMemoryError:
         retry.assert_called_once()
 
     def test_cpu_fallback_returns_result_session_provider_tuple(self):
-        err = RuntimeError("BFCArena failed")
+        err = _runtime_error("BFCArena failed")
         session_mock = MagicMock()
         creator = Mock(return_value=(session_mock, "CPUExecutionProvider"))
         retry = Mock(return_value="r")
@@ -270,7 +278,7 @@ class TestHandleOnnxMemoryError:
         retry.assert_called_once()
 
     def test_retry_failure_propagates_retry_exception(self):
-        err = RuntimeError("Failed to allocate memory for requested buffer")
+        err = _runtime_error("Failed to allocate memory for requested buffer")
         retry_err = RuntimeError("still failing")
         retry = Mock(side_effect=retry_err)
 
@@ -280,9 +288,9 @@ class TestHandleOnnxMemoryError:
         assert excinfo.value is retry_err
 
     def test_memory_error_without_retry_or_fallback_reraises_original(self):
-        err = RuntimeError("out of memory")
+        err = _runtime_error("out of memory")
 
-        with pytest.raises(RuntimeError) as excinfo:
+        with pytest.raises(type(err)) as excinfo:
             handle_onnx_memory_error(err, "test context")
 
         assert excinfo.value is err

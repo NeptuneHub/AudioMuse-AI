@@ -15,6 +15,7 @@ prompt, and the grounded brainstorm recipe prompt. Consumed by ``planner``,
 
 Main Features:
 * Tool prose and the Ollama structured-output grammar are both DERIVED from the get_mcp_tools schemas (names, descriptions, per-argument types and enums), so the routing knowledge lives in one place and stays in sync across providers.
+* build_title_naming_prompt renders the classic full-title naming prompt: the user-editable instructions followed by a fixed sample of the playlist songs, so editing the instructions can never change what data is sent.
 * build_tool_calls_schema emits a typed per-tool grammar (reasoning field first with a hard maxLength, name+arguments branches with enum-locked labels, array caps from the shared maxItems) used to constrain Ollama structured output; prompts stay short with a few diverse worked examples per intent class, including a three-tool plan, exclusion ('no rap') and language/scene routing rules.
 """
 
@@ -23,6 +24,44 @@ import json
 from typing import Dict, List, Optional
 
 import config
+
+
+NAMING_MODES = ('concept', 'title')
+
+TITLE_PROMPT_PLAYLIST_HEADER = 'This is the playlist:\n'
+
+
+def normalize_naming_mode(mode) -> str:
+    mode = str(mode or '').strip().lower()
+    return mode if mode in NAMING_MODES else NAMING_MODES[0]
+
+
+def title_prompt_song_block(songs, max_songs: int) -> str:
+    sample = list(songs or [])[: max(1, int(max_songs))]
+    lines = '\n'.join(
+        f"- {title or 'Unknown Title'} by {author or 'Unknown Artist'}"
+        for _item_id, title, author in sample
+    )
+    return f'{TITLE_PROMPT_PLAYLIST_HEADER}{lines}\n\n'
+
+
+TITLE_PROMPT_RECENT_TITLES = 8
+
+
+def title_prompt_used_titles_block(used_titles) -> str:
+    recent = [title for title in (used_titles or []) if title][-TITLE_PROMPT_RECENT_TITLES:]
+    if not recent:
+        return ''
+    return 'Titles already used, do not reuse them: ' + ' | '.join(recent) + '\n\n'
+
+
+def build_title_naming_prompt(instructions: str, songs, max_songs: int, used_titles=None) -> str:
+    return (
+        (instructions or '').rstrip()
+        + '\n\n'
+        + title_prompt_song_block(songs, max_songs)
+        + title_prompt_used_titles_block(used_titles)
+    )
 
 
 playlist_concept_prompt_template = (

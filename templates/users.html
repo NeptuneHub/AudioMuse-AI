@@ -1,5 +1,79 @@
 {% extends "includes/layout.html" %}
 
+{% block headAdditions %}
+<style>
+    @media (max-width: 640px) {
+        #additional-users-table {
+            min-width: 0 !important;
+        }
+        #additional-users-table,
+        #additional-users-table tbody {
+            display: block;
+            width: 100%;
+        }
+        #additional-users-table thead {
+            display: none;
+        }
+        #additional-users-table tbody tr {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            column-gap: 0.75rem;
+            row-gap: 0.2rem;
+            padding: 0.65rem 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+        #additional-users-table tbody tr:last-child {
+            border-bottom: 0;
+        }
+        #additional-users-table td {
+            display: block;
+            padding: 0 !important;
+            border: 0;
+            white-space: normal;
+            text-align: left !important;
+            overflow-wrap: anywhere;
+        }
+        #additional-users-table td[colspan] {
+            grid-column: 1 / -1;
+        }
+        #additional-users-table td.users-cell-name {
+            grid-column: 1;
+            grid-row: 1;
+            font-weight: 600;
+        }
+        #additional-users-table td.users-cell-role {
+            grid-column: 2;
+            grid-row: 1;
+            color: var(--text-muted);
+        }
+        #additional-users-table td.users-cell-created {
+            grid-column: 1 / -1;
+            grid-row: 2;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        #additional-users-table td.users-cell-created::before {
+            content: attr(data-label) ": ";
+        }
+        #additional-users-table td.users-cell-actions {
+            grid-column: 1 / -1;
+            grid-row: 3;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.45rem;
+        }
+        #additional-users-table td.users-cell-actions:empty {
+            display: none;
+        }
+        #additional-users-table td.users-cell-actions .btn {
+            margin-right: 0 !important;
+        }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div id="main-content-inner">
     <section class="section">

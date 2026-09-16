@@ -17,6 +17,13 @@ Main Features:
 * Role constants, password hashing, and CRUD helpers for user accounts.
 * The ``check_setup_needed`` / ``check_auth_needed`` / ``check_admin_needed``
   barrier guards and the ``/login``, ``/auth``, ``/logout``, ``/api/users`` routes.
+  The barrier still fails closed when the admin count cannot be read, but a lost
+  database connection answers 503 (``ERR_DB_CONNECTION`` as JSON on the paths
+  whose callers read JSON: ``/api/``, ``/chat/api/``, ``/external/``) instead of
+  sending every request to the setup wizard as if the install were new.
+  ``setup_status`` returns the verdict and the outage together, so the barrier
+  reads the failure from the call that saw it; ``check_setup_needed`` is the
+  plain yes/no for everyone else.
 * Sessions validated against the users table on every request: deleting a
   user or changing a password revokes that user's live JWT sessions, and the
   row's role is authoritative over token claims.
@@ -45,6 +52,17 @@ import jwt as pyjwt
 from psycopg2.extras import DictCursor
 
 from tz_helper import UTC_NOW_SQL, to_local_str
+from error.error_dictionary import (
+    ERR_CONFIG_INVALID,
+    ERR_DB_CONNECTION,
+    ERR_DB_QUERY,
+    ERR_FORBIDDEN,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
+    ERR_UNAUTHORIZED,
+)
+from error.error_manager import classify
+from error.responses import json_error, json_exception, wants_json_error
 
 logger = logging.getLogger(__name__)
 
@@ -544,29 +562,33 @@ def purge_legacy_admin_config():
 # --- Barrier helpers --------------------------------------------------------
 
 
-def check_setup_needed():
-    """Return True when the install still needs the setup wizard."""
+def setup_status():
     from tasks.setup_manager import SetupManager
     import config as _cfg
 
     sm = SetupManager()
 
     if not sm._is_valid_server_config(_cfg):
-        return True
+        return True, None
 
     auth_enabled = getattr(_cfg, 'AUTH_ENABLED', True)
     if isinstance(auth_enabled, str):
         auth_enabled = auth_enabled.strip().lower() == 'true'
     if not auth_enabled:
-        return False
+        return False, None
 
     try:
-        return count_admin_users() <= 0
-    except Exception:
+        return count_admin_users() <= 0, None
+    except Exception as exc:
         logger.exception(
             "Failed to count admin users while checking setup status"
         )
-        return True
+        return True, exc
+
+
+def check_setup_needed():
+    """Return True when the install still needs the setup wizard."""
+    return setup_status()[0]
 
 
 def _session_from_token(token, jwt_secret):
@@ -683,7 +705,7 @@ def check_auth_needed(jwt_secret):
 
     # Not authenticated
     if request.path.startswith('/api/'):
-        return jsonify({"error": "Unauthorized"}), 401
+        return json_error(ERR_UNAUTHORIZED, "Unauthorized")
     return redirect(url_for('login_page'))
 
 
@@ -802,12 +824,12 @@ def check_admin_needed():
     )
     if request.path.startswith('/api/'):
         if request.path == _API_SETUP_PATH:
-            return jsonify(
-                {
-                    "error": "Error saving configuration: Non-admin user denied access to admin path. Please refresh the page and try again."
-                }
-            ), 403
-        return jsonify({"error": "Forbidden"}), 403
+            return json_error(
+                ERR_FORBIDDEN,
+                "Error saving configuration: Non-admin user denied access to admin path. "
+                "Please refresh the page and try again.",
+            )
+        return json_error(ERR_FORBIDDEN, "Forbidden")
     return redirect(url_for('dashboard_bp.dashboard_page'))
 
 
@@ -816,7 +838,19 @@ def auth_setup_barrier():
     if request.path.startswith('/static/') or request.path == '/api/health':
         return
 
-    if check_setup_needed():
+    setup_needed, outage = setup_status()
+    if setup_needed:
+        if outage is not None and classify(outage, ERR_DB_QUERY) == ERR_DB_CONNECTION:
+            if wants_json_error(request.path):
+                return json_exception(
+                    outage, ERR_DB_CONNECTION,
+                    "The database is unavailable, so the request cannot be authorised. "
+                    "Retry shortly.",
+                )
+            return current_app.response_class(
+                "The database is unavailable. Check the container logs and retry shortly.",
+                status=503, mimetype='text/plain',
+            )
         # Handlers reached during first run (the media-server registry) read
         # this to know the wizard - not an authenticated admin - is the caller.
         g.setup_needed = True
@@ -827,7 +861,7 @@ def auth_setup_barrier():
                 "API access blocked because setup is still required: %s",
                 request.path,
             )
-            return jsonify({"error": "Setup required"}), 403
+            return json_error(ERR_FORBIDDEN, "Setup required")
         return redirect(url_for('setup_page'))
 
     if request.path in ('/login', '/auth', '/logout'):
@@ -947,26 +981,20 @@ def auth_endpoint():
     import config as _cfg
 
     if not _cfg.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
+        return json_error(ERR_NOT_FOUND, "Auth not configured")
     try:
         admin_count = count_admin_users()
     except Exception as e:
         current_app.logger.exception(
             'Failed to count admin users during authentication',
         )
-        # Imported lazily: app_auth sits deep in the eager import graph, so a
-        # module-level error import would push the import chain over its ceiling.
-        from error import error_manager
-        from error.error_dictionary import ERR_DB_QUERY
-
-        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
-        return jsonify(err), status
+        return json_exception(e, ERR_DB_QUERY)
     if admin_count <= 0:
         current_app.logger.warning(
             "Auth is enabled but no admin account is configured. "
             "Complete the setup wizard to create one."
         )
-        return jsonify({"error": "Auth not configured"}), 404
+        return json_error(ERR_NOT_FOUND, "Auth not configured")
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -982,7 +1010,7 @@ def auth_endpoint():
     if role is None:
         current_app.logger.warning(f"Failed login attempt for user: {user!r}")
         if is_ajax:
-            return jsonify({"error": "Invalid credentials"}), 401
+            return json_error(ERR_UNAUTHORIZED, "Invalid credentials")
         return render_template(
             'login.html',
             title='Login - AudioMuse-AI',
@@ -995,7 +1023,9 @@ def auth_endpoint():
         # would be trivially forgeable. This should never happen once
         # resolve_jwt_secret has run, so surface it as a server error.
         current_app.logger.error("Cannot issue session token: JWT secret is not configured.")
-        return jsonify({"error": "Server authentication is misconfigured."}), 500
+        return json_error(
+            ERR_CONFIG_INVALID, "Server authentication is misconfigured.", http_status=500
+        )
 
     token = _issue_session_token(user, role, secret)
 
@@ -1065,7 +1095,7 @@ def list_users_endpoint():
     import config as _cfg
 
     if not _cfg.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
+        return json_error(ERR_NOT_FOUND, "Auth not configured")
     role = getattr(g, 'auth_role', None)
     current_username = getattr(g, 'auth_user', None)
     try:
@@ -1077,11 +1107,7 @@ def list_users_endpoint():
             users = list_additional_users(username=current_username) if current_username else []
     except Exception as e:
         current_app.logger.exception("Failed to list users")
-        from error import error_manager
-        from error.error_dictionary import ERR_DB_QUERY
-
-        err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))
-        return jsonify(err), status
+        return json_exception(e, ERR_DB_QUERY)
     return jsonify(
         {
             "users": users,
@@ -1133,23 +1159,23 @@ def create_user_endpoint():
     import config as _cfg
 
     if not _cfg.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
+        return json_error(ERR_NOT_FOUND, "Auth not configured")
     if getattr(g, 'auth_role', None) != 'admin':
-        return jsonify({"error": "Forbidden"}), 403
+        return json_error(ERR_FORBIDDEN, "Forbidden")
     data = request.get_json(silent=True) or {}
     username = (data.get('username') or '').strip()
     password = data.get('password') or ''
     role = (data.get('role') or USER_ROLE_USER).strip().lower()
     if role not in (USER_ROLE_USER, USER_ROLE_ADMIN):
-        return jsonify({"error": "Role must be 'user' or 'admin'."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Role must be 'user' or 'admin'.")
     if not username or not password:
-        return jsonify({"error": "Username and password are required."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Username and password are required.")
     confirm_error = _confirm_password_error(data)
     if confirm_error:
-        return jsonify({"error": confirm_error}), 400
+        return json_error(ERR_INVALID_REQUEST, confirm_error)
     ok, err = create_additional_user(username, password, role=role)
     if not ok:
-        return jsonify({"error": err or "Failed to create user."}), 400
+        return json_error(ERR_INVALID_REQUEST, err or "Failed to create user.")
     return jsonify({"status": "ok"}), 201
 
 
@@ -1194,29 +1220,31 @@ def delete_user_endpoint(user_id):
     import config as _cfg
 
     if not _cfg.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
+        return json_error(ERR_NOT_FOUND, "Auth not configured")
     if getattr(g, 'auth_role', None) != 'admin':
-        return jsonify({"error": "Forbidden"}), 403
+        return json_error(ERR_FORBIDDEN, "Forbidden")
     target = get_additional_user_by_id(user_id)
     if not target:
-        return jsonify({"error": "User not found."}), 404
+        return json_error(ERR_NOT_FOUND, "User not found.")
     current_username = getattr(g, 'auth_user', None)
     if current_username and target['username'] == current_username:
-        return jsonify({"error": "You cannot delete your own account."}), 400
+        return json_error(ERR_INVALID_REQUEST, "You cannot delete your own account.")
     confirm_error = _confirm_password_error(request.get_json(silent=True))
     if confirm_error:
-        return jsonify({"error": confirm_error}), 400
+        return json_error(ERR_INVALID_REQUEST, confirm_error)
     status, err = delete_additional_user_safe(user_id)
     if status == "deleted":
         return jsonify({"status": "ok"})
     if status == "not_found":
-        return jsonify({"error": "User not found."}), 404
+        return json_error(ERR_NOT_FOUND, "User not found.")
     if status == "last_admin":
-        return jsonify({"error": "At least one admin account must remain."}), 400
+        return json_error(ERR_INVALID_REQUEST, "At least one admin account must remain.")
     if status == "invalid_id":
-        return jsonify({"error": err or "Invalid user id."}), 400
+        return json_error(ERR_INVALID_REQUEST, err or "Invalid user id.")
     # status == "error"
-    return jsonify({"error": err or "Could not delete user; please try again."}), 500
+    return json_error(
+        ERR_DB_QUERY, err or "Could not delete user; please try again.", http_status=500
+    )
 
 
 def update_user_password_endpoint(user_id):
@@ -1265,24 +1293,24 @@ def update_user_password_endpoint(user_id):
     import config as _cfg
 
     if not _cfg.AUTH_ENABLED:
-        return jsonify({"error": "Auth not configured"}), 404
+        return json_error(ERR_NOT_FOUND, "Auth not configured")
     role = getattr(g, 'auth_role', None)
     current_username = getattr(g, 'auth_user', None)
     target = get_additional_user_by_id(user_id)
     if role != 'admin' and (target is None or target['username'] != current_username):
-        return jsonify({"error": "Forbidden"}), 403
+        return json_error(ERR_FORBIDDEN, "Forbidden")
     if not target:
-        return jsonify({"error": "User not found."}), 404
+        return json_error(ERR_NOT_FOUND, "User not found.")
     data = request.get_json(silent=True) or {}
     new_password = data.get('password') or ''
     if not isinstance(new_password, str) or not new_password:
-        return jsonify({"error": "Password is required."}), 400
+        return json_error(ERR_INVALID_REQUEST, "Password is required.")
     confirm_error = _confirm_password_error(data)
     if confirm_error:
-        return jsonify({"error": confirm_error}), 400
+        return json_error(ERR_INVALID_REQUEST, confirm_error)
     ok, err = update_additional_user_password(user_id, new_password)
     if not ok:
-        return jsonify({"error": err or "Failed to update password."}), 400
+        return json_error(ERR_INVALID_REQUEST, err or "Failed to update password.")
     resp = jsonify({"status": "ok"})
     if current_username and target['username'] == current_username:
         secret = _jwt_secret()

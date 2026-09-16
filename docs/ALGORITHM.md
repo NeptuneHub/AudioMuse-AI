@@ -1148,6 +1148,17 @@ provider set the flow is:
 4. If the model declines or the output cannot be sanitized into a valid name, the
    deterministic feature-based name is kept.
 
+With `AI_NAMING_PROMPT_MODE` set to `title` the model writes the whole title
+instead. The prompt is the editable `AI_NAMING_TITLE_PROMPT` followed by a sample
+of the playlist songs (`MAX_SONGS_IN_AI_PROMPT`) and the last titles already
+used. A title must be 5 to 40 characters; a provider error, a wrong length or a
+repeat of one of the listed titles is retried up to `AI_NAMING_MAX_ATTEMPTS`
+times with feedback. If only repeats come back the repeated title is kept and the
+run's duplicate suffix tells the playlists apart; if nothing usable comes back
+the tag-based name is kept. The setup wizard's Preview titles runs one quick
+K-Means on up to 10000 songs in a worker and shows the titles either style
+produces, without creating any playlist.
+
 Finally a Fisher-Yates shuffle randomizes the order, playlists larger than
 `MAX_SONGS_PER_CLUSTER` are split into numbered chunks, the existing `_automatic`
 playlists are deleted and the new ones are created on the media server and
@@ -1231,6 +1242,8 @@ audio or lyrics.
   `DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN`, `DUPLICATE_DISTANCE_CHECK_LOOKBACK`.
 - `AI_MODEL_PROVIDER` and the provider settings, `CLUSTER_NAMING_AI_HISTORY`,
   `PLAYLIST_NAME_HISTORY_ROUNDS`, `MAX_SONGS_IN_AI_PROMPT`.
+- `AI_NAMING_PROMPT_MODE` and `AI_NAMING_TITLE_PROMPT`: the naming style and the
+  editable instructions of the full-title style, set in the setup wizard under AI Prompt.
 
 ---
 

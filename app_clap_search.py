@@ -24,6 +24,13 @@ from flask import Blueprint, render_template, request, jsonify
 import logging
 
 import app_server_context
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_INDEX_EMPTY,
+    ERR_INVALID_REQUEST,
+    ERR_SEARCH_FAILED,
+)
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +159,11 @@ def clap_search_api():
     from app_helper import attach_song_features
 
     if not CLAP_ENABLED:
-        return jsonify(
-            {
-                'error': 'CLAP text search is disabled. Set CLAP_ENABLED=true in config.',
-                'results': [],
-            }
-        ), 400
+        return json_error(
+            ERR_INVALID_REQUEST,
+            'CLAP text search is disabled. Set CLAP_ENABLED=true in config.',
+            results=[],
+        )
 
     # Validate the optional 'server' selection up front so an unknown or
     # disabled server answers 400 with a clear message.
@@ -165,36 +171,45 @@ def clap_search_api():
         app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
 
     try:
         data = request.get_json()
 
         if not data or 'query' not in data:
-            return jsonify({'error': 'Missing "query" in request body'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Missing "query" in request body')
+        if not isinstance(data['query'], str):
+            return json_error(ERR_INVALID_REQUEST, '"query" must be a string')
 
         query = data['query'].strip()
-        limit = data.get('limit', CLAP_SEARCH_DEFAULT_LIMIT)
+        limit = data.get('limit')
+        if limit is None:
+            limit = CLAP_SEARCH_DEFAULT_LIMIT
 
         if not query:
-            return jsonify({'error': 'Query cannot be empty'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Query cannot be empty')
 
         if len(query) < 1:
-            return jsonify({'error': 'Query must be at least 1 character'}), 400
+            return json_error(ERR_INVALID_REQUEST, 'Query must be at least 1 character')
 
         # Validate limit
-        limit = max(1, int(limit))
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError, OverflowError):
+            return json_error(ERR_INVALID_REQUEST, '"limit" must be a whole number')
 
         # Check if cache is loaded
         if not is_clap_cache_loaded():
-            return jsonify(
-                {'error': 'CLAP cache not loaded. Please run song analysis first.', 'results': []}
-            ), 503
+            return json_error(
+                ERR_INDEX_EMPTY,
+                'CLAP cache not loaded. Please run song analysis first.',
+                results=[],
+            )
 
         # Optional concept steering. Absent or empty means the legacy search path.
         steering, steering_warnings = normalize_terms(data.get('steering'))
         if data.get('steering') and not steering and steering_warnings:
-            return jsonify({'error': steering_warnings[0], 'results': []}), 400
+            return json_error(ERR_INVALID_REQUEST, steering_warnings[0], results=[])
 
         # Perform search
         results = search_by_text(query, limit=limit, steering=steering)
@@ -217,10 +232,12 @@ def clap_search_api():
 
     except ValueError as e:
         logger.warning(f"ValueError in DCLAP search API: {e}")
-        return jsonify({'error': 'Invalid or missing request parameter.'}), 400
-    except Exception:
+        return json_error(ERR_INVALID_REQUEST, 'Invalid or missing request parameter.')
+    except Exception as exc:
         logger.exception("DCLAP search API error")
-        return jsonify({'error': 'An internal server error occurred during DCLAP search.'}), 500
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, 'An internal server error occurred during DCLAP search.'
+        )
 
 
 @clap_search_bp.route('/api/clap/warmup', methods=['POST'])
@@ -254,14 +271,14 @@ def warmup_model_api():
     from tasks.clap_text_search import warmup_text_search_model
 
     if not CLAP_ENABLED:
-        return jsonify({'error': 'CLAP text search is disabled', 'loaded': False}), 400
+        return json_error(ERR_INVALID_REQUEST, 'CLAP text search is disabled', loaded=False)
 
     try:
         status = warmup_text_search_model()
         return jsonify(status)
-    except Exception:
+    except Exception as exc:
         logger.exception("Model warmup failed")
-        return jsonify({'error': 'Warmup failed.', 'loaded': False}), 500
+        return json_exception(exc, ERR_CACHE_REFRESH_FAILED, 'Warmup failed.', loaded=False)
 
 
 @clap_search_bp.route('/api/clap/warmup/status', methods=['GET'])
@@ -330,7 +347,7 @@ def refresh_cache_api():
     from tasks.clap_text_search import refresh_clap_cache, get_cache_stats
 
     if not CLAP_ENABLED:
-        return jsonify({'error': 'CLAP is disabled'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'CLAP is disabled')
 
     try:
         success = refresh_clap_cache()
@@ -341,15 +358,18 @@ def refresh_cache_api():
                 {'success': True, 'message': 'CLAP cache refreshed successfully', 'stats': stats}
             )
         else:
-            return jsonify(
-                {'success': False, 'message': 'Failed to refresh CLAP cache', 'stats': stats}
-            ), 500
+            refresh_failed = 'Failed to refresh CLAP cache'
+            return json_error(
+                ERR_CACHE_REFRESH_FAILED, refresh_failed,
+                success=False, message=refresh_failed, stats=stats,
+            )
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Cache refresh failed")
-        return jsonify(
-            {'success': False, 'error': 'An internal error occurred. Please try again later.'}
-        ), 500
+        return json_exception(
+            exc, ERR_CACHE_REFRESH_FAILED, 'An internal error occurred. Please try again later.',
+            success=False,
+        )
 
 
 @clap_search_bp.route('/api/clap/concepts', methods=['GET'])
@@ -410,9 +430,11 @@ def clap_concepts_api():
 
     try:
         return jsonify(get_catalogue())
-    except Exception:
+    except Exception as exc:
         logger.exception("DCLAP concepts API error")
-        return jsonify({'error': 'An internal server error occurred reading the concepts.'}), 500
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, 'An internal server error occurred reading the concepts.'
+        )
 
 
 @clap_search_bp.route('/api/clap/stats', methods=['GET'])
@@ -482,12 +504,9 @@ def top_queries_api():
     try:
         queries = get_cached_top_queries()
         return jsonify({'queries': queries, 'ready': len(queries) > 0}), 200
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to get top queries")
-        return jsonify(
-            {
-                'error': 'An internal error occurred. Please try again later.',
-                'queries': [],
-                'ready': False,
-            }
-        ), 500
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, 'An internal error occurred. Please try again later.',
+            queries=[], ready=False,
+        )

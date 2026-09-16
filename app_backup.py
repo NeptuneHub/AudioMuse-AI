@@ -23,6 +23,9 @@ Main Features:
   absent, or readable and older than the TTL, lets a new restore start, while one
   that cannot be read counts as held. It also
   strips the PG17+ `SET transaction_timeout` prologue line that PG15/16 reject.
+* pg_dump, the psql replay and the post-restore schema ensure are each bounded
+  by BACKUP_RESTORE_TIMEOUT_SECONDS (one hour). A running restore keeps its lock
+  fresh, and a second backup create is refused while one is still dumping.
 * The restore runs detached, so `/api/backup/restore` answers "started" long
   before the outcome is known. The runner appends a `RESTORE-RESULT:` marker to
   its log for whoever reads it; nothing polls it. The page counts down and
@@ -57,12 +60,15 @@ from flask import Blueprint, render_template, jsonify, request, send_file
 import config
 from sanitization import sanitize_for_log
 import restart_manager
-from error import error_manager
 from error.error_dictionary import (
-    ERR_BACKUP_VERSION_MISMATCH,
     ERR_BACKUP_FAILED,
+    ERR_BACKUP_VERSION_MISMATCH,
+    ERR_CONFLICT,
+    ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
     ERR_RESTORE_FAILED,
 )
+from error.responses import json_error
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +82,22 @@ RESTORE_LOG_DIR = os.environ.get("RESTORE_LOG_DIR", BACKUP_DIR)
 # by the very operation it guards. The timestamp inside makes it self-releasing,
 # so a crash mid-restore cannot block every later attempt forever.
 RESTORE_LOCK_TTL_SECONDS = 60 * 60  # 1 hour
+
+# Every backup and restore step that runs a Postgres client (pg_dump, the psql
+# replay, the post-restore schema ensure) gets one hour: a large catalogue
+# dumps and replays for many minutes, and a timeout there fails the whole job.
+BACKUP_RESTORE_TIMEOUT_SECONDS = 60 * 60
+
+# A running restore rewrites its lock timestamp this often, so a restore that
+# outlives RESTORE_LOCK_TTL_SECONDS is never mistaken for an abandoned one. Only
+# a runner that died stops refreshing, and its lock then expires on the TTL.
+RESTORE_LOCK_REFRESH_SECONDS = 60
+
+# Creating a backup runs pg_dump inside the request for up to an hour and deletes
+# the previous backup files first, so a second create started meanwhile (a retry
+# after a proxy timeout) would delete the dump still being written. The lock file
+# refuses that; a lock older than the pg_dump bound belongs to a dead process.
+BACKUP_CREATE_LOCK_TTL_SECONDS = BACKUP_RESTORE_TIMEOUT_SECONDS + 10 * 60
 
 # A lock we cannot READ is not an absent one: a uid or permission mismatch on a
 # shared backup volume, or an I/O error on network storage, must refuse the
@@ -145,6 +167,63 @@ def _release_restore_lock():
         pass
     except OSError:
         logger.exception("Could not release the restore lock; it expires on its own.")
+
+
+def _refresh_restore_lock():
+    try:
+        with open(_restore_lock_path(), 'r+', encoding='utf-8') as fh:
+            fh.seek(0)
+            fh.write(str(time.time()))
+            fh.truncate()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.exception("Could not refresh the restore lock")
+        return False
+
+
+def _keep_restore_lock_fresh(stop_event):
+    while not stop_event.wait(RESTORE_LOCK_REFRESH_SECONDS):
+        if not _refresh_restore_lock():
+            return
+
+
+def _backup_create_lock_path():
+    return os.path.join(BACKUP_DIR, '.backup_create.lock')
+
+
+def _acquire_backup_create_lock():
+    path = _backup_create_lock_path()
+    try:
+        age = time.time() - os.path.getmtime(path)
+        if age > BACKUP_CREATE_LOCK_TTL_SECONDS:
+            logger.warning("Clearing a backup lock left behind %.0fs ago.", age)
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("Could not inspect the backup lock; failing closed.")
+        return False
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(str(time.time()))
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        logger.exception("Could not take the backup lock; failing closed.")
+        return False
+
+
+def _release_backup_create_lock():
+    try:
+        os.unlink(_backup_create_lock_path())
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.exception("Could not release the backup lock; it expires on its own.")
 
 
 def _restore_lock_held():
@@ -270,8 +349,12 @@ def _extract_sql_if_zip(dump_file, log):
         return None, None
 
 
+def _flask_ready_timeout():
+    return float(config.FLASK_READY_TIMEOUT_SECONDS)
+
+
 def _wait_for_flask(log=None):
-    deadline = time.monotonic() + config.FLASK_READY_TIMEOUT_SECONDS
+    deadline = time.monotonic() + _flask_ready_timeout()
     last_error = None
     while time.monotonic() < deadline:
         try:
@@ -286,7 +369,7 @@ def _wait_for_flask(log=None):
         time.sleep(1)
     if log is not None:
         log.write(
-            f"Flask did not answer within {config.FLASK_READY_TIMEOUT_SECONDS}s"
+            f"Flask did not answer within {_flask_ready_timeout():.0f}s"
             f"{f' (last error: {last_error})' if last_error else ''}\n"
         )
     return False
@@ -329,6 +412,18 @@ def _write_restore_result(log, result, message):
 
 
 def _run_restore_runner(dump_file, log_file):
+    stop_event = threading.Event()
+    heartbeat = threading.Thread(
+        target=_keep_restore_lock_fresh, args=(stop_event,), name='restore-lock-refresh', daemon=True
+    )
+    heartbeat.start()
+    try:
+        return _run_restore_steps(dump_file, log_file)
+    finally:
+        stop_event.set()
+
+
+def _run_restore_steps(dump_file, log_file):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     with open(log_file, 'a', encoding='utf-8', errors='ignore') as log:
         log.write(f"Restore runner started at {datetime.now().isoformat()}\n")
@@ -433,7 +528,7 @@ def _run_restore_runner(dump_file, log_file):
                     target=_feed_dump, args=(proc.stdin, sql_source, feed_result), daemon=True
                 )
                 feeder.start()
-                ret = proc.wait(timeout=3600)
+                ret = proc.wait(timeout=BACKUP_RESTORE_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 if proc is not None:
                     try:
@@ -443,7 +538,10 @@ def _run_restore_runner(dump_file, log_file):
                     proc.kill()
                     proc.wait()
                 ret = -1
-                log.write("Restore command timed out after 3600 seconds and was killed.\n")
+                log.write(
+                    f"Restore command timed out after {BACKUP_RESTORE_TIMEOUT_SECONDS} seconds "
+                    "and was killed.\n"
+                )
                 log.flush()
             except Exception as exc:
                 log.write(f"Failed to execute restore command: {exc}\n")
@@ -472,7 +570,8 @@ def _run_restore_runner(dump_file, log_file):
                 ensure_ret = -1
                 for attempt in (1, 2):
                     ensure_ret = subprocess.run(
-                        ensure_cmd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120
+                        ensure_cmd, env=env, stdout=log, stderr=subprocess.STDOUT,
+                        timeout=BACKUP_RESTORE_TIMEOUT_SECONDS,
                     ).returncode
                     if ensure_ret == 0:
                         log.write("Ensured users session schema after restore.\n")
@@ -520,7 +619,7 @@ def _run_restore_runner(dump_file, log_file):
                 else:
                     log.write(
                         "WARNING: Flask did not answer within "
-                        f"{config.FLASK_READY_TIMEOUT_SECONDS}s; starting the workers anyway.\n"
+                        f"{_flask_ready_timeout():.0f}s; starting the workers anyway.\n"
                     )
                 log.flush()
 
@@ -604,7 +703,7 @@ def create_backup():
     description: |
       Removes any prior `audiomuse_backup_*` files in BACKUP_DIR, then runs
       `pg_dump --clean --if-exists` and compresses the dump into
-      `audiomuse_backup_<TIMESTAMP>.zip`. pg_dump is bounded by a 600 second
+      `audiomuse_backup_<TIMESTAMP>.zip`. pg_dump is bounded by a 3600 second
       timeout. The archive itself is fetched in a second step via
       GET /api/backup/download/<filename> so the browser can stream it
       natively to disk.
@@ -633,7 +732,18 @@ def create_backup():
                   type: string
     """
     os.makedirs(BACKUP_DIR, exist_ok=True)
+    if not _acquire_backup_create_lock():
+        return json_error(
+            ERR_CONFLICT,
+            'A backup is already being created. Wait for it to finish, then download it.',
+        )
+    try:
+        return _create_backup_locked()
+    finally:
+        _release_backup_create_lock()
 
+
+def _create_backup_locked():
     # Remove old backup files
     for old in os.listdir(BACKUP_DIR):
         if old.startswith('audiomuse_backup_') and old.endswith(('.sql', '.zip')):
@@ -651,7 +761,8 @@ def create_backup():
     try:
         with open(filepath, 'w') as f:
             result = subprocess.run(
-                cmd, env=_pg_env(), stdout=f, stderr=subprocess.PIPE, text=True, timeout=600
+                cmd, env=_pg_env(), stdout=f, stderr=subprocess.PIPE, text=True,
+                timeout=BACKUP_RESTORE_TIMEOUT_SECONDS,
             )
         if result.returncode != 0:
             logger.error("pg_dump failed: %s", result.stderr)
@@ -659,20 +770,19 @@ def create_backup():
                 os.remove(filepath)
             stderr = result.stderr or ""
             if "server version mismatch" in stderr.lower():
-                err = error_manager.build(ERR_BACKUP_VERSION_MISMATCH, stderr)
-            else:
-                err = error_manager.build(ERR_BACKUP_FAILED, stderr)
-            return jsonify({**err, 'error': err['error_message']}), 500
+                return json_error(ERR_BACKUP_VERSION_MISMATCH, stderr)
+            return json_error(ERR_BACKUP_FAILED, stderr)
     except FileNotFoundError:
         logger.exception("pg_dump not found on system PATH")
-        err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump is not installed or not on PATH.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_BACKUP_FAILED, "pg_dump is not installed or not on PATH.")
     except subprocess.TimeoutExpired:
         logger.exception("pg_dump timed out")
         if os.path.exists(filepath):
             os.remove(filepath)
-        err = error_manager.build(ERR_BACKUP_FAILED, "pg_dump timed out after 600 seconds.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(
+            ERR_BACKUP_FAILED,
+            f"pg_dump timed out after {BACKUP_RESTORE_TIMEOUT_SECONDS} seconds.",
+        )
 
     zip_filename = f"audiomuse_backup_{timestamp}.zip"
     zip_filepath = os.path.join(BACKUP_DIR, zip_filename)
@@ -690,8 +800,7 @@ def create_backup():
                     os.remove(path)
             except OSError:
                 logger.warning("Could not delete %s after compression failure", path, exc_info=True)
-        err = error_manager.build(ERR_BACKUP_FAILED, "Failed to compress the backup file.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_BACKUP_FAILED, "Failed to compress the backup file.")
 
     logger.info("Backup created: %s", zip_filepath)
     return jsonify(
@@ -733,10 +842,10 @@ def download_backup(filename):
                   type: string
     """
     if not _BACKUP_FILENAME_RE.fullmatch(filename):
-        return jsonify({'error': 'Invalid backup file name.'}), 404
+        return json_error(ERR_NOT_FOUND, 'Invalid backup file name.')
     filepath = os.path.join(BACKUP_DIR, filename)
     if not os.path.isfile(filepath):
-        return jsonify({'error': 'Backup file not found. Create a new backup first.'}), 404
+        return json_error(ERR_NOT_FOUND, 'Backup file not found. Create a new backup first.')
     return send_file(filepath, as_attachment=True, download_name=filename)
 
 
@@ -828,11 +937,11 @@ def restore_backup():
     confirmation = request.form.get('confirmation', '')
     expected = "I want to restore the database from the backup. This action is not reversible"
     if confirmation != expected:
-        return jsonify({'error': 'Confirmation text does not match.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Confirmation text does not match.')
 
     uploaded = request.files.get('file')
     if not uploaded or not uploaded.filename:
-        return jsonify({'error': 'No file uploaded.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'No file uploaded.')
 
     # Check if this is a chunked upload
     chunk_num = request.form.get('chunk_num')
@@ -850,14 +959,15 @@ def restore_backup():
                 chunk_num = int(chunk_num)
                 total_chunks = int(total_chunks)
             except ValueError:
-                return jsonify({'error': 'chunk_num and total_chunks must be integers.'}), 400
+                return json_error(
+                    ERR_INVALID_REQUEST, 'chunk_num and total_chunks must be integers.'
+                )
 
             if chunk_num < 1 or chunk_num > total_chunks or total_chunks < 1:
-                return jsonify(
-                    {
-                        'error': f'Invalid chunk numbers: chunk_num={chunk_num}, total_chunks={total_chunks}'
-                    }
-                ), 400
+                return json_error(
+                    ERR_INVALID_REQUEST,
+                    f'Invalid chunk numbers: chunk_num={chunk_num}, total_chunks={total_chunks}',
+                )
 
             chunks_dir = os.path.join(BACKUP_DIR, 'chunks')
             os.makedirs(chunks_dir, exist_ok=True)
@@ -868,21 +978,17 @@ def restore_backup():
             if chunk_num == 1:
                 if not _acquire_restore_lock():
                     logger.warning("Refusing chunk 1: restore lock already held.")
-                    return jsonify(
-                        {
-                            'error': 'A database restore is already in progress. '
-                            'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
-                        }
-                    ), 409
+                    return json_error(
+                        ERR_CONFLICT,
+                        'A database restore is already in progress. Wait for it to finish, '
+                        'or wait up to 1 hour for the lock to auto-release.',
+                    )
             else:
                 if not _restore_lock_held():
                     logger.warning("Refusing chunk %s: restore lock no longer held.", chunk_num)
-                    return jsonify(
-                        {
-                            'error': 'Restore session expired or was overtaken. '
-                            'Restart the upload from chunk 1.'
-                        }
-                    ), 409
+                    return json_error(ERR_CONFLICT, 'Restore session expired or was overtaken. '
+                            'Restart the upload from chunk 1.')
+                _refresh_restore_lock()
 
             chunk_file = os.path.join(chunks_dir, f'backup_{chunk_num}_of_{total_chunks}.sql')
 
@@ -904,8 +1010,7 @@ def restore_backup():
                 logger.info(f"Saved chunk {chunk_num}/{total_chunks}")
             except Exception:
                 logger.exception("Failed to save chunk %s", chunk_num)
-                err = error_manager.build(ERR_RESTORE_FAILED, f"Failed to save chunk {chunk_num}.")
-                return jsonify({**err, 'error': err['error_message']}), 500
+                return json_error(ERR_RESTORE_FAILED, f"Failed to save chunk {chunk_num}.")
 
             # Rebuild the received set from disk (only chunks belonging to this session)
             received_chunks = set()
@@ -983,9 +1088,9 @@ def restore_backup():
                                 exc_info=True,
                             )
                     _release_restore_lock()
-                    return jsonify(
-                        {'error': 'Failed to reassemble chunks due to an internal error.'}
-                    ), 500
+                    return json_error(
+                        ERR_RESTORE_FAILED, 'Failed to reassemble chunks due to an internal error.'
+                    )
             else:
                 # Still waiting for more chunks
                 missing_chunks = [i for i in range(1, total_chunks + 1) if i not in received_chunks]
@@ -1004,12 +1109,8 @@ def restore_backup():
             # Single file upload (non-chunked)
             if not _acquire_restore_lock():
                 logger.warning("Refusing non-chunked restore: lock already held.")
-                return jsonify(
-                    {
-                        'error': 'A database restore is already in progress. '
-                        'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.'
-                    }
-                ), 409
+                return json_error(ERR_CONFLICT, 'A database restore is already in progress. '
+                        'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.')
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
             uploaded.save(tmp)
             tmp.close()
@@ -1037,9 +1138,11 @@ def restore_backup():
                 if restore_file and os.path.exists(restore_file):
                     os.unlink(restore_file)
                 _release_restore_lock()
-                return jsonify({
-                    'error': 'Restore was not started because workers did not confirm they stopped.'
-                }), 503
+                return json_error(
+                    ERR_RESTORE_FAILED,
+                    'Restore was not started because workers did not confirm they stopped.',
+                    http_status=503,
+                )
             logger.info('Worker stop request completed successfully')
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1088,8 +1191,7 @@ def restore_backup():
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
-        err = error_manager.build(ERR_RESTORE_FAILED, "Python executable not found for restore runner.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_RESTORE_FAILED, "Python executable not found for restore runner.")
     except Exception:
         logger.exception("Restore failed")
         if workers_require_recovery:
@@ -1097,8 +1199,7 @@ def restore_backup():
         if restore_file and os.path.exists(restore_file):
             os.unlink(restore_file)
         _release_restore_lock()
-        err = error_manager.build(ERR_RESTORE_FAILED, "Restore failed. Check server logs.")
-        return jsonify({**err, 'error': err['error_message']}), 500
+        return json_error(ERR_RESTORE_FAILED, "Restore failed. Check server logs.")
 
 
 if __name__ == '__main__':

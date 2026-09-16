@@ -349,17 +349,19 @@
         servers.forEach(function (s) {
             var tr = document.createElement('tr');
             tr.style.borderTop = '1px solid rgba(128,128,128,0.3)';
-            function cell(content, center) {
+            function cell(content, center, kind, label) {
                 var td = document.createElement('td');
+                td.className = 'ms-cell-' + kind;
+                td.setAttribute('data-label', label);
                 td.style.padding = '0.35rem';
                 if (center) { td.style.textAlign = 'center'; }
                 if (typeof content === 'string') { td.textContent = content; }
                 else { td.appendChild(content); }
                 return td;
             }
-            tr.appendChild(cell(s.name));
-            tr.appendChild(cell(s.server_type));
-            tr.appendChild(cell(s.is_default ? 'yes' : '', true));
+            tr.appendChild(cell(s.name, false, 'name', 'Name'));
+            tr.appendChild(cell(s.server_type, false, 'type', 'Type'));
+            tr.appendChild(cell(s.is_default ? 'yes' : '', true, 'default', 'Default'));
 
             var actions = document.createElement('div');
             actions.style.whiteSpace = 'nowrap';
@@ -370,7 +372,7 @@
                 actions.appendChild(actionButton('Set default', function () { setDefault(s.server_id); }));
                 actions.appendChild(actionButton('Delete', function () { removeServer(s); }));
             }
-            tr.appendChild(cell(actions));
+            tr.appendChild(cell(actions, false, 'actions', 'Actions'));
             tbody.appendChild(tr);
         });
     }
@@ -413,6 +415,9 @@
                     var state = d.state || '';
                     var terminal = AudioMuseTaskStatus.isTerminal(state);
                     var failed = AudioMuseTaskStatus.isFailure(state);
+                    if (failed && typeof formatErrorText === 'function' && d.details) {
+                        msg = formatErrorText(d.details.error) || msg;
+                    }
                     renderSweepProgress(terminal ? 100 : (d.progress || 0), msg, !terminal, failed);
                     if (terminal) {
                         stopSweepPolling();
@@ -446,13 +451,18 @@
 
     function loadServers() {
         fetch('/api/servers', { headers: { 'Accept': 'application/json' } })
-            .then(function (r) { return r.ok ? r.json() : Promise.reject(r); })
+            .then(function (r) {
+                if (r.ok) { return r.json(); }
+                return r.json().catch(function () { return null; }).then(function (d) {
+                    throw new Error(apiErrorText(d, 'HTTP ' + r.status));
+                });
+            })
             .then(function (data) {
                 renderTable(data);
                 maybeResumeSweep(data);
             })
-            .catch(function () {
-                feedback(el('music-servers-error'), 'Could not load servers.', false);
+            .catch(function (err) {
+                feedback(el('music-servers-error'), 'Could not load servers: ' + ((err && err.message) || 'request failed'), false);
             });
     }
 
@@ -479,10 +489,10 @@
         }
         var url = editing ? '/api/servers/' + encodeURIComponent(el('ms-edit-id').value) : '/api/servers';
         jsonPost(url, payload, editing ? 'PUT' : 'POST')
-            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (r) { return r.json().catch(function () { return null; }).then(function (d) { return { ok: r.ok, d: d }; }); })
             .then(function (res) {
                 if (!res.ok) {
-                    feedback(el('ms-feedback'), (res.d && res.d.error) || 'Save failed.', false);
+                    feedback(el('ms-feedback'), apiErrorText(res.d, 'Save failed.'), false);
                     return;
                 }
                 parkWarning(res.d);
@@ -511,13 +521,13 @@
         if (editing) { payload.server_id = el('ms-edit-id').value; }
         feedback(el('ms-feedback'), 'Testing...', true);
         jsonPost('/api/servers/test', payload)
-            .then(function (r) { return r.json(); })
+            .then(function (r) { return r.json().catch(function () { return { error: 'HTTP ' + r.status }; }); })
             .then(function (d) {
                 if (d.ok) {
                     feedback(el('ms-feedback'), 'Connection OK (' + (d.sample_count || 0) + ' sample tracks).', true);
                     loadLibrariesIntoForm();
                 } else {
-                    feedback(el('ms-feedback'), 'Failed: ' + (d.error || 'unknown error'), false);
+                    feedback(el('ms-feedback'), 'Failed: ' + apiErrorText(d, 'unknown error'), false);
                 }
             })
             .catch(function () { feedback(el('ms-feedback'), 'Test failed.', false); });
@@ -525,10 +535,10 @@
 
     function setDefault(serverId) {
         jsonPost('/api/servers/' + encodeURIComponent(serverId) + '/default')
-            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (r) { return r.json().catch(function () { return null; }).then(function (d) { return { ok: r.ok, d: d }; }); })
             .then(function (res) {
                 if (!res.ok) {
-                    feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not set the default server.', false);
+                    feedback(el('music-servers-error'), apiErrorText(res.d, 'Could not set the default server.'), false);
                     return;
                 }
                 parkWarning(res.d);
@@ -544,10 +554,10 @@
 
     function alignServers() {
         jsonPost('/api/servers/align')
-            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (r) { return r.json().catch(function () { return null; }).then(function (d) { return { ok: r.ok, d: d }; }); })
             .then(function (res) {
                 if (!res.ok) {
-                    feedback(el('music-servers-error'), (res.d && res.d.error) || 'Could not start the alignment.', false);
+                    feedback(el('music-servers-error'), apiErrorText(res.d, 'Could not start the alignment.'), false);
                     return;
                 }
                 if (res.d && res.d.task_id) {
@@ -566,10 +576,10 @@
             return;
         }
         fetch('/api/servers/' + encodeURIComponent(server.server_id), { method: 'DELETE' })
-            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (r) { return r.json().catch(function () { return null; }).then(function (d) { return { ok: r.ok, d: d }; }); })
             .then(function (res) {
                 if (!res.ok) {
-                    feedback(el('music-servers-error'), (res.d && res.d.error) || 'Delete failed.', false);
+                    feedback(el('music-servers-error'), apiErrorText(res.d, 'Delete failed.'), false);
                     return;
                 }
                 loadServers();
@@ -590,8 +600,17 @@
             return;
         }
         jsonPost('/api/cancel/' + encodeURIComponent(currentSweepTaskId))
-            .then(function () {
-                el('sweep-progress-text').textContent = 'Cancelling...';
+            .then(function (r) {
+                if (r.ok) {
+                    el('sweep-progress-text').textContent = 'Cancelling...';
+                    return;
+                }
+                return r.json().catch(function () { return null; }).then(function (d) {
+                    el('sweep-progress-text').textContent = 'Cancel failed: ' + apiErrorText(d, 'HTTP ' + r.status);
+                });
+            })
+            .catch(function (err) {
+                el('sweep-progress-text').textContent = 'Cancel failed: ' + ((err && err.message) || 'request failed');
             });
     });
     el('ms-add-btn').addEventListener('click', startAdd);
@@ -602,6 +621,10 @@
 
     resetForm();
     hideRegistryForm();
-    loadServers();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadServers);
+    } else {
+        loadServers();
+    }
     showParkedWarning();
 })();

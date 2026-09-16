@@ -27,7 +27,7 @@ Main Features:
 * record_cron_retry stores first_blocked_at as a UTC epoch, so no wall-clock conversion is ever involved
 * _touch_cron_last_run never aborts the retry tick on a DB failure
 * An expired retry's visible-skip row uses the queue type, not the cron name
-* queue_busy_error_body carries the centralized error code and message
+* queue_busy_response carries the centralized error code and message
 """
 
 from unittest.mock import MagicMock, patch
@@ -248,7 +248,9 @@ def test_get_queue_blocking_task_queries_only_the_guard_task_types():
 
     sql, params = cur.execute.call_args[0]
     assert 'task_type = ANY(%s)' in sql
-    assert set(params[1]) == set(config.QUEUE_BLOCKING_TASK_TYPES)
+    assert params[1] == list(task_types.BATCH_GATE_TASK_TYPES)
+    assert set(params[1]) == set(config.QUEUE_BLOCKING_TASK_TYPES) | set(task_types.SIDE_JOB_TASK_TYPES)
+    assert 'server_sweep' not in params[1], 'a sweep blocks starts through the active-task check only'
     assert 'task_type LIKE ANY(%s)' in sql
     assert params[2] == [
         prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
@@ -367,15 +369,20 @@ def test_record_cron_retry_stores_first_blocked_at_as_a_plain_epoch():
     )
 
 
-def test_queue_busy_error_body_uses_the_centralized_error_code():
-    from app_helper import queue_busy_error_body
+def test_queue_busy_response_uses_the_centralized_error_code():
+    from flask import Flask
+
+    from app_helper import queue_busy_response
     from error.error_dictionary import ERR_TASK_IN_PROGRESS
 
-    body = queue_busy_error_body(
-        {'task_id': 'live-1', 'task_type': 'main_analysis', 'status': 'RUNNING'},
-        'clustering',
-    )
+    with Flask(__name__).app_context():
+        response, status = queue_busy_response(
+            {'task_id': 'live-1', 'task_type': 'main_analysis', 'status': 'RUNNING'},
+            'clustering',
+        )
+    body = response.get_json()
 
+    assert status == 409
     assert body['error_code'] == ERR_TASK_IN_PROGRESS
     assert body['task_id'] == 'live-1'
     assert body['status'] == 'RUNNING'
@@ -383,19 +390,27 @@ def test_queue_busy_error_body_uses_the_centralized_error_code():
     assert 'clustering' in body['error']
 
 
-def test_queue_race_error_body_also_carries_the_centralized_error_code():
-    from app_helper import queue_race_error_body
+def test_queue_race_response_also_carries_the_centralized_error_code():
+    from flask import Flask
+
+    from app_helper import queue_race_response
     from error.error_dictionary import ERR_TASK_IN_PROGRESS
 
-    body = queue_race_error_body('another task won the race', None)
-    assert body['error_code'] == ERR_TASK_IN_PROGRESS
-    assert body['task_id'] is None
-    assert body['status'] is None
-    assert 'won the race' in body['error']
+    class _Race(Exception):
+        user_message = 'another task won the race'
+        status_code = 409
 
-    body = queue_race_error_body(
-        'another task won the race', {'task_id': 'w-1', 'status': 'RUNNING'}
-    )
+    with Flask(__name__).app_context():
+        response, status = queue_race_response(_Race(), None)
+        body = response.get_json()
+        assert status == 409
+        assert body['error_code'] == ERR_TASK_IN_PROGRESS
+        assert body['task_id'] is None
+        assert body['status'] is None
+        assert 'won the race' in body['error']
+
+        response, _status = queue_race_response(_Race(), {'task_id': 'w-1', 'status': 'RUNNING'})
+        body = response.get_json()
     assert body['task_id'] == 'w-1'
     assert body['status'] == 'RUNNING'
 

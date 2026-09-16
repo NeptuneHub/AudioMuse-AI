@@ -263,6 +263,10 @@ def _catalogue_has_two_servers(cur):
 
 
 def _config_projection_lost(default):
+    return _config_projection_stale(default) or _row_holds_unprojected_creds(default)
+
+
+def _config_projection_stale(default):
     server_type = (default.get('server_type') or '').strip().lower()
     if (config.MEDIASERVER_TYPE or '').strip().lower() != server_type:
         return True
@@ -270,9 +274,12 @@ def _config_projection_lost(default):
         return True
     row_creds = default.get('creds') or {}
     projected = creds_from_config(server_type)
-    return any(
-        value != (row_creds.get(key) or '') for key, value in projected.items()
-    )
+    return any(value != (row_creds.get(key) or '') for key, value in projected.items())
+
+
+def _row_holds_unprojected_creds(default):
+    projected = creds_from_config((default.get('server_type') or '').strip().lower())
+    return any(value and key not in projected for key, value in (default.get('creds') or {}).items())
 
 
 def _default_context(default):
@@ -289,7 +296,7 @@ def _default_context(default):
         return None
     if not _config_projection_lost(default):
         return None
-    if _warn_once('projection'):
+    if _config_projection_stale(default) and _warn_once('projection'):
         logger.warning(
             "This process's config does not match default server '%s' (it started "
             "before the database had those settings, or they changed since); binding "
@@ -559,7 +566,8 @@ def translate_ids(item_ids, server_id=None, conn=None):
                 "  CASE match_tier "
                 "    WHEN 'fingerprint' THEN 0 WHEN 'path' THEN 1 WHEN 'tail' THEN 2 "
                 "    WHEN 'exact_meta' THEN 3 WHEN 'default' THEN 4 WHEN 'norm_meta' THEN 5 "
-                "    WHEN 'title_artist' THEN 6 WHEN 'analysis' THEN 7 ELSE 8 END, "
+                "    WHEN 'title_duration' THEN 6 WHEN 'title_artist' THEN 7 WHEN 'analysis' THEN 8 "
+                "    ELSE 9 END, "
                 "  provider_track_id",
                 (target, chunk),
             )

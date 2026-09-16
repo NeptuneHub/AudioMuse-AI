@@ -30,15 +30,20 @@ Main Features:
 import gc
 import json
 import math
-import time
 import logging
 from flask import Blueprint, jsonify, render_template, request, Response
 import numpy as np
 import gzip
 
 from database import get_db, load_map_projection
-from app_helper import probe_catalogue_canonical_ids
+from app_helper import catalogue_has_canonical_ids, remember_catalogue_canonical_ids
 import app_server_context
+from error.error_dictionary import (
+    ERR_CACHE_REFRESH_FAILED,
+    ERR_INVALID_REQUEST,
+    UNKNOWN_ERROR_CODE,
+)
+from error.responses import json_error, json_exception
 
 # Try to reuse the shared projection helpers
 try:
@@ -67,30 +72,6 @@ MAP_JSON_CACHE = {}
 # request streams precomputed bytes instead of translating the whole catalogue on
 # every call. Built for the default server at cache-build time, lazily for others.
 MAP_SERVER_JSON_CACHE = {}
-
-# Memoized canonical-id probe. Canonicalization is one-way, so a True is sticky
-# forever; a False is re-probed at most once per TTL. This keeps the map fast path
-# from seq-scanning score on every request of a not-yet-canonicalized library.
-_HAS_CANONICAL_IDS = None
-_HAS_CANONICAL_CHECKED_AT = 0.0
-_HAS_CANONICAL_TTL = 60.0
-
-
-def _catalogue_has_canonical_ids():
-    """True when score holds canonical fp_ ids (memoized; fails closed on error,
-    remembering the failure for the TTL so a DB outage does not re-probe on
-    every request)."""
-    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
-    if _HAS_CANONICAL_IDS:
-        return True
-    now = time.monotonic()
-    if _HAS_CANONICAL_CHECKED_AT and (now - _HAS_CANONICAL_CHECKED_AT) < _HAS_CANONICAL_TTL:
-        return _HAS_CANONICAL_IDS is not False
-    result = probe_catalogue_canonical_ids()
-    _HAS_CANONICAL_IDS = result
-    _HAS_CANONICAL_CHECKED_AT = now
-    return result is not False
-
 
 def _pick_top_mood(mood_vector_str):
     """Return top mood label from 'label:score,label2:score' string.
@@ -158,7 +139,6 @@ def build_map_cache():
     and build cached JSON blobs for 100/75/50/25 percent samples. This should be called
     once at startup inside app.app_context()."""
     global MAP_JSON_CACHE
-    global _HAS_CANONICAL_IDS, _HAS_CANONICAL_CHECKED_AT
     logger = logging.getLogger(__name__)
     logger.info('Building map JSON cache (this reads the DB once).')
 
@@ -238,8 +218,7 @@ def build_map_cache():
     # fp_ id; a rebuild (e.g. after canonicalization) reflects the legacy->fp_ flip
     # exactly here, instead of a reset that re-triggered a score seq-scan on every
     # routine rebuild. Canonicalization is one-way, so this only ever flips to True.
-    _HAS_CANONICAL_IDS = has_canonical
-    _HAS_CANONICAL_CHECKED_AT = time.monotonic()
+    remember_catalogue_canonical_ids(has_canonical)
 
     if not full_light:
         # empty cache
@@ -373,7 +352,7 @@ def _warm_server_buckets():
     from tasks.mediaserver import registry
 
     try:
-        needs = _catalogue_has_canonical_ids() or registry.has_secondary_servers()
+        needs = catalogue_has_canonical_ids() or registry.has_secondary_servers()
     except Exception:
         logger.exception('Map pre-warm scope probe failed; warming defensively')
         needs = True
@@ -556,7 +535,7 @@ def map_api():
         server_id = app_server_context.resolve_request_server_id()
     except ValueError:
         logger.warning("Invalid server selection.", exc_info=True)
-        return jsonify({'error': 'Invalid server selection.'}), 400
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
     from tasks.mediaserver import registry
 
     # The legacy fast path streams score.item_id verbatim; that is safe only while
@@ -566,7 +545,7 @@ def map_api():
     # ids (fp_ dropped) and pre-gzipped, so every request streams bytes rather than
     # re-translating the whole catalogue. ALL configured servers are warmed at build
     # time; a lookup miss (a server added since the last build) builds+caches lazily.
-    if server_id is not None or registry.has_secondary_servers() or _catalogue_has_canonical_ids():
+    if server_id is not None or registry.has_secondary_servers() or catalogue_has_canonical_ids():
         server_key = server_id or '__default__'
         cached = MAP_SERVER_JSON_CACHE.get((server_key, pct))
         if cached is None:
@@ -626,11 +605,13 @@ def map_cache_status():
                 'projection': v.get('projection'),
             }
         return jsonify({'ok': True, 'buckets': info}), 200
-    except Exception:
+    except Exception as exc:
         # Log the full exception (including stack) for diagnostics, but do not expose
         # internal exception details to API clients.
         logger.exception('map_cache_status failed')
-        return jsonify({'ok': False, 'reason': 'exception', 'error': 'Internal server error'}), 500
+        return json_exception(
+            exc, UNKNOWN_ERROR_CODE, 'Internal server error', ok=False, reason='exception'
+        )
 
 
 @map_bp.route('/api/rebuild_map_cache', methods=['POST'])
@@ -660,7 +641,7 @@ def rebuild_map_cache():
     try:
         build_map_cache()
         return jsonify({'ok': True, 'message': 'map cache rebuilt'}), 200
-    except Exception:
+    except Exception as exc:
         # Log the full exception for debugging, but return a generic error to the caller.
         logger.exception('rebuild_map_cache failed')
-        return jsonify({'ok': False, 'error': 'Internal server error'}), 500
+        return json_exception(exc, ERR_CACHE_REFRESH_FAILED, 'Internal server error', ok=False)
