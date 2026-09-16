@@ -46,6 +46,7 @@ def environment(monkeypatch, tmp_path):
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_CODEBOOK_PATH', str(files[1]))
     monkeypatch.setattr(config, 'AUTH_ENABLED', False)
     monkeypatch.setattr(config, 'API_TOKEN', 'unit-api-token')
+    monkeypatch.setattr(app_auth, 'setup_status', lambda: (False, None))
     monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: False)
     monkeypatch.setattr(app_auth, '_jwt_secret', lambda: SECRET)
     monkeypatch.setattr(registry, 'get_default_server_id', lambda: 'primary')
@@ -253,16 +254,22 @@ def test_lookup_failure_is_sanitized(client, environment):
     environment.cursor.execute.side_effect = RuntimeError('secret database password')
     response = client.get(URL)
     assert response.status_code == 500
-    assert response.json == {'error': 'Could not determine model coverage.'}
+    assert response.json['error'] == 'Could not determine model coverage.'
+    assert response.json['error_code'] == 3003
     assert response.headers['Cache-Control'] == 'no-store'
     environment.db.rollback.assert_called_once()
 
 
-@pytest.mark.parametrize('query', ['?server_id=unknown', '?server=', '?server_id='])
-def test_invalid_scope(client, query):
+@pytest.mark.parametrize('query,code', [
+    ('?server_id=unknown', 1010),
+    ('?server=', 1003),
+    ('?server_id=', 1003),
+])
+def test_invalid_scope(client, query, code):
     response = client.get(URL + query)
     assert response.status_code == 400
-    assert response.json == {'error': 'Invalid server selection.'}
+    assert response.json['error_code'] == code
+    assert 'error' in response.json
     assert response.headers['Cache-Control'] == 'no-store'
 
 
@@ -288,10 +295,12 @@ def test_auth_barrier_allows_ordinary_users(client, monkeypatch, route, auth, ex
 
 @pytest.mark.parametrize('route', [URL, '/api/version'])
 def test_initial_setup_policy(client, monkeypatch, route):
+    monkeypatch.setattr(app_auth, 'setup_status', lambda: (True, None))
     monkeypatch.setattr(app_auth, 'check_setup_needed', lambda: True)
     response = client.get(route)
     assert response.status_code == 403
-    assert response.json == {'error': 'Setup required'}
+    assert response.json['error'] == 'Setup required'
+    assert response.json['error_code'] == 1006
     assert response.headers['Cache-Control'] == 'no-store'
 
 
@@ -316,7 +325,8 @@ def test_directory_failure_is_not_reported_as_empty(client, environment):
     environment.loader.side_effect = ValueError('secret corrupt directory path')
     response = client.get(URL + '?server_id=secondary')
     assert response.status_code == 500
-    assert response.json == {'error': 'Could not determine model coverage.'}
+    assert response.json['error'] == 'Could not determine model coverage.'
+    assert response.json['error_code'] == 3003
 
 
 def test_generated_openapi_references_resolve(client):

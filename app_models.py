@@ -15,6 +15,8 @@ import logging
 from flask import Blueprint, jsonify, request
 
 import app_server_context
+from error.error_dictionary import ERR_INVALID_REQUEST, ERR_SEARCH_FAILED
+from error.responses import json_error, json_exception
 from tasks.model_coverage import get_model_coverage
 
 logger = logging.getLogger(__name__)
@@ -121,10 +123,9 @@ def models_api():
         try:
             server_id = app_server_context.resolve_request_server_id()
             if server_id is None and any(key in request.args for key in ('server', 'server_id')):
-                return jsonify({'error': 'Invalid server selection.'}), 400
-        except ValueError:
-            return jsonify({'error': 'Invalid server selection.'}), 400
+                return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
+        except ValueError as exc:
+            return json_exception(exc, ERR_INVALID_REQUEST)
         return jsonify(get_model_coverage(server_id))
-    except Exception:
-        logger.exception('Could not determine model coverage')
-        return jsonify({'error': 'Could not determine model coverage.'}), 500
+    except Exception as exc:
+        return json_exception(exc, ERR_SEARCH_FAILED, 'Could not determine model coverage.')
