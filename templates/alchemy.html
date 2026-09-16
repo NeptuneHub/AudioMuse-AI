@@ -918,6 +918,10 @@
 
                 const payload = { items: valid, n, temperature };
                 payload.subtract_distance = parseFloat(subtractSlider.value);
+                window.lastAddCentroidVector = null;
+                window.lastAlchemyExclusions = [];
+                window.lastAlchemyInclusions = [];
+                window.lastAlchemyInclusionsEmbedding = null;
 
                 const resp = await fetch("{{ url_for('alchemy_bp.alchemy_api') }}", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const data = await readJsonBody(resp);
@@ -928,12 +932,17 @@
                 wrapper.innerHTML = ''; // Clear previous results
                 // Track current result IDs so playlist creation can use them
                 window.currentResultIds = [];
+                if (Array.isArray(data.ignored_anchors) && data.ignored_anchors.length > 0) {
+                    showMessageBox('Anchor ignored', data.ignored_anchors.map(a => `'${a.name}' was ignored: ${a.problem}. Run the alchemy again and re-save it.`).join(' '), true);
+                }
                 if(data.results && data.results.length > 0) {
                     window.currentResultIds = data.results.map(r => r.item_id).filter(Boolean);
                     wrapper.innerHTML = renderSongList(data.results, { metric: songDistanceBadge });
-                    // Save centroid + exclusions from alchemy for potential anchor actions (not returned in anchors list)
+                    // Save centroid + inclusions + exclusions from alchemy for potential anchor actions (not returned in anchors list)
                     window.lastAddCentroidVector = data.add_centroid_vector || null;
                     window.lastAlchemyExclusions = data.exclusions || [];
+                    window.lastAlchemyInclusions = data.inclusions || [];
+                    window.lastAlchemyInclusionsEmbedding = data.inclusions_embedding || null;
                     // Show results, playlist creator, and save-anchor control for this run
                     alchemyHasRun = true;
                     resultsSection.classList.remove('hidden');
@@ -1546,11 +1555,16 @@
                 const resp = await fetch('/api/anchors', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, centroid: window.lastAddCentroidVector, exclusions: window.lastAlchemyExclusions || [] }),
+                    body: JSON.stringify({ name, centroid: window.lastAddCentroidVector, exclusions: window.lastAlchemyExclusions || [], inclusions: window.lastAlchemyInclusions || [], inclusions_embedding: window.lastAlchemyInclusionsEmbedding }),
                 });
                 const resData = await readJsonBody(resp);
                 if (!resp.ok || resData === null || resData.error) throw new Error(apiErrorText(resData, `Failed to save anchor (HTTP ${resp.status})`));
-                showMessageBox('Anchor Saved', `Anchor '${name}' saved successfully.`);
+                const dropped = resData.dropped_points || {};
+                if (dropped.inclusions || dropped.exclusions) {
+                    showMessageBox('Anchor Saved', `Anchor '${name}' saved. This run had more points than an anchor can hold, so the ${dropped.inclusions || 0} lightest include points and the last ${dropped.exclusions || 0} exclusions were left out.`);
+                } else {
+                    showMessageBox('Anchor Saved', `Anchor '${name}' saved successfully.`);
+                }
                 anchorNameInput.value = '';
                 await refreshAnchors();
             } catch (e) {

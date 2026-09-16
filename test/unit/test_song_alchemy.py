@@ -19,8 +19,20 @@ Main Features:
 * Full alchemy flow dedups songs and applies the distance filter
 * ADD-ed anchors re-apply their stored exclusions at the saved per-point radius
   and the run exports subtract regions as `exclusions` for anchor saving
+* The run exports every ADD point, not averaged, as `inclusions`; an ADD-ed
+  anchor with stored inclusions searches each point, ranks by the nearest one,
+  keeps stored song seeds out of the results, falls back to its centroid when
+  none are stored, and is ignored when its embedding stamp or centroid size no
+  longer matches (search, exclusions and projection alike, loaded once per run)
+* A subtracted anchor excludes around each stored point and drops its seed
+  songs; capped query points keep every input's heaviest point, and a saved
+  anchor re-run picks the same points as its run through the stored groups;
+  stored seed signatures drop other copies of a seed; the seed test ignores
+  metric settings and int8 rounding; the embedding stamp fingerprints the model
+  file content and tolerates an unreadable model on the dimension alone
 """
 
+import hashlib
 import pytest
 from unittest.mock import patch
 import numpy as np
@@ -51,6 +63,10 @@ class TestSongAlchemy:
             patch('database.get_db') as mock_get_db,
             patch('tasks.song_alchemy.load_map_projection') as mock_load_proj,
             patch('tasks.song_alchemy.config') as mock_config,
+            patch(
+                'tasks.song_alchemy.anchor_embedding_tag',
+                return_value={'embedding_model_sha256': 'musicnn_embedding.onnx', 'dimension': 2},
+            ),
         ):
             mock_filter_dist.side_effect = lambda song_results, db_conn: song_results
 
@@ -63,6 +79,8 @@ class TestSongAlchemy:
             mock_config.ALCHEMY_MAX_ANCHOR_POINTS = 16
             mock_config.ALCHEMY_PLAYLIST_MAX_SONGS = 500
             mock_config.ALCHEMY_PLAYLIST_MAX_CENTROIDS = 10
+            mock_config.EMBEDDING_DIMENSION = 2
+            mock_config.EMBEDDING_MODEL_PATH = '/nonexistent/model/musicnn_embedding.onnx'
 
             yield {
                 'get_vector_by_id': mock_get_vec,
@@ -513,6 +531,486 @@ class TestSongAlchemy:
 
         assert [r['item_id'] for r in result['results']] == ['r1']
         assert result['exclusions'] == []
+
+    @staticmethod
+    def _tagged_anchor(points, model='musicnn_embedding.onnx', dimension=2, anchor_id=7):
+        return {
+            'id': anchor_id,
+            'name': f'Anchor {anchor_id}',
+            'centroid': [0.5, 0.5],
+            'exclusions': [{'vector': [0.0, -1.0], 'distance': 0.1}],
+            'inclusions': {'embedding_model_sha256': model, 'dimension': dimension, 'points': points},
+        }
+
+    def test_song_alchemy_exports_add_points_as_inclusions(self, mock_dependencies):
+        def get_vec(id):
+            vectors = {'s1': [1.0, 0.0], 's2': [0.0, 1.0], 'r1': [0.9, 0.1]}
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'}}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        result = song_alchemy.song_alchemy(
+            add_items=[{'type': 'song', 'id': 's1'}, {'type': 'song', 'id': 's2'}]
+        )
+
+        assert result['inclusions'] == [
+            {'vector': [1.0, 0.0], 'weight': 1.0, 'seed': True, 'group': 0, 'signature': None},
+            {'vector': [0.0, 1.0], 'weight': 1.0, 'seed': True, 'group': 1, 'signature': None},
+        ]
+        assert result['add_centroid_vector'] == [0.5, 0.5]
+        assert result['inclusions_embedding'] == {'embedding_model_sha256': 'musicnn_embedding.onnx', 'dimension': 2}
+
+    def test_song_alchemy_anchor_with_inclusions_searches_every_point(self, mock_dependencies):
+        anchor = self._tagged_anchor(
+            [
+                {'vector': [1.0, 0.0], 'weight': 1.0, 'seed': True},
+                {'vector': [0.0, 1.0], 'weight': 3.0, 'seed': False},
+            ]
+        )
+
+        def get_vec(id):
+            vectors = {
+                'seed_copy': [1.0, 0.0],
+                'near_a': [0.8, 0.2],
+                'near_b': [0.2, 0.8],
+                'middle': [0.6, 0.8],
+            }
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['seed_copy', 'middle', 'near_a', 'near_b']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'seed_copy': {'item_id': 'seed_copy', 'title': 'Seed', 'author': 'A0'},
+                'near_a': {'item_id': 'near_a', 'title': 'Near A', 'author': 'A1'},
+                'near_b': {'item_id': 'near_b', 'title': 'Near B', 'author': 'A2'},
+                'middle': {'item_id': 'middle', 'title': 'Middle', 'author': 'A3'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], n_results=3, temperature=0.0
+            )
+
+        query_vectors = mock_dependencies['multi_query_ids'].call_args.args[0]
+        assert [list(v) for v in query_vectors] == [[1.0, 0.0], [0.0, 1.0]]
+        result_ids = [r['item_id'] for r in result['results']]
+        assert 'seed_copy' not in result_ids
+        assert result_ids[:2] in (['near_a', 'near_b'], ['near_b', 'near_a'])
+        assert result['inclusions'] == [
+            {'vector': [1.0, 0.0], 'weight': 0.25, 'seed': True, 'group': 0, 'signature': None},
+            {'vector': [0.0, 1.0], 'weight': 0.75, 'seed': False, 'group': 0, 'signature': None},
+        ]
+        assert result['exclusions'] == [{'vector': [0.0, -1.0], 'distance': 0.1}]
+
+    def test_song_alchemy_anchor_without_inclusions_uses_centroid(self, mock_dependencies):
+        anchor = {'id': 7, 'name': 'Anchor', 'centroid': [0.5, 0.5], 'exclusions': None}
+
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {'r1': [0.4, 0.6]}.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'}}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0
+            )
+
+        query_vectors = mock_dependencies['multi_query_ids'].call_args.args[0]
+        assert [list(v) for v in query_vectors] == [[0.5, 0.5]]
+        assert [r['item_id'] for r in result['results']] == ['r1']
+        assert result['inclusions'] == [
+            {'vector': [0.5, 0.5], 'weight': 1.0, 'seed': False, 'group': 0, 'signature': None}
+        ]
+
+    def test_song_alchemy_skips_malformed_stored_inclusions(self, mock_dependencies):
+        anchor = self._tagged_anchor(
+            [
+                {'vector': 'bad'},
+                {'vector': []},
+                'not-a-dict',
+                {'vector': [0.0, 1.0], 'weight': 'heavy'},
+                {'vector': [0.0, 1.0], 'weight': -1.0},
+            ]
+        )
+
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {'r1': [0.4, 0.6]}.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'}}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0
+            )
+
+        query_vectors = mock_dependencies['multi_query_ids'].call_args.args[0]
+        assert [list(v) for v in query_vectors] == [[0.5, 0.5]]
+        assert [r['item_id'] for r in result['results']] == ['r1']
+
+    @pytest.mark.parametrize(
+        'model, dimension',
+        [('other_embedding.onnx', 2), ('musicnn_embedding.onnx', 3)],
+    )
+    def test_song_alchemy_ignores_anchor_saved_with_another_embedding(
+        self, mock_dependencies, model, dimension
+    ):
+        anchor = self._tagged_anchor(
+            [{'vector': [1.0, 0.0], 'weight': 1.0, 'seed': True}], model=model, dimension=dimension
+        )
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0
+            )
+
+        assert result['results'] == []
+        mock_dependencies['multi_query_ids'].assert_not_called()
+        assert [(a['id'], a['name']) for a in result['ignored_anchors']] == [(7, 'Anchor 7')]
+        assert result['ignored_anchors'][0]['problem'].startswith('it was saved with embedding')
+
+    def test_song_alchemy_mismatched_anchor_drops_its_exclusions_too(self, mock_dependencies):
+        anchor = self._tagged_anchor(
+            [{'vector': [1.0, 0.0], 'weight': 1.0}], model='other_embedding.onnx'
+        )
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {
+            's1': [1.0, 0.0],
+            'r1': [0.0, -1.0],
+        }.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'}}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor) as loader:
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'song', 'id': 's1'}, {'type': 'anchor', 'id': 7}],
+                temperature=0.0,
+            )
+
+        assert [r['item_id'] for r in result['results']] == ['r1']
+        assert result['exclusions'] == []
+        assert [p for p in result['add_points'] if p.get('type') == 'anchor'] == []
+        assert loader.call_count == 1
+        assert [a['id'] for a in result['ignored_anchors']] == [7]
+
+    def test_ignored_anchor_warning_cannot_forge_log_lines(self, mock_dependencies, caplog):
+        anchor = {'id': 7, 'name': 'evil\nFAKE ERROR line', 'centroid': [0.5, 0.5, 0.5], 'exclusions': None}
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor), caplog.at_level('WARNING'):
+            song_alchemy._load_usable_anchor('7\r\nforged', {})
+
+        messages = [r.getMessage() for r in caplog.records if 'Ignoring anchor' in r.getMessage()]
+        assert len(messages) == 1
+        assert '\n' not in messages[0] and '\r' not in messages[0]
+        assert "evil FAKE ERROR line" in messages[0]
+
+    def test_song_alchemy_ignores_legacy_anchor_with_wrong_centroid_size(self, mock_dependencies):
+        anchor = {'id': 7, 'name': 'Old', 'centroid': [0.5, 0.5, 0.5], 'exclusions': None}
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0
+            )
+
+        assert result['results'] == []
+        mock_dependencies['multi_query_ids'].assert_not_called()
+        assert result['ignored_anchors'][0]['problem'].startswith('its centroid has 3 values')
+
+    def test_song_alchemy_loads_each_anchor_once_per_run(self, mock_dependencies):
+        anchor = self._tagged_anchor([{'vector': [1.0, 0.0], 'weight': 1.0}])
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {'r1': [0.9, 0.1]}.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'}}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor) as loader:
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0
+            )
+
+        assert [r['item_id'] for r in result['results']] == ['r1']
+        assert [p['item_id'] for p in result['add_points'] if p.get('type') == 'anchor'] == [7]
+        assert loader.call_count == 1
+
+    def test_select_query_points_keeps_a_many_point_anchor_when_capped(self):
+        songs = [
+            {'vector': None, 'weight': 1.0, 'source_type': 'song', 'source_id': f's{i}'}
+            for i in range(10)
+        ]
+        artists = [
+            {'vector': None, 'weight': 1 / 9, 'source_type': 'artist', 'source_id': name}
+            for name in ('a1', 'a2')
+            for _ in range(9)
+        ]
+        anchor = [
+            {'vector': None, 'weight': 0.05, 'source_type': 'anchor', 'source_id': 9}
+            for _ in range(20)
+        ]
+
+        selected = song_alchemy._select_query_points(songs + artists + anchor, 16)
+
+        assert len(selected) == 16
+        assert sum(1 for p in selected if p['source_type'] == 'anchor') == 1
+        assert sum(1 for p in selected if p['source_type'] == 'song') == 10
+        assert {p['source_id'] for p in selected if p['source_type'] == 'artist'} == {'a1', 'a2'}
+        assert [p['weight'] for p in selected] == sorted((p['weight'] for p in selected), reverse=True)
+
+    def test_select_query_points_ranks_inputs_by_total_weight(self):
+        songs = [
+            {'vector': None, 'weight': 1.0, 'source_type': 'song', 'source_id': f's{i}'}
+            for i in range(2)
+        ]
+        anchor = [
+            {'vector': None, 'weight': 0.25, 'source_type': 'anchor', 'source_id': 9}
+            for _ in range(4)
+        ]
+
+        selected = song_alchemy._select_query_points(anchor + songs, 2)
+
+        assert [p['source_type'] for p in selected] == ['song', 'anchor']
+
+    def test_select_query_points_fills_spare_slots_by_weight(self):
+        points = [
+            {'vector': None, 'weight': w, 'source_type': 'artist', 'source_id': 'a'}
+            for w in (0.5, 0.3, 0.2)
+        ] + [{'vector': None, 'weight': 1.0, 'source_type': 'song', 'source_id': 's'}]
+
+        selected = song_alchemy._select_query_points(points, 3)
+
+        assert [p['weight'] for p in selected] == [1.0, 0.5, 0.3]
+
+    def test_song_alchemy_subtracted_anchor_excludes_around_each_point(self, mock_dependencies):
+        anchor = self._tagged_anchor(
+            [{'vector': [0.0, 1.0], 'weight': 1.0}, {'vector': [0.0, -1.0], 'weight': 1.0}],
+            anchor_id=8,
+        )
+
+        def get_vec(id):
+            vectors = {'s1': [1.0, 0.0], 'up': [0.1, 0.95], 'down': [0.1, -0.95], 'keep': [0.9, 0.1]}
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['up', 'down', 'keep']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'up': {'item_id': 'up', 'title': 'Up', 'author': 'A1'},
+                'down': {'item_id': 'down', 'title': 'Down', 'author': 'A2'},
+                'keep': {'item_id': 'keep', 'title': 'Keep', 'author': 'A3'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'song', 'id': 's1'}],
+                subtract_items=[{'type': 'anchor', 'id': 8}],
+                subtract_distance=0.2,
+                temperature=0.5,
+            )
+
+        assert [r['item_id'] for r in result['results']] == ['keep']
+        assert sorted(r['item_id'] for r in result['filtered_out']) == ['down', 'up']
+        assert result['exclusions'] == [
+            {'vector': [0.0, 1.0], 'distance': 0.2},
+            {'vector': [0.0, -1.0], 'distance': 0.2},
+        ]
+
+    def test_stored_seeds_are_dropped_whatever_the_metric_settings(self, mock_dependencies):
+        config = mock_dependencies['config']
+        config.IVF_METRIC = 'dot'
+        config.PATH_DISTANCE_METRIC = 'angular'
+        config.DUPLICATE_DISTANCE_THRESHOLD_COSINE = 0.0
+        config.DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN = 0.0
+        anchor = self._tagged_anchor([{'vector': [0.6, 0.8], 'weight': 1.0, 'seed': True}])
+
+        def get_vec(id):
+            vectors = {
+                'seed_quantized': [76 / 127, 102 / 127],
+                'close': [0.8, 0.6],
+                'far': [-0.6, 0.8],
+            }
+            return vectors.get(id)
+
+        mock_dependencies['get_vector_by_id'].side_effect = get_vec
+        mock_dependencies['multi_query_ids'].return_value = ['seed_quantized', 'close', 'far']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {cid: {'item_id': cid, 'title': cid, 'author': cid} for cid in ('seed_quantized', 'close', 'far')}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}], n_results=4, temperature=0.0
+            )
+
+        assert sorted(r['item_id'] for r in result['results']) == ['close', 'far']
+
+    def test_drop_stored_seeds_skips_candidates_without_vectors(self):
+        vectors = {'a': [1.0, 0.0], 'b': None, 'c': [0.0, 1.0]}
+
+        kept = song_alchemy._drop_stored_seeds(['a', 'b', 'c'], [np.array([1.0, 0.0])], vectors.get)
+
+        assert kept == ['b', 'c']
+
+    def test_string_seed_flag_is_not_a_seed(self, mock_dependencies):
+        points = song_alchemy._stored_inclusion_points(
+            {'points': [{'vector': [1.0, 0.0], 'seed': 'true'}, {'vector': [0.0, 1.0], 'seed': True}]}
+        )
+
+        assert [p['seed'] for p in points] == [False, True]
+
+    def test_stored_points_with_wrong_size_or_non_finite_values_are_skipped(self, mock_dependencies):
+        points = song_alchemy._stored_inclusion_points(
+            {
+                'points': [
+                    {'vector': [1.0, 0.0, 0.0]},
+                    {'vector': [float('nan'), 1.0]},
+                    {'vector': [0.0, 1.0]},
+                ]
+            }
+        )
+
+        assert [list(p['vector']) for p in points] == [[0.0, 1.0]]
+
+    def test_anchor_embedding_tag_fingerprints_the_model_file(self, tmp_path):
+        model = tmp_path / 'renamed_model.onnx'
+        model.write_bytes(b'model-bytes')
+        expected = hashlib.sha256(b'model-bytes').hexdigest()[:16]
+
+        with patch('tasks.song_alchemy.config') as config:
+            config.EMBEDDING_MODEL_PATH = str(model)
+            config.EMBEDDING_DIMENSION = 200
+            tag = song_alchemy.anchor_embedding_tag()
+            config.EMBEDDING_MODEL_PATH = str(tmp_path / 'missing.onnx')
+            fallback = song_alchemy.anchor_embedding_tag()
+
+        assert tag == {'embedding_model_sha256': expected, 'dimension': 200}
+        assert fallback == {'embedding_model_sha256': None, 'dimension': 200}
+
+    def test_embedding_tags_match_ignores_an_unknown_fingerprint_but_never_the_dimension(self):
+        current = {'embedding_model_sha256': 'abc', 'dimension': 200}
+        assert song_alchemy.embedding_tags_match({'embedding_model_sha256': 'abc', 'dimension': 200}, current)
+        assert song_alchemy.embedding_tags_match({'embedding_model_sha256': None, 'dimension': 200}, current)
+        assert song_alchemy.embedding_tags_match(
+            {'embedding_model_sha256': 'abc', 'dimension': 200},
+            {'embedding_model_sha256': None, 'dimension': 200},
+        )
+        assert not song_alchemy.embedding_tags_match({'embedding_model_sha256': 'xyz', 'dimension': 200}, current)
+        assert not song_alchemy.embedding_tags_match({'embedding_model_sha256': None, 'dimension': 128}, current)
+        assert not song_alchemy.embedding_tags_match('not-a-tag', current)
+
+    def test_saved_anchor_rerun_queries_the_same_points_as_the_saved_run(self, mock_dependencies):
+        live = [
+            {'vector': np.array([1.0, float(i)]), 'weight': 1.0, 'source_type': 'song', 'source_id': f's{i}', 'seed': True}
+            for i in range(10)
+        ]
+        component_weights = [0.2, 0.15, 0.12, 0.11, 0.1, 0.09, 0.08, 0.08, 0.07]
+        for name, base in (('a1', 100.0), ('a2', 200.0)):
+            live.extend(
+                {'vector': np.array([base, float(j)]), 'weight': w, 'source_type': 'artist', 'source_id': name}
+                for j, w in enumerate(component_weights)
+            )
+        live_selected = song_alchemy._select_query_points(live, 16)
+        anchor = {
+            'id': 7,
+            'name': 'Saved',
+            'centroid': [0.0, 0.0],
+            'exclusions': None,
+            'inclusions': {
+                'embedding_model_sha256': 'musicnn_embedding.onnx',
+                'dimension': 2,
+                'points': song_alchemy._export_inclusions(live, {}),
+            },
+        }
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            loaded = song_alchemy._anchor_anchor_points(7)
+        rerun_selected = song_alchemy._select_query_points(loaded, 16)
+
+        assert {p['source_id'] for p in live_selected if p['source_type'] == 'artist'} == {'a1', 'a2'}
+        assert [list(p['vector']) for p in rerun_selected] == [list(p['vector']) for p in live_selected]
+
+    def test_stored_seed_signature_drops_other_copies_of_the_seed(self, mock_dependencies):
+        anchor = self._tagged_anchor(
+            [{'vector': [1.0, 0.0], 'weight': 1.0, 'seed': True, 'signature': ['seed title', 'seed artist']}]
+        )
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {
+            'remaster': [0.7, 0.7],
+            'other': [0.9, 0.1],
+        }.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['remaster', 'other']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'remaster': {'item_id': 'remaster', 'title': ' Seed Title ', 'author': 'SEED ARTIST'},
+                'other': {'item_id': 'other', 'title': 'Other', 'author': 'Someone'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(add_items=[{'type': 'anchor', 'id': 7}], temperature=0.0)
+
+        assert [r['item_id'] for r in result['results']] == ['other']
+
+    def test_song_seed_signature_is_exported_for_a_saved_anchor(self, mock_dependencies):
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {'s1': [1.0, 0.0], 'r1': [0.9, 0.1]}.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['r1']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                's1': {'item_id': 's1', 'title': 'My Song ', 'author': 'My Band'},
+                'r1': {'item_id': 'r1', 'title': 'R1', 'author': 'A1'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        result = song_alchemy.song_alchemy(add_items=[{'type': 'song', 'id': 's1'}], temperature=0.5)
+
+        assert result['inclusions'][0]['signature'] == ['my song', 'my band']
+
+    def test_subtracted_anchor_seed_songs_are_dropped_even_with_a_zero_radius(self, mock_dependencies):
+        anchor = self._tagged_anchor([{'vector': [0.6, 0.8], 'weight': 1.0, 'seed': True}], anchor_id=8)
+        anchor['exclusions'] = None
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {
+            's1': [1.0, 0.0],
+            'seed_copy': [0.6, 0.8],
+            'keep': [0.9, 0.1],
+        }.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['seed_copy', 'keep']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {
+                'seed_copy': {'item_id': 'seed_copy', 'title': 'Copy', 'author': 'A1'},
+                'keep': {'item_id': 'keep', 'title': 'Keep', 'author': 'A2'},
+            }
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'song', 'id': 's1'}],
+                subtract_items=[{'type': 'anchor', 'id': 8}],
+                subtract_distance=0.0,
+                temperature=0.5,
+            )
+
+        assert [r['item_id'] for r in result['results']] == ['keep']
+        assert [r['item_id'] for r in result['filtered_out']] == []
 
     def test_song_alchemy_applies_distance_filter(self, mock_dependencies):
         mock_dependencies['get_vector_by_id'].return_value = [1.0, 0.0]

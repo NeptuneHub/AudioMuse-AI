@@ -532,6 +532,16 @@ def availability_sql(alias='s'):
 _TRANSLATE_IDS_CHUNK = 5000
 
 
+def match_tier_rank_sql(column='match_tier'):
+    return (
+        f"CASE {column} "
+        "WHEN 'fingerprint' THEN 0 WHEN 'path' THEN 1 WHEN 'tail' THEN 2 "
+        "WHEN 'exact_meta' THEN 3 WHEN 'default' THEN 4 WHEN 'norm_meta' THEN 5 "
+        "WHEN 'title_duration' THEN 6 WHEN 'title_artist' THEN 7 WHEN 'analysis' THEN 8 "
+        "ELSE 9 END"
+    )
+
+
 def translate_ids(item_ids, server_id=None, conn=None):
     """Map canonical library item_ids to their ids on ``server_id``.
 
@@ -562,13 +572,7 @@ def translate_ids(item_ids, server_id=None, conn=None):
             cur.execute(
                 "SELECT DISTINCT ON (item_id) item_id, provider_track_id "
                 "FROM track_server_map WHERE server_id = %s AND item_id = ANY(%s) "
-                "ORDER BY item_id, "
-                "  CASE match_tier "
-                "    WHEN 'fingerprint' THEN 0 WHEN 'path' THEN 1 WHEN 'tail' THEN 2 "
-                "    WHEN 'exact_meta' THEN 3 WHEN 'default' THEN 4 WHEN 'norm_meta' THEN 5 "
-                "    WHEN 'title_duration' THEN 6 WHEN 'title_artist' THEN 7 WHEN 'analysis' THEN 8 "
-                "    ELSE 9 END, "
-                "  provider_track_id",
+                "ORDER BY item_id, " + match_tier_rank_sql('match_tier') + ", provider_track_id",
                 (target, chunk),
             )
             mapped.update({r[0]: r[1] for r in cur.fetchall()})

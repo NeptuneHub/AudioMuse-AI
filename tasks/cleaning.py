@@ -13,15 +13,23 @@ server through the sweep's OWN enumeration and pruning
 (multiserver_sync.fetch_server_catalogue / prune_stale_mappings, library filter
 applied), so the prune baseline can never disagree with the enumeration that
 created the mappings, and removes ONLY that server's rows from track_server_map
-for tracks it no longer has. A song bound to NO server (an orphan) is deleted
-from the catalogue, and that delete happens ONLY when every server was read
-completely (none failed, empty or partial). Every run then executes the same
-full similarity-index rebuild analysis runs, INLINE, and is not reported
-complete until Flask reloads the indexes.
+for tracks it no longer has. A song found on NO server (an orphan) is deleted
+from the catalogue when catalogue cleaning is on, at most CLEANING_SAFETY_LIMIT
+albums per run; the next run deletes the next albums. Every run then executes
+the same full similarity-index rebuild analysis runs, INLINE, and is not
+reported complete until Flask reloads the indexes.
 
 Main Features:
 * identify_and_clean_orphaned_albums_task: the queue entry point.
 * Reuses the sweep's public helpers so cleaning and the sweep never drift apart.
+* What a server returns is what it has: no ratio or share guard ever blocks the
+  unbind or the orphan delete. The ONE limit is CLEANING_SAFETY_LIMIT albums
+  deleted per run.
+* A server whose fetch raises, or returns an empty track list while AudioMuse
+  still has songs on it (providers answer a failed library lookup with an empty
+  list), was not read, so only the songs it may still hold (its own mappings,
+  plus unmapped legacy rows when it is the default server) are kept; every
+  other orphan is still cleaned. A partial but non-empty list is trusted.
 * Refreshes each server's stored library size (music_servers.track_count).
 * Runs the Chromaprint dedup (Path B) each time: splits merged groups whose
   stored fingerprints prove they are different recordings (skip-if-missing).
@@ -31,12 +39,11 @@ Main Features:
   rebuild. Each is a single call that writes no row while it runs, which the
   nudge cannot tell from a wedge; both are bounded, so a fetch that really never
   returns is still handed back to it.
-* A run that could not read every server ends in CleaningIncomplete, which is a
-  TaskFailed: the run itself COMPLETED (every reachable server was cleaned and
-  the summary is on the row), the orphan delete needs every server read, and a
-  queue retry would repeat one whole-catalogue fetch per server plus the full
-  index rebuild while holding the one-live-main slot, to reach the same result.
-  The next cron run is the retry.
+* A run with a server that could not be read ends in CleaningIncomplete, which is a
+  TaskFailed: the run itself COMPLETED (every readable server was cleaned and
+  the summary is on the row), and a queue retry would repeat one
+  whole-catalogue fetch per server plus the full index rebuild while holding
+  the one-live-main slot. The next cron run is the retry.
 """
 
 import logging
@@ -66,6 +73,40 @@ STARTING_MESSAGE = "Starting per-server library cleanup..."
 
 class CleaningIncomplete(TaskFailed):
     pass
+
+
+def _songs_on_unread_servers(cur, unread_servers):
+    if not unread_servers:
+        return set()
+    cur.execute(
+        "SELECT item_id FROM track_server_map WHERE server_id = ANY(%s)",
+        ([s['server_id'] for s in unread_servers],),
+    )
+    kept = {row[0] for row in cur.fetchall()}
+    if any(s.get('is_default') for s in unread_servers):
+        cur.execute(
+            "SELECT s.item_id FROM score s WHERE NOT EXISTS "
+            "(SELECT 1 FROM track_server_map m WHERE m.item_id = s.item_id)"
+        )
+        kept.update(row[0] for row in cur.fetchall())
+    return kept
+
+
+def _server_still_holds_songs(server):
+    from database import get_db
+
+    with get_db() as conn, conn.cursor() as cur:
+        if server:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM track_server_map WHERE server_id = %s)",
+                (server['server_id'],),
+            )
+            if cur.fetchone()[0]:
+                return True
+        if server and not server.get('is_default'):
+            return False
+        cur.execute("SELECT EXISTS (SELECT 1 FROM score)")
+        return bool(cur.fetchone()[0])
 
 
 def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
@@ -101,7 +142,8 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                 servers = registry.servers_for_scope('all')
                 present_canonical_ids = set()
                 failed_servers = []
-                refused_servers = []
+                unread_servers = []
+                legacy_server_unread = False
                 unbound_total = 0
                 unbound_by_server = {}
                 total_tracks_on_servers = 0
@@ -127,16 +169,22 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                             tracks = fetch_server_catalogue(server)
                     except Exception:
                         logger.exception(f"Failed to fetch the library from {server_name}")
+                        tracks = None
+                    provider_ids = {str(t['id']) for t in (tracks or []) if t.get('id')}
+                    if not provider_ids and (tracks is None or _server_still_holds_songs(server)):
+                        if tracks is not None:
+                            logger.error(
+                                "%s returned an empty track list while AudioMuse still has songs "
+                                "on it; treating it as unreadable so nothing of it is unbound or "
+                                "deleted this run.",
+                                server_name,
+                            )
                         failed_servers.append(server_name)
+                        if server_id:
+                            unread_servers.append(server)
+                        else:
+                            legacy_server_unread = True
                         continue
-                    if not tracks:
-                        logger.warning(
-                            f"No tracks found on {server_name}; skipping its cleanup "
-                            "so a fetch problem cannot unbind everything."
-                        )
-                        failed_servers.append(server_name)
-                        continue
-                    provider_ids = {str(t['id']) for t in tracks if t.get('id')}
                     tracks = None
                     total_tracks_on_servers += len(provider_ids)
                     log_and_update_main(
@@ -144,14 +192,11 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                         window_start + int(35 / len(servers)),
                     )
 
-                    refused = []
                     if server_id:
                         _store_server_track_count(get_db(), server_id, len(provider_ids))
                         unbound = prune_stale_mappings(
-                            get_db(), server_id, sorted(provider_ids), refused=refused
+                            get_db(), server_id, sorted(provider_ids)
                         )
-                        if refused:
-                            refused_servers.append(server_name)
                         unbound_by_server[server_name] = unbound
                         unbound_total += unbound
                         if unbound:
@@ -161,7 +206,7 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                                 window_start + int(70 / len(servers)),
                             )
                     marker_server_id = server_id or registry.get_default_server_id()
-                    if marker_server_id and not refused:
+                    if marker_server_id:
                         deleted_analysis_exclusions += delete_stale_analysis_exclusions(
                             marker_server_id, provider_ids, conn=get_db()
                         )
@@ -179,48 +224,58 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                         "JOIN embedding e ON s.item_id = e.item_id"
                     )
                     database_track_ids = {row[0] for row in cur.fetchall()}
+                    kept_on_unread_servers = _songs_on_unread_servers(cur, unread_servers)
 
-                fully_unbound = (
-                    database_track_ids - present_canonical_ids if not failed_servers else set()
-                )
-                orphaned_albums_info = defaultdict(lambda: {"tracks": [], "track_count": 0})
-                report_ids = list(fully_unbound)[:CLEANING_SAFETY_LIMIT * 50]
-                if report_ids:
+                if legacy_server_unread:
+                    fully_unbound = set()
+                else:
+                    fully_unbound = (
+                        database_track_ids - present_canonical_ids - kept_on_unread_servers
+                    )
+
+                orphan_albums = defaultdict(list)
+                orphan_list = sorted(fully_unbound)
+                if orphan_list:
                     with get_db() as conn, conn.cursor() as cur:
-                        for start in range(0, len(report_ids), 5000):
-                            chunk = report_ids[start:start + 5000]
+                        for start in range(0, len(orphan_list), 5000):
+                            cancel()
+                            chunk = orphan_list[start:start + 5000]
                             cur.execute(
-                                "SELECT item_id, title, author FROM score WHERE item_id = ANY(%s)",
+                                "SELECT item_id, title, author, album, album_artist "
+                                "FROM score WHERE item_id = ANY(%s)",
                                 (chunk,),
                             )
-                            for track_id, title, author in cur.fetchall():
-                                album_key = f"{author}" if author else "Unknown Artist"
-                                orphaned_albums_info[album_key]["tracks"].append(
+                            for track_id, title, author, album, album_artist in cur.fetchall():
+                                album_key = (
+                                    album_artist or author or "Unknown Artist",
+                                    album or "Unknown Album",
+                                )
+                                orphan_albums[album_key].append(
                                     {"item_id": track_id, "title": title, "author": author}
                                 )
-                                orphaned_albums_info[album_key]["track_count"] += 1
 
+                ordered_albums = sorted(
+                    orphan_albums.items(), key=lambda kv: (-len(kv[1]), kv[0])
+                )
                 orphaned_albums_list = [
-                    {"artist": artist, "track_count": info["track_count"], "tracks": info["tracks"]}
-                    for artist, info in orphaned_albums_info.items()
+                    {
+                        "artist": artist,
+                        "album": album,
+                        "track_count": len(tracks_of_album),
+                        "tracks": tracks_of_album,
+                    }
+                    for (artist, album), tracks_of_album
+                    in ordered_albums[:max(CLEANING_SAFETY_LIMIT, 0)]
                 ]
-                orphaned_albums_list.sort(key=lambda x: x["track_count"], reverse=True)
-                orphaned_albums_list = orphaned_albums_list[:CLEANING_SAFETY_LIMIT]
 
                 deleted_count = 0
-                deletable = (
-                    clean_catalogue and bool(fully_unbound)
-                    and not failed_servers and not refused_servers
-                )
-                if deletable and len(fully_unbound) > len(database_track_ids) // 2:
-                    logger.warning(
-                        "Cleaning: %d of %d catalogue tracks look orphaned - too large a "
-                        "share for a healthy library; deleting nothing this run.",
-                        len(fully_unbound), len(database_track_ids),
-                    )
-                    deletable = False
-                if deletable:
-                    orphan_ids = list(fully_unbound)
+                deleted_albums_count = 0
+                if clean_catalogue and orphaned_albums_list:
+                    orphan_ids = [
+                        track["item_id"]
+                        for album in orphaned_albums_list
+                        for track in album["tracks"]
+                    ]
                     with get_db() as conn, conn.cursor() as cur:
                         for start in range(0, len(orphan_ids), 5000):
                             cancel()
@@ -229,11 +284,14 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                                 "DELETE FROM score WHERE item_id = ANY(%s)", (chunk,)
                             )
                             deleted_count += len(chunk)
+                    deleted_albums_count = len(orphaned_albums_list)
                     log_and_update_main(
-                        f"Deleted {deleted_count} orphaned catalogue tracks (on no "
-                        "server); their analysis is re-created if the files return.",
+                        f"Deleted {deleted_count} orphaned catalogue tracks from "
+                        f"{deleted_albums_count} album(s) (on no server); their analysis "
+                        "is re-created if the files return.",
                         90,
                     )
+                remaining_orphans = len(fully_unbound) - deleted_count
 
                 chromaprint_splits = 0
                 if CHROMAPRINT_GATE_ENABLED:
@@ -267,38 +325,28 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                     "total_catalogue_tracks_present": len(present_canonical_ids),
                     "total_database_tracks": len(database_track_ids),
                     "orphaned_tracks_count": len(fully_unbound),
-                    "orphaned_albums_count": len(orphaned_albums_list),
+                    "orphaned_albums_count": len(orphan_albums),
                     "orphaned_albums": orphaned_albums_list,
                     "unbound_mappings": unbound_total,
                     "unbound_by_server": unbound_by_server,
                     "failed_servers": failed_servers,
-                    "prune_refused_servers": refused_servers,
                     "deleted_count": deleted_count,
+                    "deleted_albums_count": deleted_albums_count,
+                    "remaining_orphans_count": remaining_orphans,
+                    "cleaning_safety_limit": CLEANING_SAFETY_LIMIT,
                     "deleted_analysis_exclusions": deleted_analysis_exclusions,
                     "catalogue_deletion": clean_catalogue,
                     "chromaprint_splits": chromaprint_splits,
                 }
 
-                if failed_servers:
-                    message = (
-                        f"Cleanup finished with problems: server(s) {', '.join(failed_servers)} "
-                        f"could not be fully read and were skipped; {unbound_total} stale "
-                        "mappings unbound elsewhere. Stale not-analyzable markers were "
-                        "removed only for complete server reads. The catalogue was not modified."
-                    )
-                elif refused_servers:
-                    message = (
-                        f"Cleanup finished: {unbound_total} stale server mappings unbound, but "
-                        f"server(s) {', '.join(refused_servers)} returned fewer than half the "
-                        "tracks they still have mapped, so their stale mappings were NOT pruned. "
-                        "Re-run the cleanup if the library really did shrink that much."
-                    )
-                elif clean_catalogue:
+                if clean_catalogue:
                     message = (
                         f"Cleanup complete: {unbound_total} stale server mappings unbound; "
-                        f"{deleted_count} of {len(fully_unbound)} orphaned catalogue tracks "
-                        f"(on no server) deleted; {deleted_analysis_exclusions} stale "
-                        "not-analyzable marker(s) removed."
+                        f"{deleted_count} orphaned catalogue tracks from "
+                        f"{deleted_albums_count} album(s) (on no server) deleted, "
+                        f"{remaining_orphans} left for the next run (at most "
+                        f"{CLEANING_SAFETY_LIMIT} albums per run); "
+                        f"{deleted_analysis_exclusions} stale not-analyzable marker(s) removed."
                     )
                 else:
                     message = (
@@ -306,6 +354,11 @@ def identify_and_clean_orphaned_albums_task(clean_catalogue=None):
                         f"{len(fully_unbound)} catalogue tracks are on no server and were "
                         f"kept (catalogue cleaning is off - enable it to delete them); "
                         f"{deleted_analysis_exclusions} stale not-analyzable marker(s) removed."
+                    )
+                if failed_servers:
+                    message = (
+                        f"Server(s) {', '.join(failed_servers)} could not be read, so only "
+                        "the songs they may still hold were kept. " + message
                     )
                 log_and_update_main(message, 100, final_summary_details=summary)
                 if failed_servers:

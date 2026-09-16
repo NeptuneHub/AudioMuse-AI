@@ -9,18 +9,20 @@
 """Multi-server library cleanup: per-server unbind plus orphan delete.
 
 Drives identify_and_clean_orphaned_albums_task with the media-server registry,
-provider fetches and DB helpers faked, asserting that it prunes each healthy
-server's own track_server_map rows, skips servers whose fetch fails, returns
-nothing or looks partial, and DELETES the tracks bound to no server only when
-every server was read completely.
+provider fetches and DB helpers faked, asserting that it prunes each server's
+own track_server_map rows from exactly what that server returned, and DELETES
+the tracks found on no server, at most CLEANING_SAFETY_LIMIT albums per run.
 
 Main Features:
 * Uses the same full-catalogue fetch the alignment sweeps use (fetch_all_tracks)
-* A failed or empty fetch skips ONLY that server's unbinding, others proceed
+* A fetch that raises skips ONLY that server and keeps only the songs it holds
+* An empty fetch from a server that still holds songs (or a default/legacy
+  server with a non-empty catalogue) is unread too; an empty server that holds
+  nothing is read normally
 * Per-server pruning receives exactly that server's present provider ids
 * Full coverage across servers unbinds nothing and reports zero orphans
 * The legacy [None] registry fallback still counts its tracks as present
-* Tracks on no server are deleted on a complete view, kept on an incomplete one
+* No share guard: a large orphan share is deleted, capped only by album count
 """
 
 import sys
@@ -44,16 +46,21 @@ def _server(server_id, name, default=False):
 
 def _run_cleaning(monkeypatch, servers, tracks_by_server,
                   reverse_by_server, db_track_ids, author_by_id=None,
-                  prune_results=None, stored_counts=None, mark_refused=None,
+                  prune_results=None, stored_counts=None,
                   clean_catalogue=True, rebuild_calls=None,
                   chromaprint_split_result=None, current_job=None,
-                  task_info=None):
+                  task_info=None, album_by_id=None, mapped_by_server=None,
+                  unmapped_ids=None, deleted_calls=None, title_by_id=None):
     from tasks import cleaning
     from tasks import multiserver_sync
 
     statuses = []
     pruned_calls = []
     authors = author_by_id or {}
+    albums = album_by_id or {}
+    titles = title_by_id or {}
+    mapped = mapped_by_server or {}
+    deletes = deleted_calls if deleted_calls is not None else []
 
     fake_flask_app = types.ModuleType('flask_app')
     fake_flask_app.app = Flask('cleaning-test')
@@ -64,20 +71,41 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     def record_execute(sql, params=None):
         state['last'] = (sql, params)
+        if sql and sql.startswith('DELETE FROM score'):
+            deletes.extend(params[0])
 
     def answer_fetchall():
         sql, params = state['last']
         if sql and 'JOIN embedding' in sql:
             return [(item_id,) for item_id in sorted(db_track_ids)]
-        if sql and sql.startswith('SELECT item_id, title, author FROM score'):
+        if sql and sql.startswith('SELECT item_id, title, author, album, album_artist FROM score'):
             return [
-                (item_id, f'Title {item_id}', authors.get(item_id, f'Artist {item_id}'))
+                (
+                    item_id, titles.get(item_id, f'Title {item_id}'),
+                    authors.get(item_id, f'Artist {item_id}'),
+                    albums.get(item_id, f'Album {item_id}'), None,
+                )
                 for item_id in params[0]
             ]
+        if sql and sql.startswith('SELECT item_id FROM track_server_map WHERE server_id = ANY'):
+            return [
+                (item_id,) for sid in params[0] for item_id in sorted(mapped.get(sid, ()))
+            ]
+        if sql and 'NOT EXISTS' in sql and 'track_server_map' in sql:
+            return [(item_id,) for item_id in sorted(unmapped_ids or ())]
         return []
+
+    def answer_fetchone():
+        sql, params = state['last']
+        if sql and 'EXISTS (SELECT 1 FROM track_server_map WHERE server_id' in sql:
+            return (bool(mapped.get(params[0])),)
+        if sql and 'EXISTS (SELECT 1 FROM score)' in sql:
+            return (bool(db_track_ids),)
+        return None
 
     cur.execute.side_effect = record_execute
     cur.fetchall.side_effect = answer_fetchall
+    cur.fetchone.side_effect = answer_fetchone
     conn = MagicMock()
     conn.cursor.return_value.__enter__.return_value = cur
     get_db_cm = MagicMock()
@@ -142,12 +170,8 @@ def _run_cleaning(monkeypatch, servers, tracks_by_server,
 
     monkeypatch.setattr(multiserver_sync.provider_probe, 'fetch_all_tracks', fake_fetch)
 
-    refused_ids = set(mark_refused or ())
-
-    def fake_prune(db, server_id, present_ids, refused=None):
+    def fake_prune(db, server_id, present_ids):
         pruned_calls.append((server_id, sorted(present_ids)))
-        if refused is not None and server_id in refused_ids:
-            refused.append(server_id)
         return (prune_results or {}).get(server_id, 0)
 
     monkeypatch.setattr(multiserver_sync, 'prune_stale_mappings', fake_prune)
@@ -240,8 +264,38 @@ def test_dequeued_cleaning_with_wiped_claim_stops_before_writing(monkeypatch):
 
 
 class TestCleaningSkipsUnreadableServers:
-    def test_failed_fetch_skips_that_server_but_prunes_the_healthy_one(self, monkeypatch):
+    def test_failed_fetch_keeps_only_that_servers_songs_and_cleans_the_rest(self, monkeypatch):
+        deleted = []
         result, statuses, pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One'), _server('s2', 'Two', default=True)],
+            tracks_by_server={
+                's1': RuntimeError('fetch failed'),
+                's2': [{'id': 'n1'}],
+            },
+            reverse_by_server={'s2': {'n1': 'fp_1'}},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3'},
+            mapped_by_server={'s1': {'fp_2'}},
+            prune_results={'s2': 3},
+            deleted_calls=deleted,
+        )
+        assert result['status'] == 'FAIL'
+        assert 'One' in result['failed_servers']
+        assert pruned == [('s2', ['n1'])]
+        assert result['unbound_mappings'] == 3
+        assert deleted == ['fp_3'], (
+            'fp_2 is still mapped to the unread server so it was never checked; '
+            'fp_3 is on no server and is cleaned in the same run'
+        )
+        assert statuses[-1][0] == config.TASK_STATUS_RUNNING, (
+            'the task narrates the summary on its last progress write and then '
+            "raises; FAIL itself is the queue's row to write, and its retry"
+        )
+        assert 'One' in statuses[-1][2]['final_summary_details']['failed_servers']
+
+    def test_an_unread_default_server_also_keeps_unmapped_legacy_rows(self, monkeypatch):
+        deleted = []
+        result, _statuses, _pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
             tracks_by_server={
@@ -249,35 +303,94 @@ class TestCleaningSkipsUnreadableServers:
                 's2': [{'id': 'n1'}],
             },
             reverse_by_server={'s2': {'n1': 'fp_1'}},
-            db_track_ids={'fp_1', 'fp_2'},
-            prune_results={'s2': 3},
+            db_track_ids={'fp_1', 'legacy1', 'fp_3'},
+            unmapped_ids={'legacy1'},
+            deleted_calls=deleted,
         )
-        assert result['status'] == 'FAIL'
-        assert result['deleted_count'] == 0
-        assert 'One' in result['failed_servers']
-        assert pruned == [('s2', ['n1'])]
-        assert result['unbound_mappings'] == 3
-        assert statuses[-1][0] == config.TASK_STATUS_RUNNING, (
-            'the task narrates the summary on its last progress write and then '
-            "raises; FAIL itself is the queue's row to write, and its retry"
-        )
-        assert 'One' in statuses[-1][2]['final_summary_details']['failed_servers']
+        assert deleted == ['fp_3']
+        assert result['orphaned_tracks_count'] == 1
 
-    def test_zero_tracks_skips_that_server_and_reports_no_orphans(self, monkeypatch):
+    def test_an_unread_legacy_fallback_server_checks_nothing(self, monkeypatch):
+        deleted = []
+        result, _statuses, pruned = _run_cleaning(
+            monkeypatch,
+            servers=[None],
+            tracks_by_server={None: RuntimeError('fetch failed')},
+            reverse_by_server={},
+            db_track_ids={'a1', 'a2'},
+            deleted_calls=deleted,
+        )
+        assert deleted == []
+        assert result['orphaned_tracks_count'] == 0
+        assert pruned == []
+
+    def test_an_empty_list_from_a_server_holding_songs_is_unread_not_emptied(self, monkeypatch):
+        deleted = []
         result, statuses, pruned = _run_cleaning(
             monkeypatch,
-            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
+            servers=[_server('s1', 'One'), _server('s2', 'Two', default=True)],
             tracks_by_server={
                 's1': [],
                 's2': [{'id': 'n1'}],
             },
             reverse_by_server={'s2': {'n1': 'fp_1'}},
-            db_track_ids={'fp_1', 'fp_2'},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3'},
+            mapped_by_server={'s1': {'fp_2'}},
+            deleted_calls=deleted,
         )
-        assert result['deleted_count'] == 0
-        assert 'One' in result['failed_servers']
-        assert pruned == [('s2', ['n1'])]
+        assert result['status'] == 'FAIL'
+        assert result['failed_servers'] == ['One']
+        assert pruned == [('s2', ['n1'])], 'an empty answer must never unbind that server'
+        assert deleted == ['fp_3'], 'fp_2 is still mapped to the silent server and is kept'
+
+    def test_an_empty_default_server_keeps_the_whole_catalogue(self, monkeypatch):
+        deleted = []
+        result, _statuses, pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True)],
+            tracks_by_server={'s1': []},
+            reverse_by_server={},
+            db_track_ids={'fp_1', 'legacy1'},
+            mapped_by_server={'s1': {'fp_1'}},
+            unmapped_ids={'legacy1'},
+            deleted_calls=deleted,
+        )
+        assert result['status'] == 'FAIL'
+        assert pruned == []
+        assert deleted == []
         assert result['orphaned_tracks_count'] == 0
+
+    def test_an_empty_legacy_fallback_server_deletes_nothing(self, monkeypatch):
+        deleted = []
+        result, _statuses, pruned = _run_cleaning(
+            monkeypatch,
+            servers=[None],
+            tracks_by_server={None: []},
+            reverse_by_server={},
+            db_track_ids={'a1', 'a2'},
+            deleted_calls=deleted,
+        )
+        assert result['status'] == 'FAIL'
+        assert deleted == []
+        assert pruned == []
+
+    def test_an_empty_server_that_holds_nothing_is_simply_read(self, monkeypatch):
+        deleted = []
+        result, _statuses, pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
+            tracks_by_server={
+                's1': [{'id': 'j1'}],
+                's2': [],
+            },
+            reverse_by_server={'s1': {'j1': 'fp_1'}},
+            db_track_ids={'fp_1', 'fp_2'},
+            deleted_calls=deleted,
+        )
+        assert result['status'] == 'SUCCESS'
+        assert result['failed_servers'] == []
+        assert pruned == [('s1', ['j1']), ('s2', [])]
+        assert deleted == ['fp_2']
 
 
 class TestCleaningOrphanHandling:
@@ -376,20 +489,7 @@ class TestCleaningOrphanHandling:
         assert result['deleted_count'] == 0
         assert result['catalogue_deletion'] is False
 
-    def test_refused_partial_listing_reports_orphans_but_deletes_nothing(self, monkeypatch):
-        result, _statuses, _pruned = _run_cleaning(
-            monkeypatch,
-            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
-            tracks_by_server={'s1': [{'id': 'j1'}], 's2': [{'id': 'n1'}]},
-            reverse_by_server={'s1': {'j1': 'fp_1'}, 's2': {'n1': 'fp_2'}},
-            db_track_ids={'fp_1', 'fp_2', 'fp_3'},
-            mark_refused={'s2'},
-        )
-        assert 'Two' in result['prune_refused_servers']
-        assert result['orphaned_tracks_count'] == 1
-        assert result['deleted_count'] == 0
-
-    def test_implausibly_many_orphans_are_not_deleted(self, monkeypatch):
+    def test_a_large_orphan_share_is_deleted_with_no_share_guard(self, monkeypatch):
         result, _statuses, _pruned = _run_cleaning(
             monkeypatch,
             servers=[_server('s1', 'One', default=True)],
@@ -399,7 +499,53 @@ class TestCleaningOrphanHandling:
         )
         assert result['status'] == 'SUCCESS'
         assert result['orphaned_tracks_count'] == 4
-        assert result['deleted_count'] == 0
+        assert result['deleted_count'] == 4
+        assert result['remaining_orphans_count'] == 0
+
+    def test_the_safety_limit_caps_the_albums_deleted_per_run(self, monkeypatch):
+        from tasks import cleaning
+
+        monkeypatch.setattr(cleaning, 'CLEANING_SAFETY_LIMIT', 1)
+        deleted = []
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True)],
+            tracks_by_server={'s1': [{'id': 'j1'}]},
+            reverse_by_server={'s1': {'j1': 'fp_1'}},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4'},
+            author_by_id={'fp_2': 'Band', 'fp_3': 'Band', 'fp_4': 'Solo'},
+            album_by_id={'fp_2': 'Big', 'fp_3': 'Big', 'fp_4': 'Small'},
+            deleted_calls=deleted,
+        )
+        assert sorted(deleted) == ['fp_2', 'fp_3'], 'the largest album goes first'
+        assert result['deleted_albums_count'] == 1
+        assert result['orphaned_albums_count'] == 2
+        assert result['remaining_orphans_count'] == 1
+        assert [a['album'] for a in result['orphaned_albums']] == ['Big']
+
+    def test_untagged_orphans_group_per_artist_under_unknown_album(self, monkeypatch):
+        from tasks import cleaning
+
+        monkeypatch.setattr(cleaning, 'CLEANING_SAFETY_LIMIT', 1)
+        deleted = []
+        result, _statuses, _pruned = _run_cleaning(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True)],
+            tracks_by_server={'s1': [{'id': 'j1'}]},
+            reverse_by_server={'s1': {'j1': 'fp_1'}},
+            db_track_ids={'fp_1', 'fp_2', 'fp_3', 'fp_4'},
+            author_by_id={'fp_2': 'Band', 'fp_3': 'Band', 'fp_4': 'Solo'},
+            album_by_id={'fp_2': None, 'fp_3': None, 'fp_4': ''},
+            title_by_id={'fp_2': None, 'fp_3': None, 'fp_4': None},
+            deleted_calls=deleted,
+        )
+        assert sorted(deleted) == ['fp_2', 'fp_3'], 'the untagged pile of one artist is one album'
+        assert result['deleted_albums_count'] == 1
+        assert result['orphaned_albums_count'] == 2
+        assert result['remaining_orphans_count'] == 1
+        assert result['orphaned_albums'][0]['album'] == 'Unknown Album'
+        assert result['orphaned_albums'][0]['artist'] == 'Band'
+        assert not any('fp_' in a['album'] or 'fp_' in a['artist'] for a in result['orphaned_albums'])
 
 
 class TestCleaningLegacyFallback:

@@ -199,7 +199,9 @@ class TestAlchemyAnchorName:
 
     def test_non_string_name_rejected_4xx(self, alchemy_client):
         with patch('database.save_alchemy_anchor', return_value={'id': 1, 'name': 'n'}) as backend:
-            resp = alchemy_client.post('/api/anchors', json={'name': 123, 'centroid': [1.0, 2.0]})
+            resp = alchemy_client.post(
+                '/api/anchors', json={'name': 123, 'centroid': [1.0] * config.EMBEDDING_DIMENSION}
+            )
         assert 400 <= resp.status_code < 500
         backend.assert_not_called()
 
