@@ -220,8 +220,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: formData
                 });
 
-                const data = await res.json();
-                if (!res.ok) throw new Error(apiErrorText(data, `Chunk ${chunkNum} upload failed`));
+                const data = await readJsonBody(res);
+                if (!res.ok) throw new Error(apiErrorText(data, `Chunk ${chunkNum} upload failed (HTTP ${res.status})`));
+                if (data === null) throw new Error(`Chunk ${chunkNum}: the server closed the connection before answering; check this page again after the restart.`);
 
                 if (data.all_chunks_received) {
                     // Countdown from the instant the upload lands, exactly like the

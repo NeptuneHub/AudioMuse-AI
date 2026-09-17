@@ -16,13 +16,35 @@ Main Features:
 * Non-list and empty centroid payloads return 400.
 * Malformed exclusions payloads return 400; valid ones reach persistence
   with parsed distances and omitted exclusions are stored as None.
+* A centroid that could never be used (wrong size, non-finite, oversized number)
+  returns 400 instead of saving an anchor every feature would ignore.
+* Malformed inclusions payloads (wrong vector size, non-finite, oversized or
+  non-numeric values, bad weight, non-boolean seed, bad group or signature)
+  return 400; valid ones reach persistence with parsed weights, seed flags,
+  groups and signatures, stamped with the current embedding model and
+  dimension; inclusions from a run under another model are refused; omitted
+  inclusions are stored as None.
+* The legacy payload (name + centroid + exclusions, no inclusions) keeps working.
 """
 
 import pytest
 from unittest.mock import patch
 from flask import Flask
 
+import config
 from app_alchemy import alchemy_bp
+from tasks.song_alchemy import anchor_embedding_tag
+
+DIM = config.EMBEDDING_DIMENSION
+CENTROID = [0.1] * DIM
+
+
+@pytest.fixture(autouse=True)
+def readable_model_file(tmp_path, monkeypatch):
+    model = tmp_path / 'musicnn_embedding.onnx'
+    model.write_bytes(b'embedding-model-under-test')
+    monkeypatch.setattr(config, 'EMBEDDING_MODEL_PATH', str(model))
+    return model
 
 
 @pytest.fixture
@@ -41,7 +63,7 @@ def client(app):
 class TestCreateAnchorValidation:
     @patch('database.save_alchemy_anchor')
     def test_whitespace_only_name_returns_400(self, mock_save, client):
-        response = client.post('/api/anchors', json={'name': '   ', 'centroid': [0.1, 0.2]})
+        response = client.post('/api/anchors', json={'name': '   ', 'centroid': CENTROID})
         assert response.status_code == 400
         assert response.get_json()['error'] == 'Anchor name is required'
         assert response.get_json()['error_code'] == 1003
@@ -53,6 +75,17 @@ class TestCreateAnchorValidation:
         assert response.status_code == 400
         assert response.get_json()['error'] == 'Anchor centroid is required and must be a list'
         assert response.get_json()['error_code'] == 1003
+        mock_save.assert_not_called()
+
+    @pytest.mark.parametrize(
+        'centroid',
+        [[0.1, 0.2], [0.1] * (DIM + 1), [float('nan')] + [0.1] * (DIM - 1), ['x'] + [0.1] * (DIM - 1), [10 ** 400] + [0.1] * (DIM - 1)],
+    )
+    @patch('database.save_alchemy_anchor')
+    def test_centroid_that_cannot_be_used_returns_400(self, mock_save, client, centroid):
+        response = client.post('/api/anchors', json={'name': 'My Anchor', 'centroid': centroid})
+        assert response.status_code == 400
+        assert response.get_json()['error'] == f'Anchor centroid must be a list of {DIM} finite numbers'
         mock_save.assert_not_called()
 
     @patch('database.save_alchemy_anchor')
@@ -69,7 +102,7 @@ class TestCreateAnchorExclusionsValidation:
     def test_non_list_exclusions_returns_400(self, mock_save, client):
         response = client.post(
             '/api/anchors',
-            json={'name': 'A', 'centroid': [0.1, 0.2], 'exclusions': 'nope'},
+            json={'name': 'A', 'centroid': CENTROID, 'exclusions': 'nope'},
         )
         assert response.status_code == 400
         assert response.get_json()['error'] == 'Anchor exclusions must be a list'
@@ -80,7 +113,7 @@ class TestCreateAnchorExclusionsValidation:
     def test_non_object_exclusion_entry_returns_400(self, mock_save, client):
         response = client.post(
             '/api/anchors',
-            json={'name': 'A', 'centroid': [0.1, 0.2], 'exclusions': [[0.0, 1.0]]},
+            json={'name': 'A', 'centroid': CENTROID, 'exclusions': [[0.0, 1.0]]},
         )
         assert response.status_code == 400
         assert response.get_json()['error'] == 'Each anchor exclusion must be an object'
@@ -91,7 +124,7 @@ class TestCreateAnchorExclusionsValidation:
     def test_exclusion_entry_without_vector_returns_400(self, mock_save, client):
         response = client.post(
             '/api/anchors',
-            json={'name': 'A', 'centroid': [0.1, 0.2], 'exclusions': [{'distance': 0.2}]},
+            json={'name': 'A', 'centroid': CENTROID, 'exclusions': [{'distance': 0.2}]},
         )
         assert response.status_code == 400
         assert response.get_json()['error'] == 'Each anchor exclusion needs a non-empty vector list'
@@ -104,7 +137,7 @@ class TestCreateAnchorExclusionsValidation:
             '/api/anchors',
             json={
                 'name': 'A',
-                'centroid': [0.1, 0.2],
+                'centroid': CENTROID,
                 'exclusions': [{'vector': [0.0, 1.0], 'distance': 'far'}],
             },
         )
@@ -119,7 +152,7 @@ class TestCreateAnchorExclusionsValidation:
             '/api/anchors',
             json={
                 'name': 'A',
-                'centroid': [0.1, 0.2],
+                'centroid': CENTROID,
                 'exclusions': [{'vector': [0.0, 1.0], 'distance': float('inf')}],
             },
         )
@@ -135,32 +168,172 @@ class TestCreateAnchorExclusionsValidation:
             '/api/anchors',
             json={
                 'name': 'A',
-                'centroid': [0.1, 0.2],
+                'centroid': CENTROID,
                 'exclusions': [{'vector': [0.0, 1.0], 'distance': '0.3'}],
             },
         )
         assert response.status_code == 200
         assert mock_save.call_args.args == (
             'A',
-            [0.1, 0.2],
+            CENTROID,
             [{'vector': [0.0, 1.0], 'distance': 0.3}],
         )
 
     @patch('database.save_alchemy_anchor')
     def test_missing_exclusions_saves_none(self, mock_save, client):
         mock_save.return_value = {'id': 3, 'name': 'A'}
-        response = client.post('/api/anchors', json={'name': 'A', 'centroid': [0.1, 0.2]})
+        response = client.post('/api/anchors', json={'name': 'A', 'centroid': CENTROID})
         assert response.status_code == 200
-        assert mock_save.call_args.args == ('A', [0.1, 0.2], None)
+        assert mock_save.call_args.args == ('A', CENTROID, None)
 
     @patch('database.save_alchemy_anchor')
     def test_empty_exclusions_list_saves_none(self, mock_save, client):
         mock_save.return_value = {'id': 3, 'name': 'A'}
         response = client.post(
-            '/api/anchors', json={'name': 'A', 'centroid': [0.1, 0.2], 'exclusions': []}
+            '/api/anchors', json={'name': 'A', 'centroid': CENTROID, 'exclusions': []}
         )
         assert response.status_code == 200
-        assert mock_save.call_args.args == ('A', [0.1, 0.2], None)
+        assert mock_save.call_args.args == ('A', CENTROID, None)
+
+
+VECTOR_A = [1.0] + [0.0] * (DIM - 1)
+VECTOR_B = [0.0, 1.0] + [0.0] * (DIM - 2)
+SIZE_ERROR = f'Each anchor inclusion needs a vector of {DIM} finite numbers'
+
+
+class TestCreateAnchorInclusionsValidation:
+    @pytest.mark.parametrize(
+        'inclusions, error',
+        [
+            ('nope', 'Anchor inclusions must be a list'),
+            ([VECTOR_A], 'Each anchor inclusion must be an object'),
+            ([{'weight': 1.0}], SIZE_ERROR),
+            ([{'vector': [0.0, 1.0]}], SIZE_ERROR),
+            ([{'vector': VECTOR_A + [0.0]}], SIZE_ERROR),
+            ([{'vector': ['x'] + VECTOR_A[1:]}], SIZE_ERROR),
+            ([{'vector': [True] + VECTOR_A[1:]}], SIZE_ERROR),
+            ([{'vector': [float('nan')] + VECTOR_A[1:]}], SIZE_ERROR),
+            ([{'vector': VECTOR_A, 'weight': 'heavy'}], 'Anchor inclusion weight must be a number'),
+            (
+                [{'vector': VECTOR_A, 'weight': -1.0}],
+                'Anchor inclusion weight must be a finite number, 0 or greater',
+            ),
+            (
+                [{'vector': VECTOR_A, 'weight': float('inf')}],
+                'Anchor inclusion weight must be a finite number, 0 or greater',
+            ),
+            ([{'vector': VECTOR_A, 'seed': 'false'}], 'Anchor inclusion seed must be true or false'),
+            ([{'vector': [10 ** 400] + VECTOR_A[1:]}], SIZE_ERROR),
+            ([{'vector': VECTOR_A, 'weight': 10 ** 400}], 'Anchor inclusion weight must be a number'),
+            ([{'vector': VECTOR_A, 'group': -1}], 'Anchor inclusion group must be a whole number, 0 or greater'),
+            ([{'vector': VECTOR_A, 'group': True}], 'Anchor inclusion group must be a whole number, 0 or greater'),
+            ([{'vector': VECTOR_A, 'signature': ['only title']}], 'Anchor inclusion signature must be a [title, artist] pair'),
+        ],
+    )
+    @patch('database.save_alchemy_anchor')
+    def test_malformed_inclusions_return_400(self, mock_save, client, inclusions, error):
+        response = client.post(
+            '/api/anchors',
+            json={'name': 'A', 'centroid': CENTROID, 'inclusions': inclusions},
+        )
+        assert response.status_code == 400
+        assert response.get_json()['error'] == error
+        assert response.get_json()['error_code'] == 1003
+        mock_save.assert_not_called()
+
+    @patch('database.save_alchemy_anchor')
+    def test_valid_inclusions_are_stamped_and_passed_to_save(self, mock_save, client):
+        mock_save.return_value = {'id': 3, 'name': 'A'}
+        response = client.post(
+            '/api/anchors',
+            json={
+                'name': 'A',
+                'centroid': CENTROID,
+                'inclusions': [
+                    {'vector': VECTOR_A, 'weight': '2', 'seed': True, 'group': 0, 'signature': ['song', 'band']},
+                    {'vector': VECTOR_B, 'group': 1},
+                ],
+                'inclusions_embedding': anchor_embedding_tag(),
+            },
+        )
+        assert response.status_code == 200
+        assert mock_save.call_args.args == ('A', CENTROID, None)
+        assert mock_save.call_args.kwargs == {
+            'inclusions': {
+                **anchor_embedding_tag(),
+                'points': [
+                    {'vector': VECTOR_A, 'weight': 2.0, 'seed': True, 'group': 0, 'signature': ['song', 'band']},
+                    {'vector': VECTOR_B, 'weight': 1.0, 'seed': False, 'group': 1, 'signature': None},
+                ],
+            }
+        }
+
+    @patch('database.save_alchemy_anchor')
+    def test_points_over_the_ceiling_keep_half_per_side_and_still_save(self, mock_save, client, monkeypatch):
+        monkeypatch.setattr(config, 'ALCHEMY_ANCHOR_MAX_STORED_POINTS', 4)
+        mock_save.return_value = {'id': 3, 'name': 'A'}
+        inclusions = [
+            {'vector': VECTOR_A, 'weight': 0.2},
+            {'vector': VECTOR_A, 'weight': 0.9},
+            {'vector': VECTOR_A, 'weight': 0.5},
+        ]
+        exclusions = [{'vector': [0.0, float(i)]} for i in range(3)]
+        response = client.post(
+            '/api/anchors',
+            json={'name': 'A', 'centroid': CENTROID, 'inclusions': inclusions, 'exclusions': exclusions},
+        )
+        assert response.status_code == 200
+        assert response.get_json()['dropped_points'] == {'inclusions': 1, 'exclusions': 1}
+        saved_exclusions = mock_save.call_args.args[2]
+        saved_inclusions = mock_save.call_args.kwargs['inclusions']
+        assert [e['vector'] for e in saved_exclusions] == [[0.0, 0.0], [0.0, 1.0]], 'first exclusions kept'
+        assert [p['weight'] for p in saved_inclusions['points']] == [0.9, 0.5], 'heaviest points kept'
+
+    @patch('database.save_alchemy_anchor')
+    def test_points_within_the_ceiling_are_all_stored_whatever_the_split(self, mock_save, client, monkeypatch):
+        monkeypatch.setattr(config, 'ALCHEMY_ANCHOR_MAX_STORED_POINTS', 4)
+        mock_save.return_value = {'id': 3, 'name': 'A'}
+        response = client.post(
+            '/api/anchors',
+            json={
+                'name': 'A', 'centroid': CENTROID,
+                'inclusions': [{'vector': VECTOR_A, 'weight': 0.1 * (i + 1)} for i in range(3)],
+                'exclusions': [{'vector': [0.0, 1.0]}],
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json()['dropped_points'] == {'inclusions': 0, 'exclusions': 0}
+        assert len(mock_save.call_args.kwargs['inclusions']['points']) == 3
+        assert len(mock_save.call_args.args[2]) == 1
+        response = client.post(
+            '/api/anchors',
+            json={'name': 'A', 'centroid': CENTROID, 'inclusions': [{'vector': VECTOR_A} for _ in range(4)]},
+        )
+        assert response.status_code == 200
+        assert len(mock_save.call_args.kwargs['inclusions']['points']) == 4
+
+    @patch('database.save_alchemy_anchor')
+    def test_inclusions_from_a_run_under_another_model_are_refused(self, mock_save, client):
+        stale = {**anchor_embedding_tag(), 'embedding_model_sha256': 'another-model'}
+        response = client.post(
+            '/api/anchors',
+            json={
+                'name': 'A',
+                'centroid': CENTROID,
+                'inclusions': [{'vector': VECTOR_A}],
+                'inclusions_embedding': stale,
+            },
+        )
+        assert response.status_code == 400
+        assert 'different embedding model' in response.get_json()['error']
+        mock_save.assert_not_called()
+
+    @patch('database.save_alchemy_anchor')
+    def test_missing_inclusions_saves_none(self, mock_save, client):
+        mock_save.return_value = {'id': 3, 'name': 'A'}
+        response = client.post('/api/anchors', json={'name': 'A', 'centroid': CENTROID})
+        assert response.status_code == 200
+        assert mock_save.call_args.kwargs == {'inclusions': None}
 
 
 class TestRenameAnchorValidation:

@@ -453,6 +453,52 @@ class TestRunRadioPlaylists:
         assert summary['failed'] == ['Empty']
 
     @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_an_ignored_anchor_names_its_problem_instead_of_no_tracks(
+        self, mock_alchemy, mock_upsert, mock_get_radios, caplog
+    ):
+        from tasks.radio_manager import run_radio_playlists
+
+        mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
+        mock_alchemy.return_value = {
+            'results': [],
+            'ignored_anchors': [
+                {'id': 10, 'name': 'Chill', 'problem': 'its centroid has 2 values but the embedding has 200'}
+            ],
+        }
+
+        with caplog.at_level('ERROR'):
+            summary = run_radio_playlists()
+
+        mock_upsert.assert_not_called()
+        assert summary['failed'] == ['Chill']
+        assert "anchor 'Chill' was ignored: its centroid has 2 values" in caplog.text
+        assert 'no tracks available' not in caplog.text
+
+    @patch('database.get_alchemy_radios')
+    @patch('tasks.radio_manager.create_or_replace_playlist')
+    @patch('tasks.radio_manager.song_alchemy')
+    def test_an_ignored_anchor_name_cannot_forge_log_lines(
+        self, mock_alchemy, mock_upsert, mock_get_radios, caplog
+    ):
+        from tasks.radio_manager import run_radio_playlists
+
+        mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
+        mock_alchemy.return_value = {
+            'results': [],
+            'ignored_anchors': [
+                {'id': 10, 'name': 'Chill\n2026-09-16 ERROR forged line', 'problem': 'bad\rproblem'}
+            ],
+        }
+
+        with caplog.at_level('ERROR'):
+            run_radio_playlists()
+
+        assert '\n2026-09-16 ERROR forged line' not in caplog.text
+        assert "anchor 'Chill 2026-09-16 ERROR forged line' was ignored: bad problem" in caplog.text
+
+    @patch('database.get_alchemy_radios')
     @patch('tasks.radio_manager.song_alchemy')
     def test_loads_the_similarity_index_before_picking_tracks(
         self, mock_alchemy, mock_get_radios, loaded_index

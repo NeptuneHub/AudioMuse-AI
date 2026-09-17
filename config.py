@@ -279,6 +279,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'SUPERVISORCTL_CMD',
     'SUPERVISOR_CONF',
     'DISABLE_FLASK_RESTART',
+    'ALCHEMY_ANCHOR_MAX_STORED_POINTS',
     # Per-endpoint result-count defaults. These DO reach the UI: each search page
     # renders one of them into its count input's value= attribute, so they are the
     # number the box starts on as well as the fallback for a direct API caller that
@@ -1456,6 +1457,7 @@ ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN = float(os.environ.get("ALCHEMY_SUBTRACT_DIS
 ALCHEMY_PLAYLIST_MAX_SONGS = int(os.environ.get("ALCHEMY_PLAYLIST_MAX_SONGS", "500"))
 ALCHEMY_PLAYLIST_MAX_CENTROIDS = int(os.environ.get("ALCHEMY_PLAYLIST_MAX_CENTROIDS", "10"))
 ALCHEMY_MAX_ANCHOR_POINTS = int(os.environ.get("ALCHEMY_MAX_ANCHOR_POINTS", "16"))
+ALCHEMY_ANCHOR_MAX_STORED_POINTS = 50 * ALCHEMY_MAX_ANCHOR_POINTS
 
 
 # --- Other Feature Labels (computed via CLAP text-audio similarity) ---
@@ -1577,13 +1579,11 @@ CRON_RETRY_MAX_MINUTES = int(os.environ.get("CRON_RETRY_MAX_MINUTES", "240")) # 
 CRON_RETRY_INTERVAL_MINUTES = int(os.environ.get("CRON_RETRY_INTERVAL_MINUTES", "10")) # Minutes between re-attempts of blocked scheduled runs
 
 # --- Database Cleaning Safety ---
-CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max unbound-on-every-server albums listed in the cleaning report
+CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max orphaned albums (on no server) deleted from the catalogue in one cleaning run; the next run deletes the next ones
 # When true, cleaning also DELETES catalogue rows bound to no server (orphans); when false it only
 # unbinds each server's stale mappings and leaves the catalogue untouched. Default false; the cleaning
 # page has a per-run checkbox to enable it for a single run without changing this default.
 CLEANING_CATALOGUE = os.environ.get("CLEANING_CATALOGUE", "False").lower() == "true"
-SWEEP_PRUNE_MIN_FETCH_RATIO = float(os.environ.get("SWEEP_PRUNE_MIN_FETCH_RATIO", "0.5"))  # A sweep/cleaning prune is refused when the server returns fewer than this fraction of the tracks it still has mapped, so a partial fetch cannot wipe the mappings. Lower it only to prune a library that legitimately shrank that much
-
 # --- Stratified Sampling Constants (New) ---
 # Genres for which to enforce equal representation during stratified sampling
 STRATIFIED_GENRES = [
@@ -1836,6 +1836,7 @@ def _apply_db_overrides():
                     globals()[_field] = _ms_creds.get(_cred_key, '') or ''
             DB_DEFAULT_SERVER_PROJECTED = True
 
+        globals()['ALCHEMY_ANCHOR_MAX_STORED_POINTS'] = 50 * globals()['ALCHEMY_MAX_ANCHOR_POINTS']
         HEADERS = _compute_headers()
         DB_OVERRIDES_LOADED = True
     except Exception:

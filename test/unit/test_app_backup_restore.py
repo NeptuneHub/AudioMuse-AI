@@ -562,6 +562,50 @@ def test_a_second_backup_create_is_refused_while_one_is_dumping(client, monkeypa
     app_backup._release_backup_create_lock()
 
 
+def test_an_unwritable_backup_dir_is_reported_as_such_not_as_a_running_backup(client, monkeypatch, tmp_path):
+    import os
+
+    from error.error_dictionary import ERR_BACKUP_FAILED
+
+    monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path))
+    real_open = os.open
+
+    def denied(path, *args, **kwargs):
+        if str(path).endswith('.backup_create.lock'):
+            raise PermissionError(13, 'Permission denied', path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(app_backup.os, 'open', denied)
+    assert app_backup._acquire_backup_create_lock() is None
+    runs = []
+    monkeypatch.setattr(app_backup.subprocess, 'run', lambda *a, **k: runs.append(a))
+    resp = client.post('/api/backup/create')
+    assert resp.status_code == 500
+    body = resp.get_json()
+    assert body['error_code'] == ERR_BACKUP_FAILED
+    assert 'not writable' in body['error']
+    assert runs == []
+
+
+def test_a_backup_dir_that_cannot_be_created_is_reported_as_not_writable(client, monkeypatch, tmp_path):
+    from error.error_dictionary import ERR_BACKUP_FAILED
+
+    monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(tmp_path / 'ro' / 'backup'))
+
+    def denied(path, *args, **kwargs):
+        raise PermissionError(13, 'Permission denied', path)
+
+    monkeypatch.setattr(app_backup.os, 'makedirs', denied)
+    runs = []
+    monkeypatch.setattr(app_backup.subprocess, 'run', lambda *a, **k: runs.append(a))
+    resp = client.post('/api/backup/create')
+    assert resp.status_code == 500
+    body = resp.get_json()
+    assert body['error_code'] == ERR_BACKUP_FAILED
+    assert 'not writable' in body['error']
+    assert runs == []
+
+
 def test_a_backup_lock_left_by_a_dead_process_expires(monkeypatch, tmp_path):
     import os
 

@@ -25,9 +25,22 @@ Main Features:
 * With per-server info, lazy folders with no track on the server are pruned
 * The root keeps its bands instead of collapsing to an empty node
 * Translation never mutates the shared cached node (returns copies)
+* A non-leaf answer that embeds a materialized leaf folder (a small library
+  puts whole genres at the root) has those tracks collected and translated too,
+  so no canonical id ever leaves the API
 """
 
-from app_hyperbolic import _translate_tree_ids
+from app_hyperbolic import _payload_track_ids, _translate_track_node, _translate_tree_ids
+
+
+def test_a_track_named_after_its_canonical_id_is_renamed_to_the_provider_id():
+    node = {"id": "fp_abc", "name": "fp_abc", "type": "track", "children_count": 0, "items": []}
+    out = _translate_track_node(node, {"fp_abc": "prov-1"})
+    assert out["id"] == "prov-1"
+    assert out["name"] == "prov-1"
+    assert node["name"] == "fp_abc", "the cached node is never mutated"
+    titled = _translate_track_node({**node, "name": "Song - Artist"}, {"fp_abc": "prov-1"})
+    assert titled["name"] == "Song - Artist"
 
 
 def _track(item_id):
@@ -121,6 +134,44 @@ def test_non_leaf_band_survives_with_its_summaries():
     assert out is not None
     assert [c["id"] for c in out["items"]] == ["b0.c0", "b0.c1"]
     assert out["children_count"] == 2
+
+
+def _root_with_embedded_leaf_genre():
+    return {
+        "id": "root",
+        "name": "Hyperbolic Explorer",
+        "type": "folder",
+        "children_count": 2,
+        "items": [
+            _non_leaf_band("root.grock", [_cluster_summary("root.grock.c0", 10)]),
+            _leaf_band("root.gjazz", ["fp_j1", "fp_j2", "fp_j3"]),
+        ],
+    }
+
+
+def test_payload_track_ids_collects_only_embedded_tracks():
+    assert _payload_track_ids(_root_with_embedded_leaf_genre()) == {"fp_j1", "fp_j2", "fp_j3"}
+    assert _payload_track_ids(_non_leaf_band("b0", [_cluster_summary("b0.c0", 10)])) == set()
+    assert _payload_track_ids(_track("fp_x")) == {"fp_x"}
+
+
+def test_root_embedding_a_leaf_genre_translates_its_tracks_and_keeps_lazy_bands():
+    root = _root_with_embedded_leaf_genre()
+    out = _translate_tree_ids(root, {"fp_j1": "prov-j1", "fp_j3": "prov-j3"})
+    assert out is not None
+    assert [c["id"] for c in out["items"]] == ["root.grock", "root.gjazz"]
+    jazz = out["items"][1]
+    assert [t["id"] for t in jazz["items"]] == ["prov-j1", "prov-j3"]
+    assert jazz["children_count"] == 2
+    assert out["items"][0]["items"][0]["id"] == "root.grock.c0"
+    assert root["items"][1]["items"][0]["id"] == "fp_j1"
+
+
+def test_root_drops_an_embedded_leaf_genre_with_no_track_on_the_server():
+    out = _translate_tree_ids(_root_with_embedded_leaf_genre(), {})
+    assert out is not None
+    assert [c["id"] for c in out["items"]] == ["root.grock"]
+    assert out["children_count"] == 1
 
 
 def test_root_with_non_leaf_bands_does_not_collapse():

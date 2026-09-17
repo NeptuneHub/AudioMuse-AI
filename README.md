@@ -1,6 +1,6 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/AudioMuse-AI.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/AudioMuse-AI?label=latest-tag)
-![Media Server Support: Navidrome 0.62.0, Jellyfin 12.0, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80, Plex 1.43.2](https://img.shields.io/badge/Media%20Server-Navidrome%200.62.0%2C%20Jellyfin%2012.0%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80%2C%20Plex%201.43.2-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Navidrome 0.64.0, Jellyfin 12.1, LMS v3.69.0, Lyrion 9.0.2, Emby 4.9.1.80, Plex 1.43.2](https://img.shields.io/badge/Media%20Server-Navidrome%200.64.0%2C%20Jellyfin%2012.1%2C%20LMS%20v3.69.0%2C%20Lyrion%209.0.2%2C%20Emby%204.9.1.80%2C%20Plex%201.43.2-blue?style=flat-square&logo=server&logoColor=white)
 <a href="https://www.bestpractices.dev/projects/13329"><img src="https://www.bestpractices.dev/projects/13329/badge"></a>
 
 <p align="center">
@@ -56,11 +56,8 @@ More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/AR
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
 
 And now just some **NEWS:**
-> * **Version 3.3.0** introduce the `-nvidia-arm` image in order to support the DGX Spark and other machine based on the GB10 GPU. This new image is **experimental**
-> * **Version 3.2.0** implemented queue on postgresql, this means that Redis is not needed anymore. Just check the new deployment/docker-compose example.
-> * **Version 3.0.0** added multiple music server support on a single deployment, with duplicate detection so a song shared by more servers is analyzed only once.
-> * **Version 2.6.0** added support for third party plugin. Give a look to the [plugin documentation](docs/PLUGIN.md) to know how to develop one and to the [official 3rd party catalog](https://github.com/NeptuneHub/AudioMuse-AI-plugins). The plugin system requires a persistent volume mounted on both the Flask and worker containers, otherwise installed plugins are lost whenever the containers restart; the deployment example has been updated accordingly.
-> * **Version 2.5.0** added Plex Music Server support.
+> * **Version 3.6.1** introduce Setup Wizard > AI Naming > Clustering Naming: set your own prompt for the clustering playlist name based on AI.
+> * **Version 3.6.0** introduce Search By Recording functionality: search in your collection from a short 20s clip.
 
 ## Disclaimer
 
@@ -77,7 +74,6 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [How To Contribute](#how-to-contribute)
 - [Code Mirror](#code-mirror)
-- [Star History](#star-history)
 
 ## Quick Start Deployment (Containerized)
 

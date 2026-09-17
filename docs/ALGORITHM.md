@@ -159,8 +159,7 @@ AI providers:
 
 Safety caps:
 
-- `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST`, `DASHBOARD_BROWSE_MAX_OFFSET`,
-  `SWEEP_PRUNE_MIN_FETCH_RATIO`.
+- `CLEANING_SAFETY_LIMIT`, `MAX_SONGS_PER_ARTIST`, `DASHBOARD_BROWSE_MAX_OFFSET`.
 - `ALCHEMY_MAX_N_RESULTS` and `INSTANT_PLAYLIST_MAX_N_RESULTS` are NOT safety
   caps: they bound only their page's own input box. No API route and no internal
   routine clamps a requested result count to them.
@@ -495,10 +494,7 @@ guessed.
 
 The sweep also refreshes the server's artist links and the catalogue metadata
 (album, album artist, year, rating; file path only from the default server), and
-prunes mappings whose track is no longer on that server. Pruning is refused when
-the fetch returns fewer tracks than `SWEEP_PRUNE_MIN_FETCH_RATIO` of the
-mappings already stored, so a transient provider error can never mass-delete
-valid mappings.
+prunes mappings whose track is no longer on that server.
 
 ### 2.3. Environment Variable Configuration
 
@@ -516,8 +512,6 @@ valid mappings.
   `CHROMAPRINT_MIN_OVERLAP`: the comparison parameters.
 - `FPCALC`: path to the `fpcalc` binary. It is on `PATH` inside Docker and set by
   the launcher in the standalone builds.
-- `SWEEP_PRUNE_MIN_FETCH_RATIO`: safety ratio that blocks pruning after a partial
-  catalogue fetch.
 
 ---
 
@@ -1452,8 +1446,12 @@ the things you do not, and get back the tracks that match the blend.
    turned into a **radio**.
 
 **Anchors** store a blend so it can be reused as a seed anywhere else (similar
-song, path, radio). An anchor also stores its exclusions with their radius, so
-re-running it later gives a comparable result.
+song, path, radio). Besides the add centroid, an anchor stores every Include
+point of the run without averaging them, each with its weight, and every
+exclusion with its radius. Re-running it later (a radio included) therefore
+searches around the same seed neighbourhoods as the original run instead of only
+the area around their average, and keeps working when an input song, artist or
+playlist later disappears from a server or from the catalogue.
 
 **Radios** are saved anchors that a scheduled task re-runs regularly and pushes
 to the media server as a playlist that is replaced in place, so a client that
@@ -1474,9 +1472,18 @@ syncs "online first" keeps following the same playlist.
    - *Playlist*: the vectors of its member tracks, capped by
      `ALCHEMY_PLAYLIST_MAX_SONGS` and reduced to at most
      `ALCHEMY_PLAYLIST_MAX_CENTROIDS` centroids.
-   - *Anchor*: the stored vectors, plus the stored exclusions which are
-     re-applied at their saved radius.
-   The total number of anchor points is capped by `ALCHEMY_MAX_ANCHOR_POINTS`.
+   - *Anchor*: the stored Include points (weights normalised so the whole
+     anchor counts as one item; anchors saved before these were stored fall back
+     to their single centroid), on whichever side the anchor is placed, so an
+     excluded anchor removes the area around each of its points like an excluded
+     artist does. An included anchor also re-applies its stored exclusions at
+     their saved radius, and its stored song seeds are kept out of the results,
+     like the input songs of a live run. The points are stamped with a SHA-256
+     prefix of the embedding model file and the dimension; an anchor saved under
+     a different model, or whose centroid has the wrong size, is ignored with a
+     warning (also by Similar Song and Song Path) until it is saved again.
+   The number of points queried is capped by `ALCHEMY_MAX_ANCHOR_POINTS`; when
+   there are more, every input keeps its heaviest point first.
 3. **Centroids.** The Include points are averaged into the add centroid and the
    Exclude points into the subtract centroid.
 4. **Candidate search.** The index is queried around the add centroid (a
@@ -2091,16 +2098,18 @@ or removed.
 3. The job reports which tracks each server no longer has, removes only that
    server's stale mappings, and rebuilds the similarity indexes.
 
-**The important guarantee: cleaning never shrinks the catalogue by accident.**
+**The rule: what a server returns is what it has.**
 
 - A song that disappeared from **one** server keeps its analysis, its embeddings
   and its mappings on the other servers. It simply stops appearing in results for
   the server that lost it.
-- A song bound to **no** server is an orphan. By default it is only reported. It
-  is deleted only if `CLEANING_CATALOGUE` is on, or if the per-run checkbox is
-  ticked, and even then only when every server was read completely.
-- A server whose library could not be fully read is skipped, so a transient
-  provider error can never unbind valid mappings.
+- A song found on **no** server is an orphan. By default it is only reported. It
+  is deleted if `CLEANING_CATALOGUE` is on, or if the per-run checkbox is ticked,
+  at most `CLEANING_SAFETY_LIMIT` albums per run. The next run deletes the next
+  albums.
+- A server whose fetch raised an error was not read: its own mappings stay, and
+  the songs it may still hold are not treated as orphans. Every other server is
+  still cleaned.
 
 Like analysis and clustering, cleaning always covers **every** configured server.
 
@@ -2118,16 +2127,15 @@ Like analysis and clustering, cleaning always covers **every** configured server
    the sweep's own enumeration means the prune baseline can never disagree with
    the enumeration that created the mappings in the first place.
 3. **Prune per server.** `prune_stale_mappings` removes only that server's rows
-   from `track_server_map` for tracks it no longer has. The
-   `SWEEP_PRUNE_MIN_FETCH_RATIO` guard applies here too: a suspiciously small
-   fetch blocks the prune.
-4. **Orphans.** Tracks now bound to no server at all are grouped by artist and
-   album and reported, up to `CLEANING_SAFETY_LIMIT` entries. Deleting them
-   requires all of: the catalogue option enabled for this run, no server failed
-   or was refused, and the orphans being fewer than half the catalogue. That last
-   guard exists because "half the library disappeared" is much more likely to be
-   a bad view than a real deletion. When the delete does run it removes the score
-   row, the embeddings and the playlist references together.
+   from `track_server_map` for tracks it no longer has. No ratio guard applies:
+   an id the server did not return is unbound.
+4. **Orphans.** Tracks found on no server are grouped by album (album artist and
+   album name). When the catalogue option is enabled for this run, the first
+   `CLEANING_SAFETY_LIMIT` albums (largest first) are deleted and reported; the
+   rest stay for the next run. Songs still mapped to a server whose fetch raised
+   are never orphans, and with the legacy single-server fallback an unread server
+   means nothing was checked. The delete removes the score row, the embeddings
+   and the playlist references together.
 5. **Library sizes.** Each server's stored track count is refreshed from the
    fetch that already happened, which keeps the dashboard coverage figure
    current.
@@ -2144,11 +2152,10 @@ collected and returned in the summary rather than aborting the run.
 
 ### 15.3. Environment Variable Configuration
 
-- `CLEANING_SAFETY_LIMIT`: maximum number of unbound albums listed in the report.
+- `CLEANING_SAFETY_LIMIT`: maximum number of orphaned albums deleted in one run.
 - `CLEANING_CATALOGUE`: whether orphan catalogue rows are deleted as well as
   reported. The page has a per-run checkbox that enables it for one run without
   changing the default.
-- `SWEEP_PRUNE_MIN_FETCH_RATIO`: the partial-fetch guard.
 - `CHROMAPRINT_GATE_ENABLED` and the other Chromaprint settings: used by the
   duplicate repair step, see
   [chapter 2](#2-catalogue-identity-and-deduplication).

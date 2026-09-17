@@ -423,7 +423,7 @@ def get_all_songs(user_creds=None, apply_filter=True):
                     "offset": offset,
                     "musicFolderId": folder_id,
                 }
-                response = _navidrome_request("getAlbumList2", params)
+                response = _navidrome_request("getAlbumList2", params, user_creds=user_creds)
 
                 if response and "albumList2" in response and "album" in response["albumList2"]:
                     albums = response["albumList2"]["album"]
@@ -452,7 +452,12 @@ def get_all_songs(user_creds=None, apply_filter=True):
             if not album_id:
                 continue
 
-            album_songs = get_tracks_from_album(album_id, user_creds=user_creds)
+            album_songs, error = _album_tracks_ex(album_id, user_creds=user_creds)
+            if error is not None:
+                logger.error(f"Failed to fetch album {album_id} from Navidrome: {error.get('message')}")
+                raise RuntimeError(
+                    f"Navidrome album {album_id} could not be read; a partial catalogue is never returned."
+                )
             for song in album_songs:
                 all_songs.append(
                     {
@@ -699,6 +704,19 @@ def get_tracks_from_album(album_id, user_creds=None):
     user_creds = context.active_creds(user_creds)
     params = {"id": album_id}
     response = _navidrome_request("getAlbum", params, user_creds=user_creds)
+    return _album_songs(response)
+
+
+def _album_tracks_ex(album_id, user_creds=None):
+    user_creds = context.active_creds(user_creds)
+    params = {"id": album_id}
+    response, error = _navidrome_request_ex("getAlbum", params, user_creds=user_creds)
+    if error is not None:
+        return [], error
+    return _album_songs(response), None
+
+
+def _album_songs(response):
     if response and "album" in response and "song" in response["album"]:
         songs = response["album"]["song"]
 

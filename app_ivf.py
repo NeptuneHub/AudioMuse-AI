@@ -497,6 +497,19 @@ def get_similar_tracks_endpoint():
             return json_error(
                 ERR_NOT_FOUND, f"Anchor with id {anchor_id_param} not found or has no centroid."
             )
+        from tasks.song_alchemy import anchor_embedding_problem
+
+        problem = anchor_embedding_problem(anchor)
+        if problem:
+            logger.warning(
+                "Anchor id %s cannot seed a similarity search: %s. Run the alchemy again and re-save it.",
+                anchor_id_param, problem,
+            )
+            return json_error(
+                ERR_INVALID_REQUEST,
+                f"Anchor with id {anchor_id_param} does not match the current embedding. "
+                "Run the alchemy again and re-save the anchor.",
+            )
 
         anchor_vector = np.array(anchor['centroid'], dtype=np.float32)
         neighbor_results, err = _vector_neighbors_or_error(

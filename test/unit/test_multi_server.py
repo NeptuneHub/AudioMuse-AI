@@ -1879,6 +1879,9 @@ class TestSweepAlignment:
 
         score_update = next(sql for sql, _p in executed if 'UPDATE score' in sql)
         assert 'file_path' not in score_update
+        order_by = score_update.split('ORDER BY', 1)[1]
+        assert 'CASE m.match_tier' in order_by, 'the strongest-tier file must feed the metadata refresh'
+        assert order_by.index('CASE m.match_tier') < order_by.index('m.provider_track_id')
 
         map_update = next(
             sql for sql, _p in executed if 'UPDATE track_server_map' in sql
@@ -2384,32 +2387,99 @@ class TestSweepAlignment:
         )
         assert stored == {'s1': 1}
 
-    def test_prune_skipped_when_fetch_looks_partial(self, caplog):
+    def test_an_empty_fetch_from_a_mapped_server_fails_that_server_instead_of_counting_zero(
+        self, monkeypatch
+    ):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 1)
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: {'nav1', 'nav2'})
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: [])
+        stored = {}
+        monkeypatch.setattr(
+            sync, '_store_server_track_count',
+            lambda db, sid, count: stored.update({sid: count}),
+        )
+        pruned = []
+        monkeypatch.setattr(
+            sync, 'prune_stale_mappings',
+            lambda db, sid, present, **k: pruned.append(sid) or 0,
+        )
+
+        with pytest.raises(RuntimeError, match=r'N1 returned no tracks while the catalogue still holds songs for it \(2 mapped\)'):
+            sync._sweep_one(
+                {'server_id': 's1', 'server_type': 'navidrome', 'name': 'N1', 'creds': {}},
+                MagicMock(), lambda *a, **k: None, 5, 95, lambda: None, full_refresh=True,
+            )
+
+        assert stored == {}, 'a failed lookup must not overwrite the stored track count with 0'
+        assert pruned == []
+
+    def test_an_empty_fetch_from_the_unmapped_default_server_fails_it_too(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        monkeypatch.setattr(sync, '_local_track_count', lambda conn: 3)
+        monkeypatch.setattr(sync, 'unmapped_local_count', lambda conn, sid: 3)
+        monkeypatch.setattr(sync, '_already_mapped_ids', lambda db, sid: set())
+        monkeypatch.setattr(sync.provider_probe, 'fetch_all_tracks', lambda *a, **k: [])
+        stored = {}
+        monkeypatch.setattr(
+            sync, '_store_server_track_count',
+            lambda db, sid, count: stored.update({sid: count}),
+        )
+
+        with pytest.raises(RuntimeError, match='returned no tracks while the catalogue still holds songs'):
+            sync._sweep_one(
+                {'server_id': 's0', 'server_type': 'navidrome', 'name': 'Main', 'creds': {}, 'is_default': True},
+                MagicMock(), lambda *a, **k: None, 5, 95, lambda: None, full_refresh=True,
+            )
+
+        assert stored == {}
+
+    def test_a_small_fetch_still_prunes_with_no_ratio_guard(self, monkeypatch):
         from tasks import multiserver_sync as sync
 
         cursor = MagicMock()
         cursor.fetchone.return_value = (100,)
+        cursor.rowcount = 0
         db = MagicMock()
         db.cursor.return_value = cursor
-        target = {str(i) for i in range(10)}
-        with caplog.at_level(logging.WARNING):
-            assert sync.prune_stale_mappings(db, 's1', target) == 0
-        assert 'pruning skipped' in caplog.text
+        staged = []
+        monkeypatch.setattr(
+            sync, "execute_values", lambda cur, sql, rows, **kw: staged.extend(rows)
+        )
+
+        sync.prune_stale_mappings(db, 's1', {str(i) for i in range(10)})
+
+        assert len(staged) == 10
+        assert any(
+            'DELETE FROM track_server_map' in str(c.args[0])
+            for c in cursor.execute.call_args_list
+        )
+        db.commit.assert_called_once()
+
+    def test_an_empty_fetch_never_unbinds_the_server(self, monkeypatch):
+        from tasks import multiserver_sync as sync
+
+        cursor = MagicMock()
+        cursor.rowcount = 0
+        db = MagicMock()
+        db.cursor.return_value = cursor
+        staged = []
+        monkeypatch.setattr(
+            sync, "execute_values", lambda cur, sql, rows, **kw: staged.extend(rows)
+        )
+
+        assert sync.prune_stale_mappings(db, 's1', set()) == 0
+        assert sync.prune_stale_mappings(db, 's1', {'', None}) == 0
+
+        assert staged == []
+        assert not any(
+            'DELETE FROM track_server_map' in str(c.args[0])
+            for c in cursor.execute.call_args_list
+        ), 'an empty list is what a failed library lookup returns; it must not wipe the mappings'
         db.commit.assert_not_called()
-
-    def test_a_refused_prune_is_reported_not_silently_zero(self):
-        from tasks import multiserver_sync as sync
-
-        cursor = MagicMock()
-        cursor.fetchone.return_value = (100,)
-        db = MagicMock()
-        db.cursor.return_value = cursor
-
-        refused = []
-        assert sync.prune_stale_mappings(
-            db, 's1', {str(i) for i in range(10)}, refused=refused
-        ) == 0
-        assert refused == [(10, 100)]
 
     def test_a_real_prune_invalidates_the_paged_ivf_hyperbolic_and_neural_masks(self, monkeypatch):
         from tasks import multiserver_sync as sync
