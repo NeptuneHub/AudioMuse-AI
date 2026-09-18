@@ -33,3 +33,39 @@ GPU-accelerated clustering is also available through RAPIDS cuML. It can give a 
 - GPU clustering is disabled by default (`USE_GPU_CLUSTERING=false`)
 - The GPU is also used by the audio analysis models (ONNX inference: MusiCNN, CLAP and the neural fingerprint encoder of Search by Recording)
 - The index build and the similarity queries are not GPU accelerated; they are IO bound rather than compute bound, see [ALGORITHM](ALGORITHM.md#4-similarity-indexes-disk-paged-ivf)
+
+## Several workers on one GPU
+
+Analysis is one album per job, so extra worker replicas are the way to use a
+big GPU - but three things stop them scaling on a single card:
+
+1. **Whisper VRAM.** Every replica that reaches the ASR fallback loads its own
+   Whisper-small pipeline (~1.5 GB + activations). Three replicas transcribing
+   at once fill a 12 GB card, and a fourth OOMs. Set `LYRICS_ASR_LOCK_DIR` to a
+   directory mounted into every replica (the `asr-locks` volume in
+   `docker-compose-nvidia.yaml`) and `LYRICS_ASR_LOCK_SLOTS` to how many
+   replicas may transcribe at the same time. Replicas beyond that wait for a
+   slot; the wait is not charged against the ASR timeout, and a pipeline is
+   unloaded before its slot is released. Worker count is then bounded by
+   CLAP/MusiCNN memory (well under 1 GB per replica) instead of by Whisper.
+2. **CPU thread pools.** Without a cgroup CPU limit `cpu_budget.py` sees the
+   whole host, so every replica opens ONNX thread pools as wide as the machine
+   (six replicas on a 20-thread host means 600+ threads and a load average of
+   ~50). Give each replica a quota (`cpus: "3"` in compose, or a Kubernetes
+   CPU limit) and the pools are sized to it.
+3. **gte on CPU.** The lyrics-embedding model runs on CPU by default. With
+   `LYRICS_GTE_USE_GPU=true` it runs on CUDA, which on a shared GPU is cheaper
+   than the CPU cores it frees for audio decoding.
+
+Measured on an RTX 5070 (12 GB), i7-12700K (20 threads), Navidrome library
+of 5.7k tracks, lyrics fallback hitting Whisper on ~25% of them:
+
+| replicas | Whisper slots | cpus/replica | tracks/min | VRAM | load avg |
+| --- | --- | --- | --- | --- | --- |
+| 3 | unlimited | none | 10 | 11.5 GB (ceiling) | 13 |
+| 6 | 3 | none | 19 | 6 GB | 49 |
+| 6 | 3 | 3 | 29 | 7.6 GB | 8 |
+| 8 | 3 | 3 | 38 | 9 GB | 8 |
+
+Adding replicas needs RAM too (~2 GB each); watch the host before going past
+what fits.

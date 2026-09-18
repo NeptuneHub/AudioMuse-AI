@@ -62,12 +62,24 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
       TEMP_DIR: "/app/temp_audio"
+      # Running several worker replicas on one GPU? See docs/GPU.md "Several
+      # workers on one GPU". Cap how many replicas transcribe with Whisper at
+      # the same time (each resident pipeline is ~1.5 GB of VRAM):
+      # LYRICS_ASR_LOCK_DIR: "/app/locks"
+      # LYRICS_ASR_LOCK_SLOTS: "3"
+      # LYRICS_GTE_USE_GPU: "true"
     volumes:
       - temp-audio-worker:/app/temp_audio # Volume for temporary audio files
       - plugins-worker:/app/plugin/installed # This container's own plugins cache (code + pip deps)
+      - asr-locks:/app/locks # Shared by every replica: the Whisper semaphore lives here
     depends_on:
       - postgres
     restart: unless-stopped
+    # With replicas, give each one a CPU quota: cpu_budget.py sizes the ONNX
+    # thread pools from it, otherwise every replica spawns a pool as wide as
+    # the whole host and they thrash each other. Drop container_name and run
+    # `docker compose up -d --scale audiomuse-ai-worker=N`.
+    # cpus: "3"
     deploy:
       resources:
         reservations:
@@ -81,6 +93,7 @@ volumes:
   postgres-data:
   temp-audio-flask: # Volume for Flask app's temporary audio
   temp-audio-worker: # Volume for Worker's temporary audio
+  asr-locks: # Whisper semaphore lock files, shared by all worker replicas
   # Installed plugins live here (not in the database). Flask and worker each keep
   # their own copy and install into it, so plugins are reused across restarts.
   plugins-flask:

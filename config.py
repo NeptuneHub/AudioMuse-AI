@@ -1038,6 +1038,21 @@ LYRICS_API_2_TIMEOUT       = float(os.environ.get("LYRICS_API_2_TIMEOUT",   "5.0
 # quality, ~5x cost). Each extra beam adds one decoder.run per generated
 # token plus its own KV cache (~30-80 MB at a full 30 s chunk).
 LYRICS_ASR_BEAM_SIZE = int(os.environ.get("LYRICS_ASR_BEAM_SIZE", "5"))
+# Cross-worker Whisper semaphore. With several worker replicas on one GPU every
+# replica can be inside Whisper at the same moment, and each resident pipeline
+# costs ~1.5 GB plus activations - on a 12 GB card that caps the deployment at
+# 3 replicas even though CLAP/MusiCNN alone would allow far more. Point
+# LYRICS_ASR_LOCK_DIR at a directory mounted into every worker (a shared Docker
+# volume) and at most LYRICS_ASR_LOCK_SLOTS replicas transcribe at once; the
+# others wait for a slot, and a pipeline is unloaded before its slot is handed
+# on. Empty (default) disables it. POSIX only (flock); ignored on Windows.
+LYRICS_ASR_LOCK_DIR = os.environ.get("LYRICS_ASR_LOCK_DIR", "")
+LYRICS_ASR_LOCK_SLOTS = int(os.environ.get("LYRICS_ASR_LOCK_SLOTS", "1"))
+# Run the gte lyrics-embedding model on CUDA when the provider is available.
+# Off by default: the int8 graph picks up Memcpy nodes on CUDA, so on a lone
+# worker CPU is fine. With many replicas sharing a GPU it moves a transformer
+# pass per lyric off cores the audio decode needs.
+LYRICS_GTE_USE_GPU = os.environ.get("LYRICS_GTE_USE_GPU", "false").lower() == "true"
 LYRICS_ASR_MIN_AVG_LOGPROB = float(os.environ.get("LYRICS_ASR_MIN_AVG_LOGPROB", "-1.0"))
 LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB = float(os.environ.get("LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB", "-0.85"))
 # Root the image unpacks its model bundles under. Every model directory below

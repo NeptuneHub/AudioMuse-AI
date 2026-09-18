@@ -32,6 +32,7 @@ import math
 import os
 import re
 import signal
+import time
 import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -71,6 +72,8 @@ from cpu_budget import usable_cpu_count
 from .text_quality import compression_ratio as _compression_ratio
 
 from config import LYRICS_MIN_CHARS_FOR_EMBEDDING as MIN_CHARS_FOR_EMBEDDING
+from config import LYRICS_ASR_LOCK_DIR as ASR_LOCK_DIR
+from config import LYRICS_ASR_LOCK_SLOTS as ASR_LOCK_SLOTS
 from config import LYRICS_ASR_MIN_AVG_LOGPROB as ASR_MIN_AVG_LOGPROB
 from config import LYRICS_ASR_NON_ENGLISH_MIN_LOGPROB as ASR_NON_ENGLISH_MIN_LOGPROB
 
@@ -939,6 +942,61 @@ def _prepare_audio_clip(
     return audio_clip, sr, used_seconds
 
 
+# The cross-worker Whisper semaphore is N flock files in a directory every
+# replica mounts. A replica takes the first free slot, or polls until one frees
+# up. flock is released by the kernel if the process dies, so a crashed worker
+# never leaks a slot. Returns None when the feature is off or unsupported.
+def _acquire_asr_slot():
+    if not ASR_LOCK_DIR:
+        return None
+    try:
+        import fcntl
+    except ImportError:  # Windows native build
+        return None
+    try:
+        os.makedirs(ASR_LOCK_DIR, exist_ok=True)
+    except OSError as exc:
+        logger.warning('ASR lock dir %s unusable (%s) - running without the semaphore', ASR_LOCK_DIR, exc)
+        return None
+    slots = max(1, ASR_LOCK_SLOTS)
+    started = time.monotonic()
+    while True:
+        for slot in range(slots):
+            handle = open(os.path.join(ASR_LOCK_DIR, 'asr-slot-%d.lock' % slot), 'a')
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                continue
+            waited = time.monotonic() - started
+            if waited > 0.5:
+                logger.info('STEP 5 ASR slot %d/%d acquired after %.1fs wait', slot, slots, waited)
+            return handle
+        time.sleep(0.5)
+
+
+# Unload the pipeline before releasing, so the next holder never overlaps our
+# resident model on the GPU; that overlap is the memory spike the semaphore is
+# there to remove.
+def _release_asr_slot(handle) -> None:
+    if handle is None:
+        return
+    try:
+        from ._asr_backend import get_asr_backend
+
+        backend = get_asr_backend()
+        if backend.is_loaded():
+            backend.unload()
+    except Exception as exc:  # cleanup must never cost the transcript
+        logger.warning('ASR unload before slot release failed: %s', exc)
+    try:
+        import fcntl
+
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dict[str, object]:
     _ASR_TIMEOUT_S = 300
     logger.info(
@@ -952,6 +1010,10 @@ def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dic
 
     def _alarm_handler(signum, frame):
         raise _AsrTimeout()
+
+    # Taken before the alarm starts, so time spent queueing for a slot can
+    # never be charged against the transcription timeout.
+    _slot = _acquire_asr_slot()
 
     _has_alarm = hasattr(signal, 'SIGALRM')
     if _has_alarm:
@@ -969,6 +1031,7 @@ def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dic
         if _has_alarm:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, _old_handler)
+        _release_asr_slot(_slot)
 
 
 # Reads the backend's avg_logprob, or None when it reported none. The built-in

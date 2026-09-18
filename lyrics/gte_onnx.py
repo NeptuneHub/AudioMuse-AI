@@ -84,7 +84,7 @@ def load_gte_model():
 
         logger.info('Loading gte tokenizer from %s', tokenizer_path)
         tokenizer = Tokenizer.from_file(tokenizer_path)
-        from config import LYRICS_GTE_MAX_TOKENS
+        from config import LYRICS_GTE_MAX_TOKENS, LYRICS_GTE_USE_GPU
 
         try:
             tokenizer.enable_truncation(max_length=LYRICS_GTE_MAX_TOKENS)
@@ -104,7 +104,7 @@ def load_gte_model():
 
             session = create_onnx_session(
                 onnx_path,
-                provider_options=resolve_providers(label='gte', cpu_only_default=True),
+                provider_options=resolve_providers(label='gte', cpu_only_default=not LYRICS_GTE_USE_GPU),
                 sess_options=sess_options,
                 label='gte',
             )
