@@ -942,10 +942,7 @@ def _prepare_audio_clip(
     return audio_clip, sr, used_seconds
 
 
-# The cross-worker Whisper semaphore is N flock files in a directory every
-# replica mounts. A replica takes the first free slot, or polls until one frees
-# up. flock is released by the kernel if the process dies, so a crashed worker
-# never leaks a slot. Returns None when the feature is off or unsupported.
+# Take the first free of N flock slots (kernel releases it if we die); None when off or non-POSIX.
 def _acquire_asr_slot():
     if not ASR_LOCK_DIR:
         return None
@@ -975,9 +972,7 @@ def _acquire_asr_slot():
         time.sleep(0.5)
 
 
-# Unload the pipeline before releasing, so the next holder never overlaps our
-# resident model on the GPU; that overlap is the memory spike the semaphore is
-# there to remove.
+# Unload the pipeline before handing the slot on, so two resident copies never overlap on the GPU.
 def _release_asr_slot(handle) -> None:
     if handle is None:
         return
@@ -1011,8 +1006,7 @@ def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dic
     def _alarm_handler(signum, frame):
         raise _AsrTimeout()
 
-    # Taken before the alarm starts, so time spent queueing for a slot can
-    # never be charged against the transcription timeout.
+    # Taken before the alarm starts so queueing is never charged against the ASR timeout.
     _slot = _acquire_asr_slot()
 
     _has_alarm = hasattr(signal, 'SIGALRM')

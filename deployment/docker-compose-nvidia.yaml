@@ -62,9 +62,7 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
       TEMP_DIR: "/app/temp_audio"
-      # Running several worker replicas on one GPU? See docs/GPU.md "Several
-      # workers on one GPU". Cap how many replicas transcribe with Whisper at
-      # the same time (each resident pipeline is ~1.5 GB of VRAM):
+      # Several worker replicas on one GPU? See docs/GPU.md "Several workers on one GPU".
       # LYRICS_ASR_LOCK_DIR: "/app/locks"
       # LYRICS_ASR_LOCK_SLOTS: "3"
       # LYRICS_GTE_USE_GPU: "true"
@@ -75,10 +73,7 @@ services:
     depends_on:
       - postgres
     restart: unless-stopped
-    # With replicas, give each one a CPU quota: cpu_budget.py sizes the ONNX
-    # thread pools from it, otherwise every replica spawns a pool as wide as
-    # the whole host and they thrash each other. Drop container_name and run
-    # `docker compose up -d --scale audiomuse-ai-worker=N`.
+    # Per-replica CPU quota; cpu_budget.py sizes the ONNX thread pools from it (see docs/GPU.md).
     # cpus: "3"
     deploy:
       resources:
