@@ -57,82 +57,14 @@ jobs:
         pip install -r test/requirements.txt
 
     - name: Download models
-      run: |
-        dclap_url="https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1"
-        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
-        mkdir -p test/models
-        echo "Downloading DCLAP audio model..."
-        curl -L "${dclap_url}/model_epoch_36.onnx" -o "test/models/model_epoch_36.onnx"
-        echo "Downloading DCLAP audio model data..."
-        curl -L "${dclap_url}/model_epoch_36.onnx.data" -o "test/models/model_epoch_36.onnx.data"
-        echo "Downloading CLAP text model..."
-        curl -L "${base_url}/clap_text_model.onnx" -o "test/models/clap_text_model.onnx"
-        echo "Downloading MusiCNN embedding model..."
-        curl -L "${base_url}/musicnn_embedding.onnx" -o "test/models/musicnn_embedding.onnx"
-        echo "Downloading MusiCNN prediction model..."
-        curl -L "${base_url}/musicnn_prediction.onnx" -o "test/models/musicnn_prediction.onnx"
-        sae_url="https://github.com/NeptuneHub/AudioMuse-AI-SAE/releases/download/v1"
-        echo "Downloading SAE concept steering graphs..."
-        curl -L "${sae_url}/dclap_sae_k20_d1024_best_encoder.onnx" -o "test/models/dclap_sae_k20_d1024_best_encoder.onnx"
-        curl -L "${sae_url}/dclap_sae_k20_d1024_best_decoder.onnx" -o "test/models/dclap_sae_k20_d1024_best_decoder.onnx"
-        neural_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"
-        echo "Downloading neural fingerprint encoder and codebook..."
-        curl -fL "${neural_url}/neural_fingerprint.onnx" -o "test/models/neural_fingerprint.onnx"
-        curl -fL "${neural_url}/neural_fingerprint_pq.npz" -o "test/models/neural_fingerprint_pq.npz"
-        echo "NEURAL_FINGERPRINT_MODEL_PATH=${GITHUB_WORKSPACE}/test/models/neural_fingerprint.onnx" >> "$GITHUB_ENV"
-        echo "NEURAL_FINGERPRINT_CODEBOOK_PATH=${GITHUB_WORKSPACE}/test/models/neural_fingerprint_pq.npz" >> "$GITHUB_ENV"
-        echo "Models downloaded successfully"
-        ls -lh test/models/
-
-    - name: Download HuggingFace tokenizer cache (release v4.0.0-model)
-      run: |
-        # The CLAP analyzer loads roberta-base via AutoTokenizer.from_pretrained(..., local_files_only=True).
-        # Reuse the same huggingface_models.tar.gz bundled in the GitHub release that the
-        # Dockerfile uses, and extract it into an HF cache directory under test/.
-        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
-        hf_cache_dir="${GITHUB_WORKSPACE}/test/.hf_cache"
-        mkdir -p "$hf_cache_dir"
-        echo "Downloading huggingface_models.tar.gz..."
-        curl -L "${base_url}/huggingface_models.tar.gz" -o /tmp/huggingface_models.tar.gz
-        echo "Extracting into ${hf_cache_dir}..."
-        tar -xzf /tmp/huggingface_models.tar.gz -C "$hf_cache_dir"
-        rm -f /tmp/huggingface_models.tar.gz
-        if [ ! -d "$hf_cache_dir/hub" ]; then
-          echo "ERROR: extraction did not produce a hub/ directory" >&2
-          ls -lah "$hf_cache_dir"
-          exit 1
-        fi
-        echo "HF cache ready:"
-        du -sh "$hf_cache_dir"
-        # Expose HF_HOME to subsequent steps so transformers resolves the cache offline.
-        echo "HF_HOME=$hf_cache_dir" >> "$GITHUB_ENV"
-
-    - name: Download gte model bundle (release v4.0.0-model)
-      run: |
-        # The Dockerfile downloads lyrics_model_gte_vnni.tar.gz from the
-        # v4.0.0-model release and extracts it flat into /app/model/. After
-        # extraction the layout is:
-        #   <models>/gte-multilingual-base-int8.onnx      (INT8 ONNX weights)
-        #   <models>/gte-multilingual-base/tokenizer.json (+ tokenizer files)
-        # We mirror the same layout under test/models/ for the integration
-        # test, which loads via lyrics/gte_onnx.py.
-        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
-        mkdir -p test/models
-        if [ ! -f test/models/gte-multilingual-base-int8.onnx ] || [ ! -f test/models/gte-multilingual-base/tokenizer.json ]; then
-          echo "Downloading lyrics_model_gte_vnni.tar.gz..."
-          curl -L "${base_url}/lyrics_model_gte_vnni.tar.gz" -o /tmp/lyrics_model_gte_vnni.tar.gz
-          tar -xzf /tmp/lyrics_model_gte_vnni.tar.gz -C test/models
-          rm -f /tmp/lyrics_model_gte_vnni.tar.gz
-        fi
-        echo "test/models/ after extraction:"
-        ls -la test/models/
-        echo "gte-multilingual-base/ contents:"
-        ls -la test/models/gte-multilingual-base/ || true
-        echo "gte model checksums (sha256):"
-        sha256sum test/models/gte-multilingual-base-int8.onnx test/models/gte-multilingual-base/tokenizer.json || true
-        echo "LYRICS_MODEL_DIR=${GITHUB_WORKSPACE}/test/models" >> "$GITHUB_ENV"
-        echo "LYRICS_GTE_ONNX_PATH=${GITHUB_WORKSPACE}/test/models/gte-multilingual-base-int8.onnx" >> "$GITHUB_ENV"
-        echo "LYRICS_GTE_TOKENIZER_DIR=${GITHUB_WORKSPACE}/test/models/gte-multilingual-base" >> "$GITHUB_ENV"
+      # One composite action shared with e2e.yml: the same release assets, the
+      # same test/models and test/.hf_cache layout, and the same model path
+      # variables exported to GITHUB_ENV, restored from the Actions cache when
+      # the release tags have not changed.
+      uses: ./.github/actions/download-models
+      with:
+        models-dir: test/models
+        hf-cache-dir: test/.hf_cache
 
     - name: Verify test files exist
       run: |

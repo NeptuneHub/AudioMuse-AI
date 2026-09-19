@@ -98,7 +98,7 @@ When submitting a pull request, ensure:
   * Song Path
   * Sonic Fingerprint
   * *(Basically, test each function in the integrated front-end menu at least once)*
-* **Automated tests:** Any PR that adds or changes major functionality MUST include automated tests (unit and/or integration, under `test/`) that cover that functionality. Run `pytest test/unit/` and `pytest test/integration/` locally before pushing, and make sure the CI Unit Tests and Integration Tests workflows pass.
+* **Automated tests:** Any PR that adds or changes major functionality MUST include automated tests (unit, integration and/or end-to-end, under `test/`) that cover that functionality. Run `pytest test/unit/`, `pytest test/integration/` and `bash test/e2e/run_local.sh` locally before pushing, and make sure the CI Unit Tests, Integration Tests and End-to-End Tests workflows pass. A change to a user-facing feature should keep (or extend) its module under `test/e2e/`, which drives the real stack (see `test/e2e/README.md`).
 * **AGPLv3 License compliance:** Your code must align with AudioMuse-AI's license
 * **CPU Compatibility:** AudioMuse-AI supports both Intel and ARM CPUs, including older Intel processors. PRs that introduce dependencies breaking compatibility with older CPUs will not be merged
 * **Documentation:** If needed, update the documentation
@@ -120,7 +120,7 @@ All of this is enforced by CI (`.github/workflows/lint-*.yml`), so run it locall
 * **codespell:** must pass repo-wide; fix real typos, and add genuine false positives (with a short reason) to `.codespellrc`.
 * **LF line endings & mypy:** every file must use LF line endings (no CRLF).
 * **Backslashes in SQL:** a pattern passed as a `%s` parameter needs nothing, psycopg2 quotes it for the server. A backslash written inside the SQL text itself (an `ESCAPE` clause or an inline `LIKE` pattern) must be an E-prefixed literal, so `ESCAPE E'\\'` reaches the server and reads the same with `standard_conforming_strings` on or off (#901). Enforced by `test/unit/test_no_backslash_escape_clause_in_source.py`.
-* **Repo-wide unit and integration test:** beyond the lint tools above, `pytest test/unit/` and `pytest test/integration/` introduce unit and integration test.
+* **Repo-wide unit, integration and end-to-end tests:** beyond the lint tools above, `pytest test/unit/` and `pytest test/integration/` run the unit and integration suites, and `bash test/e2e/run_local.sh` boots the real stack (Postgres, Navidrome, gunicorn, workers) for the end-to-end functional suite.
 * **Exeternal tools:** Sonarcloud and eventually AI review will run on PR.
 
 ### How to Open a Draft PR

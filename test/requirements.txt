@@ -62,6 +62,17 @@ PyJWT==2.13.0
 torch==2.6.0
 langdetect==1.0.9
 
+# End-to-end suite (test/e2e): the production WSGI server (pin identical to
+# requirements/common.txt, enforced by test_requirements_alignment), an ephemeral
+# Postgres for local runs (same pin as requirements/linux.txt), a per-test timeout
+# whose signal method still runs fixture teardown, and the headless browser page
+# smoke. Chromium itself is installed by `python -m playwright install chromium`.
+gunicorn==25.3.0
+pgserver==0.1.4; sys_platform == "linux" and platform_machine == "x86_64"
+pytest-timeout==2.4.0
+playwright==1.63.0
+pytest-playwright==0.9.0
+
 # Notes:
 # - ffmpeg (system binary) is NOT included here - keep pydub/ffmpeg calls stubbed or
 #   install ffmpeg separately on your machine if you want full fallback behavior.

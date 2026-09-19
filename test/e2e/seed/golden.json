@@ -1,0 +1,243 @@
+{
+ "artists": [
+  "Kimiko Ishizaka",
+  "Enrico Caruso",
+  "Czech National Symphony Orchestra",
+  "United States Marine Band",
+  "narva9"
+ ],
+ "clap electronic dance beat": [
+  [
+   "song 69",
+   "Various Artists"
+  ],
+  [
+   "song 135",
+   "Various Artists"
+  ],
+  [
+   "song 81",
+   "Various Artists"
+  ]
+ ],
+ "clap slow orchestral strings": [
+  [
+   "song 64",
+   "Various Artists"
+  ],
+  [
+   "song 235",
+   "Various Artists"
+  ],
+  [
+   "song 40",
+   "Various Artists"
+  ]
+ ],
+ "clap upbeat chiptune video game music": [
+  [
+   "song 2",
+   "Various Artists"
+  ],
+  [
+   "song 39",
+   "Various Artists"
+  ],
+  [
+   "song 135",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic niche 0:Various Artists - song 194": [
+  [
+   "song 15",
+   "Various Artists"
+  ],
+  [
+   "song 105",
+   "Various Artists"
+  ],
+  [
+   "song 131",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic niche 1:Various Artists - song 140": [
+  [
+   "song 113",
+   "Various Artists"
+  ],
+  [
+   "song 188",
+   "Various Artists"
+  ],
+  [
+   "song 172",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic niche 2:Various Artists - song 99": [
+  [
+   "song 271",
+   "Various Artists"
+  ],
+  [
+   "song 129",
+   "Various Artists"
+  ],
+  [
+   "song 193",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic roots 0:Various Artists - song 194": [
+  [
+   "song 235",
+   "Various Artists"
+  ],
+  [
+   "song 31",
+   "Various Artists"
+  ],
+  [
+   "song 227",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic roots 1:Various Artists - song 140": [
+  [
+   "song 31",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic roots 2:Various Artists - song 99": [
+  [
+   "song 31",
+   "Various Artists"
+  ],
+  [
+   "song 227",
+   "Various Artists"
+  ],
+  [
+   "song 235",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic similar 0:Various Artists - song 194": [
+  [
+   "song 144",
+   "Various Artists"
+  ],
+  [
+   "song 177",
+   "Various Artists"
+  ],
+  [
+   "song 124",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic similar 1:Various Artists - song 140": [
+  [
+   "song 95",
+   "Various Artists"
+  ],
+  [
+   "song 113",
+   "Various Artists"
+  ],
+  [
+   "song 173",
+   "Various Artists"
+  ]
+ ],
+ "hyperbolic similar 2:Various Artists - song 99": [
+  [
+   "song 112",
+   "Various Artists"
+  ],
+  [
+   "song 31",
+   "Various Artists"
+  ],
+  [
+   "song 98",
+   "Various Artists"
+  ]
+ ],
+ "path": [
+  [
+   "song 194",
+   "Various Artists"
+  ],
+  [
+   "song 177",
+   "Various Artists"
+  ],
+  [
+   "song 99",
+   "Various Artists"
+  ]
+ ],
+ "score 0:Various Artists - song 194": {
+  "author": "Various Artists",
+  "energy": 0.7516,
+  "key": "A#",
+  "mood_vector": "electronic:0.562,experimental:0.539,ambient:0.537,rock:0.530,indie:0.529",
+  "other_features": "danceable:0.58,aggressive:0.56,happy:0.59,party:0.58,relaxed:0.60,sad:0.56",
+  "scale": "minor",
+  "tempo": 98.6842,
+  "title": "song 194"
+ },
+ "score 1:Various Artists - song 140": {
+  "author": "Various Artists",
+  "energy": 0.5699,
+  "key": "G",
+  "mood_vector": "folk:0.555,blues:0.535,instrumental:0.534,indie:0.528,rock:0.525",
+  "other_features": "danceable:0.54,aggressive:0.56,happy:0.61,party:0.59,relaxed:0.54,sad:0.53",
+  "scale": "major",
+  "tempo": 144.2308,
+  "title": "song 140"
+ },
+ "score 2:Various Artists - song 99": {
+  "author": "Various Artists",
+  "energy": 0.6953,
+  "key": "A",
+  "mood_vector": "rock:0.561,indie:0.561,alternative:0.534,indie rock:0.526,experimental:0.525",
+  "other_features": "danceable:0.58,aggressive:0.59,happy:0.59,party:0.59,relaxed:0.64,sad:0.63",
+  "scale": "minor",
+  "tempo": 89.2857,
+  "title": "song 99"
+ },
+ "similar 0:Various Artists - song 194": [
+  [
+   "song 144",
+   "Various Artists"
+  ],
+  [
+   "song 218",
+   "Various Artists"
+  ]
+ ],
+ "similar 1:Various Artists - song 140": [
+  [
+   "song 113",
+   "Various Artists"
+  ],
+  [
+   "song 95",
+   "Various Artists"
+  ]
+ ],
+ "similar 2:Various Artists - song 99": [
+  [
+   "song 112",
+   "Various Artists"
+  ],
+  [
+   "song 55",
+   "Various Artists"
+  ]
+ ]
+}
