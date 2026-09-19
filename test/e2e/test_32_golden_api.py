@@ -16,9 +16,10 @@ rows the analysis wrote for the real clips are compared value by value as
 well. Clustering, temperature-driven alchemy and the 2D map coordinates (the
 UMAP projection is not seeded) are the only random outputs and stay out;
 alchemy at temperature zero is deterministic and is in. The dashboard's
-mood, genre and tempo buckets are checked for shape only: a real clip whose
-scores sit on a bucket edge lands on one side or the other depending on the
-CPU and thread count the models ran with.
+mood, genre and tempo charts are checked for shape only: the app refreshes
+them hourly, separately from the counts, so in a fresh run they are a
+snapshot of whatever part of the library was analyzed when they were first
+computed, and their numbers depend on that moment.
 
 Main Features:
 * track, search, similar songs, mood centroids, farthest song, song path
@@ -152,7 +153,8 @@ def test_external_sync_dashboard_and_setup(stack, api, library, golden):
     assert {m['label'] for m in moods} <= MOOD_BUCKETS, moods
     assert 0 < sum(m['count'] for m in moods) <= content['total_songs'], moods
     assert genres and sum(g['count'] for g in genres) <= content['total_songs'], genres
-    assert sum(tempos[k] for k in ('slow', 'medium', 'fast', 'very_fast')) == content['total_songs'], tempos
+    bucketed = sum(tempos[k] for k in ('slow', 'medium', 'fast', 'very_fast'))
+    assert 0 < bucketed <= content['total_songs'], tempos
     _get(api, golden, 'browse songs page 1', '/api/dashboard/browse?kind=songs')
     _get(api, golden, 'browse artists', '/api/dashboard/browse?kind=artists')
     _get(api, golden, 'browse albums', '/api/dashboard/browse?kind=albums')
