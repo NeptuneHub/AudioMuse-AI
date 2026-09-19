@@ -57,6 +57,14 @@ test/models/*.onnx
 test/models/*.onnx.data
 test/models/*.npz
 
+# End-to-end suite (test/e2e): per-run logs and data dirs, the cached Navidrome
+# binary, and the HuggingFace tokenizer cache CI extracts next to the models
+/test/e2e/.run/
+# one-second silent stand-ins of the seeded songs, written by the harness at boot
+/test/e2e/library/S[A-Z][0-9][0-9] - */
+/test/.cache/
+/test/.hf_cache/
+
 # Student CLAP training artifacts
 student_clap/cache/
 student_clap/checkpoints/

@@ -1,0 +1,106 @@
+name: Download AudioMuse-AI models
+description: >-
+  Fetch the ONNX models and the HuggingFace tokenizer cache from the immutable
+  GitHub release assets, restored from the Actions cache when the release tags
+  have not changed. Exports the model path variables the tests read.
+
+inputs:
+  models-dir:
+    description: Directory (relative to the workspace) receiving the ONNX files and the extracted gte bundle
+    required: true
+  hf-cache-dir:
+    description: Directory (relative to the workspace) used as HF_HOME for huggingface_models.tar.gz
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the model cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ inputs.models-dir }}
+          ${{ inputs.hf-cache-dir }}
+        # Bump the trailing -rN to invalidate by hand; the release tags are immutable.
+        key: models-v4.0.0-model-v5.0.0-model-dclap-v1-sae-v1-r2
+
+    - name: Download on a cache miss
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        MODELS_DIR: ${{ inputs.models-dir }}
+        HF_CACHE_DIR: ${{ inputs.hf-cache-dir }}
+      run: |
+        set -euo pipefail
+        dclap_url="https://github.com/NeptuneHub/AudioMuse-AI-DCLAP/releases/download/v1"
+        base_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v4.0.0-model"
+        sae_url="https://github.com/NeptuneHub/AudioMuse-AI-SAE/releases/download/v1"
+        neural_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"
+        mkdir -p "$MODELS_DIR" "$HF_CACHE_DIR"
+        # Every download goes through this helper: HTTPS only, on the first request
+        # and on every redirect the release CDN answers with, TLS 1.2 or newer.
+        fetch() {
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL "$@"
+        }
+        echo "Downloading DCLAP audio model..."
+        fetch "${dclap_url}/model_epoch_36.onnx" -o "$MODELS_DIR/model_epoch_36.onnx"
+        fetch "${dclap_url}/model_epoch_36.onnx.data" -o "$MODELS_DIR/model_epoch_36.onnx.data"
+        echo "Downloading CLAP text model..."
+        fetch "${base_url}/clap_text_model.onnx" -o "$MODELS_DIR/clap_text_model.onnx"
+        echo "Downloading MusiCNN models..."
+        fetch "${base_url}/musicnn_embedding.onnx" -o "$MODELS_DIR/musicnn_embedding.onnx"
+        fetch "${base_url}/musicnn_prediction.onnx" -o "$MODELS_DIR/musicnn_prediction.onnx"
+        echo "Downloading SAE concept steering graphs..."
+        fetch "${sae_url}/dclap_sae_k20_d1024_best_encoder.onnx" -o "$MODELS_DIR/dclap_sae_k20_d1024_best_encoder.onnx"
+        fetch "${sae_url}/dclap_sae_k20_d1024_best_decoder.onnx" -o "$MODELS_DIR/dclap_sae_k20_d1024_best_decoder.onnx"
+        echo "Downloading neural fingerprint encoder and codebook..."
+        fetch "${neural_url}/neural_fingerprint.onnx" -o "$MODELS_DIR/neural_fingerprint.onnx"
+        fetch "${neural_url}/neural_fingerprint_pq.npz" -o "$MODELS_DIR/neural_fingerprint_pq.npz"
+        echo "Downloading huggingface_models.tar.gz (roberta-base tokenizer for the CLAP analyzer)..."
+        fetch "${base_url}/huggingface_models.tar.gz" -o /tmp/huggingface_models.tar.gz
+        tar -xzf /tmp/huggingface_models.tar.gz -C "$HF_CACHE_DIR"
+        rm -f /tmp/huggingface_models.tar.gz
+        if [ ! -d "$HF_CACHE_DIR/hub" ]; then
+          echo "ERROR: extraction did not produce a hub/ directory" >&2
+          ls -lah "$HF_CACHE_DIR"
+          exit 1
+        fi
+        # The bundle carries two models no test loads; the Dockerfile drops the
+        # same two, which keeps about 1 GB off the runner disk and the cache.
+        rm -rf "$HF_CACHE_DIR/hub/models--bert-base-uncased" "$HF_CACHE_DIR/hub/models--facebook--bart-base"
+        echo "Downloading lyrics_model_gte_vnni.tar.gz (gte-multilingual-base INT8 + tokenizer)..."
+        fetch "${base_url}/lyrics_model_gte_vnni.tar.gz" -o /tmp/lyrics_model_gte_vnni.tar.gz
+        tar -xzf /tmp/lyrics_model_gte_vnni.tar.gz -C "$MODELS_DIR"
+        rm -f /tmp/lyrics_model_gte_vnni.tar.gz
+        test -f "$MODELS_DIR/gte-multilingual-base-int8.onnx"
+        test -f "$MODELS_DIR/gte-multilingual-base/tokenizer.json"
+        echo "Downloading lyrics_model_whisper.tar.gz (Whisper-small ONNX bundle for the lyrics ASR, ~570 MB)..."
+        fetch "${neural_url}/lyrics_model_whisper.tar.gz" -o /tmp/lyrics_model_whisper.tar.gz
+        tar -xzf /tmp/lyrics_model_whisper.tar.gz -C "$MODELS_DIR"
+        rm -f /tmp/lyrics_model_whisper.tar.gz
+        test -f "$MODELS_DIR/whisper-small-onnx/encoder_model.onnx"
+        echo "Downloading lyrics_model_silero_vad.tar.gz (voice activity detection for the lyrics ASR)..."
+        fetch "${neural_url}/lyrics_model_silero_vad.tar.gz" -o /tmp/lyrics_model_silero_vad.tar.gz
+        tar -xzf /tmp/lyrics_model_silero_vad.tar.gz -C "$MODELS_DIR"
+        rm -f /tmp/lyrics_model_silero_vad.tar.gz
+        test -f "$MODELS_DIR/silero_vad.onnx"
+
+    - name: Export model locations
+      shell: bash
+      env:
+        MODELS_DIR: ${{ inputs.models-dir }}
+        HF_CACHE_DIR: ${{ inputs.hf-cache-dir }}
+      run: |
+        set -euo pipefail
+        echo "HF_HOME=${GITHUB_WORKSPACE}/${HF_CACHE_DIR}" >> "$GITHUB_ENV"
+        echo "LYRICS_MODEL_DIR=${GITHUB_WORKSPACE}/${MODELS_DIR}" >> "$GITHUB_ENV"
+        echo "LYRICS_GTE_ONNX_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/gte-multilingual-base-int8.onnx" >> "$GITHUB_ENV"
+        echo "LYRICS_GTE_TOKENIZER_DIR=${GITHUB_WORKSPACE}/${MODELS_DIR}/gte-multilingual-base" >> "$GITHUB_ENV"
+        echo "NEURAL_FINGERPRINT_MODEL_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/neural_fingerprint.onnx" >> "$GITHUB_ENV"
+        echo "NEURAL_FINGERPRINT_CODEBOOK_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/neural_fingerprint_pq.npz" >> "$GITHUB_ENV"
+        echo "LYRICS_WHISPER_MODEL_DIR=${GITHUB_WORKSPACE}/${MODELS_DIR}/whisper-small-onnx" >> "$GITHUB_ENV"
+        echo "SILERO_VAD_ONNX_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/silero_vad.onnx" >> "$GITHUB_ENV"
+        echo "Models in ${MODELS_DIR}:"
+        ls -lh "$MODELS_DIR"
+        du -sh "$HF_CACHE_DIR"

@@ -1,0 +1,115 @@
+name: End-to-End Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+  # A cache saved by a pull_request run is only visible to that PR; one saved on
+  # main is restorable by every later run, so main warms the model cache.
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # Generous only for a cold model cache; a warm run finishes in about 30 minutes.
+    timeout-minutes: 90
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: audiomuse_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: test/requirements.txt
+
+    - name: Disk and memory before the job
+      run: |
+        df -h / /mnt 2>/dev/null || df -h /
+        free -h
+
+    - name: Install system dependencies
+      # ffmpeg for the app's audio decoding fallback, postgresql-client for the
+      # pg_dump the backup page shells out to. Navidrome and fpcalc are fetched
+      # by the suite itself from their pinned release assets.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg postgresql-client
+
+    - name: Install Python dependencies
+      # torch is installed first from the CPU index: the same pinned version the
+      # requirements file asks for, without the 3 GB of CUDA wheels the default
+      # Linux build drags in, which keeps the job well inside the runner's disk.
+      run: |
+        python -m pip install --upgrade --only-binary :all: pip
+        pip install --only-binary :all: torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+        # No --only-binary here: langdetect, which the lyrics language gate needs,
+        # is published as a source distribution only.
+        pip install -r test/requirements.txt
+
+    - name: Download models
+      uses: ./.github/actions/download-models
+      with:
+        models-dir: test/models
+        hf-cache-dir: test/.hf_cache
+
+    - name: Cache the pinned Navidrome and fpcalc binaries
+      uses: actions/cache@v4
+      with:
+        path: test/.cache
+        key: e2e-binaries-${{ hashFiles('test/e2e/stack/navidrome.py', 'test/e2e/stack/fpcalc.py') }}
+
+    - name: Install Chromium for the page smoke
+      run: python -m playwright install --with-deps chromium
+
+    - name: Run the end-to-end suite
+      env:
+        AUDIOMUSE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/audiomuse_e2e
+      run: |
+        # The whole directory, so a new test/e2e/test_*.py is picked up
+        # automatically. --timeout-method=signal keeps fixture teardown running
+        # when a single test hits the per-test limit.
+        pytest test/e2e/ -p no:cacheprovider --timeout=2700 --timeout-method=signal --durations=25
+
+    - name: Disk and memory after the suite
+      if: always()
+      run: |
+        df -h / /mnt 2>/dev/null || df -h /
+        du -sh test/models test/.hf_cache test/.cache test/e2e/.run 2>/dev/null || true
+        free -h
+
+    - name: Upload run logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-run
+        path: |
+          test/e2e/.run/logs/
+          test/e2e/.run/playwright/
+          test/e2e/.run/env.json
+        retention-days: 7
+        if-no-files-found: ignore
