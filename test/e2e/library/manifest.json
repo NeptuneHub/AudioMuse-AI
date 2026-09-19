@@ -1,0 +1,373 @@
+{
+  "version": 1,
+  "albums": [
+    {
+      "key": "A",
+      "folder": "A - Kimiko Ishizaka - Open Goldberg Variations",
+      "album": "Open Goldberg Variations",
+      "album_artist": "Kimiko Ishizaka",
+      "year": 2012,
+      "genre": "Classical",
+      "tracks": [
+        {
+          "key": "A01",
+          "file": "01 - Variatio 1 a 1 Clav.mp3",
+          "title": "Variatio 1 a 1 Clav.",
+          "artist": "Kimiko Ishizaka",
+          "track": 1,
+          "duration_s": 20.0,
+          "role": "clip",
+          "character": "solo piano"
+        },
+        {
+          "key": "A02",
+          "file": "02 - Variatio 2 a 1 Clav.mp3",
+          "title": "Variatio 2 a 1 Clav.",
+          "artist": "Kimiko Ishizaka",
+          "track": 2,
+          "duration_s": 22.0,
+          "role": "clip",
+          "character": "solo piano"
+        },
+        {
+          "key": "A03",
+          "file": "03 - Aria da Capo e Fine.mp3",
+          "title": "Aria da Capo e Fine",
+          "artist": "Kimiko Ishizaka",
+          "track": 3,
+          "duration_s": 24.0,
+          "role": "clip",
+          "character": "solo piano"
+        }
+      ]
+    },
+    {
+      "key": "B",
+      "folder": "B - Czech National Symphony Orchestra - Musopen Symphonic Recordings",
+      "album": "Musopen Symphonic Recordings",
+      "album_artist": "Czech National Symphony Orchestra",
+      "year": 2012,
+      "genre": "Orchestral",
+      "tracks": [
+        {
+          "key": "B01",
+          "file": "01 - The Marriage of Figaro, Overture.mp3",
+          "title": "The Marriage of Figaro, Overture",
+          "artist": "Czech National Symphony Orchestra",
+          "track": 1,
+          "duration_s": 26.0,
+          "role": "clip",
+          "character": "orchestra"
+        },
+        {
+          "key": "B02",
+          "file": "02 - Symphony No. 2 in D Major, III. Allegretto grazioso.mp3",
+          "title": "Symphony No. 2 in D Major, III. Allegretto grazioso",
+          "artist": "Czech National Symphony Orchestra",
+          "track": 2,
+          "duration_s": 28.0,
+          "role": "clip",
+          "character": "orchestra"
+        },
+        {
+          "key": "B03",
+          "file": "03 - Symphony No. 3 in A Minor Scottish, II. Vivace non troppo.mp3",
+          "title": "Symphony No. 3 in A Minor Scottish, II. Vivace non troppo",
+          "artist": "Czech National Symphony Orchestra",
+          "track": 3,
+          "duration_s": 30.0,
+          "role": "clip",
+          "character": "orchestra"
+        }
+      ]
+    },
+    {
+      "key": "C",
+      "folder": "C - United States Marine Band - Sousa Marches",
+      "album": "Sousa Marches",
+      "album_artist": "United States Marine Band",
+      "year": 2017,
+      "genre": "March",
+      "tracks": [
+        {
+          "key": "C01",
+          "file": "01 - The Thunderer.mp3",
+          "title": "The Thunderer",
+          "artist": "United States Marine Band",
+          "track": 1,
+          "duration_s": 32.0,
+          "role": "clip",
+          "character": "wind band"
+        },
+        {
+          "key": "C02",
+          "file": "02 - The Directorate.mp3",
+          "title": "The Directorate",
+          "artist": "United States Marine Band",
+          "track": 2,
+          "duration_s": 34.0,
+          "role": "clip",
+          "character": "wind band"
+        },
+        {
+          "key": "C03",
+          "file": "03 - On the Campus.mp3",
+          "title": "On the Campus",
+          "artist": "United States Marine Band",
+          "track": 3,
+          "duration_s": 36.0,
+          "role": "clip",
+          "character": "wind band"
+        }
+      ]
+    },
+    {
+      "key": "D",
+      "folder": "D - Enrico Caruso - Acoustic Recordings 1908-1911",
+      "album": "Acoustic Recordings 1908-1911",
+      "album_artist": "Enrico Caruso",
+      "year": 1911,
+      "genre": "Opera",
+      "tracks": [
+        {
+          "key": "D01",
+          "file": "01 - La donna e mobile.mp3",
+          "title": "La donna e mobile",
+          "artist": "Enrico Caruso",
+          "track": 1,
+          "duration_s": 38.0,
+          "role": "clip",
+          "character": "tenor voice"
+        },
+        {
+          "key": "D02",
+          "file": "02 - E lucevan le stelle.mp3",
+          "title": "E lucevan le stelle",
+          "artist": "Enrico Caruso",
+          "track": 2,
+          "duration_s": 40.0,
+          "role": "clip",
+          "character": "tenor voice"
+        },
+        {
+          "key": "D03",
+          "file": "03 - Una furtiva lagrima.mp3",
+          "title": "Una furtiva lagrima",
+          "artist": "Enrico Caruso",
+          "track": 3,
+          "duration_s": 42.0,
+          "role": "clip",
+          "character": "tenor voice"
+        }
+      ]
+    },
+    {
+      "key": "E",
+      "folder": "E - Airmen of Note - Air Force Jazz",
+      "album": "Air Force Jazz",
+      "album_artist": "Airmen of Note",
+      "year": 2019,
+      "genre": "Jazz",
+      "tracks": [
+        {
+          "key": "E01",
+          "file": "01 - Small Note Boogaloo.mp3",
+          "title": "Small Note Boogaloo",
+          "artist": "Airmen of Note",
+          "track": 1,
+          "duration_s": 44.0,
+          "role": "clip",
+          "character": "big band jazz"
+        },
+        {
+          "key": "E02",
+          "file": "02 - Skyscrapers.mp3",
+          "title": "Skyscrapers",
+          "artist": "Airmen of Note",
+          "track": 2,
+          "duration_s": 46.0,
+          "role": "clip",
+          "character": "big band jazz"
+        },
+        {
+          "key": "E03",
+          "file": "03 - Sheridan Square.mp3",
+          "title": "Sheridan Square",
+          "artist": "Airmen of Note",
+          "track": 3,
+          "duration_s": 48.0,
+          "role": "clip",
+          "character": "big band jazz"
+        }
+      ]
+    },
+    {
+      "key": "F",
+      "folder": "F - Various Artists - Compilation Copies",
+      "album": "Compilation Copies",
+      "album_artist": "Various Artists",
+      "year": 2024,
+      "genre": "Compilation",
+      "tracks": [
+        {
+          "key": "F01",
+          "file": "01 - Variatio 1 a 1 Clav.mp3",
+          "title": "Variatio 1 a 1 Clav.",
+          "artist": "Kimiko Ishizaka",
+          "track": 1,
+          "duration_s": 20.0,
+          "role": "copy",
+          "character": "solo piano"
+        },
+        {
+          "key": "F02",
+          "file": "02 - Variatio 2 a 1 Clav. (Extended).mp3",
+          "title": "Variatio 2 a 1 Clav. (Extended)",
+          "artist": "Kimiko Ishizaka",
+          "track": 2,
+          "duration_s": 29.0,
+          "role": "copy",
+          "character": "solo piano"
+        }
+      ]
+    },
+    {
+      "key": "G",
+      "folder": "G - Glitch Artist - Broken Album",
+      "album": "Broken Album",
+      "album_artist": "Glitch Artist",
+      "year": 2024,
+      "genre": "Noise",
+      "tracks": [
+        {
+          "key": "G01",
+          "file": "01 - Broken.mp3",
+          "title": "Broken",
+          "artist": "Glitch Artist",
+          "track": 1,
+          "duration_s": null,
+          "role": "broken",
+          "character": "undecodable"
+        }
+      ]
+    },
+    {
+      "key": "H",
+      "folder": "H - CC0 Vocal Artists - CC0 Vocal Songs",
+      "album": "CC0 Vocal Songs",
+      "album_artist": "CC0 Vocal Artists",
+      "year": 2016,
+      "genre": "Vocal",
+      "tracks": [
+        {
+          "key": "H01",
+          "file": "01 - It Came Upon A Midnight Clear.mp3",
+          "title": "It Came Upon A Midnight Clear",
+          "artist": "narva9",
+          "track": 1,
+          "duration_s": 90.0,
+          "role": "vocal",
+          "lyrics": "01 - It Came Upon A Midnight Clear.lrc",
+          "character": "a cappella carol"
+        },
+        {
+          "key": "H02",
+          "file": "02 - Missing Person.mp3",
+          "title": "Missing Person",
+          "artist": "orrisroot",
+          "track": 2,
+          "duration_s": 88.0,
+          "role": "vocal",
+          "character": "a cappella"
+        },
+        {
+          "key": "H03",
+          "file": "03 - What Im sayin (streetmix).mp3",
+          "title": "What Im sayin (streetmix)",
+          "artist": "MC Shadow",
+          "track": 3,
+          "duration_s": 60.0,
+          "role": "vocal",
+          "character": "rap"
+        },
+        {
+          "key": "H04",
+          "file": "04 - Pizza.mp3",
+          "title": "Pizza",
+          "artist": "U-Man",
+          "track": 4,
+          "duration_s": 62.0,
+          "role": "vocal",
+          "character": "french song"
+        },
+        {
+          "key": "H05",
+          "file": "05 - Un week-end avec papy.mp3",
+          "title": "Un week-end avec papy",
+          "artist": "Frederic Lardon",
+          "track": 5,
+          "duration_s": 64.0,
+          "role": "vocal",
+          "character": "french spoken word over music"
+        }
+      ]
+    }
+  ],
+  "copies": {
+    "F01": {
+      "of": "A01",
+      "kind": "retagged_stream_copy",
+      "expect": "merged"
+    },
+    "F02": {
+      "of": "A02",
+      "kind": "reencoded_padded",
+      "extra_seconds": 7.0,
+      "expect": "separate"
+    }
+  },
+  "unanalyzable": [
+    "G01"
+  ],
+  "lyrics": {
+    "H01": {
+      "file": "01 - It Came Upon A Midnight Clear.lrc",
+      "source": "sidecar",
+      "probe_phrase": "It came upon the midnight clear, that glorious song of old"
+    },
+    "H02": {
+      "source": "asr",
+      "probe_phrase": "when all you see is red because you are already dead"
+    },
+    "H03": {
+      "source": "asr",
+      "probe_phrase": "you wanna play game then go buy Monopoly"
+    },
+    "H04": {
+      "source": "asr",
+      "probe_phrase": "dans une demi-heure j'aurai une pizza"
+    },
+    "H05": {
+      "source": "asr",
+      "probe_phrase": "on avait terminé notre vingtième partie de tarot"
+    }
+  },
+  "clap_probe": {
+    "query": "solo piano",
+    "expect_key": "A03"
+  },
+  "recording_probe": {
+    "key": "C02",
+    "start_s": 8.0,
+    "length_s": 10.0
+  },
+  "counts": {
+    "files": 23,
+    "clips": 15,
+    "analyzable_files": 22,
+    "catalogue_rows": 21,
+    "clip_artists": 5,
+    "album_folders": 8,
+    "lyric_clips": 5
+  }
+}

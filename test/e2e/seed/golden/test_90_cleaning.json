@@ -1,0 +1,70 @@
+{
+ "cleaning summary with catalogue deletion": {
+  "catalogue_deletion": true,
+  "chromaprint_splits": 0,
+  "cleaning_safety_limit": 100,
+  "deleted_albums_count": 1,
+  "deleted_analysis_exclusions": 0,
+  "deleted_count": 1,
+  "failed_servers": [],
+  "message": "Cleanup complete: 0 stale server mappings unbound; 1 orphaned catalogue tracks from 1 album(s) (on no server) deleted, 0 left for the next run (at most 100 albums per run); 0 stale not-analyzable marker(s) removed.",
+  "orphaned_albums": [
+   {
+    "album": "Acoustic Recordings 1908-1911",
+    "artist": "Enrico Caruso",
+    "track_count": 1,
+    "tracks": [
+     {
+      "author": "Enrico Caruso",
+      "title": "Una furtiva lagrima"
+     }
+    ]
+   }
+  ],
+  "orphaned_albums_count": 1,
+  "orphaned_tracks_count": 1,
+  "remaining_orphans_count": 0,
+  "status": "SUCCESS",
+  "total_catalogue_tracks_present": 309,
+  "total_database_tracks": 310,
+  "total_media_server_tracks": 310,
+  "unbound_by_server": {
+   "Navidrome": 0
+  },
+  "unbound_mappings": 0
+ },
+ "cleaning summary without catalogue deletion": {
+  "catalogue_deletion": false,
+  "chromaprint_splits": 0,
+  "cleaning_safety_limit": 100,
+  "deleted_albums_count": 0,
+  "deleted_analysis_exclusions": 1,
+  "deleted_count": 0,
+  "failed_servers": [],
+  "message": "Cleanup complete: 1 stale server mappings unbound; 1 catalogue tracks are on no server and were kept (catalogue cleaning is off - enable it to delete them); 1 stale not-analyzable marker(s) removed.",
+  "orphaned_albums": [
+   {
+    "album": "Acoustic Recordings 1908-1911",
+    "artist": "Enrico Caruso",
+    "track_count": 1,
+    "tracks": [
+     {
+      "author": "Enrico Caruso",
+      "title": "Una furtiva lagrima"
+     }
+    ]
+   }
+  ],
+  "orphaned_albums_count": 1,
+  "orphaned_tracks_count": 1,
+  "remaining_orphans_count": 1,
+  "status": "SUCCESS",
+  "total_catalogue_tracks_present": 309,
+  "total_database_tracks": 310,
+  "total_media_server_tracks": 310,
+  "unbound_by_server": {
+   "Navidrome": 1
+  },
+  "unbound_mappings": 1
+ }
+}

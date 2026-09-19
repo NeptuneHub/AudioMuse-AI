@@ -1,0 +1,124 @@
+{
+ "sonic_fingerprint n8 after the seeded plays": [
+  {
+   "album": "Musopen Symphonic Recordings",
+   "author": "Czech National Symphony Orchestra",
+   "distance": 0.0,
+   "item_id": "track:The Marriage of Figaro, Overture | Czech National Symphony Orchestra",
+   "mood_vector": {
+    "Progressive rock": 0.524,
+    "instrumental": 0.564,
+    "jazz": 0.543,
+    "oldies": 0.522,
+    "rock": 0.523
+   },
+   "other_features": {
+    "aggressive": 0.58,
+    "danceable": 0.58,
+    "happy": 0.59,
+    "party": 0.59,
+    "relaxed": 0.55,
+    "sad": 0.54
+   },
+   "title": "The Marriage of Figaro, Overture",
+   "top_genre": "jazz",
+   "top_mood": "happy"
+  },
+  {
+   "album": "Musopen Symphonic Recordings",
+   "author": "Czech National Symphony Orchestra",
+   "distance": 0.0,
+   "item_id": "track:Symphony No. 2 in D Major, III. Allegretto grazioso | Czech National Symphony Orchestra",
+   "mood_vector": {
+    "Progressive rock": 0.522,
+    "ambient": 0.538,
+    "instrumental": 0.574,
+    "jazz": 0.532,
+    "rock": 0.522
+   },
+   "other_features": {
+    "aggressive": 0.56,
+    "danceable": 0.56,
+    "happy": 0.58,
+    "party": 0.55,
+    "relaxed": 0.6,
+    "sad": 0.57
+   },
+   "title": "Symphony No. 2 in D Major, III. Allegretto grazioso",
+   "top_genre": "ambient",
+   "top_mood": "relaxed"
+  },
+  {
+   "album": "Musopen Symphonic Recordings",
+   "author": "Czech National Symphony Orchestra",
+   "distance": 0.0,
+   "item_id": "track:Symphony No. 3 in A Minor Scottish, II. Vivace non troppo | Czech National Symphony Orchestra",
+   "mood_vector": {
+    "Progressive rock": 0.526,
+    "folk": 0.527,
+    "instrumental": 0.57,
+    "jazz": 0.54,
+    "rock": 0.523
+   },
+   "other_features": {
+    "aggressive": 0.59,
+    "danceable": 0.58,
+    "happy": 0.59,
+    "party": 0.58,
+    "relaxed": 0.61,
+    "sad": 0.58
+   },
+   "title": "Symphony No. 3 in A Minor Scottish, II. Vivace non troppo",
+   "top_genre": "jazz",
+   "top_mood": "relaxed"
+  },
+  {
+   "album": "Seed 04",
+   "author": "Various Artists",
+   "distance": 0.034,
+   "item_id": "track:song 37 | Various Artists",
+   "mood_vector": {
+    "ambient": 0.53,
+    "instrumental": 0.563,
+    "jazz": 0.529,
+    "oldies": 0.517,
+    "rock": 0.522
+   },
+   "other_features": {
+    "aggressive": 0.57,
+    "danceable": 0.57,
+    "happy": 0.58,
+    "party": 0.57,
+    "relaxed": 0.57,
+    "sad": 0.54
+   },
+   "title": "song 37",
+   "top_genre": "ambient",
+   "top_mood": "happy"
+  },
+  {
+   "album": "Seed 29",
+   "author": "Various Artists",
+   "distance": 0.054,
+   "item_id": "track:song 284 | Various Artists",
+   "mood_vector": {
+    "ambient": 0.522,
+    "instrumental": 0.554,
+    "jazz": 0.547,
+    "oldies": 0.522,
+    "rock": 0.52
+   },
+   "other_features": {
+    "aggressive": 0.56,
+    "danceable": 0.56,
+    "happy": 0.57,
+    "party": 0.55,
+    "relaxed": 0.56,
+    "sad": 0.53
+   },
+   "title": "song 284",
+   "top_genre": "jazz",
+   "top_mood": "happy"
+  }
+ ]
+}

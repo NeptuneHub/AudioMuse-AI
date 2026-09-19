@@ -1,0 +1,260 @@
+{
+ "alchemy: ADD Aria da Capo e Fine, SUBTRACT Figaro overture, temperature 0, 5 songs": [
+  {
+   "distance": 0.079,
+   "item_id": "song 9 | Various Artists"
+  },
+  {
+   "distance": 0.082,
+   "item_id": "song 269 | Various Artists"
+  },
+  {
+   "distance": 0.09,
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka"
+  },
+  {
+   "distance": 0.159,
+   "item_id": "Una furtiva lagrima | Enrico Caruso"
+  }
+ ],
+ "hyperbolic neighbours: Aria da Capo e Fine, similar mode, 5 songs": [
+  {
+   "distance": 0.526,
+   "item_id": "song 269 | Various Artists"
+  },
+  {
+   "distance": 0.535,
+   "item_id": "song 9 | Various Artists"
+  },
+  {
+   "distance": 0.571,
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka"
+  },
+  {
+   "distance": 0.632,
+   "item_id": "song 128 | Various Artists"
+  },
+  {
+   "distance": 0.815,
+   "item_id": "Variatio 2 a 1 Clav. | Kimiko Ishizaka"
+  }
+ ],
+ "library browser: first page of songs": [
+  "Sheridan Square",
+  "Skyscrapers",
+  "Small Note Boogaloo",
+  "Symphony No. 2 in D Major, III. Allegretto grazioso",
+  "Symphony No. 3 in A Minor Scottish, II. Vivace non troppo",
+  "The Marriage of Figaro, Overture",
+  "E lucevan le stelle",
+  "La donna e mobile",
+  "Una furtiva lagrima",
+  "Un week-end avec papy",
+  "Aria da Capo e Fine",
+  "Variatio 1 a 1 Clav.",
+  "Variatio 2 a 1 Clav.",
+  "Variatio 2 a 1 Clav. (Extended)",
+  "What Im sayin (streetmix)",
+  "Pizza",
+  "On the Campus",
+  "The Directorate",
+  "The Thunderer",
+  "song 1",
+  "song 10",
+  "song 100",
+  "song 101",
+  "song 102",
+  "song 103",
+  "song 104",
+  "song 105",
+  "song 106",
+  "song 107",
+  "song 108",
+  "song 109",
+  "song 11",
+  "song 110",
+  "song 111",
+  "song 112",
+  "song 113",
+  "song 114",
+  "song 115",
+  "song 116",
+  "song 117",
+  "song 118",
+  "song 119",
+  "song 12",
+  "song 120",
+  "song 121",
+  "song 122",
+  "song 123",
+  "song 124",
+  "song 125",
+  "song 126",
+  "song 127",
+  "song 128",
+  "song 129",
+  "song 13",
+  "song 130",
+  "song 131",
+  "song 132",
+  "song 133",
+  "song 134",
+  "song 135",
+  "song 136",
+  "song 137",
+  "song 138",
+  "song 139",
+  "song 14",
+  "song 140",
+  "song 141",
+  "song 142",
+  "song 143",
+  "song 144",
+  "song 145",
+  "song 146",
+  "song 147",
+  "song 148",
+  "song 149",
+  "song 15",
+  "song 150",
+  "song 151",
+  "song 152",
+  "song 153",
+  "song 154",
+  "song 155",
+  "song 156",
+  "song 157",
+  "song 158",
+  "song 159",
+  "song 16",
+  "song 160",
+  "song 161",
+  "song 162",
+  "song 163",
+  "song 164",
+  "song 165",
+  "song 166",
+  "song 167",
+  "song 168",
+  "song 169",
+  "song 17",
+  "song 170",
+  "song 171"
+ ],
+ "library browser: search for the start of a Goldberg variation title": [
+  "Aria da Capo e Fine",
+  "Variatio 1 a 1 Clav.",
+  "Variatio 2 a 1 Clav.",
+  "Variatio 2 a 1 Clav. (Extended)"
+ ],
+ "lyrics text search: a line of Missing Person, 6 songs": [
+  {
+   "item_id": "Missing Person | orrisroot",
+   "similarity": 0.654
+  },
+  {
+   "item_id": "What Im sayin (streetmix) | MC Shadow",
+   "similarity": 0.558
+  },
+  {
+   "item_id": "Un week-end avec papy | Frederic Lardon",
+   "similarity": 0.552
+  },
+  {
+   "item_id": "Pizza | U-Man",
+   "similarity": 0.505
+  },
+  {
+   "item_id": "It Came Upon A Midnight Clear | narva9",
+   "similarity": 0.478
+  },
+  {
+   "item_id": "Skyscrapers | Airmen of Note",
+   "similarity": -0.047
+  }
+ ],
+ "path: Figaro overture to the last Airmen of Note clip, 5 steps": [
+  [
+   "The Marriage of Figaro, Overture",
+   "Czech National Symphony Orchestra"
+  ],
+  [
+   "The Thunderer",
+   "United States Marine Band"
+  ],
+  [
+   "On the Campus",
+   "United States Marine Band"
+  ],
+  [
+   "song 125",
+   "Various Artists"
+  ],
+  [
+   "Sheridan Square",
+   "Airmen of Note"
+  ]
+ ],
+ "similar artists: Airmen of Note, 3 artists": [
+  {
+   "artist": "United States Marine Band",
+   "divergence": 0.168
+  },
+  {
+   "artist": "Kimiko Ishizaka",
+   "divergence": 0.283
+  },
+  {
+   "artist": "orrisroot",
+   "divergence": 0.377
+  }
+ ],
+ "similarity: Aria da Capo e Fine, 5 songs, no duplicate elimination, no radius": [
+  {
+   "distance": 0.031,
+   "item_id": "song 9 | Various Artists"
+  },
+  {
+   "distance": 0.032,
+   "item_id": "song 269 | Various Artists"
+  },
+  {
+   "distance": 0.038,
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka"
+  },
+  {
+   "distance": 0.041,
+   "item_id": "song 128 | Various Artists"
+  },
+  {
+   "distance": 0.053,
+   "item_id": "song 274 | Various Artists"
+  }
+ ],
+ "text search: solo piano, 8 songs": [
+  {
+   "item_id": "song 251 | Various Artists",
+   "similarity": 0.489
+  },
+  {
+   "item_id": "song 180 | Various Artists",
+   "similarity": 0.448
+  },
+  {
+   "item_id": "song 108 | Various Artists",
+   "similarity": 0.439
+  },
+  {
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka",
+   "similarity": 0.434
+  },
+  {
+   "item_id": "Aria da Capo e Fine | Kimiko Ishizaka",
+   "similarity": 0.426
+  },
+  {
+   "item_id": "Variatio 2 a 1 Clav. | Kimiko Ishizaka",
+   "similarity": 0.422
+  }
+ ]
+}
