@@ -155,6 +155,7 @@ PICKER_WHERE = (
 OLDER_LAYOUT = 'The neural fingerprint index was built by an older version; the next analysis run rebuilds it.'
 LOAD_FAILED = 'The neural fingerprint index could not be loaded; check the container logs.'
 _AVAILABILITY = AvailabilityCache()
+_STATUS_COUNTS = AvailabilityCache()
 _CANONICAL = {}
 _LOCK = threading.RLock()
 _STATE = {'pack': None, 'building': False, 'error': None, 'gpu': None, 'executor': None}
@@ -735,6 +736,7 @@ def _read_pack(conn):
 def _swap_pack(pack):
     with _LOCK:
         _STATE['pack'] = pack
+        _STATE['error'] = None
     _CELLS.drop(pack.build_id)
     invalidate_availability_cache()
 
@@ -883,6 +885,40 @@ def get_status():
             'cache_mb': _CELLS.resident_mb(),
             'error': _STATE['error'],
         }
+
+
+def get_scoped_status(server_id):
+    """Read one loaded index snapshot without loading models or renewing warmup.
+
+    Counts use the search availability rules, cached per server/build for 30 s
+    and invalidated with mapping changes and pack swaps. Never fall back to the
+    union catalogue if source resolution or availability lookup fails.
+    """
+    if not server_id:
+        raise RuntimeError('A resolved music server is required for index status')
+    with _LOCK:
+        pack = _STATE['pack']
+        building = _STATE['building']
+        error = _STATE['error']
+    if pack is None:
+        if building:
+            return {'state': 'loading', 'indexed_tracks': None}
+        if error:
+            return {'state': 'error', 'indexed_tracks': None}
+        return {'state': 'not_loaded', 'indexed_tracks': None}
+
+    def count_available():
+        if not pack.live_tracks or _mask_unneeded(pack, server_id):
+            return pack.live_tracks
+        from database import get_db
+
+        mask = build_availability_mask(server_id, pack.ids, get_db)
+        if mask is None:
+            raise RuntimeError('Selected-server availability could not be determined')
+        return int(np.count_nonzero(mask))
+
+    count = _STATUS_COUNTS.get(server_id, pack.build_id, count_available)
+    return {'state': 'ready' if count else 'empty', 'indexed_tracks': count}
 
 
 def _db_connection():
@@ -1088,6 +1124,7 @@ def identify(audio, sr, n_results):
 
 def invalidate_availability_cache(server_id=None):
     _AVAILABILITY.invalidate(server_id)
+    _STATUS_COUNTS.invalidate(server_id)
 
 
 def _has_canonical_ids(pack):

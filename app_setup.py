@@ -558,16 +558,9 @@ def model_coverage_level(indexed, eligible):
     return 1 + sum(1 for edge in MODEL_COVERAGE_BANDS if ratio >= edge)
 
 
-def _count_rows(cur, sql):
-    cur.execute(sql)
-    row = cur.fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
-
-
 def model_coverage_levels():
     from database import get_db
-    from tasks.paged_ivf import paged_ivf_item_count
-    from tasks.neural_fingerprint_index import indexed_track_count
+    from tasks.model_coverage import model_coverage_pairs
 
     try:
         db = get_db()
@@ -575,17 +568,11 @@ def model_coverage_levels():
         app.logger.exception('Model coverage could not open the database for the setup wizard')
         return {}
     try:
-        with db.cursor() as cur:
-            total_songs = _count_rows(cur, "SELECT COUNT(*) FROM score")
-            songs_with_lyrics = _count_rows(
-                cur, "SELECT COUNT(*) FROM lyrics_embedding WHERE embedding IS NOT NULL"
-            )
-        pairs = {
-            'musicnn': (paged_ivf_item_count(db, config.INDEX_NAME), total_songs),
-            'clap': (paged_ivf_item_count(db, 'clap_index'), total_songs),
-            'lyrics': (paged_ivf_item_count(db, 'lyrics_index'), songs_with_lyrics),
-            'neural-fingerprint': (indexed_track_count() or 0, total_songs),
-        }
+        pairs = model_coverage_pairs(db)
+        # Preserve the wizard's unloaded-neural empty band; the client API
+        # retains None so unknown coverage is not reported as known zero.
+        count, total = pairs['neural-fingerprint']
+        pairs['neural-fingerprint'] = (count or 0, total)
     except Exception:
         app.logger.exception('Model coverage could not be read for the setup wizard')
         try:
