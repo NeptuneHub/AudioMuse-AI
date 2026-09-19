@@ -1,8 +1,8 @@
 # Multiple Music Servers
 
 AudioMuse-AI can talk to several media servers at once - for example a Navidrome
-plus two Jellyfins plus a Plex, in any combination, including several instances
-of the same type. This is fully backward compatible: an install that only ever
+plus two Jellyfins plus a Plex plus an Ampache, in any combination, including
+several instances of the same type. This is fully backward compatible: an install that only ever
 configures one server behaves exactly as it always has.
 
 ## The model in one picture
@@ -92,7 +92,8 @@ partial and pruning is skipped, so a transient provider error never
 mass-deletes valid mappings. Only map rows are ever removed, never analyzed
 tracks. A server's library filter is honoured by every provider: Jellyfin and
 Emby fetch only the selected libraries, Plex only the selected sections,
-Navidrome only the selected music folders, and Lyrion only the selected paths -
+Navidrome only the selected music folders, Ampache only the selected catalogs,
+and Lyrion only the selected paths -
 so nothing outside the libraries you picked is ever mapped, counted or pruned.
 
 Matching runs in bounded memory even on very large libraries: the fetched
