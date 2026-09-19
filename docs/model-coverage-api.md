@@ -7,10 +7,11 @@ installations. Neither requires an administrator. Responses use
 
 ## GET /api/models
 
-Returns all four setup-wizard models. No parameter means global coverage only.
-Pass `server_id=<id-or-name>` or `server=<id-or-name>` to additionally request local
-coverage. `server` takes precedence; the resolved ID is echoed as `server_id`.
-An explicitly empty or invalid selection returns 400 instead of global data.
+Returns all four setup-wizard models, each with its global coverage and the local
+coverage of one server. Pass `server_id=<id-or-name>` or `server=<id-or-name>` to
+select that server; with no parameter, or an empty one, the default server is
+used, like on the other endpoints. `server` takes precedence; the resolved ID is
+echoed as `server_id`. An unknown selection returns 400.
 
 ```json
 {
@@ -41,9 +42,9 @@ Each coverage object contains:
   stale index can have a count above total after cleaning; its percentage is
   capped, without hiding the actual index count.
 
-`server_id` and every `local` object are omitted when no server is requested.
-Local counts apply the same canonical mapping and legacy-default rules as search;
-a server with no indexed tracks never inherits the global count.
+`server_id` and every `local` object are omitted only when no music server is
+configured. Local counts apply the same canonical mapping and legacy-default
+rules as search; a server with no indexed tracks never inherits the global count.
 
 Global MusiCNN/DCLAP/Lyrics counts reuse the compact persisted IVF directory
 header counts already used by the setup wizard. Global neural coverage uses the
@@ -51,9 +52,11 @@ resident fingerprint pack; if unloaded it remains unknown. Local paged-IVF check
 read only directory IDs and source mappings, not embedding/cell blobs, and do not
 construct a search index or initialize a model. Scalar counts are cached for up
 to 30 seconds, invalidated on source-mapping changes and index replacement.
-Local neural coverage reuses the source-scoped resident-index status; loading,
-failed or unloaded indexes report unknown counts. Coverage is a snapshot, not a
-guarantee of successful inference or media-server playback.
+Local neural coverage reuses the source-scoped resident-index status. A loaded
+index always reports its count, even while a newer build is loading or after an
+earlier load failed; only with no index loaded (loading, failed or not loaded
+yet) is the count unknown. Coverage is a snapshot, not a guarantee of successful
+inference or media-server playback.
 
 The endpoint contains no version fields or recording limits. Disabled/unknown
 models still return 200. Authentication/setup errors retain 401/403. Unexpected

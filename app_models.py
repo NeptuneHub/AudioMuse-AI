@@ -6,7 +6,7 @@
 
 Main Features:
 * Returns enablement and global counts/percentages for all setup-wizard models.
-* Includes local coverage only when a server is explicitly supplied.
+* Includes local coverage of the selected server, the default when none is passed.
 * Keeps version reporting separate and avoids model warmup side effects.
 """
 
@@ -16,7 +16,7 @@ from flask import Blueprint, jsonify, request
 
 import app_server_context
 from error.error_dictionary import ERR_INVALID_REQUEST, ERR_SEARCH_FAILED
-from error.responses import json_error, json_exception
+from error.responses import json_exception
 from tasks.model_coverage import get_model_coverage
 
 logger = logging.getLogger(__name__)
@@ -37,11 +37,13 @@ def models_api():
     ---
     tags:
       - Models
-    summary: Global and optional server-local model coverage.
+    summary: Global and server-local model coverage.
     description: |
       Returns musicnn (MusiCNN), clap (DCLAP), lyrics and neural-fingerprint.
-      Each model has enabled and global coverage; local coverage and server_id
-      appear only when server or server_id is supplied. Counts describe indexed
+      Each model has enabled, global coverage and the local coverage of one
+      server: the one selected with server or server_id, or the default server
+      when none is supplied. The resolved id is echoed as server_id. Both are
+      absent only when no music server is configured. Counts describe indexed
       tracks; percentage uses the whole relevant catalogue, including for Lyrics.
       Unknown counts/percentages are null. Empty catalogues have zero percent.
       Does not load models or search indexes. See docs/model-coverage-api.md.
@@ -51,7 +53,7 @@ def models_api():
         required: false
         schema:
           type: string
-        description: Server ID or name. Omission returns global coverage only.
+        description: Server ID or name. Omitted or empty selects the default server.
       - name: server
         in: query
         required: false
@@ -111,7 +113,7 @@ def models_api():
                             maximum: 100
                             nullable: true
       400:
-        description: Invalid or empty explicit server selection.
+        description: Unknown server selection.
       401:
         description: Authentication required under the existing policy.
       403:
@@ -121,11 +123,9 @@ def models_api():
     """
     try:
         try:
-            server_id = app_server_context.resolve_request_server_id()
-            if server_id is None and any(key in request.args for key in ('server', 'server_id')):
-                return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
+            server_id, is_default = app_server_context.selected_server_scope()
         except ValueError as exc:
             return json_exception(exc, ERR_INVALID_REQUEST)
-        return jsonify(get_model_coverage(server_id))
+        return jsonify(get_model_coverage(server_id, include_legacy=is_default))
     except Exception as exc:
         return json_exception(exc, ERR_SEARCH_FAILED, 'Could not determine model coverage.')

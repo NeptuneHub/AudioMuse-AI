@@ -7,7 +7,7 @@
 Main Features:
 * Reuses directory-header counts and the resident neural fingerprint pack.
 * Keeps wizard eligibility denominators while API percentages use the catalogue.
-* Adds explicit-server coverage without loading encoders or search indexes.
+* Adds the selected server's coverage without loading encoders or search indexes.
 """
 
 import config
@@ -49,8 +49,8 @@ def _coverage(count, total):
     }
 
 
-def get_model_coverage(server_id=None):
-    """All four models; local coverage is present only for an explicit source."""
+def get_model_coverage(server_id=None, include_legacy=False):
+    """All four models; local coverage is present whenever a server is resolved."""
     from database import get_db
     from tasks.mediaserver import registry
     from tasks.neural_fingerprint_index import get_scoped_status
@@ -72,7 +72,6 @@ def get_model_coverage(server_id=None):
         }
         result = {'models': models}
         if server_id is not None:
-            include_legacy = server_id == registry.get_default_server_id()
             with db.cursor() as cur:
                 local_total = _count_rows(
                     cur, 'SELECT COUNT(*) FROM score s WHERE ' + registry.availability_sql('s'),

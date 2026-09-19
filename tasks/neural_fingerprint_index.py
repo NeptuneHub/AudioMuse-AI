@@ -736,6 +736,7 @@ def _read_pack(conn):
 def _swap_pack(pack):
     with _LOCK:
         _STATE['pack'] = pack
+        _STATE['error'] = None
     _CELLS.drop(pack.build_id)
     invalidate_availability_cache()
 
@@ -899,11 +900,11 @@ def get_scoped_status(server_id):
         pack = _STATE['pack']
         building = _STATE['building']
         error = _STATE['error']
-    if building:
-        return {'state': 'loading', 'indexed_tracks': None}
-    if error:
-        return {'state': 'error', 'indexed_tracks': None}
     if pack is None:
+        if building:
+            return {'state': 'loading', 'indexed_tracks': None}
+        if error:
+            return {'state': 'error', 'indexed_tracks': None}
         return {'state': 'not_loaded', 'indexed_tracks': None}
 
     def count_available():

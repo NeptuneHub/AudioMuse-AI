@@ -6,6 +6,7 @@
 
 Main Features:
 * Verifies global header counts and local directory/mapping intersections.
+* Checks that no server parameter answers for the default server.
 * Checks legacy default IDs, lyrics percentages and empty secondary sources.
 * Uses only the shared disposable test database and an isolated schema.
 """
@@ -63,10 +64,13 @@ def test_global_and_local_model_coverage(shared_pg_dsn, monkeypatch):
         app = Flask(__name__)
         app.register_blueprint(app_models.models_bp)
         client = app.test_client()
-        global_result = client.get('/api/models')
-        assert global_result.status_code == 200
-        assert set(global_result.json) == {'models'}
-        assert global_result.json['models']['lyrics']['global'] == {'count': 1, 'total': 4, 'percentage': 25.0}
+        default_result = client.get('/api/models')
+        assert default_result.status_code == 200
+        assert set(default_result.json) == {'models', 'server_id'}
+        assert default_result.json['server_id'] == 'primary'
+        assert default_result.json['models']['lyrics']['global'] == {'count': 1, 'total': 4, 'percentage': 25.0}
+        assert default_result.json['models']['musicnn']['local'] == {'count': 2, 'total': 2, 'percentage': 100.0}
+        assert client.get('/api/models?server_id=').json == default_result.json
         primary = client.get('/api/models?server_id=primary').json['models']
         assert primary['musicnn']['local'] == {'count': 2, 'total': 2, 'percentage': 100.0}
         assert primary['clap']['local']['count'] == 0

@@ -6,6 +6,7 @@
 
 Main Features:
 * Checks all four models, effective enablement and global/local percentages.
+* Checks the default-server fallback and that a loaded pack outlives a stale error.
 * Exercises source masks and paged directory decoding without model warmup.
 * Verifies auth, setup, version isolation, unknown counts and cache invalidation.
 """
@@ -33,6 +34,8 @@ from tasks.mediaserver import registry
 
 URL = '/api/models'
 SECRET = 'model-coverage-unit-secret-at-least-32-bytes'
+REAL_ENSURE_LOADED = nfi.ensure_loaded
+REAL_RELOAD_FROM_DB = nfi.reload_from_db
 
 
 @pytest.fixture
@@ -138,15 +141,29 @@ def client(environment):
     return app.test_client()
 
 
-def test_global_only_contract_uses_whole_catalogue_even_for_lyrics(client, environment):
+def test_default_server_contract_uses_whole_catalogue_even_for_lyrics(client, environment):
     response = client.get(URL)
     assert response.status_code == 200
     assert response.headers['Cache-Control'] == 'no-store'
-    assert set(response.json) == {'models'}
+    assert set(response.json) == {'models', 'server_id'}
+    assert response.json['server_id'] == 'primary'
     models = response.json['models']
     assert set(models) == {'musicnn', 'clap', 'lyrics', 'neural-fingerprint'}
+    for model, count, local in (('musicnn', 3, 2), ('clap', 2, 1), ('lyrics', 1, 1), ('neural-fingerprint', 3, 2)):
+        assert models[model] == {
+            'enabled': True,
+            'global': {'count': count, 'total': 4, 'percentage': count * 25.0},
+            'local': {'count': local, 'total': 2, 'percentage': local * 50.0},
+        }
+
+
+def test_no_configured_server_returns_global_only(client, environment, monkeypatch):
+    monkeypatch.setattr(registry, 'get_default_server_id', lambda: None)
+    response = client.get(URL)
+    assert response.status_code == 200
+    assert set(response.json) == {'models'}
     for model, count in (('musicnn', 3), ('clap', 2), ('lyrics', 1), ('neural-fingerprint', 3)):
-        assert models[model] == {'enabled': True, 'global': {'count': count, 'total': 4, 'percentage': count * 25.0}}
+        assert response.json['models'][model] == {'enabled': True, 'global': {'count': count, 'total': 4, 'percentage': count * 25.0}}
     environment.loader.assert_not_called()
 
 
@@ -200,20 +217,61 @@ def test_model_files_availability_split_is_preserved(environment, monkeypatch, e
     assert nf.is_available() is (enabled and missing is None)
 
 
-@pytest.mark.parametrize('loaded,building,error,expected', [
-    (False, False, None, 'not_loaded'), (False, True, None, 'loading'),
-    (True, True, None, 'loading'), (False, False, 'secret', 'error'),
-    (True, False, 'secret', 'error'),
+@pytest.mark.parametrize('building,error,expected', [
+    (False, None, 'not_loaded'), (True, None, 'loading'),
+    (False, 'secret', 'error'), (True, 'secret', 'loading'),
 ])
-def test_neural_unknown_coverage_stays_null(client, environment, loaded, building, error, expected):
-    environment.state.update(pack=environment.pack if loaded else None, building=building, error=error)
+def test_neural_unknown_coverage_stays_null(client, environment, building, error, expected):
+    environment.state.update(pack=None, building=building, error=error)
     response = client.get(URL + '?server_id=primary')
     assert response.status_code == 200
     assert response.json['models']['neural-fingerprint']['local'] == {'count': None, 'total': 2, 'percentage': None}
-    assert nfi.get_scoped_status('primary')['state'] == expected
+    assert response.json['models']['neural-fingerprint']['global']['count'] is None
+    assert nfi.get_scoped_status('primary') == {'state': expected, 'indexed_tracks': None}
     assert 'secret' not in response.text
-    if not loaded:
-        assert response.json['models']['neural-fingerprint']['global']['count'] is None
+
+
+@pytest.mark.parametrize('building,error', [(True, None), (False, 'secret'), (True, 'secret')])
+def test_loaded_neural_pack_wins_over_building_and_error(client, environment, building, error):
+    environment.state.update(pack=environment.pack, building=building, error=error)
+    response = client.get(URL + '?server_id=primary')
+    assert response.status_code == 200
+    assert response.json['models']['neural-fingerprint']['local'] == {'count': 2, 'total': 2, 'percentage': 100.0}
+    assert response.json['models']['neural-fingerprint']['global']['count'] == 3
+    assert nfi.get_scoped_status('primary') == {'state': 'ready', 'indexed_tracks': 2}
+    assert 'secret' not in response.text
+
+
+def test_reload_after_a_failed_startup_load_clears_the_stale_error(client, environment, monkeypatch):
+    import database
+
+    stored = {'build_id': None}
+    environment.state.update(pack=None, building=False, error=None)
+    monkeypatch.setattr(database, 'connect_raw', lambda **kwargs: MagicMock())
+    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: stored['build_id'])
+    monkeypatch.setattr(nfi, '_load_directory', lambda conn: 'directory')
+    monkeypatch.setattr(nfi, '_current_layout', lambda directory, build_id: build_id)
+    monkeypatch.setattr(nfi, '_pack_from', lambda build_id: SimpleNamespace(
+        build_id=build_id, ids=environment.pack.ids, live_tracks=3, n_cells=1, parts=1,
+    ))
+    with pytest.raises(nfi.IndexUnavailable):
+        REAL_ENSURE_LOADED()
+    assert environment.state['pack'] is None
+    assert environment.state['building'] is False
+    assert 'built yet' in environment.state['error']
+    assert nfi.get_scoped_status('primary') == {'state': 'error', 'indexed_tracks': None}
+    before = client.get(URL + '?server_id=primary').json['models']['neural-fingerprint']
+    assert before['global']['count'] is None
+    assert before['local'] == {'count': None, 'total': 2, 'percentage': None}
+    stored['build_id'] = 'build-2'
+    assert REAL_RELOAD_FROM_DB() is True
+    assert environment.state['pack'].build_id == 'build-2'
+    assert environment.state['error'] is None
+    assert nfi.get_status()['error'] is None
+    assert nfi.get_scoped_status('primary') == {'state': 'ready', 'indexed_tracks': 2}
+    after = client.get(URL + '?server_id=primary').json['models']['neural-fingerprint']
+    assert after['global'] == {'count': 3, 'total': 4, 'percentage': 75.0}
+    assert after['local'] == {'count': 2, 'total': 2, 'percentage': 100.0}
 
 
 def test_unknown_global_index_is_not_zero(client, monkeypatch):
@@ -260,10 +318,18 @@ def test_lookup_failure_is_sanitized(client, environment):
     environment.db.rollback.assert_called_once()
 
 
+@pytest.mark.parametrize('query', ['?server=', '?server_id=', '?server=&server_id='])
+def test_empty_scope_falls_back_to_the_default_server(client, query):
+    response = client.get(URL + query)
+    assert response.status_code == 200
+    assert response.json['server_id'] == 'primary'
+    assert response.json['models']['musicnn']['local'] == {'count': 2, 'total': 2, 'percentage': 100.0}
+    assert response.headers['Cache-Control'] == 'no-store'
+
+
 @pytest.mark.parametrize('query,code', [
     ('?server_id=unknown', 1010),
-    ('?server=', 1003),
-    ('?server_id=', 1003),
+    ('?server=unknown', 1010),
 ])
 def test_invalid_scope(client, query, code):
     response = client.get(URL + query)
