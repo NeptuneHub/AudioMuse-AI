@@ -46,7 +46,7 @@ def models_api():
       absent only when no music server is configured. Counts describe indexed
       tracks; percentage uses the whole relevant catalogue, including for Lyrics.
       Unknown counts/percentages are null. Empty catalogues have zero percent.
-      Does not load models or search indexes. See docs/model-coverage-api.md.
+      Does not load models or search indexes.
     parameters:
       - name: server_id
         in: query
