@@ -41,7 +41,8 @@ def test_search_finds_a_clip(stack, api, library, analyzed_library):
     ids = {r['item_id'] for r in results}
     assert library.pid('B01') in ids, results
     for row in results:
-        assert row.get('title') and 'author' in row
+        assert row.get('title')
+        assert 'author' in row
 
 
 def test_similar_tracks_ranking(stack, api, library, analyzed_library):
@@ -54,14 +55,16 @@ def test_similar_tracks_ranking(stack, api, library, analyzed_library):
     assert all(isinstance(d, (int, float)) and d >= 0 for d in distances), distances
     assert distances[0] == min(distances), distances
     for row in results:
-        assert row.get('title') and 'author' in row
+        assert row.get('title')
+        assert 'author' in row
     track = library.track('B01')
     by_title = api.json(
         'GET',
         '/api/similar_tracks?n=5&title=' + urllib.parse.quote(track.title)
         + '&artist=' + urllib.parse.quote(track.artist),
     )
-    assert by_title and by_title[0]['item_id'] == results[0]['item_id']
+    assert by_title
+    assert by_title[0]['item_id'] == results[0]['item_id']
     capped = api.json('GET', f'/api/similar_tracks?item_id={seed}&n=12&eliminate_duplicates=true')
     per_author = {}
     for row in capped:
@@ -81,11 +84,13 @@ def test_similar_tracks_validation(stack, api, library, analyzed_library):
 
 def test_mood_centroids_and_max_distance(stack, api, library, analyzed_library):
     centroids = api.json('GET', '/api/mood_centroids')
-    assert isinstance(centroids, dict) and centroids
+    assert isinstance(centroids, dict)
+    assert centroids
     mood = next(iter(centroids))
     by_mood = api.json('GET', f'/api/similar_tracks?mood={urllib.parse.quote(mood)}&centroid_index=0&n=3')
     assert_no_fp_ids(by_mood)
-    assert isinstance(by_mood, list) and by_mood
+    assert isinstance(by_mood, list)
+    assert by_mood
     farthest = api.json('GET', f'/api/max_distance?item_id={library.pid("B01")}')
     assert_no_fp_ids(farthest)
     assert farthest['max_distance'] > 0
@@ -101,7 +106,8 @@ def test_create_playlist_on_navidrome(stack, api, db, library, navidrome, analyz
     created = create_playlist(api, name, ids)
     try:
         assert created['playlist_id']
-        assert created['mapped'] == len(ids) and created['skipped'] == 0, created
+        assert created['mapped'] == len(ids), created
+        assert created['skipped'] == 0, created
         remote = navidrome.playlist(created['playlist_id'])
         assert remote['name'].startswith(name), remote['name']
         assert navidrome.playlist_entry_ids(created['playlist_id']) == ids

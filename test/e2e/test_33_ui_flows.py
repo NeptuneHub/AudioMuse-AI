@@ -120,7 +120,8 @@ def flow(browser, page_base_url, request):
 
 def _open(page, path, ready):
     response = page.goto(path, wait_until='domcontentloaded')
-    assert response is not None and response.ok, f'{path}: {response and response.status}'
+    assert response is not None, f'{path}: {response and response.status}'
+    assert response.ok, f'{path}: {response and response.status}'
     page.locator(ready).first.wait_for(state='attached', timeout=PICK_TIMEOUT_MS)
 
 
@@ -171,9 +172,7 @@ def _clean(problems, where):
     assert not problems, f'{where}:\n' + '\n'.join(problems)
 
 
-def test_similar_songs_and_playlist(flow, lib, ui_golden, request):
-    page, problems = flow
-    seed = lib.track('A03')
+def _similar_songs(page, seed):
     _open(page, '/similarity', '#similarity-form')
     _pick(page, page.locator('#search_query'), page.locator('#autocomplete-results .autocomplete-item'), seed.title)
     assert page.locator('#selected_item_id').input_value(), 'the suggestion did not select a track'
@@ -183,22 +182,35 @@ def test_similar_songs_and_playlist(flow, lib, ui_golden, request):
     answer = _submit(page, '#similarity-form button[type=submit]', '/api/similar_tracks', 'GET')
     shown = _shown(page, '#results-table-wrapper', len(answer))
     assert shown == _pairs(answer), (shown, _pairs(answer))
-    assert len(shown) == 5 and [seed.title, seed.artist] not in shown
+    return shown
+
+
+def test_similar_songs(flow, lib, ui_golden):
+    page, problems = flow
+    seed = lib.track('A03')
+    shown = _similar_songs(page, seed)
+    assert len(shown) == 5
+    assert [seed.title, seed.artist] not in shown
     ui_golden.check('similarity: Aria da Capo e Fine, 5 songs, no duplicate elimination, no radius', shown)
-    if not os.environ.get(ATTACH_ENV, '').strip():
-        navidrome = request.getfixturevalue('navidrome')
+    _clean(problems, '/similarity')
+
+
+@pytest.mark.skipif(bool(os.environ.get(ATTACH_ENV, '').strip()), reason='needs the harness Navidrome client, absent when attached to a held stack')
+def test_playlist_created_from_the_similarity_page(flow, lib, navidrome):
+    page, problems = flow
+    shown = _similar_songs(page, lib.track('A03'))
+    navidrome.delete_playlists_named(lambda candidate: candidate.startswith(UI_PLAYLIST_PREFIX))
+    name = unique_name(UI_PLAYLIST_STEM)
+    page.fill('#playlist_name', name)
+    created = _submit(page, '#playlist-form button[type=submit]', '/api/create_playlist', 'POST')
+    try:
+        assert created.get('playlist_id'), created
+        made = [p for p in navidrome.playlists() if (p.get('name') or '').startswith(name)]
+        assert len(made) == 1, [p.get('name') for p in navidrome.playlists()]
+        entries = navidrome.playlist_entry_ids(made[0]['id'])
+        assert len(entries) >= len(shown), (len(entries), len(shown))
+    finally:
         navidrome.delete_playlists_named(lambda candidate: candidate.startswith(UI_PLAYLIST_PREFIX))
-        name = unique_name(UI_PLAYLIST_STEM)
-        page.fill('#playlist_name', name)
-        created = _submit(page, '#playlist-form button[type=submit]', '/api/create_playlist', 'POST')
-        try:
-            assert created.get('playlist_id'), created
-            made = [p for p in navidrome.playlists() if (p.get('name') or '').startswith(name)]
-            assert len(made) == 1, [p.get('name') for p in navidrome.playlists()]
-            entries = navidrome.playlist_entry_ids(made[0]['id'])
-            assert len(entries) >= len(shown), (len(entries), len(shown))
-        finally:
-            navidrome.delete_playlists_named(lambda candidate: candidate.startswith(UI_PLAYLIST_PREFIX))
     _clean(problems, '/similarity')
 
 
@@ -208,13 +220,15 @@ def test_song_path(flow, lib, ui_golden):
     _open(page, '/path', '#path-form')
     _pick(page, page.locator('#start_search'), page.locator('#start-autocomplete-results .autocomplete-item'), start.title)
     _pick(page, page.locator('#end_search'), page.locator('#end-autocomplete-results .autocomplete-item'), end.title)
-    assert page.locator('#start_song_id').input_value() and page.locator('#end_song_id').input_value()
+    assert page.locator('#start_song_id').input_value()
+    assert page.locator('#end_song_id').input_value()
     page.fill('#max_steps', '5')
     answer = _submit(page, '#path-form button[type=submit]', '/api/find_path', 'GET')
     path = answer['path']
     shown = _shown(page, '#results-table-wrapper', len(path))
     assert shown == _pairs(path), (shown, _pairs(path))
-    assert shown[0] == [start.title, start.artist] and shown[-1] == [end.title, end.artist], shown
+    assert shown[0] == [start.title, start.artist], shown
+    assert shown[-1] == [end.title, end.artist], shown
     ui_golden.check('path: Figaro overture to the last Airmen of Note clip, 5 steps', shown)
     _clean(problems, '/path')
 
@@ -292,7 +306,8 @@ def test_similar_artists(flow, lib, ui_golden, api_golden):
         page.wait_for_timeout(200)
     shown = [rows.nth(i).locator('td').first.inner_text().strip() for i in range(rows.count())]
     assert shown == names, (shown, names)
-    assert artist not in shown and 1 <= len(shown) <= 3
+    assert artist not in shown
+    assert 1 <= len(shown) <= 3
     recorded = api_golden.get('similar_artists E n3')
     assert recorded is None or shown == [row.get('artist') for row in recorded], (shown, recorded)
     ui_golden.check('similar artists: Airmen of Note, 3 artists', shown)
@@ -356,6 +371,7 @@ def test_library_browser_and_its_search(flow, lib, ui_golden):
         page.wait_for_timeout(200)
     filtered = [rows.nth(i).locator('td').nth(1).inner_text().strip() for i in range(rows.count())]
     assert filtered == [row.get('title') for row in found], filtered
-    assert wanted.title in filtered and len(filtered) < len(titles), filtered
+    assert wanted.title in filtered, filtered
+    assert len(filtered) < len(titles), filtered
     ui_golden.check('library browser: search for the start of a Goldberg variation title', filtered)
     _clean(problems, '/browse')

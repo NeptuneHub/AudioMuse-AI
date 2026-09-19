@@ -60,7 +60,8 @@ def test_clip_identifies_its_track(stack, api, library, probe_clip):
     assert_no_fp_ids(body)
     assert abs(body['clip_seconds'] - probe['length_s']) < 0.5, body['clip_seconds']
     results = body['results']
-    assert results and body['count'] == len(results)
+    assert results
+    assert body['count'] == len(results)
     best = results[0]
     assert best['item_id'] == library.pid(probe['key']), results
     assert best['identified'] is True, best
@@ -88,4 +89,5 @@ def test_unusable_inputs(stack, api, probe_clip):
 def test_warmup_reports_models(stack, api, analyzed_library):
     body = api.json('POST', '/api/recording_search/warmup', timeout=300)
     assert body['loaded'] is True, body
-    assert body['models']['neural'] is True and body['models']['encoder'] is True, body
+    assert body['models']['neural'] is True, body
+    assert body['models']['encoder'] is True, body

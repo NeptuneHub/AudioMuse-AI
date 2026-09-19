@@ -67,7 +67,9 @@ def test_dashboard_sees_idle_workers(api):
     backlog = summary['queue_backlog']
     assert sorted(q['queue_name'] for q in backlog) == ['default', 'high'], backlog
     for entry in backlog:
-        assert entry['pending_count'] == 0 and entry['running_count'] == 0 and entry['delayed_count'] == 0, backlog
+        assert entry['pending_count'] == 0, backlog
+        assert entry['running_count'] == 0, backlog
+        assert entry['delayed_count'] == 0, backlog
 
 
 def test_read_endpoints_answer_empty(api):

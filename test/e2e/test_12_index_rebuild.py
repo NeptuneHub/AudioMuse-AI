@@ -62,7 +62,8 @@ def test_map_and_hyperbolic_ready(stack, api, library, analyzed_library):
 
 def test_coverage_bands_are_full(stack, api, analyzed_library):
     coverage = api.json('GET', '/api/setup')['model_coverage']
-    assert coverage and all(band == TOP_COVERAGE_BAND for band in coverage.values()), coverage
+    assert coverage, coverage
+    assert all(band == TOP_COVERAGE_BAND for band in coverage.values()), coverage
 
 
 def test_cache_refresh_keeps_counts(stack, api, library, analyzed_library):

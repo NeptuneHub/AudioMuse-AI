@@ -60,10 +60,17 @@ def test_score_rows(stack, db, library, analyzed_library):
     assert len(catalogue) == stack.catalogue_rows
     for item_id, title, author, album_artist, tempo, key, scale, energy, mood_vector, other_features, duration in catalogue:
         assert ITEM_ID_RE.match(item_id), item_id
-        assert title and author and album_artist
-        assert tempo and key and scale and energy is not None and duration, (title, tempo, key, scale, energy, duration)
+        assert title
+        assert author
+        assert album_artist
+        assert tempo, (title, tempo, key, scale, energy, duration)
+        assert key, (title, tempo, key, scale, energy, duration)
+        assert scale, (title, tempo, key, scale, energy, duration)
+        assert energy is not None, (title, tempo, key, scale, energy, duration)
+        assert duration, (title, tempo, key, scale, energy, duration)
         assert len(mood_vector.split(',')) == 5, mood_vector
-        assert other_features and 'danceable:' in other_features, other_features
+        assert other_features, other_features
+        assert 'danceable:' in other_features, other_features
     titles = {r[1] for r in catalogue}
     for key in library.clip_keys():
         assert library.track(key).title in titles, key

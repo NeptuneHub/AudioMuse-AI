@@ -53,7 +53,8 @@ def _clean(api, clean_catalogue):
 def test_cleaning_unbinds_then_deletes_and_reanalysis_restores(stack, api, db, library, removed_files, golden):
     pid = library.pid(REMOVED_CLIP)
     fp_before = item_id_of(db, pid)
-    assert fp_before and fp_before.startswith('fp_')
+    assert fp_before
+    assert fp_before.startswith('fp_')
     exclusions_before = scalar(db, 'SELECT count(*) FROM analysis_exclusions')
     assert exclusions_before == len(library.unanalyzable)
 

@@ -83,7 +83,8 @@ def _assert_run(final, db, navidrome):
     details = final['details']
     assert isinstance(details.get('best_score'), (int, float)), details
     created = details.get('num_playlists_created')
-    assert isinstance(created, int) and 1 <= created <= MAX_PLAYLISTS, details
+    assert isinstance(created, int), details
+    assert 1 <= created <= MAX_PLAYLISTS, details
     playlists = _db_playlists(db)
     assert len(playlists) == created, (created, list(playlists))
     assert all(name.endswith(SUFFIX) for name in playlists), list(playlists)
@@ -95,7 +96,8 @@ def _assert_run(final, db, navidrome):
     provider_ids = {r[0] for r in rows(db, 'SELECT provider_track_id FROM track_server_map')}
     for name, playlist_id in remote.items():
         entries = navidrome.playlist_entry_ids(playlist_id)
-        assert entries and set(entries) <= provider_ids, (name, entries)
+        assert entries, (name, entries)
+        assert set(entries) <= provider_ids, (name, entries)
     return playlists
 
 
@@ -116,8 +118,10 @@ def test_playlists_listing(stack, api, db, analyzed_library):
     assert_no_fp_ids(body)
     assert body.get('multi_server') is False
     servers = body['servers']
-    assert len(servers) == 1 and servers[0]['is_default'] is True
+    assert len(servers) == 1
+    assert servers[0]['is_default'] is True
     listed = servers[0]['playlists']
     assert set(listed) == set(_db_playlists(db)), (set(listed), set(_db_playlists(db)))
     for tracks in listed.values():
-        assert tracks and all(t.get('item_id') and 'title' in t for t in tracks)
+        assert tracks
+        assert all(t.get('item_id') and 'title' in t for t in tracks)

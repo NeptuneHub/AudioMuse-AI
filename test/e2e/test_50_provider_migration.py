@@ -72,7 +72,8 @@ def _migrate(stack, api, db, target, expected_rows, golden, label):
     selected = api.json('POST', '/api/migration/libraries/select', json={'session_id': session_id, 'libraries': None})
     assert selected['ok'] is True
     planner = api.json('POST', '/api/migration/dry-run', json={'session_id': session_id})
-    assert planner.get('async') is True and planner['task_id']
+    assert planner.get('async') is True
+    assert planner['task_id']
     planned = _wait_status(api, planner['task_id'], PLANNER_TIMEOUT)
     assert planned['status'] == 'SUCCESS', planned
     report = api.get(f'/api/migration/dry-run-report/{session_id}')
@@ -83,7 +84,8 @@ def _migrate(stack, api, db, target, expected_rows, golden, label):
     final = api.json('POST', '/api/migration/finalize-dry-run', json={'session_id': session_id})
     golden.check(f'finalize dry run {label}', final)
     assert final['matched'] == expected_rows, final
-    assert final['orphans'] == 0 and final['collisions'] == 0, final
+    assert final['orphans'] == 0, final
+    assert final['collisions'] == 0, final
     refused = api.post('/api/migration/execute', json={'session_id': session_id, 'backup_confirmed': True, 'confirmation_text': 'nope'})
     assert refused.status_code == 400, refused.text
     unconfirmed = api.post('/api/migration/execute', json={'session_id': session_id, 'backup_confirmed': False, 'confirmation_text': CONFIRMATION})

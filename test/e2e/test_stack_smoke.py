@@ -33,13 +33,15 @@ pytestmark = pytest.mark.e2e
 def test_flask_answers_health_and_config(stack, api):
     assert api.health()
     config = api.json('GET', '/api/config')
-    assert isinstance(config, dict) and config
+    assert isinstance(config, dict)
+    assert config
 
 
 def test_default_server_seeded_from_env(stack, db):
     servers = rows(db, 'SELECT server_type, is_default, name FROM music_servers')
     assert len(servers) == 1, servers
-    assert servers[0][0] == 'navidrome' and servers[0][1] is True
+    assert servers[0][0] == 'navidrome'
+    assert servers[0][1] is True
 
 
 def test_navidrome_serves_the_manifest(stack, navidrome, library):

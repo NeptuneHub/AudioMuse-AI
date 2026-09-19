@@ -34,7 +34,8 @@ def test_stream_copy_is_the_same_recording(stack, db, library, analyzed_library)
             continue
         original = item_id_of(db, library.pid(spec['of']))
         copy = item_id_of(db, library.pid(copy_key))
-        assert original and original == copy, (copy_key, original, copy)
+        assert original, (copy_key, original, copy)
+        assert original == copy, (copy_key, original, copy)
         assert sorted(provider_ids_for(db, original)) == sorted([library.pid(spec['of']), library.pid(copy_key)])
 
 
@@ -44,7 +45,9 @@ def test_padded_copy_is_a_separate_row(stack, db, library, analyzed_library):
             continue
         original = item_id_of(db, library.pid(spec['of']))
         copy = item_id_of(db, library.pid(copy_key))
-        assert original and copy and original != copy, (copy_key, original, copy)
+        assert original, (copy_key, original, copy)
+        assert copy, (copy_key, original, copy)
+        assert original != copy, (copy_key, original, copy)
         durations = dict(rows(db, 'SELECT item_id, duration FROM score WHERE item_id = ANY(%s)', ([original, copy],)))
         assert durations[copy] - durations[original] >= spec['extra_seconds'] - 0.5, durations
 

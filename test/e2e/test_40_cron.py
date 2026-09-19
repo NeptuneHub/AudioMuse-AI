@@ -85,10 +85,12 @@ def test_upsert_by_type_and_rename_by_id(stack, api, db, disable_all_rows):
     after = rows(db, "SELECT count(*) FROM cron WHERE task_type = 'analysis'")[0][0]
     assert before == after == 1
     entry = _by_type(api)['analysis']
-    assert entry['name'] == 'e2e second' and entry['cron_expr'] == '30 4 * * *'
+    assert entry['name'] == 'e2e second'
+    assert entry['cron_expr'] == '30 4 * * *'
     _save(api, 'analysis', 'e2e renamed', NIGHTLY, False, row_id=entry['id'])
     renamed = _by_type(api)['analysis']
-    assert renamed['id'] == entry['id'] and renamed['name'] == 'e2e renamed'
+    assert renamed['id'] == entry['id']
+    assert renamed['name'] == 'e2e renamed'
 
 
 def test_validation(stack, api, disable_all_rows):
@@ -123,7 +125,8 @@ def test_one_tick_runs_the_radio_and_the_sonic_fingerprint(stack, api, db, libra
         _save(api, 'sonic_fingerprint', 'e2e sonic tick', NIGHTLY, False, row_id=entries['sonic_fingerprint']['id'])
         api.wait_idle(300)
         sonic_rows = rows(db, "SELECT status FROM task_status WHERE task_type = 'sonic_fingerprint' ORDER BY timestamp DESC LIMIT 1")
-        assert sonic_rows and sonic_rows[0][0] == 'SUCCESS', sonic_rows
+        assert sonic_rows, sonic_rows
+        assert sonic_rows[0][0] == 'SUCCESS', sonic_rows
         radio_playlist = navidrome.playlist_by_name(anchor_name)
         assert radio_playlist is not None, [p.get('name') for p in navidrome.playlists()]
         assert 1 <= len(navidrome.playlist_entry_ids(radio_playlist['id'])) <= 5

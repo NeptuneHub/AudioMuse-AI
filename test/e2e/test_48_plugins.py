@@ -31,7 +31,8 @@ def test_installed_list_is_empty(stack, api):
 
 def test_repositories_have_a_default(stack, api):
     body = api.json('GET', '/api/plugins/repos')
-    assert isinstance(body.get('repos'), list) and body['repos']
+    assert isinstance(body.get('repos'), list)
+    assert body['repos']
     assert body.get('default')
 
 

@@ -123,7 +123,8 @@ def smoke_page(browser, page_base_url, artifact_dir, request):
 def test_page_renders_without_errors(smoke_page, path, selector, viewport):
     page, problems = smoke_page
     response = page.goto(path, wait_until='domcontentloaded')
-    assert response is not None and response.ok, f'{path}: {response and response.status}'
+    assert response is not None, f'{path}: {response and response.status}'
+    assert response.ok, f'{path}: {response and response.status}'
     page.locator(selector).first.wait_for(state='attached', timeout=SELECTOR_TIMEOUT_MS)
     page.locator('#sidebar').first.wait_for(state='attached', timeout=SELECTOR_TIMEOUT_MS)
     page.wait_for_timeout(SETTLE_MS)

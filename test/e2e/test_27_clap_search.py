@@ -42,7 +42,8 @@ def test_semantic_query_ranks_piano(stack, api, library, analyzed_library):
     assert_no_fp_ids(body)
     assert body['query'] == probe['query']
     results = body['results']
-    assert 1 <= len(results) <= limit and body['count'] == len(results)
+    assert 1 <= len(results) <= limit
+    assert body['count'] == len(results)
     similarities = [r['similarity'] for r in results]
     assert similarities == sorted(similarities, reverse=True), similarities
     piano = {library.pid(k) for k in PIANO_KEYS}

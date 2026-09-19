@@ -38,22 +38,27 @@ runs:
         sae_url="https://github.com/NeptuneHub/AudioMuse-AI-SAE/releases/download/v1"
         neural_url="https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model"
         mkdir -p "$MODELS_DIR" "$HF_CACHE_DIR"
+        # Every download goes through this helper: HTTPS only, on the first request
+        # and on every redirect the release CDN answers with, TLS 1.2 or newer.
+        fetch() {
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL "$@"
+        }
         echo "Downloading DCLAP audio model..."
-        curl -fL "${dclap_url}/model_epoch_36.onnx" -o "$MODELS_DIR/model_epoch_36.onnx"
-        curl -fL "${dclap_url}/model_epoch_36.onnx.data" -o "$MODELS_DIR/model_epoch_36.onnx.data"
+        fetch "${dclap_url}/model_epoch_36.onnx" -o "$MODELS_DIR/model_epoch_36.onnx"
+        fetch "${dclap_url}/model_epoch_36.onnx.data" -o "$MODELS_DIR/model_epoch_36.onnx.data"
         echo "Downloading CLAP text model..."
-        curl -fL "${base_url}/clap_text_model.onnx" -o "$MODELS_DIR/clap_text_model.onnx"
+        fetch "${base_url}/clap_text_model.onnx" -o "$MODELS_DIR/clap_text_model.onnx"
         echo "Downloading MusiCNN models..."
-        curl -fL "${base_url}/musicnn_embedding.onnx" -o "$MODELS_DIR/musicnn_embedding.onnx"
-        curl -fL "${base_url}/musicnn_prediction.onnx" -o "$MODELS_DIR/musicnn_prediction.onnx"
+        fetch "${base_url}/musicnn_embedding.onnx" -o "$MODELS_DIR/musicnn_embedding.onnx"
+        fetch "${base_url}/musicnn_prediction.onnx" -o "$MODELS_DIR/musicnn_prediction.onnx"
         echo "Downloading SAE concept steering graphs..."
-        curl -fL "${sae_url}/dclap_sae_k20_d1024_best_encoder.onnx" -o "$MODELS_DIR/dclap_sae_k20_d1024_best_encoder.onnx"
-        curl -fL "${sae_url}/dclap_sae_k20_d1024_best_decoder.onnx" -o "$MODELS_DIR/dclap_sae_k20_d1024_best_decoder.onnx"
+        fetch "${sae_url}/dclap_sae_k20_d1024_best_encoder.onnx" -o "$MODELS_DIR/dclap_sae_k20_d1024_best_encoder.onnx"
+        fetch "${sae_url}/dclap_sae_k20_d1024_best_decoder.onnx" -o "$MODELS_DIR/dclap_sae_k20_d1024_best_decoder.onnx"
         echo "Downloading neural fingerprint encoder and codebook..."
-        curl -fL "${neural_url}/neural_fingerprint.onnx" -o "$MODELS_DIR/neural_fingerprint.onnx"
-        curl -fL "${neural_url}/neural_fingerprint_pq.npz" -o "$MODELS_DIR/neural_fingerprint_pq.npz"
+        fetch "${neural_url}/neural_fingerprint.onnx" -o "$MODELS_DIR/neural_fingerprint.onnx"
+        fetch "${neural_url}/neural_fingerprint_pq.npz" -o "$MODELS_DIR/neural_fingerprint_pq.npz"
         echo "Downloading huggingface_models.tar.gz (roberta-base tokenizer for the CLAP analyzer)..."
-        curl -fL "${base_url}/huggingface_models.tar.gz" -o /tmp/huggingface_models.tar.gz
+        fetch "${base_url}/huggingface_models.tar.gz" -o /tmp/huggingface_models.tar.gz
         tar -xzf /tmp/huggingface_models.tar.gz -C "$HF_CACHE_DIR"
         rm -f /tmp/huggingface_models.tar.gz
         if [ ! -d "$HF_CACHE_DIR/hub" ]; then
@@ -65,18 +70,18 @@ runs:
         # same two, which keeps about 1 GB off the runner disk and the cache.
         rm -rf "$HF_CACHE_DIR/hub/models--bert-base-uncased" "$HF_CACHE_DIR/hub/models--facebook--bart-base"
         echo "Downloading lyrics_model_gte_vnni.tar.gz (gte-multilingual-base INT8 + tokenizer)..."
-        curl -fL "${base_url}/lyrics_model_gte_vnni.tar.gz" -o /tmp/lyrics_model_gte_vnni.tar.gz
+        fetch "${base_url}/lyrics_model_gte_vnni.tar.gz" -o /tmp/lyrics_model_gte_vnni.tar.gz
         tar -xzf /tmp/lyrics_model_gte_vnni.tar.gz -C "$MODELS_DIR"
         rm -f /tmp/lyrics_model_gte_vnni.tar.gz
         test -f "$MODELS_DIR/gte-multilingual-base-int8.onnx"
         test -f "$MODELS_DIR/gte-multilingual-base/tokenizer.json"
         echo "Downloading lyrics_model_whisper.tar.gz (Whisper-small ONNX bundle for the lyrics ASR, ~570 MB)..."
-        curl -fL "${neural_url}/lyrics_model_whisper.tar.gz" -o /tmp/lyrics_model_whisper.tar.gz
+        fetch "${neural_url}/lyrics_model_whisper.tar.gz" -o /tmp/lyrics_model_whisper.tar.gz
         tar -xzf /tmp/lyrics_model_whisper.tar.gz -C "$MODELS_DIR"
         rm -f /tmp/lyrics_model_whisper.tar.gz
         test -f "$MODELS_DIR/whisper-small-onnx/encoder_model.onnx"
         echo "Downloading lyrics_model_silero_vad.tar.gz (voice activity detection for the lyrics ASR)..."
-        curl -fL "${neural_url}/lyrics_model_silero_vad.tar.gz" -o /tmp/lyrics_model_silero_vad.tar.gz
+        fetch "${neural_url}/lyrics_model_silero_vad.tar.gz" -o /tmp/lyrics_model_silero_vad.tar.gz
         tar -xzf /tmp/lyrics_model_silero_vad.tar.gz -C "$MODELS_DIR"
         rm -f /tmp/lyrics_model_silero_vad.tar.gz
         test -f "$MODELS_DIR/silero_vad.onnx"

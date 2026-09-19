@@ -47,13 +47,15 @@ def test_summary_reflects_the_catalogue(stack, api, library, analyzed_library):
     content = summary['content']
     assert content['total_songs'] == stack.catalogue_rows
     servers = content.get('music_servers') or []
-    assert servers and servers[0].get('name')
+    assert servers
+    assert servers[0].get('name')
 
 
 def test_browse_kinds(stack, api, library, analyzed_library):
     songs = api.json('GET', '/api/dashboard/browse?kind=songs')
     assert_no_fp_ids(songs)
-    assert songs['kind'] == 'songs' and songs['filter'] == 'all'
+    assert songs['kind'] == 'songs'
+    assert songs['filter'] == 'all'
     seen = len(songs['results'])
     page = 1
     while songs['has_more']:
@@ -70,7 +72,8 @@ def test_browse_kinds(stack, api, library, analyzed_library):
     assert len(broken['results']) == len(library.unanalyzable), broken['results']
     fragment = library.track('C02').title[:8]
     filtered = api.json('GET', '/api/dashboard/browse?kind=songs&q=' + urllib.parse.quote(fragment))
-    assert filtered['results'] and all(fragment.lower() in r['title'].lower() for r in filtered['results'])
+    assert filtered['results']
+    assert all(fragment.lower() in r['title'].lower() for r in filtered['results'])
 
 
 def test_duplicates_filter(stack, api, library, analyzed_library):

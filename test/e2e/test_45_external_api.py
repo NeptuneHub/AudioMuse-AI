@@ -43,9 +43,11 @@ def test_get_embedding(stack, api, library, analyzed_library):
     body = api.json('GET', f'/external/get_embedding?id={pid}')
     assert_no_fp_ids(body)
     assert body['item_id'] == pid
-    assert isinstance(body['embedding'], list) and len(body['embedding']) == 200
+    assert isinstance(body['embedding'], list)
+    assert len(body['embedding']) == 200
     assert all(isinstance(v, (int, float)) for v in body['embedding'])
-    assert 'poincare_embedding' in body and 'hyperbolic_radius' in body
+    assert 'poincare_embedding' in body
+    assert 'hyperbolic_radius' in body
 
 
 def test_errors(stack, api, analyzed_library):
@@ -62,5 +64,6 @@ def test_search(stack, api, library, analyzed_library):
     ids = {r['item_id'] for r in results}
     assert library.pid('A02') in ids or library.pid('A01') in ids or library.pid('F01') in ids
     for row in results:
-        assert row.get('title') and row['item_id']
+        assert row.get('title')
+        assert row['item_id']
     assert api.json('GET', '/external/search') == []

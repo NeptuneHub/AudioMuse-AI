@@ -47,9 +47,11 @@ def test_blend_two_clips(stack, api, library, analyzed_library):
     results = body['results']
     assert 1 <= len(results) <= 5, results
     ids = {r['item_id'] for r in results}
-    assert add not in ids and subtract not in ids
+    assert add not in ids
+    assert subtract not in ids
     for row in results:
-        assert row.get('title') and 'author' in row
+        assert row.get('title')
+        assert 'author' in row
     assert api.post('/api/alchemy', json={'items': [], 'n': 5}).status_code == 400
 
 
@@ -87,13 +89,15 @@ def test_anchor_and_radio_lifecycle(stack, api, db, library, navidrome, analyzed
         assert_no_fp_ids(similar)
         assert similar
         path = api.json('GET', f'/api/find_path?start_anchor={anchor_id}&end_song_id={library.pid("E03")}&max_steps=5')
-        assert path['path'] and path['path'][-1]['item_id'] == library.pid('E03')
+        assert path['path']
+        assert path['path'][-1]['item_id'] == library.pid('E03')
         blend = api.json('POST', '/api/alchemy', json={'items': [{'id': anchor_id, 'op': 'ADD', 'type': 'anchor'}], 'n': 3, 'temperature': 1.0})
         assert blend['results']
 
         radio = api.json('POST', '/api/radios', json={'anchor_id': anchor_id, 'temperature': 1.0, 'n_results': 5})['radio']
         radio_id = radio['id']
-        assert radio['anchor_id'] == anchor_id and radio.get('enabled') is True
+        assert radio['anchor_id'] == anchor_id
+        assert radio.get('enabled') is True
         assert api.post('/api/radios', json={'anchor_id': anchor_id, 'temperature': 1.0, 'n_results': 5}).status_code == 400
         radios = api.json('GET', '/api/radios')['radios']
         assert any(r['id'] == radio_id for r in radios), radios
@@ -124,8 +128,10 @@ def test_anchor_and_radio_lifecycle(stack, api, db, library, navidrome, analyzed
 def test_artist_projections(stack, api, analyzed_library):
     body = api.json('GET', '/api/artist_projections')
     assert_no_fp_ids(body)
-    assert body['count'] > 0 and body['components']
+    assert body['count'] > 0
+    assert body['components']
     component = body['components'][0]
-    assert 'artist_name' in component and len(component['projection']) == 2
+    assert 'artist_name' in component
+    assert len(component['projection']) == 2
     rebuilt = api.json('POST', '/api/build_artist_projection', timeout=180)
     assert rebuilt.get('status') == 'success', rebuilt

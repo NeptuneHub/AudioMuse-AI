@@ -152,7 +152,8 @@ def test_external_sync_dashboard_and_setup(stack, api, library, golden):
     golden.check('dashboard summary content', content)
     assert {m['label'] for m in moods} <= MOOD_BUCKETS, moods
     assert 0 < sum(m['count'] for m in moods) <= content['total_songs'], moods
-    assert genres and sum(g['count'] for g in genres) <= content['total_songs'], genres
+    assert genres, genres
+    assert sum(g['count'] for g in genres) <= content['total_songs'], genres
     bucketed = sum(tempos[k] for k in ('slow', 'medium', 'fast', 'very_fast'))
     assert 0 < bucketed <= content['total_songs'], tempos
     _get(api, golden, 'browse songs page 1', '/api/dashboard/browse?kind=songs')

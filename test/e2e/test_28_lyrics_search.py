@@ -31,7 +31,8 @@ pytestmark = pytest.mark.e2e
 def test_axes_catalogue(stack, api, analyzed_library):
     body = api.json('GET', '/api/lyrics/axes')
     axes = body['axes']
-    assert isinstance(axes, dict) and len(axes) >= 3, axes
+    assert isinstance(axes, dict), axes
+    assert len(axes) >= 3, axes
     for name, axis in axes.items():
         assert name.startswith('AXIS_'), name
         assert axis.get('labels'), (name, axis)
@@ -75,11 +76,13 @@ def test_sem_grove_search(stack, api, library, analyzed_library):
     body = api.json('POST', '/api/sem_grove/search', json={'item_id': seed, 'limit': 5})
     assert_no_fp_ids(body)
     results = body['results']
-    assert results and results[0]['item_id'] == seed, results
+    assert results, results
+    assert results[0]['item_id'] == seed, results
     assert results[0].get('is_seed') is True
     assert body['count'] == len(results) >= 2
     stats = api.json('GET', '/api/sem_grove/stats')
-    assert stats['loaded'] is True and stats['song_count'] == stack.catalogue_rows
+    assert stats['loaded'] is True
+    assert stats['song_count'] == stack.catalogue_rows
 
 
 def test_only_lyric_clips_have_real_embeddings(stack, db, library, analyzed_library):

@@ -179,8 +179,11 @@ def test_seed_placeholders_are_generated_from_the_catalogue(tmp_path):
         assert meta.get('artist') == track['artist'], (track['file'], meta)
         assert meta.get('album') == track['album'], (track['file'], meta)
         assert meta.get('album_artist') == track['album_artist'], (track['file'], meta)
-        assert track['artist'] == 'Various Artists' and track['title'].startswith('song '), (track['file'], track)
-        assert 'source' not in track and 'license' not in track, 'seed rows must stay anonymous'
+        assert track['artist'] == 'Various Artists', (track['file'], track)
+        assert track['title'].startswith('song '), (track['file'], track)
+        assert 'source' not in track, 'seed rows must stay anonymous'
+        assert 'license' not in track, 'seed rows must stay anonymous'
     assert len({t['item_id'] for t in catalogue.tracks}) == catalogue.count
     assert catalogue.payload['provenance']['license'] == CC0
-    assert catalogue.sentinel and catalogue.tables['score']
+    assert catalogue.sentinel
+    assert catalogue.tables['score']

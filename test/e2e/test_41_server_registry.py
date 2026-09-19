@@ -103,10 +103,12 @@ def test_second_instance_lifecycle(stack, api, db, library, analyzed_library):
         api.wait_idle(60)
 
         second_ids = provider_ids_for(db, item_id_of(db, library.pid('A03')), server_id)
-        assert len(second_ids) == 1 and second_ids[0] in second_songs, second_ids
+        assert len(second_ids) == 1, second_ids
+        assert second_ids[0] in second_songs, second_ids
         similar = api.json('GET', f'/api/similar_tracks?item_id={second_ids[0]}&n=3&server=e2e-second')
         assert_no_fp_ids(similar)
-        assert similar and all(r['item_id'] in second_songs for r in similar), similar
+        assert similar, similar
+        assert all(r['item_id'] in second_songs for r in similar), similar
         playlists = api.json('GET', '/api/playlists')
         assert playlists.get('multi_server') is True
         assert len(playlists['servers']) <= 2

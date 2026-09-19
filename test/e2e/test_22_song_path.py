@@ -37,11 +37,14 @@ def test_path_between_two_clips(stack, api, library, analyzed_library):
     start, end = library.pid('A03'), library.pid('E03')
     body = _path(api, f'start_song_id={start}&end_song_id={end}&max_steps=5')
     path = body['path']
-    assert path[0]['item_id'] == start and path[-1]['item_id'] == end, path
+    assert path[0]['item_id'] == start, path
+    assert path[-1]['item_id'] == end, path
     assert 2 <= len(path) <= 7, len(path)
-    assert isinstance(body['total_distance'], (int, float)) and body['total_distance'] >= 0
+    assert isinstance(body['total_distance'], (int, float))
+    assert body['total_distance'] >= 0
     for hop in path:
-        assert hop.get('title') and 'author' in hop
+        assert hop.get('title')
+        assert 'author' in hop
         assert isinstance(hop.get('embedding_vector'), list)
         assert 'top_genre' in hop
 
@@ -51,13 +54,15 @@ def test_path_validation_and_mood_endpoint(stack, api, library, analyzed_library
     assert api.get(f'/api/find_path?start_song_id={start}&end_song_id={start}&max_steps=5').status_code == 400
     assert api.get(f'/api/find_path?start_mood=bogus&end_song_id={start}&max_steps=5').status_code == 400
     body = _path(api, f'start_mood=happy&end_song_id={start}&max_steps=5')
-    assert body['path'] and body['path'][-1]['item_id'] == start
+    assert body['path']
+    assert body['path'][-1]['item_id'] == start
 
 
 def test_path_in_lyrics_space(stack, api, library, analyzed_library):
     start, end = library.pid('H02'), library.pid('H03')
     body = _path(api, f'start_song_id={start}&end_song_id={end}&max_steps=5&path_space=lyrics')
-    assert body['path'][0]['item_id'] == start and body['path'][-1]['item_id'] == end
+    assert body['path'][0]['item_id'] == start
+    assert body['path'][-1]['item_id'] == end
 
 
 def test_path_becomes_a_playlist(stack, api, library, navidrome, analyzed_library):

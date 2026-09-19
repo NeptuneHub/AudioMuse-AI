@@ -76,7 +76,8 @@ def test_cancel_a_running_clustering(stack, api, db, analyzed_library):
     assert refused.status_code == 409, refused.text
     assert refused.json().get('task_id') == task_id, refused.text
     active = api.active_task()
-    assert active.get('task_id') == task_id and active.get('side_job') is False, active
+    assert active.get('task_id') == task_id, active
+    assert active.get('side_job') is False, active
 
     cancelled = api.json('POST', f'/api/cancel/{task_id}')
     assert_no_fp_ids(cancelled)
@@ -88,7 +89,8 @@ def test_cancel_a_running_clustering(stack, api, db, analyzed_library):
     assert 'cancel' in final['status_message'].lower(), final
     api.wait_idle(120)
     last = api.last_task()
-    assert last['task_id'] == task_id and last['status'] == 'REVOKED', last
+    assert last['task_id'] == task_id, last
+    assert last['status'] == 'REVOKED', last
     assert scalar(db, 'SELECT count(*) FROM task_status WHERE parent_task_id = %s', (task_id,)) == 0
     _wait_workers_idle(api)
     for worker in stack.workers.values():

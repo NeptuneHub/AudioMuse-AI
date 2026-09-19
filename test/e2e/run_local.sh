@@ -18,13 +18,13 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-if [ "$(uname -s)" != "Linux" ]; then
+if [[ "$(uname -s)" != "Linux" ]]; then
   echo "run this inside WSL or Linux; the end-to-end stack is Linux only" >&2
   exit 2
 fi
 
-if [ -z "${VIRTUAL_ENV:-}" ]; then
-  if [ ! -f "$REPO_ROOT/.venv/bin/activate" ]; then
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  if [[ ! -f "$REPO_ROOT/.venv/bin/activate" ]]; then
     echo "no .venv in $REPO_ROOT; create it and pip install -r test/requirements.txt" >&2
     exit 2
   fi
@@ -51,7 +51,7 @@ if missing:
     sys.exit("missing packages: " + ", ".join(missing) + " (pip install -r test/requirements.txt)")
 PY
 
-if [ -z "${AUDIOMUSE_TEST_DATABASE_URL:-}" ]; then
+if [[ -z "${AUDIOMUSE_TEST_DATABASE_URL:-}" ]]; then
   if ! python -c "import pgserver" 2>/dev/null; then
     echo "set AUDIOMUSE_TEST_DATABASE_URL to a disposable database or pip install pgserver==0.1.4" >&2
     exit 2
@@ -61,9 +61,9 @@ if [ -z "${AUDIOMUSE_TEST_DATABASE_URL:-}" ]; then
   # against pgserver's own headers; reuse that script once and graft the
   # artifacts into pgserver's install tree, exactly like the PyInstaller spec.
   PGINSTALL="$(python -c 'import os, pgserver; print(os.path.join(os.path.dirname(pgserver.__file__), "pginstall"))')"
-  if [ ! -f "$PGINSTALL/share/postgresql/extension/unaccent.control" ]; then
+  if [[ ! -f "$PGINSTALL/share/postgresql/extension/unaccent.control" ]]; then
     CONTRIB="native-build/linux/vendor/pg-contrib/$(uname -m)"
-    if [ ! -f "$CONTRIB/extension/unaccent.control" ]; then
+    if [[ ! -f "$CONTRIB/extension/unaccent.control" ]]; then
       echo "building the unaccent and pg_trgm extensions against pgserver's PostgreSQL (needs gcc, make, curl)"
       bash native-build/linux/vendor/pg-contrib/build-pg-contrib.sh
     fi

@@ -37,7 +37,8 @@ def test_manifest_covers_the_catalogue(stack, api, db, library, analyzed_library
     assert_no_fp_ids(body)
     assert body['provider_type'] == 'navidrome'
     assert body['total_tracks'] == stack.catalogue_rows
-    assert body['has_more'] is False and body['next_page'] is None
+    assert body['has_more'] is False
+    assert body['next_page'] is None
     tracks = body['tracks']
     assert len(tracks) == stack.catalogue_rows
     assert len({t['id'] for t in tracks}) == len(tracks)
@@ -56,7 +57,8 @@ def test_payload_pages_through_everything(stack, api, library, analyzed_library)
         tracks = body['tracks']
         assert 0 < len(tracks) <= 50, body
         for track in tracks:
-            assert track['id'] and track.get('title')
+            assert track['id']
+            assert track.get('title')
             seen.add(track['id'])
         if not body['has_more']:
             assert body['next_page'] is None
@@ -73,6 +75,7 @@ def test_id_filter_and_embedding_toggle(stack, api, library, analyzed_library):
     assert {t['id'] for t in body['tracks']} == set(wanted)
     with_embeddings = api.json('GET', f'/api/sync?ids={wanted[0]}&include_embeddings=true')
     without = api.json('GET', f'/api/sync?ids={wanted[0]}&include_embeddings=false')
-    assert with_embeddings['tracks'] and without['tracks']
+    assert with_embeddings['tracks']
+    assert without['tracks']
     assert 'embedding' in with_embeddings['tracks'][0]
     assert 'embedding' not in without['tracks'][0]

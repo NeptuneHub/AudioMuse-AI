@@ -41,8 +41,10 @@ def test_similar_modes(stack, api, library, warmed):
         assert body['seed_item_id'] == seed
         assert body['count'] == len(body['results']) <= 5
         for row in body['results']:
-            assert row['item_id'] != seed and row.get('title')
-            assert 'distance' in row and 'hyperbolic_radius' in row
+            assert row['item_id'] != seed
+            assert row.get('title')
+            assert 'distance' in row
+            assert 'hyperbolic_radius' in row
 
 
 def test_similar_validation(stack, api, library, warmed):
@@ -57,8 +59,10 @@ def test_journey(stack, api, library, warmed):
     body = api.json('POST', '/api/hyperbolic/journey', json={'start_item_id': start, 'end_item_id': end, 'length': 5})
     assert_no_fp_ids(body)
     results = body['results']
-    assert results[0]['item_id'] == start and results[-1]['item_id'] == end, results
-    assert body['start_item_id'] == start and body['end_item_id'] == end
+    assert results[0]['item_id'] == start, results
+    assert results[-1]['item_id'] == end, results
+    assert body['start_item_id'] == start
+    assert body['end_item_id'] == end
     assert api.post('/api/hyperbolic/journey', json={'start_item_id': start, 'end_item_id': start, 'length': 5}).status_code == 400
 
 

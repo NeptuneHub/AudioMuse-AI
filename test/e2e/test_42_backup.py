@@ -49,7 +49,8 @@ RESTORE_TIMEOUT = 600
 def _create(api):
     body = api.json('POST', '/api/backup/create', timeout=600)
     assert body['success'] is True, body
-    assert body['filename'].startswith('audiomuse_backup_') and body['filename'].endswith('.zip')
+    assert body['filename'].startswith('audiomuse_backup_')
+    assert body['filename'].endswith('.zip')
     assert body['size_bytes'] > 0
     return body['filename']
 
@@ -59,7 +60,8 @@ def _download(api, filename):
     assert response.status_code == 200, response.text[:300]
     archive = zipfile.ZipFile(io.BytesIO(response.content))
     names = archive.namelist()
-    assert len(names) == 1 and names[0].endswith('.sql'), names
+    assert len(names) == 1, names
+    assert names[0].endswith('.sql'), names
     return archive.read(names[0]).decode('utf-8', 'replace')
 
 
@@ -118,7 +120,8 @@ def test_restore_round_trip(stack, api, db, analyzed_library):
     assert started['restore_log_name'].startswith('restore_'), started
     result, log_text = _wait_restore_result(started['restore_log'], RESTORE_TIMEOUT)
     assert result == 'completed', log_text[-2000:]
-    assert 'Stopped local Flask service.' in log_text and 'Started local Flask service.' in log_text, log_text[-2000:]
+    assert 'Stopped local Flask service.' in log_text, log_text[-2000:]
+    assert 'Started local Flask service.' in log_text, log_text[-2000:]
     stack.flask.wait_ready(300)
     for worker in stack.workers.values():
         worker.wait_ready(180)

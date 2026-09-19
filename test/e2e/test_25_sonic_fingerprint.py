@@ -44,7 +44,8 @@ def test_fingerprint_reflects_play_history(stack, api, library, seeded_plays, go
     ids = [r['item_id'] for r in results]
     assert set(seeded_plays) <= set(ids), (seeded_plays, ids)
     for row in results:
-        assert row.get('title') and 'author' in row
+        assert row.get('title')
+        assert 'author' in row
 
 
 def test_fingerprint_count_and_validation(stack, api, seeded_plays):
