@@ -39,7 +39,7 @@ import urllib.parse
 import pytest
 
 from test.e2e.e2e_helpers import unique_name
-from test.e2e.golden import GOLDEN_DIR, RECORD_ENV, Golden, Resolver
+from test.e2e.golden import ASR_TOLERANCE, GOLDEN_DIR, RECORD_ENV, TOLERANCE, Golden, Resolver, differences
 from test.e2e.stack import library as fixture_library
 from test.e2e.stack import paths
 from test.e2e.stack.env import NAVIDROME_ADMIN_PASSWORD, NAVIDROME_ADMIN_USER
@@ -160,12 +160,25 @@ def _shown(page, container, expected_count):
     return shown
 
 
-def _recorded(api_golden, key):
+def _ranking(shown, rows, score_key):
+    assert len(shown) == len(rows), (shown, rows)
+    return [
+        {'item_id': f'{title} | {artist}', score_key: row.get(score_key)}
+        for (title, artist), row in zip(shown, rows)
+    ]
+
+
+def _same_as_the_recorded_api_answer(api_golden, key, ranking, score_key, tolerance=TOLERANCE):
     payload = api_golden.get(key)
     if payload is None:
-        return None
+        return
     rows = payload.get('results') if isinstance(payload, dict) else payload
-    return _pairs(rows)
+    recorded = [
+        {'item_id': f"{row.get('title') or 'Unknown'} | {row.get('author') or row.get('artist') or ''}", score_key: row.get(score_key)}
+        for row in rows if not row.get('is_seed')
+    ]
+    lines = differences(recorded, ranking, tolerance=tolerance)
+    assert not lines, f'the page shows a different ranking than the recorded API answer {key!r}:\n' + '\n'.join(lines)
 
 
 def _clean(problems, where):
@@ -182,23 +195,23 @@ def _similar_songs(page, seed):
     answer = _submit(page, '#similarity-form button[type=submit]', '/api/similar_tracks', 'GET')
     shown = _shown(page, '#results-table-wrapper', len(answer))
     assert shown == _pairs(answer), (shown, _pairs(answer))
-    return shown
+    return shown, answer
 
 
 def test_similar_songs(flow, lib, ui_golden):
     page, problems = flow
     seed = lib.track('A03')
-    shown = _similar_songs(page, seed)
+    shown, answer = _similar_songs(page, seed)
     assert len(shown) == 5
     assert [seed.title, seed.artist] not in shown
-    ui_golden.check('similarity: Aria da Capo e Fine, 5 songs, no duplicate elimination, no radius', shown)
+    ui_golden.check('similarity: Aria da Capo e Fine, 5 songs, no duplicate elimination, no radius', _ranking(shown, answer, 'distance'))
     _clean(problems, '/similarity')
 
 
 @pytest.mark.skipif(bool(os.environ.get(ATTACH_ENV, '').strip()), reason='needs the harness Navidrome client, absent when attached to a held stack')
 def test_playlist_created_from_the_similarity_page(flow, lib, navidrome):
     page, problems = flow
-    shown = _similar_songs(page, lib.track('A03'))
+    shown, _answer = _similar_songs(page, lib.track('A03'))
     navidrome.delete_playlists_named(lambda candidate: candidate.startswith(UI_PLAYLIST_PREFIX))
     name = unique_name(UI_PLAYLIST_STEM)
     page.fill('#playlist_name', name)
@@ -251,7 +264,7 @@ def test_alchemy_at_temperature_zero(flow, lib, ui_golden):
     shown = _shown(page, '#results-table-wrapper', len(results))
     assert shown == _pairs(results), (shown, _pairs(results))
     assert 1 <= len(shown) <= 5
-    ui_golden.check('alchemy: ADD Aria da Capo e Fine, SUBTRACT Figaro overture, temperature 0, 5 songs', shown)
+    ui_golden.check('alchemy: ADD Aria da Capo e Fine, SUBTRACT Figaro overture, temperature 0, 5 songs', _ranking(shown, results, 'distance'))
     _clean(problems, '/alchemy')
 
 
@@ -265,9 +278,9 @@ def test_text_search(flow, lib, ui_golden, api_golden):
     answer = _submit(page, '#search-form button[type=submit]', '/api/clap/search', 'POST')
     shown = _shown(page, '#results-list', len(answer['results']))
     assert shown == _pairs(answer['results']), (shown, _pairs(answer['results']))
-    recorded = _recorded(api_golden, 'clap search probe limit 8')
-    assert recorded is None or shown == recorded, (shown, recorded)
-    ui_golden.check('text search: solo piano, 8 songs', shown)
+    ranking = _ranking(shown, answer['results'], 'similarity')
+    _same_as_the_recorded_api_answer(api_golden, 'clap search probe limit 8', ranking, 'similarity')
+    ui_golden.check('text search: solo piano, 8 songs', ranking)
     _clean(problems, '/clap_search')
 
 
@@ -285,9 +298,10 @@ def test_lyrics_text_search(flow, lib, ui_golden, api_golden):
     assert shown == _pairs(results), (shown, _pairs(results))
     sung = lib.track('H02')
     assert [sung.title, sung.artist] in shown[:5], shown
-    recorded = _recorded(api_golden, 'lyrics text search H02 phrase limit 6')
-    assert recorded is None or shown == recorded, (shown, recorded)
-    ui_golden.check('lyrics text search: a line of Missing Person, 6 songs', shown)
+    ranking = _ranking(shown, results, 'similarity')
+    assert ranking[0]['item_id'] == f'{sung.title} | {sung.artist}', ranking
+    _same_as_the_recorded_api_answer(api_golden, 'lyrics text search H02 phrase limit 6', ranking, 'similarity', ASR_TOLERANCE)
+    ui_golden.check('lyrics text search: a line of Missing Person, 6 songs', ranking, tolerance=ASR_TOLERANCE)
     _clean(problems, '/lyrics_search')
 
 
@@ -308,9 +322,12 @@ def test_similar_artists(flow, lib, ui_golden, api_golden):
     assert shown == names, (shown, names)
     assert artist not in shown
     assert 1 <= len(shown) <= 3
+    ranking = [{'artist': name, 'divergence': row.get('divergence')} for name, row in zip(shown, answer)]
     recorded = api_golden.get('similar_artists E n3')
-    assert recorded is None or shown == [row.get('artist') for row in recorded], (shown, recorded)
-    ui_golden.check('similar artists: Airmen of Note, 3 artists', shown)
+    if recorded is not None:
+        lines = differences([{'artist': row.get('artist'), 'divergence': row.get('divergence')} for row in recorded], ranking)
+        assert not lines, lines
+    ui_golden.check('similar artists: Airmen of Note, 3 artists', ranking)
     _clean(problems, '/artist_similarity')
 
 
@@ -323,9 +340,9 @@ def test_hyperbolic_neighbours(flow, lib, ui_golden, api_golden):
     answer = _submit(page, '#hyper-similar-form button[type=submit]', '/api/hyperbolic/similar', 'POST')
     shown = _shown(page, '#results-table-wrapper', len(answer['results']))
     assert shown == _pairs(answer['results']), (shown, _pairs(answer['results']))
-    recorded = _recorded(api_golden, 'hyperbolic similar A03 limit 5')
-    assert recorded is None or shown == recorded, (shown, recorded)
-    ui_golden.check('hyperbolic neighbours: Aria da Capo e Fine, similar mode, 5 songs', shown)
+    ranking = _ranking(shown, answer['results'], 'distance')
+    _same_as_the_recorded_api_answer(api_golden, 'hyperbolic similar A03 limit 5', ranking, 'distance')
+    ui_golden.check('hyperbolic neighbours: Aria da Capo e Fine, similar mode, 5 songs', ranking)
     _clean(problems, '/hyperbolic')
 
 

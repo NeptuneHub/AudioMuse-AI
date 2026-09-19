@@ -1,43 +1,43 @@
 {
  "alchemy: ADD Aria da Capo e Fine, SUBTRACT Figaro overture, temperature 0, 5 songs": [
-  [
-   "song 9",
-   "Various Artists"
-  ],
-  [
-   "song 269",
-   "Various Artists"
-  ],
-  [
-   "Variatio 2 a 1 Clav. (Extended)",
-   "Kimiko Ishizaka"
-  ],
-  [
-   "Una furtiva lagrima",
-   "Enrico Caruso"
-  ]
+  {
+   "distance": 0.079,
+   "item_id": "song 9 | Various Artists"
+  },
+  {
+   "distance": 0.082,
+   "item_id": "song 269 | Various Artists"
+  },
+  {
+   "distance": 0.09,
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka"
+  },
+  {
+   "distance": 0.159,
+   "item_id": "Una furtiva lagrima | Enrico Caruso"
+  }
  ],
  "hyperbolic neighbours: Aria da Capo e Fine, similar mode, 5 songs": [
-  [
-   "song 269",
-   "Various Artists"
-  ],
-  [
-   "song 9",
-   "Various Artists"
-  ],
-  [
-   "Variatio 2 a 1 Clav. (Extended)",
-   "Kimiko Ishizaka"
-  ],
-  [
-   "song 128",
-   "Various Artists"
-  ],
-  [
-   "Variatio 2 a 1 Clav.",
-   "Kimiko Ishizaka"
-  ]
+  {
+   "distance": 0.526,
+   "item_id": "song 269 | Various Artists"
+  },
+  {
+   "distance": 0.535,
+   "item_id": "song 9 | Various Artists"
+  },
+  {
+   "distance": 0.571,
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka"
+  },
+  {
+   "distance": 0.632,
+   "item_id": "song 128 | Various Artists"
+  },
+  {
+   "distance": 0.815,
+   "item_id": "Variatio 2 a 1 Clav. | Kimiko Ishizaka"
+  }
  ],
  "library browser: first page of songs": [
   "Sheridan Square",
@@ -148,30 +148,30 @@
   "Variatio 2 a 1 Clav. (Extended)"
  ],
  "lyrics text search: a line of Missing Person, 6 songs": [
-  [
-   "Missing Person",
-   "orrisroot"
-  ],
-  [
-   "What Im sayin (streetmix)",
-   "MC Shadow"
-  ],
-  [
-   "Un week-end avec papy",
-   "Frederic Lardon"
-  ],
-  [
-   "Pizza",
-   "U-Man"
-  ],
-  [
-   "It Came Upon A Midnight Clear",
-   "narva9"
-  ],
-  [
-   "Skyscrapers",
-   "Airmen of Note"
-  ]
+  {
+   "item_id": "Missing Person | orrisroot",
+   "similarity": 0.654
+  },
+  {
+   "item_id": "What Im sayin (streetmix) | MC Shadow",
+   "similarity": 0.558
+  },
+  {
+   "item_id": "Un week-end avec papy | Frederic Lardon",
+   "similarity": 0.552
+  },
+  {
+   "item_id": "Pizza | U-Man",
+   "similarity": 0.505
+  },
+  {
+   "item_id": "It Came Upon A Midnight Clear | narva9",
+   "similarity": 0.478
+  },
+  {
+   "item_id": "Skyscrapers | Airmen of Note",
+   "similarity": -0.047
+  }
  ],
  "path: Figaro overture to the last Airmen of Note clip, 5 steps": [
   [
@@ -196,56 +196,65 @@
   ]
  ],
  "similar artists: Airmen of Note, 3 artists": [
-  "United States Marine Band",
-  "Kimiko Ishizaka",
-  "orrisroot"
+  {
+   "artist": "United States Marine Band",
+   "divergence": 0.168
+  },
+  {
+   "artist": "Kimiko Ishizaka",
+   "divergence": 0.283
+  },
+  {
+   "artist": "orrisroot",
+   "divergence": 0.377
+  }
  ],
  "similarity: Aria da Capo e Fine, 5 songs, no duplicate elimination, no radius": [
-  [
-   "song 9",
-   "Various Artists"
-  ],
-  [
-   "song 269",
-   "Various Artists"
-  ],
-  [
-   "Variatio 2 a 1 Clav. (Extended)",
-   "Kimiko Ishizaka"
-  ],
-  [
-   "song 128",
-   "Various Artists"
-  ],
-  [
-   "song 274",
-   "Various Artists"
-  ]
+  {
+   "distance": 0.031,
+   "item_id": "song 9 | Various Artists"
+  },
+  {
+   "distance": 0.032,
+   "item_id": "song 269 | Various Artists"
+  },
+  {
+   "distance": 0.038,
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka"
+  },
+  {
+   "distance": 0.041,
+   "item_id": "song 128 | Various Artists"
+  },
+  {
+   "distance": 0.053,
+   "item_id": "song 274 | Various Artists"
+  }
  ],
  "text search: solo piano, 8 songs": [
-  [
-   "song 251",
-   "Various Artists"
-  ],
-  [
-   "song 180",
-   "Various Artists"
-  ],
-  [
-   "song 108",
-   "Various Artists"
-  ],
-  [
-   "Variatio 2 a 1 Clav. (Extended)",
-   "Kimiko Ishizaka"
-  ],
-  [
-   "Aria da Capo e Fine",
-   "Kimiko Ishizaka"
-  ],
-  [
-   "Variatio 2 a 1 Clav.",
-   "Kimiko Ishizaka"
-  ]
+  {
+   "item_id": "song 251 | Various Artists",
+   "similarity": 0.489
+  },
+  {
+   "item_id": "song 180 | Various Artists",
+   "similarity": 0.448
+  },
+  {
+   "item_id": "song 108 | Various Artists",
+   "similarity": 0.439
+  },
+  {
+   "item_id": "Variatio 2 a 1 Clav. (Extended) | Kimiko Ishizaka",
+   "similarity": 0.434
+  },
+  {
+   "item_id": "Aria da Capo e Fine | Kimiko Ishizaka",
+   "similarity": 0.426
+  },
+  {
+   "item_id": "Variatio 2 a 1 Clav. | Kimiko Ishizaka",
+   "similarity": 0.422
+  }
  ]
 }

@@ -4382,7 +4382,6 @@
  },
  "hyperbolic cache_status": {
   "n_bands": 16,
-  "node_count": 113,
   "ok": true,
   "track_count": 310
  },
@@ -11062,7 +11061,6 @@
     "album_artist": "Kimiko Ishizaka",
     "artist": "Kimiko Ishizaka",
     "energy": 0.326,
-    "fp": "3d3b15a0cad82244",
     "id": "track:Aria da Capo e Fine | Kimiko Ishizaka",
     "key": "D",
     "mood_vector": {

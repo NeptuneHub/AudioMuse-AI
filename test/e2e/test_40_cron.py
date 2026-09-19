@@ -13,7 +13,13 @@ by type and validated. Then two rows are enabled every minute and the web
 process's cron loop is left to fire once: the alchemy radio runs inline and
 writes its playlist on Navidrome, the sonic fingerprint is enqueued on the
 queue, runs on a real worker and writes its playlist too, and both rows show
-a last_run.
+a last_run newer than the one they had (a kept state carries the stamp of the
+run before). The stamp is written when the tick claims the row, before the
+task runs, so each playlist is then awaited on Navidrome for a bounded time.
+The two tasks of one tick finish in either order and the one that
+finishes last trims the other's recap row from task_status, so the
+fingerprint is judged by the playlist it wrote; a recap row that is still
+there must say SUCCESS.
 
 Main Features:
 * POST /api/cron creates and updates rows, GET /api/cron lists them
@@ -34,6 +40,8 @@ TASK_TYPES = ('analysis', 'clustering', 'sonic_fingerprint', 'alchemy_radio')
 NIGHTLY = '0 3 * * *'
 EVERY_MINUTE = '* * * * *'
 TICK_TIMEOUT = 150
+PLAYLIST_TIMEOUT = 120
+TICK_TASK_TYPES = ('alchemy_radio', 'sonic_fingerprint')
 CRON_SONIC_PLAYLIST = 'Sonic Fingerprint by AudioMuse-AI'
 
 
@@ -54,6 +62,20 @@ def _by_type(api):
     entries = api.json('GET', '/api/cron')
     assert_no_fp_ids(entries)
     return {e['task_type']: e for e in entries}
+
+
+def _last_runs(api):
+    entries = _by_type(api)
+    return {task_type: (entries.get(task_type) or {}).get('last_run') for task_type in TICK_TASK_TYPES}
+
+
+def _wait_for_playlist(navidrome, name):
+    deadline = time.monotonic() + PLAYLIST_TIMEOUT
+    while True:
+        playlist = navidrome.playlist_by_name(name)
+        if playlist is not None or time.monotonic() >= deadline:
+            return playlist
+        time.sleep(2)
 
 
 def _save(api, task_type, name, cron_expr, enabled, row_id=None):
@@ -110,29 +132,29 @@ def test_one_tick_runs_the_radio_and_the_sonic_fingerprint(stack, api, db, libra
     for key in ('B01', 'B02', 'B03'):
         navidrome.scrobble(library.pid(key), submission=True)
     navidrome.delete_playlists_named(lambda name: name in (anchor_name, CRON_SONIC_PLAYLIST))
+    stamped_before = _last_runs(api)
     try:
         _save(api, 'alchemy_radio', 'e2e radio tick', EVERY_MINUTE, True)
         _save(api, 'sonic_fingerprint', 'e2e sonic tick', EVERY_MINUTE, True)
         deadline = time.monotonic() + TICK_TIMEOUT
         while True:
             entries = _by_type(api)
-            fired = entries['alchemy_radio'].get('last_run') and entries['sonic_fingerprint'].get('last_run')
+            fired = all(entries[task_type].get('last_run') not in (None, stamped_before[task_type]) for task_type in TICK_TASK_TYPES)
             if fired:
                 break
             assert time.monotonic() < deadline, f'the cron loop did not fire within {TICK_TIMEOUT}s: {entries}'
             time.sleep(5)
         _save(api, 'alchemy_radio', 'e2e radio tick', NIGHTLY, False, row_id=entries['alchemy_radio']['id'])
         _save(api, 'sonic_fingerprint', 'e2e sonic tick', NIGHTLY, False, row_id=entries['sonic_fingerprint']['id'])
-        api.wait_idle(300)
-        sonic_rows = rows(db, "SELECT status FROM task_status WHERE task_type = 'sonic_fingerprint' ORDER BY timestamp DESC LIMIT 1")
-        assert sonic_rows, sonic_rows
-        assert sonic_rows[0][0] == 'SUCCESS', sonic_rows
-        radio_playlist = navidrome.playlist_by_name(anchor_name)
+        radio_playlist = _wait_for_playlist(navidrome, anchor_name)
         assert radio_playlist is not None, [p.get('name') for p in navidrome.playlists()]
-        assert 1 <= len(navidrome.playlist_entry_ids(radio_playlist['id'])) <= 5
-        sonic_playlist = navidrome.playlist_by_name(CRON_SONIC_PLAYLIST)
+        sonic_playlist = _wait_for_playlist(navidrome, CRON_SONIC_PLAYLIST)
         assert sonic_playlist is not None, [p.get('name') for p in navidrome.playlists()]
+        api.wait_idle(300)
+        assert 1 <= len(navidrome.playlist_entry_ids(radio_playlist['id'])) <= 5
         assert navidrome.playlist_entry_ids(sonic_playlist['id'])
+        sonic_rows = rows(db, "SELECT status FROM task_status WHERE task_type = 'sonic_fingerprint' ORDER BY timestamp DESC LIMIT 1")
+        assert all(row[0] == 'SUCCESS' for row in sonic_rows), sonic_rows
         assert rows(db, 'SELECT count(*) FROM cron_retry')[0][0] == 0
     finally:
         api.json('DELETE', f'/api/radios/{radio_id}')

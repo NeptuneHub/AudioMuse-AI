@@ -35,6 +35,7 @@ import urllib.parse
 import pytest
 
 from test.e2e.e2e_helpers import assert_no_fp_ids, item_id_of, rows
+from test.e2e.golden import ASR_TOLERANCE, TOLERANCE
 
 pytestmark = pytest.mark.e2e
 
@@ -62,10 +63,10 @@ def _get(api, golden, key, path, **kwargs):
     return body
 
 
-def _post(api, golden, key, path, payload, **kwargs):
+def _post(api, golden, key, path, payload, tolerance=TOLERANCE, **kwargs):
     body = api.json('POST', path, json=payload, **kwargs)
     assert_no_fp_ids(body)
-    golden.check(key, body)
+    golden.check(key, body, tolerance=tolerance)
     return body
 
 
@@ -113,10 +114,10 @@ def test_lyrics_semgrove_and_recording(stack, api, library, golden):
     if isinstance(label, dict):
         label = label.get('key') or label.get('name')
     phrase = library.lyrics['H02']['probe_phrase']
-    _post(api, golden, 'lyrics text search H02 phrase limit 6', '/api/lyrics/search/text', {'query': phrase, 'limit': 6}, timeout=300)
-    _post(api, golden, 'lyrics axes search first axis first label', '/api/lyrics/search/axes', {'targets': {axis_name: label}, 'limit': 5})
+    _post(api, golden, 'lyrics text search H02 phrase limit 6', '/api/lyrics/search/text', {'query': phrase, 'limit': 6}, tolerance=ASR_TOLERANCE, timeout=300)
+    _post(api, golden, 'lyrics axes search first axis first label', '/api/lyrics/search/axes', {'targets': {axis_name: label}, 'limit': 5}, tolerance=ASR_TOLERANCE)
     _get(api, golden, 'lyrics stats', '/api/lyrics/stats')
-    _post(api, golden, 'sem_grove search H02 limit 5', '/api/sem_grove/search', {'item_id': h02, 'limit': 5})
+    _post(api, golden, 'sem_grove search H02 limit 5', '/api/sem_grove/search', {'item_id': h02, 'limit': 5}, tolerance=ASR_TOLERANCE)
     _get(api, golden, 'sem_grove stats', '/api/sem_grove/stats')
     _post(api, golden, 'recording_search by_track A02 n5', '/api/recording_search/by_track', {'item_id': library.pid('A02'), 'n_results': 5})
 
@@ -132,7 +133,9 @@ def test_hyperbolic(stack, api, library, golden):
         {'type': item.get('type'), 'name': item.get('name') or item.get('title'), 'count': item.get('count') or item.get('track_count')}
         for item in root.get('items') or []
     ])
-    _get(api, golden, 'hyperbolic cache_status', '/api/hyperbolic/cache_status')
+    status = api.json('GET', '/api/hyperbolic/cache_status')
+    assert status.pop('node_count') > 0, 'the tree is built from every embedding, so its size follows the real clips'
+    golden.check('hyperbolic cache_status', status)
 
 
 def test_external_sync_dashboard_and_setup(stack, api, library, golden):
