@@ -2202,7 +2202,12 @@ same as when they are started from the page.
    which only the Flask process loads, so the tick runs it inline right there. It
    still gets a task row (STARTED, then SUCCESS or FAILURE) and so stays visible
    in the task panel; the cost is that the poll thread waits for the run, which is
-   the accepted trade for a schedule that fires once a day.
+   the accepted trade for a schedule that fires once a day. The sonic fingerprint
+   and the album of the week take nothing but a server scope, so both the dispatch
+   entry and the task body they run are declared once: the registry holds the
+   function each row enqueues, and `tasks.task_run.run_playlist_task_per_server`
+   holds the per-server loop, cancel check, heartbeat, reporter and playlist
+   upsert they share. A schedule of that shape is one line in each.
 5. **Queue guard.** Analysis, clustering, sonic fingerprint, album of the week,
    plugin tasks (and,
    when started manually, cleaning and provider migration) are mutually
@@ -2737,12 +2742,15 @@ only parses the request and scopes the answer to a server.
    and its lyrics turn inward. Two calm tracks are never adjacent while a gap is
    free, none sits next to a calm closer, and two tracks of one artist are pulled
    apart whenever another track can take the place.
-10. **Album of the Week.** `run_album_of_the_week_task` runs once per server
-   through the shared per-server loop, cancel check, heartbeat and reporter. It
-   samples random analysed songs available on that server, builds the album from
-   the first one that works and calls `create_or_replace_playlist` with
-   `ALBUM_OF_THE_WEEK_PLAYLIST_NAME`. When nothing could be built the previous
-   playlist is kept. It fails only when every server failed.
+10. **Album of the Week.** `run_album_of_the_week_task` samples random analysed
+   songs available on that server and builds the album from the first one that
+   works. Everything around that choice is
+   `tasks.task_run.run_playlist_task_per_server`, the scaffold it shares with the
+   sonic fingerprint: the per-server loop, cancel check, heartbeat and reporter,
+   the `create_or_replace_playlist` call under `ALBUM_OF_THE_WEEK_PLAYLIST_NAME`,
+   the dated fallback playlist on a backend without upsert, and the rule that an
+   empty result keeps the previous playlist. It fails only when every server
+   failed.
 
 ### 18.3. Environment Variable Configuration
 

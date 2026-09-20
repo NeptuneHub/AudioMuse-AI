@@ -462,7 +462,8 @@ RECOVERY = {
     'sonic_fingerprint': {
         MAIN_WORKER_DIED: handled(_RECLAIM),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; row_heartbeat covers generate_sonic_fingerprint, which '
+            _NUDGE + '; the shared scheduled-playlist scaffold in tasks.task_run '
+            'wraps generate_sonic_fingerprint in row_heartbeat, because it '
             'writes no row between the start and the end of a server'
         ),
         CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
@@ -472,7 +473,8 @@ RECOVERY = {
     'album_of_the_week': {
         MAIN_WORKER_DIED: handled(_RECLAIM),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; row_heartbeat covers create_album_of_the_week, which '
+            _NUDGE + '; the shared scheduled-playlist scaffold in tasks.task_run '
+            'wraps create_album_of_the_week in row_heartbeat, because it '
             'writes no row between the start and the end of a server'
         ),
         CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),

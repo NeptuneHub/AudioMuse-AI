@@ -41,6 +41,16 @@ Main Features:
   made its parent wait out three backoffs on a failure that would not heal. The
   migration planner gets none, because a silently re-run dry run holds its
   session claimed for a whole extra attempt. None means QUEUE_MAX_ATTEMPTS
+* cron is the name a Scheduled Tasks row carries for a schedule that ENQUEUES
+  this type, where the two names differ (the analysis row queues main_analysis).
+  CRON_TASK_TYPE_TO_QUEUE_TYPE and CRON_RETRY_TASK_TYPES derive from it, so the
+  row a blocked cron start fails and the SUCCESS its retry looks for can no
+  longer describe different task types. A row that never reaches the queue
+  declares none: alchemy_radio runs inline in Flask under its own name
+* dotted is the function a cron row enqueues verbatim, for the scheduled
+  playlist builders that take nothing but a server scope. CRON_QUEUED_TASKS
+  derives from it and IS app_cron's dispatch for them, so a third one is a line
+  here rather than a fourth copy of the same eleven-line enqueue call
 * side_job marks a short read-only batch the user starts from a page, such as the
   setup wizard naming preview. SIDE_JOB_TASK_TYPES derives every rule it needs in
   one place: it shows as the running task so the dashboard can stop it, but it
@@ -66,7 +76,7 @@ class TaskType:
     def __init__(self, name, role, queue=None, holds_main_index=False,
                  watched_by_nudge=False, blocks_starts=False,
                  self_managed=False, is_prefix=False, restarts=None,
-                 side_job=False):
+                 side_job=False, cron=None, dotted=None):
         self.name = name
         self.role = role
         self.queue = queue
@@ -77,20 +87,26 @@ class TaskType:
         self.is_prefix = is_prefix
         self.restarts = restarts
         self.side_job = side_job
+        self.cron = cron
+        self.dotted = dotted
 
 
 ALL = (
-    TaskType('main_analysis', ROLE_MAIN, queue='high',
+    TaskType('main_analysis', ROLE_MAIN, queue='high', cron='analysis',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
-    TaskType('main_clustering', ROLE_MAIN, queue='high',
+    TaskType('main_clustering', ROLE_MAIN, queue='high', cron='clustering',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('cleaning', ROLE_MAIN, queue='high',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('provider_migration', ROLE_MAIN, queue='high',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('sonic_fingerprint', ROLE_MAIN, queue='default',
+             cron='sonic_fingerprint',
+             dotted='tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('album_of_the_week', ROLE_MAIN, queue='default',
+             cron='album_of_the_week',
+             dotted='tasks.album_creation_manager.run_album_of_the_week_task',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('server_sweep', ROLE_MAIN, queue='high',
              watched_by_nudge=True, blocks_starts=True, self_managed=True),
@@ -154,6 +170,14 @@ SIDE_JOB_TASK_TYPES = tuple(
 )
 
 BATCH_GATE_TASK_TYPES = QUEUE_BLOCKING_TASK_TYPES + SIDE_JOB_TASK_TYPES
+
+CRON_TASK_TYPE_TO_QUEUE_TYPE = {
+    entry.cron: entry.name for entry in ALL if entry.cron
+}
+
+CRON_RETRY_TASK_TYPES = tuple(CRON_TASK_TYPE_TO_QUEUE_TYPE)
+
+CRON_QUEUED_TASKS = {entry.cron: entry.dotted for entry in ALL if entry.dotted}
 
 
 def matches(task_type, names=(), prefixes=()):

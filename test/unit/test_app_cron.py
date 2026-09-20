@@ -21,6 +21,11 @@ Main Features:
 * NotImplementedError from the backend falls back to a timestamped legacy playlist
 * A live main task blocks a cron analysis/clustering start, as the manual endpoints do
 * A failed enqueue leaves no row at all, never a PENDING row that would 409 every later start
+* Every task type the Scheduled Tasks page can save reaches a real dispatch
+  branch, so a row that fires for ever and runs nothing cannot ship
+* The scheduled playlist tasks own their track ids and nothing else: the loop,
+  the reporter, the heartbeat and the fallbacks are one shared scaffold, and a
+  task that grows its own copy of any of them fails here
 """
 
 from unittest.mock import MagicMock, patch
@@ -28,6 +33,8 @@ from unittest.mock import MagicMock, patch
 import time
 
 import pytest
+
+import task_types
 
 
 def _make_cron_row(task_type='sonic_fingerprint'):
@@ -428,6 +435,88 @@ def test_plugin_branch_always_runs_against_all_servers(mock_get_db, _matches):
         'the shared cancel check enforces the live claim for every task now; '
         'the old task_claim_required flag is no longer written into a payload'
     )
+
+
+def _task_types_the_page_can_schedule():
+    import pathlib
+    import re
+
+    page = (pathlib.Path(__file__).resolve().parents[2] / 'templates' / 'cron.html').read_text(
+        encoding='utf-8'
+    )
+    return sorted(set(re.findall(r"task_type:'([a-z_]+)'", page)))
+
+
+@pytest.mark.parametrize('task_type', _task_types_the_page_can_schedule())
+def test_every_row_the_page_can_save_reaches_a_real_branch(task_type):
+    from app_cron import _dispatch_cron_row
+
+    db = MagicMock()
+    radio_summary = {'playlists_created': 0, 'failed': []}
+    with (
+        patch('app_cron.main_task_start_lock'),
+        patch('app_cron.get_queue_blocking_task', return_value=None),
+        patch('app_cron.clean_up_previous_main_tasks'),
+        patch('app_cron.save_task_status'),
+        patch('app_cron.taskqueue.enqueue') as enqueue,
+        patch('tasks.radio_manager.run_radio_playlists', return_value=radio_summary) as radio,
+    ):
+        outcome = _dispatch_cron_row(db, {'task_type': task_type})
+        queued = [call[0][0] for call in enqueue.call_args_list]
+        ran_inline = radio.called
+
+    assert outcome == 'enqueued', (
+        f'a {task_type} row can be saved from the Scheduled Tasks page and its '
+        f'tick answered {outcome}; a row that dispatches to nothing fires for '
+        'ever and never runs'
+    )
+    if task_type in task_types.INLINE_FLASK_TASK_TYPES:
+        assert ran_inline and not queued
+    else:
+        assert not ran_inline and len(queued) == 1 and queued[0].startswith('tasks.')
+
+
+class TestTheScheduledPlaylistTasksShareOneScaffold:
+    def _task_sources(self):
+        import inspect
+
+        from tasks.album_creation_manager import run_album_of_the_week_task
+        from tasks.sonic_fingerprint_manager import run_sonic_fingerprint_task
+
+        return {
+            'sonic_fingerprint': inspect.getsource(run_sonic_fingerprint_task),
+            'album_of_the_week': inspect.getsource(run_album_of_the_week_task),
+        }
+
+    @pytest.mark.parametrize('task_type', ['sonic_fingerprint', 'album_of_the_week'])
+    def test_the_task_body_is_the_track_ids_and_nothing_else(self, task_type):
+        source = self._task_sources()[task_type]
+
+        assert 'run_playlist_task_per_server' in source
+        for copied in (
+            'create_or_replace_playlist', 'row_heartbeat', 'cancel_guard',
+            'make_task_reporter', 'for_each_server_in_scope', 'app_context',
+        ):
+            assert copied not in source, (
+                f'{task_type} carries its own {copied} again. Both tasks used to '
+                'hold a line-for-line copy of the same ninety-line scaffold, '
+                'which is how the older per-task scaffolds drifted; the only '
+                'thing a scheduled playlist task owns is its track ids'
+            )
+        assert len(source.splitlines()) < 20
+
+    def test_both_reach_the_scaffold_with_the_dotted_path_the_registry_enqueues(self):
+        import importlib
+
+        import task_types
+
+        for cron_type, dotted in task_types.CRON_QUEUED_TASKS.items():
+            module_path, _, name = dotted.rpartition('.')
+            func = getattr(importlib.import_module(module_path), name)
+            assert name in self._task_sources()[cron_type]
+            assert func.__code__.co_argcount == 1, (
+                'the shared cron branch passes nothing but a server scope'
+            )
 
 
 def _cron_api_client():

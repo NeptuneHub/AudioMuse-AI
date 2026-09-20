@@ -60,6 +60,17 @@ Main Features:
   and swallowing it as one server's failure would march the loop over every
   remaining server on a dead connection and cost the task a charged attempt
   where the worker has an uncharged path for exactly this
+* run_playlist_task_per_server: the WHOLE body of a scheduled task that builds
+  one playlist per server. The sonic fingerprint and the album of the week
+  carried a line-for-line copy of it, ninety lines each, differing only in
+  three strings and the call that picks the track ids, and a copy is how the
+  older scaffolds drifted. A caller now passes its label, its playlist name,
+  the name to fall back to on a backend without upsert, and a callable that
+  returns the ids; everything else - the prologue, the forced cancel check,
+  the reporter, the heartbeat around a step that can run for minutes, the
+  empty result that PRESERVES the previous playlist rather than emptying it,
+  the NotImplementedError fallback to a dated playlist, and the rule that only
+  a failure on EVERY server fails the task - lives here once
 """
 
 import logging
@@ -91,6 +102,7 @@ __all__ = (
     'task_run_prologue',
     'make_cancel_check', 'cancel_guard',
     'make_task_reporter', 'for_each_server_in_scope',
+    'run_playlist_task_per_server',
 )
 
 
@@ -289,3 +301,81 @@ def for_each_server_in_scope(scope, step, *, on_server=None, cancel=None):
             )
             failed.append(name)
     return servers, results, failed
+
+
+def run_playlist_task_per_server(task_type, label, playlist_name, fallback_name,
+                                 build_ids, server_scope="all"):
+    from flask_app import app
+    from config import QUEUE_WEDGED_MAIN_TASK_MINUTES
+
+    from .mediaserver import create_or_replace_playlist
+    from .ivf_manager import create_playlist_from_ids
+
+    with app.app_context():
+        from .recovery import row_heartbeat, slow_step_budget_minutes
+
+        claimed_task_id, task_id = task_run_prologue()
+        created = [0]
+        current = ['resolving the server scope']
+
+        def build(_server, server_name):
+            current[0] = f"the {label} for {server_name}"
+            with row_heartbeat(
+                claimed_task_id, lambda: current[0],
+                stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+            ):
+                track_ids = build_ids()
+                if not track_ids:
+                    logger.warning(
+                        "The %s came out empty on %s; preserving the previous playlist.",
+                        label, server_name,
+                    )
+                    return None
+                try:
+                    if create_or_replace_playlist(playlist_name, track_ids) is None:
+                        raise RuntimeError(
+                            f"Media server reported failure upserting the {label} playlist"
+                        )
+                    name = playlist_name
+                except NotImplementedError:
+                    name = f"{fallback_name} (Cron {time.strftime('%Y-%m-%d')})"
+                    create_playlist_from_ids(name, track_ids)
+                created[0] += 1
+                logger.info(
+                    "The %s playlist '%s' was upserted on %s with %d tracks.",
+                    label, name, server_name, len(track_ids),
+                )
+                return name
+
+        def on_server(index, total, _server, server_name):
+            report(
+                f"Building the {label} for {server_name} ({index + 1}/{total})...",
+                int(100 * index / max(1, total)),
+            )
+
+        with cancel_guard(claimed_task_id) as cancel:
+            cancel(force=True)
+            report = make_task_reporter(
+                task_id, task_type, f"Building the {label} playlist...",
+                prefix=f"{fallback_name.title().replace(' ', '')}-{task_id}",
+            )
+            servers, _results, failed = for_each_server_in_scope(
+                server_scope, build, on_server=on_server, cancel=cancel,
+            )
+
+        if failed and len(failed) == len(servers):
+            raise RuntimeError(
+                f"The {label} failed on every server: " + ", ".join(failed)
+            )
+        message = f"Created {created[0]} {label} playlist(s)."
+        if failed:
+            message += f" Failed on: {', '.join(failed)}."
+        summary = {
+            "message": message,
+            "servers_enabled": len(servers),
+            "playlists_created": created[0],
+            "failed": failed,
+        }
+        report(message, 100)
+        logger.info("The %s run finished: %s", label, summary)
+        return summary

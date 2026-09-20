@@ -116,8 +116,12 @@ Main Features:
   switched on and off from the Scheduled Tasks page only, like every other
   schedule, and without lyric themes the album is sequenced on audio alone.
 * run_album_of_the_week_task picks a random analysed seed per server and upserts
-  one playlist under a fixed name, so every run cleans and refills it. It raises
-  only when every server failed.
+  one playlist under a fixed name, so every run cleans and refills it. It owns
+  nothing but that choice of track ids: the per-server loop, the cancel check,
+  the reporter, the heartbeat, the empty-result and unsupported-backend rules
+  and the raise-only-when-every-server-failed verdict are the scaffold in
+  tasks.task_run.run_playlist_task_per_server, shared with the sonic
+  fingerprint.
 """
 
 import logging
@@ -1189,87 +1193,18 @@ def create_album_of_the_week():
 
 
 def run_album_of_the_week_task(server_scope="all"):
-    import time
+    from config import ALBUM_OF_THE_WEEK_PLAYLIST_NAME
+    from .task_run import run_playlist_task_per_server
 
-    from flask_app import app
-    from config import ALBUM_OF_THE_WEEK_PLAYLIST_NAME, QUEUE_WEDGED_MAIN_TASK_MINUTES
+    def build_ids():
+        album = create_album_of_the_week()
+        if not album:
+            return []
+        logger.info("The album of the week grew from seed %s.", album['seed']['label'])
+        return [track['item_id'] for track in album['tracks']]
 
-    from .mediaserver import create_or_replace_playlist
-    from .ivf_manager import create_playlist_from_ids
-
-    with app.app_context():
-        from .task_run import (
-            task_run_prologue, cancel_guard, make_task_reporter,
-            for_each_server_in_scope,
-        )
-        from .recovery import row_heartbeat, slow_step_budget_minutes
-
-        claimed_task_id, task_id = task_run_prologue()
-        created = [0]
-        current = ['resolving the server scope']
-
-        def build(_server, server_name):
-            current[0] = f"the album of the week for {server_name}"
-            with row_heartbeat(
-                claimed_task_id, lambda: current[0],
-                stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
-            ):
-                album = create_album_of_the_week()
-                if not album:
-                    logger.warning(
-                        "No album of the week could be built on %s; preserving the "
-                        "previous playlist.", server_name,
-                    )
-                    return None
-                track_ids = [track['item_id'] for track in album['tracks']]
-                try:
-                    if create_or_replace_playlist(
-                        ALBUM_OF_THE_WEEK_PLAYLIST_NAME, track_ids
-                    ) is None:
-                        raise RuntimeError(
-                            "Media server reported failure upserting the album of "
-                            "the week playlist"
-                        )
-                    name = ALBUM_OF_THE_WEEK_PLAYLIST_NAME
-                except NotImplementedError:
-                    name = f"Album of the Week (Cron {time.strftime('%Y-%m-%d')})"
-                    create_playlist_from_ids(name, track_ids)
-                created[0] += 1
-                logger.info(
-                    "Album of the week playlist '%s' upserted on %s with %d tracks (seed: %s).",
-                    name, server_name, len(track_ids), album['seed']['label'],
-                )
-                return name
-
-        def on_server(index, total, _server, server_name):
-            report(
-                f"Building the album of the week for {server_name} ({index + 1}/{total})...",
-                int(100 * index / max(1, total)),
-            )
-
-        with cancel_guard(claimed_task_id) as cancel:
-            cancel(force=True)
-            report = make_task_reporter(
-                task_id, 'album_of_the_week', "Building the album of the week playlist...",
-                prefix=f"AlbumOfTheWeek-{task_id}",
-            )
-            servers, _results, failed = for_each_server_in_scope(
-                server_scope, build, on_server=on_server, cancel=cancel,
-            )
-
-        if failed and len(failed) == len(servers):
-            raise RuntimeError(
-                "Album of the week failed on every server: " + ", ".join(failed)
-            )
-        message = f"Created {created[0]} album of the week playlist(s)."
-        if failed:
-            message += f" Failed on: {', '.join(failed)}."
-        summary = {
-            "message": message,
-            "servers_enabled": len(servers),
-            "playlists_created": created[0],
-            "failed": failed,
-        }
-        report(message, 100)
-        logger.info("Album of the week run finished: %s", summary)
-        return summary
+    return run_playlist_task_per_server(
+        'album_of_the_week', 'album of the week',
+        ALBUM_OF_THE_WEEK_PLAYLIST_NAME, 'Album of the Week',
+        build_ids, server_scope,
+    )

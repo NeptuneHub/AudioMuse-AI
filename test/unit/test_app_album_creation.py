@@ -276,7 +276,13 @@ class TestOffWithoutBothAnalyses:
         import ast
         import inspect
 
-        source = inspect.getsource(acm.create_album_of_the_week) + inspect.getsource(acm.run_album_of_the_week_task)
+        from tasks import task_run
+
+        source = (
+            inspect.getsource(acm.create_album_of_the_week)
+            + inspect.getsource(acm.run_album_of_the_week_task)
+            + inspect.getsource(task_run.run_playlist_task_per_server)
+        )
         names = {node.id for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Name)}
         attributes = {node.attr for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Attribute)}
         assert 'is_enabled' not in names | attributes

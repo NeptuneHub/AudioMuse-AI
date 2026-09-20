@@ -2806,12 +2806,7 @@ def list_pending_cron_retries(conn=None):
 
 
 def cron_retry_task_already_done(cron_task_type, first_blocked_at, conn=None):
-    queue_type = {
-        'analysis': 'main_analysis',
-        'clustering': 'main_clustering',
-        'sonic_fingerprint': 'sonic_fingerprint',
-        'album_of_the_week': 'album_of_the_week',
-    }.get(cron_task_type)
+    queue_type = task_types.CRON_TASK_TYPE_TO_QUEUE_TYPE.get(cron_task_type)
     if queue_type is None and task_types.matches(
         cron_task_type, prefixes=task_types.PREFIXES
     ):

@@ -27,6 +27,8 @@ it on every install. The order is pinned as a literal for that reason.
 Main Features:
 * The historical MAIN order and the index name it checksums are both unchanged
 * Every derived tuple equals the literal the queue shipped with
+* The cron tables derive from the registry, so the task type a blocked schedule
+  fails under and the one its retry looks for cannot describe different rows
 * config's copy is pinned by value because it may not import the registry
 * server_sweep is in the nudge set, which nothing asserted before
 * The registry stays free of project imports so it can hang below database
@@ -86,6 +88,47 @@ class TestEveryDerivedTupleMatchesWhatShipped:
             'this tuple only ever reaches SQL as a NOT IN list and a set issubset '
             'check, so its ORDER is free, but its membership decides which rows '
             'refuse a batch start'
+        )
+
+
+class TestTheCronTablesAreDerivedFromTheRegistry:
+    def test_the_queue_type_map_is_the_one_both_readers_shipped_with(self):
+        assert task_types.CRON_TASK_TYPE_TO_QUEUE_TYPE == {
+            'analysis': 'main_analysis',
+            'clustering': 'main_clustering',
+            'sonic_fingerprint': 'sonic_fingerprint',
+            'album_of_the_week': 'album_of_the_week',
+        }, (
+            'app_cron and database.cron_retry_task_already_done each held a copy '
+            'of this literal; a row failed under one task type while its retry '
+            'looked for a SUCCESS under another is exactly what that allowed'
+        )
+
+    def test_the_retry_tuple_is_the_same_set_as_the_map(self):
+        assert task_types.CRON_RETRY_TASK_TYPES == (
+            'analysis', 'clustering', 'sonic_fingerprint', 'album_of_the_week',
+        )
+
+    def test_every_queued_playlist_task_is_allowed_on_the_queue(self):
+        import taskqueue
+
+        assert task_types.CRON_QUEUED_TASKS == {
+            'sonic_fingerprint':
+                'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
+            'album_of_the_week':
+                'tasks.album_creation_manager.run_album_of_the_week_task',
+        }
+        for cron_type, dotted in task_types.CRON_QUEUED_TASKS.items():
+            assert dotted in taskqueue.ALLOWED_FUNCS, (
+                f'the cron branch enqueues {dotted} straight from the registry, so '
+                'a path the queue refuses would fail every run of that schedule'
+            )
+            assert task_types.CRON_TASK_TYPE_TO_QUEUE_TYPE[cron_type] == cron_type
+
+    def test_an_inline_cron_row_declares_no_queue_type(self):
+        assert 'alchemy_radio' not in task_types.CRON_TASK_TYPE_TO_QUEUE_TYPE, (
+            'the radio runs inline in Flask under its own name and never reaches '
+            'the queue, so it has no second name to map to'
         )
 
 
