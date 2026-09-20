@@ -40,6 +40,7 @@ PAGES = [
     ('/chat/', '#playlistForm'),
     ('/similarity', '#similarity-form'),
     ('/artist_similarity', '#artist-similarity-form'),
+    ('/album_creation', '#album-creation-form'),
     ('/path', '#path-form'),
     ('/alchemy', '#alchemy-form'),
     ('/clap_search', '#search-form'),

@@ -140,6 +140,7 @@ class TestEveryLongOpaquePhaseHasAHeartbeat:
             'main_clustering': ('tasks/clustering.py',),
             'cleaning': ('tasks/analysis/index.py', 'tasks/cleaning.py'),
             'sonic_fingerprint': ('tasks/sonic_fingerprint_manager.py',),
+            'album_of_the_week': ('tasks/album_creation_manager.py',),
             'provider_migration': ('tasks/provider_migration_tasks.py',),
             'server_sweep': ('tasks/multiserver_sync.py',),
             'plugin.': ('plugin/manager.py',),

@@ -2810,6 +2810,7 @@ def cron_retry_task_already_done(cron_task_type, first_blocked_at, conn=None):
         'analysis': 'main_analysis',
         'clustering': 'main_clustering',
         'sonic_fingerprint': 'sonic_fingerprint',
+        'album_of_the_week': 'album_of_the_week',
     }.get(cron_task_type)
     if queue_type is None and task_types.matches(
         cron_task_type, prefixes=task_types.PREFIXES

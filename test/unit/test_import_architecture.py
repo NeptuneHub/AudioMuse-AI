@@ -105,6 +105,7 @@ INDEPENDENT_GROUPS = [
         "app_alchemy",
         "app_map",
         "app_artist_similarity",
+        "app_album_creation",
         "app_clap_search",
         "app_lyrics",
         "app_sem_grove",

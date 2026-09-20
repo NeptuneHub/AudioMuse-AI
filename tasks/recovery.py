@@ -469,6 +469,16 @@ RECOVERY = {
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
     },
+    'album_of_the_week': {
+        MAIN_WORKER_DIED: handled(_RECLAIM),
+        MAIN_ROW_SILENT: handled(
+            _NUDGE + '; row_heartbeat covers create_album_of_the_week, which '
+            'writes no row between the start and the end of a server'
+        ),
+        CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
+        CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
+        GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
+    },
     'album_analysis': {
         MAIN_WORKER_DIED: not_applicable('this IS a child, not a main task'),
         MAIN_ROW_SILENT: not_applicable(

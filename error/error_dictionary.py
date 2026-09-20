@@ -81,6 +81,7 @@ ERR_PLUGIN_FAILED = 6007
 ERR_TASK_ENQUEUE_FAILED = 6008
 ERR_TASK_CANCEL_FAILED = 6009
 ERR_PLUGIN_DOWNLOAD_FAILED = 6010
+ERR_ALBUM_CREATION_FAILED = 6011
 
 ERR_TASK_IN_PROGRESS = 1201
 
@@ -360,6 +361,10 @@ ERROR_REGISTRY = {
             "with an error. The container log has the details."
         ),
         "http_status": 502,
+    },
+    ERR_ALBUM_CREATION_FAILED: {
+        "error_class": "Album Creation Error",
+        "default_message": "The album could not be created.",
     },
     ERR_TASK_IN_PROGRESS: {
         "error_class": "Task In Progress",

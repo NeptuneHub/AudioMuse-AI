@@ -49,6 +49,7 @@ import queue_names
 import task_types
 from error.error_dictionary import (
     ERR_ALBUM_ANALYSIS_FAILED,
+    ERR_ALBUM_CREATION_FAILED,
     ERR_ANALYSIS_FAILED,
     ERR_CLEANING_FAILED,
     ERR_CLUSTERING_FAILED,
@@ -80,6 +81,7 @@ TASK_FUNC_ERROR_CODES = {
     'tasks.multiserver_sync.sweep_server': ERR_SERVER_SYNC_FAILED,
     'tasks.multiserver_sync.sweep_all_secondary_servers': ERR_SERVER_SYNC_FAILED,
     'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task': ERR_SONIC_FINGERPRINT_FAILED,
+    'tasks.album_creation_manager.run_album_of_the_week_task': ERR_ALBUM_CREATION_FAILED,
     'tasks.provider_migration_tasks.execute_provider_migration': ERR_PROVIDER_MIGRATION_FAILED,
     'tasks.provider_migration_tasks.dry_run_provider_migration': ERR_PROVIDER_MIGRATION_FAILED,
     'tasks.provider_migration_tasks.source_refresh_provider_migration': (

@@ -58,6 +58,14 @@
 
         <div class="main-content" id="main-content">
             <button class="menu-toggle" type="button" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">&#9776;</button>
+            <div class="sidebar-actions">
+                <button type="button" id="dark-mode-toggle" class="sidebar-action" aria-pressed="false" aria-label="Toggle dark mode" title="Toggle dark mode">🌙</button>
+                {% if auth_enabled and setup_saved %}
+                <form id="logout-form" action="{{ url_for('logout_endpoint') }}" method="post">
+                    <button id="logout-btn" class="sidebar-action" type="submit" aria-label="Logout" title="Logout">🔓</button>
+                </form>
+                {% endif %}
+            </div>
             {#
               Scope of every functionality page, keyed by the `active` value the
               route already passes. Two scopes and only two:
@@ -90,6 +98,7 @@
                 'clap_search': 'server',
                 'recording_search': 'server',
                 'artist_similarity': 'server',
+                'album_creation': 'server',
                 'sonic_fingerprint': 'server',
                 'hyperbolic': 'server'
             } %}

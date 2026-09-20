@@ -56,6 +56,10 @@ UI_PLAYLIST_PREFIX = 'e2e-' + UI_PLAYLIST_STEM
 PICK_TIMEOUT_MS = 20000
 ANSWER_TIMEOUT_MS = 300000
 RENDER_TIMEOUT_S = 15
+ALBUM_OF_THE_WEEK_PLAYLIST = 'Album of the Week by AudioMuse-AI'
+CRON_TICK_TIMEOUT_S = 150
+CRON_PLAYLIST_TIMEOUT_S = 120
+CRON_QUIET_S = 75
 
 
 @pytest.fixture(scope='module')
@@ -359,6 +363,123 @@ def test_sonic_fingerprint(flow):
     assert 1 <= len(shown) <= 6
     page.locator('#fingerprint-radar').wait_for(state='visible', timeout=PICK_TIMEOUT_MS)
     _clean(problems, '/sonic_fingerprint')
+
+
+def test_album_creation(flow, lib):
+    page, problems = flow
+    seed = lib.track('B01')
+    _open(page, '/album_creation', '#album-creation-form')
+    assert page.locator('#create-album-btn').is_disabled()
+    page.locator('.seed-types button[data-seed="text"]').click()
+    assert page.locator('#seed-query-label').inner_text().strip() == 'Text search:'
+    assert not page.locator('#seed-hint').is_hidden()
+    page.locator('.seed-types button[data-seed="song"]').click()
+    assert page.locator('.seed-types button[data-seed="song"]').get_attribute('aria-pressed') == 'true'
+    _pick(page, page.locator('#seed_query'), page.locator('#seed-suggestions .autocomplete-item'), seed.title)
+    assert seed.title in page.locator('#seed-selected').inner_text()
+    assert page.locator('#create-album-btn').is_enabled()
+    answer = _submit(page, '#create-album-btn', '/api/album_creation/generate', 'POST')
+    tracks = answer['tracks']
+    shown = _shown(page, '#results-table-wrapper', len(tracks))
+    assert shown == _pairs(tracks), (shown, _pairs(tracks))
+    assert [seed.title, seed.artist] in shown, shown
+    badges = page.locator('#results-table-wrapper .similarity-badge').all_inner_texts()
+    assert len(badges) == len(tracks), badges
+    assert badges[:3] == ['Opener', 'Single', 'Single'] and badges[-1] == 'Closer', badges
+    assert set(badges[3:-1]) <= {'Track'}, badges
+    assert page.locator('#stat-tracks').inner_text().strip() == str(len(tracks))
+    page.locator('#playlist-creator').wait_for(state='visible', timeout=PICK_TIMEOUT_MS)
+    assert page.locator('#playlist_name').input_value() == answer['suggested_name']
+    _clean(problems, '/album_creation')
+
+
+@pytest.mark.skipif(bool(os.environ.get(ATTACH_ENV, '').strip()), reason='needs the harness Navidrome client, absent when attached to a held stack')
+def test_playlist_created_from_the_album_creation_page(flow, lib, navidrome):
+    page, problems = flow
+    _open(page, '/album_creation', '#album-creation-form')
+    _pick(page, page.locator('#seed_query'), page.locator('#seed-suggestions .autocomplete-item'), lib.track('B01').title)
+    answer = _submit(page, '#create-album-btn', '/api/album_creation/generate', 'POST')
+    page.locator('#playlist-creator').wait_for(state='visible', timeout=PICK_TIMEOUT_MS)
+    navidrome.delete_playlists_named(lambda candidate: candidate.startswith('e2e-ui-album'))
+    name = unique_name('ui-album')
+    page.fill('#playlist_name', name)
+    created = _submit(page, '#playlist-form button[type=submit]', '/api/create_playlist', 'POST')
+    try:
+        assert created.get('playlist_id'), created
+        assert navidrome.playlist_entry_ids(created['playlist_id']) == [track['item_id'] for track in answer['tracks']]
+        page.locator('#playlist-status.status-success').wait_for(state='visible', timeout=PICK_TIMEOUT_MS)
+    finally:
+        navidrome.delete_playlists_named(lambda candidate: candidate.startswith('e2e-ui-album'))
+    _clean(problems, '/album_creation')
+
+
+def _cron_row(api, task_type):
+    return next((row for row in api.json('GET', '/api/cron') if row['task_type'] == task_type), None)
+
+
+def _save_schedules(page, saved):
+    page.wait_for_function("!document.getElementById('save-btn').disabled", timeout=PICK_TIMEOUT_MS)
+    before = len(saved)
+    page.click('#save-btn')
+    deadline = time.monotonic() + RENDER_TIMEOUT_S * 2
+    while len(saved) == before and time.monotonic() < deadline:
+        page.wait_for_timeout(200)
+    assert saved[before:] == ['Saved'], saved
+
+
+@pytest.mark.skipif(bool(os.environ.get(ATTACH_ENV, '').strip()), reason='needs the harness API and Navidrome clients, absent when attached to a held stack')
+def test_album_of_the_week_is_scheduled_and_disabled_from_the_scheduled_tasks_page(flow, api, navidrome):
+    page, problems = flow
+    saved = []
+    page.on('dialog', lambda dialog: (saved.append(dialog.message), dialog.accept()))
+    api.wait_idle(180)
+    navidrome.delete_playlists_named(lambda name: name == ALBUM_OF_THE_WEEK_PLAYLIST)
+    stamped_before = (_cron_row(api, 'album_of_the_week') or {}).get('last_run')
+    try:
+        _open(page, '/cron', '#album-of-the-week-cron')
+        page.wait_for_function("!document.getElementById('save-btn').disabled", timeout=PICK_TIMEOUT_MS)
+        assert not page.is_checked('#album-of-the-week-enabled')
+        page.fill('#album-of-the-week-cron', '* * * * *')
+        page.check('#album-of-the-week-enabled')
+        _save_schedules(page, saved)
+        row = _cron_row(api, 'album_of_the_week')
+        assert row['enabled'] is True and row['cron_expr'] == '* * * * *', row
+        assert row['name'] == 'Album of the Week', row
+
+        deadline = time.monotonic() + CRON_TICK_TIMEOUT_S
+        while _cron_row(api, 'album_of_the_week').get('last_run') in (None, stamped_before):
+            assert time.monotonic() < deadline, 'the cron loop never fired the row scheduled from the page'
+            time.sleep(5)
+
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_function("!document.getElementById('save-btn').disabled", timeout=PICK_TIMEOUT_MS)
+        assert page.is_checked('#album-of-the-week-enabled'), 'the page does not show the schedule it saved'
+        assert page.input_value('#album-of-the-week-cron') == '* * * * *'
+        page.uncheck('#album-of-the-week-enabled')
+        page.fill('#album-of-the-week-cron', '30 0 * * 6')
+        _save_schedules(page, saved)
+        row = _cron_row(api, 'album_of_the_week')
+        assert row['enabled'] is False and row['cron_expr'] == '30 0 * * 6', row
+
+        deadline = time.monotonic() + CRON_PLAYLIST_TIMEOUT_S
+        playlist = navidrome.playlist_by_name(ALBUM_OF_THE_WEEK_PLAYLIST)
+        while playlist is None and time.monotonic() < deadline:
+            time.sleep(2)
+            playlist = navidrome.playlist_by_name(ALBUM_OF_THE_WEEK_PLAYLIST)
+        assert playlist is not None, [p.get('name') for p in navidrome.playlists()]
+        api.wait_idle(300)
+        entries = navidrome.playlist_entry_ids(playlist['id'])
+        assert 4 <= len(entries) <= 12 and len(entries) == len(set(entries)), entries
+
+        stamped_after = _cron_row(api, 'album_of_the_week')['last_run']
+        time.sleep(CRON_QUIET_S)
+        assert _cron_row(api, 'album_of_the_week')['last_run'] == stamped_after, 'the row kept firing after it was disabled from the page'
+    finally:
+        row = _cron_row(api, 'album_of_the_week')
+        if row and row['enabled']:
+            api.json('POST', '/api/cron', json={'id': row['id'], 'name': row['name'], 'task_type': row['task_type'], 'cron_expr': '30 0 * * 6', 'enabled': False})
+        navidrome.delete_playlists_named(lambda name: name == ALBUM_OF_THE_WEEK_PLAYLIST)
+    _clean(problems, '/cron')
 
 
 def test_library_browser_and_its_search(flow, lib, ui_golden):

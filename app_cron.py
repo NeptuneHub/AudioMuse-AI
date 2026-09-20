@@ -152,7 +152,7 @@ def get_cron_entries():
                     type: string
                   task_type:
                     type: string
-                    enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
+                    enum: [analysis, clustering, sonic_fingerprint, album_of_the_week, alchemy_radio]
                   cron_expr:
                     type: string
                     description: 5-field cron expression "min hour day month dow".
@@ -227,7 +227,7 @@ def save_cron_entry():
                 type: string
               task_type:
                 type: string
-                enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
+                enum: [analysis, clustering, sonic_fingerprint, album_of_the_week, alchemy_radio]
               cron_expr:
                 type: string
                 description: 5-field cron expression "min hour day month dow".
@@ -567,7 +567,7 @@ def _admit_and_enqueue_cron_job(job_id, task_type, enqueue, *, conn):
     return 'enqueued'
 
 
-_CRON_RETRY_TASK_TYPES = ('analysis', 'clustering', 'sonic_fingerprint')
+_CRON_RETRY_TASK_TYPES = ('analysis', 'clustering', 'sonic_fingerprint', 'album_of_the_week')
 
 # Plugin cron rows are not in the fixed tuple above (their task_type is the
 # plugin's own dotted path, not a fixed name), but they are still admitted
@@ -578,6 +578,7 @@ _CRON_TASK_TYPE_TO_QUEUE_TYPE = {
     'analysis': 'main_analysis',
     'clustering': 'main_clustering',
     'sonic_fingerprint': 'sonic_fingerprint',
+    'album_of_the_week': 'album_of_the_week',
 }
 
 
@@ -732,6 +733,23 @@ def _dispatch_cron_row(db, r):
             task_type,
             lambda job_id=job_id, server_scope=server_scope, task_type=task_type: taskqueue.enqueue(
                 'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
+                kwargs={'server_scope': server_scope},
+                task_id=job_id,
+                task_type=task_type,
+                queue=taskqueue.QUEUE_DEFAULT,
+                details={"message": _ENQUEUED_BY_CRON},
+                conn=db,
+            ),
+            conn=db,
+        )
+    elif task_type == 'album_of_the_week':
+        # Enqueued like the sonic fingerprint: it queries the similarity index
+        # once per server, which has no place on the 60s poll thread.
+        return _enqueue_cron_job(
+            job_id,
+            task_type,
+            lambda job_id=job_id, server_scope=server_scope, task_type=task_type: taskqueue.enqueue(
+                'tasks.album_creation_manager.run_album_of_the_week_task',
                 kwargs={'server_scope': server_scope},
                 task_id=job_id,
                 task_type=task_type,

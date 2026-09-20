@@ -1178,6 +1178,7 @@ def _register_blueprints(flask_app):
     from app_alchemy import alchemy_bp
     from app_map import map_bp
     from app_artist_similarity import artist_similarity_bp
+    from app_album_creation import album_creation_bp
     from app_clap_search import clap_search_bp
     from app_lyrics import lyrics_search_bp
     from app_sem_grove import sem_grove_bp
@@ -1195,7 +1196,8 @@ def _register_blueprints(flask_app):
     flask_app.register_blueprint(external_bp, url_prefix='/external')
     for blueprint in (
         clustering_bp, analysis_bp, cron_bp, ivf_bp, sonic_fingerprint_bp, path_bp,
-        alchemy_bp, map_bp, artist_similarity_bp, clap_search_bp, lyrics_search_bp,
+        alchemy_bp, map_bp, artist_similarity_bp, album_creation_bp, clap_search_bp,
+        lyrics_search_bp,
         sem_grove_bp, backup_bp, migration_bp, dashboard_bp, users_bp, sync_bp,
         music_servers_bp, hyperbolic_bp, recording_search_bp, models_bp,
     ):

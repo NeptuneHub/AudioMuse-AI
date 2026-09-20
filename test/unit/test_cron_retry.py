@@ -224,6 +224,7 @@ def test_queue_type_for_cron_task_type_passes_plugin_types_through():
     assert _queue_type_for_cron_task_type('analysis') == 'main_analysis'
     assert _queue_type_for_cron_task_type('clustering') == 'main_clustering'
     assert _queue_type_for_cron_task_type('sonic_fingerprint') == 'sonic_fingerprint'
+    assert _queue_type_for_cron_task_type('album_of_the_week') == 'album_of_the_week'
     assert _queue_type_for_cron_task_type('plugin.demo.sync') == 'plugin.demo.sync'
 
 

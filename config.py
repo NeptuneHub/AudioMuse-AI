@@ -48,7 +48,7 @@ TASK_STATUS_LIVE = (TASK_STATUS_NEW, TASK_STATUS_RUNNING)
 # for the cron scheduler and the manual start endpoints alike.
 QUEUE_BLOCKING_TASK_TYPES = (
     'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
-    'sonic_fingerprint',
+    'sonic_fingerprint', 'album_of_the_week',
 )
 
 # --- Media Server Type ---
@@ -1569,6 +1569,33 @@ SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", 
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
     "Sonic Fingerprint by AudioMuse-AI",
+)
+
+# --- Album Creation Constants ---
+# Tracks in a created album: the CD format measured on real albums (12 tracks, about 48 minutes).
+ALBUM_CREATION_TRACKS = int(os.environ.get("ALBUM_CREATION_TRACKS", "12"))
+# Share of MusiCNN in the space the album is measured in; the rest is DCLAP. Half and
+# half is calibrated: DCLAP alone knows an album's instruments and voices better
+# (it finds 55% more tracks of the same real album), MusiCNN alone keeps the genre
+# tighter, and the mix matches real albums on both. 1.0 turns DCLAP off.
+ALBUM_CREATION_MUSICNN_SHARE = float(os.environ.get("ALBUM_CREATION_MUSICNN_SHARE", "0.5"))
+# Target mean pairwise cosine between the album's tracks in that mixed space
+# (nearest-neighbour sets sit at 0.92). 0.86 is calibrated: there an album of several
+# artists matches real albums on instrument and voice coherence. Lower is more
+# eclectic and 0.80 already changes genre; on MusiCNN alone the same point is 0.90.
+ALBUM_CREATION_COHESION = float(os.environ.get("ALBUM_CREATION_COHESION", "0.86"))
+# Share of the candidates kept by what their lyrics are about: the tracks whose
+# lyrics embedding sits nearest the seed's. Real albums are only slightly tighter
+# in their lyrics than the same artist's other songs, so this is a preference and
+# not a rule: it applies while enough candidates remain, never to a track without
+# lyrics, and it does not change the sound of the album. Measured on 120 seeds it
+# lifts lyric cohesion from 0.16 to 0.21 (real albums sit at 0.22) and leaves the
+# audio measures untouched. 1.0 turns it off.
+ALBUM_CREATION_LYRIC_SHARE = float(os.environ.get("ALBUM_CREATION_LYRIC_SHARE", "0.25"))
+# Playlist the scheduled Album of the Week run cleans and refills on every server.
+ALBUM_OF_THE_WEEK_PLAYLIST_NAME = os.environ.get(
+    "ALBUM_OF_THE_WEEK_PLAYLIST_NAME",
+    "Album of the Week by AudioMuse-AI",
 )
 
 # --- Cron Scheduler Retry ---

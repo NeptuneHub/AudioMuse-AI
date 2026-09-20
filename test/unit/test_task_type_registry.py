@@ -46,10 +46,10 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 
 HISTORICAL_MAIN_TASK_TYPES = (
     'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
-    'sonic_fingerprint',
+    'sonic_fingerprint', 'album_of_the_week',
 )
 
-HISTORICAL_MAIN_INDEX_NAME = 'idx_task_status_one_live_main_5d694b56'
+HISTORICAL_MAIN_INDEX_NAME = 'idx_task_status_one_live_main_632c3608'
 
 
 class TestTheOneLiveMainIndexDoesNotMove:

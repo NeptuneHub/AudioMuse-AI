@@ -36,6 +36,7 @@ Each chapter follows the same structure:
 15. [Database Cleaning](#15-database-cleaning)
 16. [Scheduled Tasks (Cron)](#16-scheduled-tasks-cron)
 17. [Search by Recording](#17-search-by-recording)
+18. [Album Creation](#18-album-creation)
 
 ---
 
@@ -2172,7 +2173,7 @@ Scheduled Tasks run the long jobs automatically.
 1. An admin opens **Administration > Scheduled Tasks**. Each supported task type
    has a cron expression field and an Enable checkbox.
 2. The supported types are **analysis**, **clustering**, **sonic fingerprint**,
-   **alchemy radio**, and any task a plugin has registered.
+   **album of the week**, **alchemy radio**, and any task a plugin has registered.
 3. The user enters an expression, for example `0 2 * * 0-5` for weeknights at 2
    am, enables it and saves. An expression that could never fire is rejected
    before it is stored as enabled.
@@ -2194,21 +2195,22 @@ same as when they are started from the page.
 3. **Atomic claim.** A row that matches is claimed atomically for its wall-clock
    minute. This is what makes a restart, or a second web process, unable to
    double-fire the same schedule.
-4. **Enqueue the batch work.** Analysis, clustering, sonic fingerprint and plugin
-   tasks are **enqueued** as queue jobs, so a slow media server cannot swallow a
+4. **Enqueue the batch work.** Analysis, clustering, sonic fingerprint, album of
+   the week and plugin tasks are **enqueued** as queue jobs, so a slow media server cannot swallow a
    scheduling window or block the other schedules. The **alchemy radio** is the
    exception: it is an online feature that queries the in-memory similarity index,
    which only the Flask process loads, so the tick runs it inline right there. It
    still gets a task row (STARTED, then SUCCESS or FAILURE) and so stays visible
    in the task panel; the cost is that the poll thread waits for the run, which is
    the accepted trade for a schedule that fires once a day.
-5. **Queue guard.** Analysis, clustering, sonic fingerprint, plugin tasks (and,
+5. **Queue guard.** Analysis, clustering, sonic fingerprint, album of the week,
+   plugin tasks (and,
    when started manually, cleaning and provider migration) are mutually
    exclusive: a scheduled run is skipped while any other queue-guard task is
    still queued or running, so a schedule cannot pile heavy runs on top of each
    other.
 6. **Retry on conflict.** A skipped scheduled run (analysis, clustering, sonic
-   fingerprint or a plugin task) is recorded in a `cron_retry` list instead of
+   fingerprint, album of the week or a plugin task) is recorded in a `cron_retry` list instead of
    being dropped silently. The cron thread re-attempts it every
    `CRON_RETRY_INTERVAL_MINUTES` (clamped below `CRON_RETRY_MAX_MINUTES`), up to
    `CRON_RETRY_MAX_MINUTES` after the first block; once the guard clears it
@@ -2235,6 +2237,8 @@ Cron reuses the defaults of the tasks it starts:
   AI naming settings: used to compose the scheduled clustering job.
 - `SONIC_FINGERPRINT_CRON_PLAYLIST_NAME`: the stable playlist name used by the
   scheduled sonic fingerprint.
+- `ALBUM_OF_THE_WEEK_PLAYLIST_NAME`: the stable playlist name used by the
+  scheduled album of the week.
 - `CRON_RETRY_MAX_MINUTES`: how long a scheduled run blocked by the queue guard
   waits in the retry list before it is recorded as skipped.
 - `CRON_RETRY_INTERVAL_MINUTES`: how often the cron thread re-attempts blocked
@@ -2597,3 +2601,163 @@ address, a reverse proxy, or `http://localhost:8000` on the server itself.
 - `RECORDING_SEARCH_TARGET_LEVEL_DB` (-14): RMS level the clip is normalised to.
 - `RECORDING_SEARCH_WARMUP_DURATION` (300): idle seconds before the neural
   fingerprint pack and its encoder session unload from the web process.
+
+---
+
+## 18. Album Creation
+
+Album Creation turns one seed into a CD-format album: a short, ordered track list
+that behaves like a real album instead of a list of nearest neighbours.
+
+### 18.1. Functional Analysis (High-Level)
+
+1. The user opens **Album Creation** (the entry under Artist Similarity) and
+   picks the kind of seed: a **song**, chosen from the search box for the
+   selected music server, or a **description** of a few words such as "jazz with
+   trumpet". The description box offers example queries and the same concept
+   refinement the DCLAP search page has, so an instrument or a voice can be
+   asked for explicitly.
+2. **Create Album Proposal** returns 12 tracks (about 48 minutes) in running
+   order, with the role of the key slots (Opener, the two Singles, Closer), the
+   album length, the number of artists and the cohesion reached. The tracks are
+   chosen with both the MusiCNN and the DCLAP analysis of every song, so the
+   album agrees on its instruments and voices as well as on its genre.
+3. A song seed stays in the album, in the slot that fits it. A description is
+   turned into a point in the DCLAP audio space, and every genre or instrument
+   it names is then checked against the candidates by the index that knows it.
+4. No artist gets more than `MAX_SONGS_PER_ARTIST` tracks. Only one version of a
+   song gets in. Live,
+   demo, remix and skit tracks never do, and neither does an alternate rendition
+   named in a title suffix (acoustic, instrumental, extended mix, session,
+   outtake); a remaster, a mono, single or radio cut is the song itself and
+   stays. Holiday songs stay out unless it is December or the seed itself is a
+   holiday song.
+5. The album stays in the seed's world: tracks within 15 years of the seed, of
+   album length (100 seconds to 10 minutes), with a tagged artist and with
+   lyrics about what the seed is about are preferred while enough of them
+   remain, so a small or untagged library still gets its album. A description
+   has no year of its own, so its era comes from the median year of its best
+   matches. A sung album takes at most two instrumentals, and an instrumental
+   album at most two sung tracks.
+6. **Create Playlist on Media Server** sends the album, in order, to the selected
+   server through the same route every other page uses.
+7. The scheduled **Album of the Week** creates one album per music server from a
+   random analysed song and writes it to one fixed playlist name, which every run
+   cleans and refills.
+
+The page is PER SERVER and uses the lyric themes, so the menu entry, the page and
+its API are off while `LYRICS_ENABLED` is off. The Album of the Week schedule is
+not behind that flag or any other: like every other schedule it is switched on
+and off only from **Administration > Scheduled Tasks**, and without lyric themes
+the album is sequenced on audio alone.
+
+### 18.2. Technical Analysis (Algorithm-Level)
+
+All of it lives in `tasks/album_creation_manager.py`; `app_album_creation.py`
+only parses the request and scopes the answer to a server.
+
+1. **Why not plain similar songs.** Measured on 12,668 real studio albums, the
+   mean pairwise cosine of an album's MusiCNN embeddings is 0.80 (0.67 to 0.89
+   between the 10th and the 90th percentile). The top 12 neighbours of a song sit
+   at 0.95: more alike than any real album.
+2. **Two indexes, one space.** MusiCNN and DCLAP disagree usefully: over 20,000
+   random pairs their cosines correlate at 0.72 only. Measured against real
+   albums, DCLAP is the better judge of what belongs together (given one track
+   of a real album, 26.7% of the album's other tracks are in its top 100 against
+   MusiCNN's 17.3%) and it hears a voice far better (0.97 AUC against 0.91 when
+   telling sung tracks from instrumental ones), while MusiCNN keeps the genre
+   tighter. Both vectors are therefore scaled by the square root of their share
+   (`ALBUM_CREATION_MUSICNN_SHARE`, half each) and joined into one vector, so a
+   cosine in that space is exactly the weighted average of the two cosines and
+   every later step runs on one space. A library analysed before DCLAP, or a
+   share of 1.0, builds the album on MusiCNN alone.
+3. **A description, word by word.** The words are matched against the 50
+   analysis tags and the DCLAP concept dictionary. A genre word is scored from
+   the analysis tags, which owe nothing to DCLAP and so cannot be diluted by it;
+   an instrument word from the DCLAP concepts, validated against tracks that
+   name the instrument in their own title (piano 0.91, cello 0.89, trumpet 0.83,
+   choir 0.83 AUC). Each named word also queries the DCLAP index on its own,
+   because the text point for "rock with piano" lands among pianos and the pool
+   would otherwise hold no rock at all. The attributes then take turns narrowing
+   the candidates, in `ALBUM_CREATION` terms `ATTRIBUTE_PASSES` rounds, because
+   whichever one narrows first otherwise wins outright: instrument first scored
+   instrument 100 and genre 33, genre first the reverse, taking turns 99 and 95.
+   Concepts picked in the page steer the query point as well.
+4. **Candidate pool.** The songs come from the similar-song engine
+   (`find_nearest_neighbors_by_vector`, without its per-artist cap), so they are
+   limited to the selected server and its duplicate removal has already run. The
+   first query takes 150 neighbours of the seed vector; one hop follows,
+   querying 100 neighbours around the 4 tracks farthest from the seed. The DCLAP
+   index adds 150 more neighbours of the seed's DCLAP vector, filtered through
+   the same per-server availability rule, because that index answers to whoever
+   queries it and does not scope itself. On real albums the MusiCNN pool held
+   2.4 of the album's own other tracks and the two indexes together hold 3.8.
+   When the DCLAP index is not loaded the pool is the MusiCNN one.
+5. **The target is calibrated, not copied.** A real album is one artist. The
+   same 0.80 between DIFFERENT artists is a change of genre: at that target a
+   Nick Drake seed gave indie rock, a Battisti seed ambient piano and Billie
+   Jean 2020s hip-hop. The target is therefore calibrated against real albums on
+   the DCLAP concept model, which names instruments and voices: at 0.86 in the
+   mixed space a created album holds its instruments together as tightly as a
+   real album (0.79 against 0.79) and its voices as tightly (0.82 against 0.81),
+   while 0.90 in the same space overshoots both. On MusiCNN alone the same point
+   is 0.90.
+6. **Selection.** A guided greedy picks the tracks: every step samples up to 48
+   allowed candidates and keeps the one that brings the mean pairwise cosine
+   closest to the target. A candidate below cosine 0.75 from any chosen track is
+   only used when nothing else is left, so the album makes sense as a whole and
+   not only on average.
+7. **Preferences and the other voice.** Tagged artists, album length and the seed's era (15 years either way,
+   which halves the year span at no cost in coherence) are applied in turn, each
+   only while three albums' worth of candidates remain. Then what the songs are
+   ABOUT: of the candidates that have lyrics, only the
+   `ALBUM_CREATION_LYRIC_SHARE` nearest the seed in the lyrics embedding stay.
+   Real albums are only slightly tighter in their lyrics than the same artist's
+   other songs (they beat a random set of songs 98% of the time, their own
+   artist's other songs only 59%), so this is a preference and never a rule: a
+   track without lyrics is never judged by it. Measured on 120 seeds it lifts
+   lyric cohesion from 0.16 to 0.21, where real albums sit at 0.22 and random
+   songs at 0.13, and leaves every audio measure unchanged. Giving the lyrics a
+   share of the mixed vector instead was tried and made the album worse on every
+   count, because the target had to be loosened to make room for them. At most two tracks may
+   be sung in an instrumental album or the other way round. Sung or instrumental
+   is a vote of each track's 10 nearest pool neighbours in the DCLAP space,
+   never its own lyrics flag: 4 in 10 tracks without lyrics are sung songs whose
+   lyrics are missing, and the raw flag built albums out of exactly those.
+8. **Intensity.** The arc is driven by one composite: 60% the mood scores
+   (party, aggressive and danceable minus relaxed and sad), 30% energy and 10%
+   tempo. The mood scores are centred per song first, because the raw scores
+   share one factor that follows the release year. The tempo is folded into one
+   octave (70 to 140 BPM), because the detector often doubles it.
+9. **Sequencing.** The roles follow what real albums measure. The closer is the
+   calmest, longest, least typical track, often without lyrics or with inward
+   ones. Slots two and three take the most intense and most typical tracks. The
+   opener is a short quiet intro when the dominant genre is hip-hop, R&B, metal
+   or electronic, and a strong track otherwise. The middle declines in intensity
+   and its lyrics turn inward. Two calm tracks are never adjacent while a gap is
+   free, none sits next to a calm closer, and two tracks of one artist are pulled
+   apart whenever another track can take the place.
+10. **Album of the Week.** `run_album_of_the_week_task` runs once per server
+   through the shared per-server loop, cancel check, heartbeat and reporter. It
+   samples random analysed songs available on that server, builds the album from
+   the first one that works and calls `create_or_replace_playlist` with
+   `ALBUM_OF_THE_WEEK_PLAYLIST_NAME`. When nothing could be built the previous
+   playlist is kept. It fails only when every server failed.
+
+### 18.3. Environment Variable Configuration
+
+- `ALBUM_CREATION_TRACKS`: tracks in a created album (default `12`).
+- The pool starts at `POOL_FIRST_QUERY` and widens to `POOL_MAX_QUERY` (2000 to
+  4000 for a description) until three albums' worth of candidates survive.
+- `ALBUM_CREATION_MUSICNN_SHARE`: share of MusiCNN in the space the album is
+  measured in, the rest being DCLAP (default `0.5`; `1.0` turns DCLAP off).
+- `ALBUM_CREATION_LYRIC_SHARE`: share of the candidates kept by what their
+  lyrics are about (default `0.25`; `1.0` turns it off).
+- `ALBUM_CREATION_COHESION`: target mean pairwise cosine of the album in that
+  space (default `0.86`, the calibrated value; lower is more eclectic and 0.80
+  already changes genre).
+- `ALBUM_OF_THE_WEEK_PLAYLIST_NAME`: the fixed playlist the scheduled run cleans
+  and refills.
+- `MAX_SONGS_PER_ARTIST`: the shared per-artist cap.
+- `LYRICS_ENABLED`: must be on for the page, its API and its menu entry. It does
+  not touch the schedule.

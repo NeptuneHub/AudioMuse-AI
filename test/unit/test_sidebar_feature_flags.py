@@ -20,11 +20,12 @@ import re
 
 _ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-_ENTRIES = {
-    'clap_enabled': 'Text Search (DCLAP)',
-    'lyrics_enabled': 'Lyrics Search',
-    'neural_enabled': 'Search by Recording',
-}
+_ENTRIES = (
+    ('clap_enabled', 'Text Search (DCLAP)'),
+    ('lyrics_enabled', 'Lyrics Search'),
+    ('lyrics_enabled', 'Album Creation'),
+    ('neural_enabled', 'Search by Recording'),
+)
 
 
 def _read(*parts):
@@ -34,7 +35,7 @@ def _read(*parts):
 
 def test_each_switchable_page_is_guarded_by_its_flag_in_the_sidebar():
     sidebar = _read('templates', 'sidebar_navi.html')
-    for flag, label in _ENTRIES.items():
+    for flag, label in _ENTRIES:
         lines = [line for line in sidebar.splitlines() if f'>{label}</a>' in line]
         assert len(lines) == 1, label
         assert re.search(r'\{%\s*if\s+' + flag + r'\s*%\}.*' + re.escape(label) + r'.*\{%\s*endif\s*%\}', lines[0]), (flag, label)

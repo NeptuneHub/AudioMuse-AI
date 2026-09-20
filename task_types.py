@@ -90,6 +90,8 @@ ALL = (
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('sonic_fingerprint', ROLE_MAIN, queue='default',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
+    TaskType('album_of_the_week', ROLE_MAIN, queue='default',
+             holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('server_sweep', ROLE_MAIN, queue='high',
              watched_by_nudge=True, blocks_starts=True, self_managed=True),
     TaskType('alchemy_radio', ROLE_INLINE, self_managed=True),
