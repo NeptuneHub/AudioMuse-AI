@@ -118,6 +118,7 @@ ERA_WINDOW_YEARS = 15
 ERA_SAMPLE = 50
 OTHER_VOICE_CAP = 2
 VOICE_NEIGHBOURS = 10
+VOICE_BLOCK = 256
 PREFERENCE_HEADROOM = 3
 WEEKLY_SEED_SAMPLE = 25
 
@@ -620,13 +621,17 @@ def median_year(tracks):
 
 def other_voices(units, query_unit, has_lyrics):
     flags = np.asarray(has_lyrics, dtype=np.float32)
-    wanted = min(VOICE_NEIGHBOURS, len(units) - 1)
+    total = len(units)
+    wanted = min(VOICE_NEIGHBOURS, total - 1)
     if wanted < 1:
-        return [False] * len(units)
-    similarity = units @ units.T
-    np.fill_diagonal(similarity, -np.inf)
-    nearest = np.argpartition(-similarity, wanted - 1, axis=1)[:, :wanted]
-    sung = flags[nearest].mean(axis=1) >= 0.5
+        return [False] * total
+    sung = np.empty(total, dtype=bool)
+    for start in range(0, total, VOICE_BLOCK):
+        block = -(units[start:start + VOICE_BLOCK] @ units.T)
+        rows = np.arange(len(block))
+        block[rows, start + rows] = np.inf
+        nearest = np.argpartition(block, wanted - 1, axis=1)[:, :wanted]
+        sung[start:start + len(block)] = flags[nearest].mean(axis=1) >= 0.5
     around_seed = np.argsort(-(units @ query_unit))[:ANCHOR_NEAREST]
     seed_is_sung = 2 * float(flags[around_seed].sum()) >= len(around_seed)
     return [bool(differs) for differs in sung != seed_is_sung]
@@ -753,11 +758,6 @@ def _rank_product(columns, size):
     for column in columns:
         product = product * np.maximum(column, 1e-6)
     return product
-
-
-def attribute_scores(tracks, tags, concepts):
-    columns = attribute_columns(tracks, tags, concepts)
-    return _rank_product(columns, len(tracks)) if columns else None
 
 
 def enough_artists(tracks, indexes):

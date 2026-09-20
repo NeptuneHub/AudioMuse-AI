@@ -89,6 +89,11 @@ def _track(item_id, vector, title=None, author=None, **extra):
     return track
 
 
+def _attribute_ranking(tracks, tags, concepts):
+    columns = acm.attribute_columns(tracks, tags, concepts)
+    return acm._rank_product(columns, len(tracks)) if columns else None
+
+
 class TestDedupKeysAndHygiene:
     def test_a_bracketed_or_dashed_suffix_is_the_same_song(self):
         plain = acm.song_key('Heroes', 'David Bowie')
@@ -1005,22 +1010,22 @@ class TestTheDescriptionSeed:
             _track('b', np.ones(DIM), mood_vector='jazz:0.2,rock:0.9'),
             _track('c', np.ones(DIM), mood_vector='jazz:0.5,rock:0.5'),
         ]
-        product = acm.attribute_scores(tracks, ['jazz'], [])
+        product = _attribute_ranking(tracks, ['jazz'], [])
         assert list(np.argsort(-product)) == [0, 2, 1]
-        assert acm.attribute_scores(tracks, [], []) is None
+        assert _attribute_ranking(tracks, [], []) is None
 
     def test_an_instrument_is_scored_by_the_dclap_concepts(self):
         tracks = [_track(name, np.ones(DIM)) for name in ('a', 'b', 'c')]
         module = MagicMock()
         module.concept_scores.return_value = {'trumpet': np.array([0.1, 0.9, 0.5])}
         with patch.dict('sys.modules', {'tasks.clap_steering': module}):
-            product = acm.attribute_scores(tracks, [], ['trumpet'])
+            product = _attribute_ranking(tracks, [], ['trumpet'])
         assert list(np.argsort(-product)) == [1, 2, 0]
         assert module.concept_scores.call_args[0][1] == ['trumpet']
 
     def test_a_track_without_a_dclap_vector_turns_the_instrument_off(self):
         tracks = [_track('a', np.ones(DIM)), _track('b', np.ones(DIM), clap=None)]
-        assert acm.attribute_scores(tracks, [], ['trumpet']) is None
+        assert _attribute_ranking(tracks, [], ['trumpet']) is None
 
     def test_only_the_best_ranked_candidates_stay(self, monkeypatch):
         monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
@@ -1200,7 +1205,7 @@ class TestTheReviewFindings:
             _track('b', np.ones(DIM), mood_vector='House:0.10,pop:0.90'),
             _track('c', np.ones(DIM), mood_vector='House:0.50,pop:0.50'),
         ]
-        assert list(np.argsort(-acm.attribute_scores(tracks, ['House'], []))) == [0, 2, 1]
+        assert list(np.argsort(-_attribute_ranking(tracks, ['House'], []))) == [0, 2, 1]
 
     def test_a_word_that_is_both_a_tag_and_a_concept_counts_once(self, monkeypatch):
         monkeypatch.setattr(config, 'MOOD_LABELS', ['guitar', 'rock'])
@@ -1229,6 +1234,35 @@ class TestTheReviewFindings:
         assert acm.other_voices(units, units[0], flags)[0] is False
         lonely = acm.unit_rows(_cluster(rng, 1, 0.05))
         assert acm.other_voices(lonely, lonely[0], [True]) == [False]
+
+    def test_the_voice_vote_reads_the_same_however_the_rows_are_blocked(self, monkeypatch):
+        rng = np.random.default_rng(23)
+        units = acm.unit_rows(_cluster(rng, 30, 0.2, axis=0) + _cluster(rng, 30, 0.2, axis=1))
+        flags = [True] * 30 + [False] * 30
+        whole = acm.other_voices(units, units[0], flags)
+        assert any(whole) and not all(whole)
+        monkeypatch.setattr(acm, 'VOICE_BLOCK', 7)
+        assert acm.other_voices(units, units[0], flags) == whole
+
+    def test_the_voice_vote_never_builds_a_square_matrix_of_the_whole_pool(self, monkeypatch):
+        shapes = []
+        real = np.argpartition
+
+        def watched(array, kth, axis=None):
+            shapes.append(array.shape)
+            return real(array, kth, axis=axis)
+
+        monkeypatch.setattr(np, 'argpartition', watched)
+        monkeypatch.setattr(acm, 'VOICE_BLOCK', 8)
+        rng = np.random.default_rng(24)
+        units = acm.unit_rows(_cluster(rng, 40, 0.2, axis=0) + _cluster(rng, 40, 0.2, axis=1))
+        acm.other_voices(units, units[0], [True] * 40 + [False] * 40)
+        assert shapes and max(shape[0] for shape in shapes) <= 8, (
+            'the neighbour search used to hand argpartition the whole N x N matrix, '
+            'which it answers with an N x N int64 array of its own: 256 MB of '
+            'transient at a 4000-track text pool, inside the Flask request'
+        )
+        assert all(shape[1] == 80 for shape in shapes)
 
 
 class TestTheWideningPool:

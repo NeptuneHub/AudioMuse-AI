@@ -38,7 +38,9 @@ MAIN_FEATURES_MARKER = 'Main Features:'
 MAX_DOCSTRING_CHARS = 2500
 COMMENT_EXEMPT_GLOBS = ('app*.py', 'config.py')
 PRAGMA_RE = re.compile(
-    r'^#\s*(?:noqa|pragma|nosec|type:|fmt:|isort:|black:|pylint:|mypy:|ruff:|coding[:=])'
+    r'\b(?:noqa|pragma|nosec|nosonar|type:\s*ignore|fmt:\s*(?:off|on)'
+    r'|isort:|black:|pylint:|mypy:|ruff:|coding[:=])',
+    re.IGNORECASE,
 )
 
 
@@ -89,7 +91,7 @@ def _body_comments(source):
         if token.type != tokenize.COMMENT or token.start[0] <= header_end:
             continue
         text = token.string.strip()
-        if PRAGMA_RE.match(text):
+        if PRAGMA_RE.search(text):
             continue
         found.append((token.start[0], text))
     return found
@@ -183,5 +185,6 @@ def test_no_comments_below_the_header():
         'explains the module and the code explains itself. Only '
         + ', '.join(COMMENT_EXEMPT_GLOBS)
         + ' may carry body comments, plus tool pragmas (noqa / pragma / nosec / '
-        'type: / fmt: / isort:) anywhere:\n  ' + '\n  '.join(failures)
+        'NOSONAR / type: ignore / fmt: / isort:), which may sit anywhere in the '
+        'comment:\n  ' + '\n  '.join(failures)
     )

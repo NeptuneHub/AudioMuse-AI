@@ -23,26 +23,25 @@ Main Features:
   worker's terminal write and the migration handshake recovery. It must run
   AFTER the terminal row is committed: record_task_history rolls back on
   failure, and in the worker that rollback used to undo the verdict itself.
-* stage_pending_task_row is the one way to stage a placeholder row that a later
-  taskqueue.enqueue on the same transaction adopts (returns True only for a row
-  this call created).
+* stage_pending_task_row is the one way to stage a placeholder row a later
+  taskqueue.enqueue on the same transaction adopts (True only for a row this
+  call created).
 * MAIN_TASK_START_LOCK_KEY serializes the whole check-cleanup-claim sequence a
-  main-task start runs. It is SESSION scoped on purpose: clean_up_previous_main
-  _tasks commits in the middle of that sequence, and a transaction lock would be
-  released by that commit, reopening the very gap it closes.
-* The start filters come from task_types. sonic_fingerprint is deliberately not
-  a blocking type, so a running fingerprint no longer refuses an analysis or a
-  clustering over the same catalogue, and the rows that may never refuse a batch
-  start (restart handshake, inline radio, migration PLANNER) are machinery, not
-  catalogue work. server_sweep and the plugin tasks DO block, because they write
-  the mappings a cleaning or a migration rewrites; excluding nothing at all is
-  what once made a restart handshake answer 409 to a cleaning the user asked for.
+  main-task start runs. It is SESSION scoped on purpose: the cleanup commits in
+  the middle of that sequence, and a transaction lock would be released by that
+  commit, reopening the very gap it closes.
+* The start filters come from task_types: sonic_fingerprint is deliberately not
+  blocking, so a fingerprint no longer refuses an analysis or a clustering over
+  the same catalogue, and the rows that may never refuse a batch start (restart
+  handshake, inline radio, migration PLANNER) are machinery, not catalogue work.
+  server_sweep and the plugin tasks DO block, since they write the mappings a
+  cleaning or a migration rewrites; excluding nothing at all once made a restart
+  handshake answer 409 to a cleaning the user had just asked for.
 * _CONNECT_OPTIONS goes on every app connection: statement_timeout caps a
   runaway query at 10 minutes, and max_parallel_workers_per_gather=0 forces
   SERIAL plans - a parallel plan allocates a dynamic shared-memory segment in
-  /dev/shm, which is small by default in containers, so a big scan such as the
-  analysis work map died with DiskFull; a serial plan spills to ordinary temp
-  files and runs on any cluster.
+  /dev/shm, small by default in containers, so a big scan such as the analysis
+  work map died with DiskFull; a serial plan spills to ordinary temp files.
 * Embedding, projection, and alchemy CRUD shared by workers and the web app.
 """
 
