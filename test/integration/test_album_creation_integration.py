@@ -258,7 +258,7 @@ def test_dclap_puts_tracks_in_the_album_that_musicnn_alone_would_never_pick(albu
     seed = acm.load_tracks(['fp_1_010'])[0]
     assert seed['clap'] is not None and seed['clap'].shape == (_CLAP_DIM,)
     hidden = {f"fp_9_{number:03d}" for number in range(_HIDDEN - 2)}
-    assert hidden <= {track['item_id'] for track in acm.candidate_pool(seed['vector'], {}, seed['clap'])}
+    assert hidden <= {track['item_id'] for track in acm.candidate_pool(seed['vector'], {}, seed['clap'])[0]}
     assert hidden & {track['item_id'] for track in _create('song', item_id='fp_1_010')['tracks']}
     monkeypatch.setattr(config, 'ALBUM_CREATION_MUSICNN_SHARE', 1.0)
     audio_only = _create('song', item_id='fp_1_010')
@@ -272,10 +272,10 @@ def test_the_dclap_half_of_the_pool_is_scoped_to_the_bound_server(album_library)
     seed = acm.load_tracks(['fp_1_010'])[0]
     elsewhere = {f"fp_9_{number:03d}" for number in range(_HIDDEN - 2, _HIDDEN)}
     with registry.bind(registry.get_server('srv-a')):
-        on_default = {track['item_id'] for track in acm.candidate_pool(seed['vector'], {}, seed['clap'])}
+        on_default = {track['item_id'] for track in acm.candidate_pool(seed['vector'], {}, seed['clap'])[0]}
     assert not elsewhere & on_default
     with registry.bind(registry.get_server('srv-b')):
-        on_second = {track['item_id'] for track in acm.candidate_pool(seed['vector'], {}, seed['clap'])}
+        on_second = {track['item_id'] for track in acm.candidate_pool(seed['vector'], {}, seed['clap'])[0]}
     assert on_second == set(registry.translate_ids(list(on_second), 'srv-b'))
 
 

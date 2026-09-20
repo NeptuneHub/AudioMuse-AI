@@ -6,7 +6,7 @@
 <li><a href="{{ url_for('chat_bp.chat_home') }}" {% if active == 'chat' %}class="active"{% endif %}>Instant Playlist</a></li>
 <li><a href="{{ url_for('ivf_bp.similarity_page') }}" {% if active == 'similarity' %}class="active"{% endif %}>Playlist from Similar Song</a></li>
 <li><a href="{{ url_for('artist_similarity_bp.artist_similarity_page') }}" {% if active == 'artist_similarity' %}class="active"{% endif %}>Artist Similarity</a></li>
-{% if lyrics_enabled %}<li><a href="{{ url_for('album_creation_bp.album_creation_page') }}" {% if active == 'album_creation' %}class="active"{% endif %}>Album Creation</a></li>{% endif %}
+{% if lyrics_enabled and clap_enabled %}<li><a href="{{ url_for('album_creation_bp.album_creation_page') }}" {% if active == 'album_creation' %}class="active"{% endif %}>Album Creation</a></li>{% endif %}
 <li><a href="{{ url_for('path_bp.path_page') }}" {% if active == 'path' %}class="active"{% endif %}>Song Path</a></li>
 <li><a href="{{ url_for('alchemy_bp.alchemy_page') }}" {% if active == 'alchemy' %}class="active"{% endif %}>Song Alchemy</a></li>
 {% if clap_enabled %}<li><a href="{{ url_for('clap_search_bp.clap_search_page') }}" {% if active == 'clap_search' %}class="active"{% endif %}>Text Search (DCLAP)</a></li>{% endif %}

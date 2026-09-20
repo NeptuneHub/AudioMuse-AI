@@ -453,7 +453,7 @@ def library(monkeypatch):
     by_id = {track['item_id']: track for track in tracks}
     monkeypatch.setattr(acm, '_axis_index', lambda: {})
     monkeypatch.setattr(acm, 'load_tracks', lambda ids, axis_index=None: [by_id[i] for i in ids if i in by_id])
-    monkeypatch.setattr(acm, 'candidate_pool', lambda query, axis_index=None, clap_query=None, first=0: list(tracks))
+    monkeypatch.setattr(acm, 'candidate_pool', lambda query, axis_index=None, clap_query=None, first=0, carried=None: (list(tracks), None))
     monkeypatch.setattr(config, 'ALBUM_CREATION_TRACKS', 12)
     monkeypatch.setattr(config, 'ALBUM_CREATION_COHESION', 0.90)
     monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST', 3)
@@ -671,7 +671,7 @@ class TestCreateAlbum:
     def test_an_unknown_seed_or_a_desert_around_it_is_a_not_found(self, library, monkeypatch):
         with pytest.raises(acm.AlbumSeedNotFound):
             self._create(item_id='fp_missing')
-        monkeypatch.setattr(acm, 'candidate_pool', lambda query, axis_index=None, clap_query=None, first=0: [])
+        monkeypatch.setattr(acm, 'candidate_pool', lambda query, axis_index=None, clap_query=None, first=0, carried=None: ([], None))
         with pytest.raises(acm.AlbumSeedNotFound):
             self._create(item_id='fp_000')
 
@@ -697,7 +697,7 @@ class TestThePool:
         monkeypatch.setattr(acm, 'ensure_ivf_index_loaded', lambda: True)
         monkeypatch.setattr(acm, 'find_nearest_neighbors_by_vector', engine)
         monkeypatch.setattr(acm, 'load_tracks', lambda ids, axis_index=None: [_track(i, vectors[i]) for i in ids])
-        pool = acm.candidate_pool(vectors['id0'], {})
+        pool, _carried = acm.candidate_pool(vectors['id0'], {})
         assert calls[0] == (acm.POOL_FIRST_QUERY, False)
         assert len(calls) == 1 + acm.POOL_HOPS * acm.POOL_FRONTIER
         assert all(call == (acm.POOL_HOP_QUERY, False) for call in calls[1:])
@@ -729,7 +729,8 @@ class TestThePool:
             return ['clap1', 'clap2']
 
         monkeypatch.setattr(acm, 'clap_song_ids', clap_ids)
-        ids = [track['item_id'] for track in acm.candidate_pool(np.ones(DIM), {}, np.ones(4))]
+        pool, _carried = acm.candidate_pool(np.ones(DIM), {}, np.ones(4))
+        ids = [track['item_id'] for track in pool]
         assert asked == [acm.POOL_CLAP_QUERY]
         assert {'clap1', 'clap2'} <= set(ids) and 'audio0' in ids
 
@@ -737,7 +738,8 @@ class TestThePool:
         self._engine(monkeypatch, {})
         calls = []
         monkeypatch.setattr(acm, 'clap_song_ids', lambda vector, count: calls.append(vector) or [])
-        ids = [track['item_id'] for track in acm.candidate_pool(np.ones(DIM), {}, None)]
+        pool, _carried = acm.candidate_pool(np.ones(DIM), {}, None)
+        ids = [track['item_id'] for track in pool]
         assert calls == [None] and 'audio0' in ids
 
     def test_dclap_ids_are_scoped_to_the_server_before_they_join_the_pool(self, monkeypatch):
@@ -1070,9 +1072,9 @@ class TestTheAdaptivePool:
     def test_the_pool_widens_until_enough_candidates_survive(self, monkeypatch):
         asked = []
 
-        def pool(query, axis_index=None, clap_query=None, first=0):
+        def pool(query, axis_index=None, clap_query=None, first=0, carried=None):
             asked.append(first)
-            return [_track('id%d' % n, np.ones(DIM)) for n in range(first // 10)]
+            return [_track('id%d' % n, np.ones(DIM)) for n in range(first // 10)], carried
 
         monkeypatch.setattr(acm, 'candidate_pool', pool)
         found = acm.gather_candidates(self._seed(), {}, False, 36)
@@ -1082,9 +1084,9 @@ class TestTheAdaptivePool:
     def test_it_stops_at_the_ceiling_instead_of_looping(self, monkeypatch):
         asked = []
 
-        def pool(query, axis_index=None, clap_query=None, first=0):
+        def pool(query, axis_index=None, clap_query=None, first=0, carried=None):
             asked.append(first)
-            return [_track('id0', np.ones(DIM))]
+            return [_track('id0', np.ones(DIM))], carried
 
         monkeypatch.setattr(acm, 'candidate_pool', pool)
         found = acm.gather_candidates(self._seed(), {}, False, 36)
@@ -1099,6 +1101,7 @@ class TestTheAdaptivePool:
             return ['id%d' % n for n in range(count // 100)]
 
         monkeypatch.setattr(acm, 'text_pool_ids', ids)
+        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
         monkeypatch.setattr(
             acm, 'load_tracks',
             lambda item_ids, axis_index=None: [_track(i, np.ones(DIM)) for i in item_ids],
@@ -1123,7 +1126,7 @@ class TestConceptRefinement:
                 acm, '_text_embedding',
                 lambda query, steering=None: np.full(4, 2.0 if steering else 1.0, dtype=np.float32),
             )
-            built = seed('pop with viola', {}, [{'term': 'harp', 'direction': 'more', 'weight': 3.0}])
+            built = seed('pop with viola', [{'term': 'harp', 'direction': 'more', 'weight': 3.0}])
         assert built['concepts'] == ['viola', 'harp']
         assert float(built['clap_query'][0]) == 2.0
 
@@ -1131,7 +1134,7 @@ class TestConceptRefinement:
         monkeypatch.setattr(config, 'MOOD_LABELS', ['pop'])
         monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
         monkeypatch.setattr(acm, '_text_embedding', lambda query, steering=None: np.ones(4, dtype=np.float32))
-        built = acm._text_seed('pop album', {}, [{'term': 'choir', 'direction': 'less', 'weight': 3.0}])
+        built = acm._text_seed('pop album', [{'term': 'choir', 'direction': 'less', 'weight': 3.0}])
         assert built['concepts'] == []
 
 
@@ -1184,3 +1187,71 @@ class TestTheArtistHeadroom:
     def test_the_cap_being_off_asks_nothing_of_the_artists(self, monkeypatch):
         monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST', 0)
         assert acm.enough_artists(self._pool(['Only Band']), [0, 1, 2])
+
+
+class TestTheReviewFindings:
+    def test_a_mixed_case_genre_tag_is_read_with_the_case_the_database_stores(self, monkeypatch):
+        monkeypatch.setattr(config, 'MOOD_LABELS', ['House', 'Hip-Hop', 'Progressive rock'])
+        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
+        assert acm.named_attributes('house with piano') == (['House'], [])
+        assert acm.named_attributes('hip-hop album') == (['Hip-Hop'], [])
+        tracks = [
+            _track('a', np.ones(DIM), mood_vector='House:0.90,pop:0.10'),
+            _track('b', np.ones(DIM), mood_vector='House:0.10,pop:0.90'),
+            _track('c', np.ones(DIM), mood_vector='House:0.50,pop:0.50'),
+        ]
+        assert list(np.argsort(-acm.attribute_scores(tracks, ['House'], []))) == [0, 2, 1]
+
+    def test_a_word_that_is_both_a_tag_and_a_concept_counts_once(self, monkeypatch):
+        monkeypatch.setattr(config, 'MOOD_LABELS', ['guitar', 'rock'])
+        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: ['guitar', 'piano'])
+        tags, concepts = acm.named_attributes('rock with guitar')
+        assert tags == ['guitar', 'rock'] and concepts == []
+
+    def test_a_text_seed_survives_a_pool_without_dclap_vectors(self, library, monkeypatch):
+        monkeypatch.setattr(config, 'ALBUM_CREATION_MUSICNN_SHARE', 1.0)
+        monkeypatch.setattr(acm, '_text_embedding', lambda query, steering=None: np.ones(4, dtype=np.float32))
+        monkeypatch.setattr(acm, 'text_pool_ids', lambda embedding, count: [t['item_id'] for t in library])
+        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
+        album = acm.create_album(acm.SEED_TEXT, query='anything at all',
+                                 rng=np.random.default_rng(2), today=date(2026, 6, 1))
+        assert len(album['tracks']) == 12
+
+    def test_a_dash_suffix_padded_with_extra_spaces_is_still_one_song(self):
+        plain = acm.song_key('Hey Jude', 'The Beatles')
+        assert acm.song_key('Hey Jude  -  Remastered 2015', 'The Beatles') == plain
+        assert not acm.has_clean_title(_track('x', np.ones(DIM), title='Hey Jude  -  Live Version'), False)
+
+    def test_a_track_never_votes_on_its_own_voice(self):
+        rng = np.random.default_rng(21)
+        units = acm.unit_rows(_cluster(rng, 11, 0.05, axis=0) + _cluster(rng, 11, 0.05, axis=1))
+        flags = [False] + [True] * 10 + [True] * 11
+        assert acm.other_voices(units, units[0], flags)[0] is False
+        lonely = acm.unit_rows(_cluster(rng, 1, 0.05))
+        assert acm.other_voices(lonely, lonely[0], [True]) == [False]
+
+
+class TestTheWideningPool:
+    def test_a_widened_pool_asks_only_for_what_it_does_not_have(self, monkeypatch):
+        asked, loaded = [], []
+
+        def engine(vector, n, eliminate_duplicates):
+            asked.append(n)
+            return [{'item_id': 'id%03d' % i} for i in range(n)]
+
+        monkeypatch.setattr(acm, 'ensure_ivf_index_loaded', lambda: True)
+        monkeypatch.setattr(acm, 'find_nearest_neighbors_by_vector', engine)
+        monkeypatch.setattr(acm, 'clap_song_ids', lambda vector, count: [])
+        monkeypatch.setattr(acm, 'POOL_HOPS', 0)
+        monkeypatch.setattr(
+            acm, 'load_tracks',
+            lambda ids, axis_index=None: loaded.append(list(ids)) or [
+                _track(item_id, np.ones(DIM)) for item_id in ids
+            ],
+        )
+        first, carried = acm.candidate_pool(np.ones(DIM), {}, None, 10)
+        assert len(first) == 10 and loaded[-1] == ['id%03d' % i for i in range(10)]
+        wider, carried = acm.candidate_pool(np.ones(DIM), {}, None, 25, carried)
+        assert len(wider) == 25
+        assert loaded[-1] == ['id%03d' % i for i in range(10, 25)]
+        assert [track['item_id'] for track in wider] == ['id%03d' % i for i in range(25)]

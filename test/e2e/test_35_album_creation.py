@@ -98,8 +98,10 @@ def test_the_proposal_becomes_a_playlist_in_running_order(stack, api, library, n
 def test_a_description_seed_answers_or_explains_itself(stack, api, library, analyzed_library):
     api.post('/api/clap/warmup', json={}, timeout=300)
     response = api.post(GENERATE, json={'seed_type': 'text', 'query': 'calm piano music'}, timeout=300)
-    assert response.status_code in (200, 400, 404), response.text
-    if response.status_code == 200:
-        _check_album(response.json(), 'text')
-    else:
-        assert response.json()['error']
+    if response.status_code != 200:
+        assert 'DCLAP' in response.json()['error'], response.text
+        pytest.skip('this stack serves no DCLAP index, so a text seed cannot be built')
+    album = _check_album(response.json(), 'text')
+    assert response.json()['seed'] == {'type': 'text', 'label': 'calm piano music'}
+    assert response.json()['suggested_name'] == 'Calm piano music'
+    assert album

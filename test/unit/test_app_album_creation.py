@@ -134,7 +134,7 @@ class TestThePage:
                        "clap_search_bp.top_queries_api"):
             assert widget in page, widget
         for gone in ('data-seed="album"', 'data-seed="artist"', 'search_albums_endpoint',
-                     'search_artists_endpoint'):
+                     'search_artists_endpoint', 'album or artist'):
             assert gone not in page, gone
 
     def test_the_layout_marks_the_page_per_server(self):
@@ -144,7 +144,7 @@ class TestThePage:
         lines = _read('templates', 'sidebar_navi.html').splitlines()
         index = next(i for i, line in enumerate(lines) if '>Artist Similarity</a>' in line)
         assert '>Album Creation</a>' in lines[index + 1]
-        assert lines[index + 1].startswith('{% if lyrics_enabled %}')
+        assert lines[index + 1].startswith('{% if lyrics_enabled and clap_enabled %}')
         assert lines[index + 1].endswith('{% endif %}')
 
     def test_the_blueprint_is_registered_by_the_app(self):
@@ -252,9 +252,10 @@ class TestGenerate:
         assert all(track['top_genre'] == 'rock' for track in body['tracks'])
 
 
-class TestOffWhileLyricsAreOff:
-    def test_the_api_answers_400_and_touches_nothing(self, client, created, monkeypatch):
-        monkeypatch.setattr(config, 'LYRICS_ENABLED', False)
+class TestOffWithoutBothAnalyses:
+    @pytest.mark.parametrize('off', ['LYRICS_ENABLED', 'CLAP_ENABLED'])
+    def test_the_api_answers_400_and_touches_nothing(self, client, created, monkeypatch, off):
+        monkeypatch.setattr(config, off, False)
         for response in (
             _generate(client, {'seed_type': 'song', 'item_id': '1'}),
             _generate(client, {'seed_type': 'text', 'query': 'jazz with trumpet'}),

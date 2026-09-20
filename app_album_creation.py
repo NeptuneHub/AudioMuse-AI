@@ -24,8 +24,10 @@ Main Features:
 * PER SERVER: the generated tracks are limited to the server picked in the
   sidebar (the default one when none is given), and every returned id is that
   server's own provider id, ready for `/api/create_playlist`.
-* Off together with the lyrics analysis (LYRICS_ENABLED), which the sequencing
-  needs: the page says so and the API answers 400.
+* Off unless BOTH analyses are on: the lyric themes (LYRICS_ENABLED) that the
+  sequencing needs and DCLAP (CLAP_ENABLED) that the mixed space and the text
+  seed need. The menu entry, the page and the API all follow; the schedule does
+  not, like every other schedule.
 """
 
 from flask import Blueprint, jsonify, render_template, request
@@ -47,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 album_creation_bp = Blueprint('album_creation_bp', __name__, template_folder='templates')
 
-_DISABLED = 'Album Creation is disabled because lyrics analysis is turned off.'
+_DISABLED = 'Album Creation is disabled: it needs both the lyrics analysis and DCLAP.'
 
 
 class _UnknownConcept(ValueError):
@@ -158,6 +160,8 @@ def generate_album_endpoint():
         album = album_manager.create_album(seed_type, **seed)
         tracks = app_helper.attach_song_features(album['tracks'])
         tracks = app_server_context.scope_results(tracks, None, id_key='item_id')
+        if len(tracks) != len(album['tracks']):
+            _restate(album, tracks)
         for slot, track in enumerate(tracks, start=1):
             track['slot'] = slot
         album['tracks'] = tracks
@@ -180,6 +184,22 @@ def generate_album_endpoint():
         return json_exception(
             exc, ERR_ALBUM_CREATION_FAILED, "An unexpected error occurred while creating the album.",
         )
+
+
+def _restate(album, tracks):
+    logger.info(
+        "%d of %d album tracks are not on the selected server; restating the album.",
+        len(album['tracks']) - len(tracks), len(album['tracks']),
+    )
+    seconds = sum(track.get('duration') or 0.0 for track in tracks)
+    album['stats']['minutes'] = int(round(seconds / 60.0))
+    album['stats']['artists'] = len({(track.get('author') or '').strip().lower() for track in tracks})
+    album['stats'].pop('cohesion', None)
+    for track in tracks:
+        track['role'] = album_manager.ROLE_TRACK
+    if tracks:
+        tracks[0]['role'] = album_manager.ROLE_OPENER
+        tracks[-1]['role'] = album_manager.ROLE_CLOSER
 
 
 def _seed_arguments(seed_type, data):

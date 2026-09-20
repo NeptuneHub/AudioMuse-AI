@@ -181,14 +181,26 @@ def test_one_tick_runs_the_album_of_the_week_and_the_next_refills_it(stack, api,
                 break
             assert time.monotonic() < deadline, f'the cron loop did not fire within {TICK_TIMEOUT}s: {entry}'
             time.sleep(5)
-        _save(api, 'album_of_the_week', 'e2e album tick', NIGHTLY, False, row_id=entry['id'])
         playlist = _wait_for_playlist(navidrome, CRON_ALBUM_PLAYLIST)
         assert playlist is not None, [p.get('name') for p in navidrome.playlists()]
         api.wait_idle(300)
         entries = navidrome.playlist_entry_ids(playlist['id'])
         assert 4 <= len(entries) <= 12 and len(entries) == len(set(entries)), entries
+
+        fired_once = _by_type(api)['album_of_the_week'].get('last_run')
+        deadline = time.monotonic() + TICK_TIMEOUT
+        while True:
+            entry = _by_type(api)['album_of_the_week']
+            if entry.get('last_run') not in (None, fired_once):
+                break
+            assert time.monotonic() < deadline, f'the second tick never fired: {entry}'
+            time.sleep(5)
+        _save(api, 'album_of_the_week', 'e2e album tick', NIGHTLY, False, row_id=entry['id'])
+        api.wait_idle(300)
         named = [p for p in navidrome.playlists() if p.get('name') == CRON_ALBUM_PLAYLIST]
         assert len(named) == 1, [p.get('name') for p in navidrome.playlists()]
+        refilled = navidrome.playlist_entry_ids(named[0]['id'])
+        assert 4 <= len(refilled) <= 12 and len(refilled) == len(set(refilled)), refilled
         album_rows = rows(db, "SELECT status FROM task_status WHERE task_type = 'album_of_the_week' ORDER BY timestamp DESC LIMIT 1")
         assert all(row[0] == 'SUCCESS' for row in album_rows), album_rows
         assert rows(db, 'SELECT count(*) FROM cron_retry')[0][0] == 0

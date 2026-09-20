@@ -90,7 +90,9 @@ Main Features:
   tracks without lyrics are sung songs whose lyrics are simply missing, and the
   raw flag built albums out of exactly those. The vote runs on DCLAP where it is
   available, because DCLAP hears a voice far better than MusiCNN does (it tells
-  sung tracks from instrumental ones with 0.97 AUC against MusiCNN's 0.91).
+  sung tracks from instrumental ones with 0.97 AUC against MusiCNN's 0.91). The
+  track itself is excluded from its own vote, which is the whole point of asking
+  the neighbours.
 * Dedup on top of the engine's: one version per song (title without its
   bracketed suffix or year tag + artist), no live, demo, remix or skit tracks,
   no alternate rendition named in a title suffix (acoustic, instrumental,
@@ -108,8 +110,9 @@ Main Features:
 * Intensity is led by the mood scores, centred per song because the raw scores
   share one factor that tracks the release year. Energy is a minor term and the
   tempo a smaller one, folded into one octave because the detector doubles it.
-* The page and its API use the lyric themes, so is_enabled turns them off while
-  LYRICS_ENABLED is off. The schedule is NOT behind that flag or any other: it is
+* The page and its API need both analyses: the lyric themes for the sequencing
+  and DCLAP for the mixed space and the text seed, so is_enabled turns them off
+  unless LYRICS_ENABLED and CLAP_ENABLED are both on, and the menu entry follows. The schedule is NOT behind that flag or any other: it is
   switched on and off from the Scheduled Tasks page only, like every other
   schedule, and without lyric themes the album is sequenced on audio alone.
 * run_album_of_the_week_task picks a random analysed seed per server and upserts
@@ -192,17 +195,17 @@ VOICE_NEIGHBOURS = 10
 PREFERENCE_HEADROOM = 3
 WEEKLY_SEED_SAMPLE = 25
 
-_BRACKETED = re.compile(r"[\(\[].*?[\)\]]")
-_DASH_SUFFIX = re.compile(r"\s+-\s+.*$")
+_BRACKETED = re.compile(r"[\(\[][^\)\]]*[\)\]]")
+_DASH_SUFFIX = re.compile(r"\s+-\s+[^\n]*$")
 _NOT_WORD = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACES = re.compile(r"\s+")
 _YEAR_TAG = re.compile(r"\s+(?:['\N{RIGHT SINGLE QUOTATION MARK}]\d{2}|(?:19|20)\d{2})\s*$")
 _VERSION_TITLE = re.compile(
-    r"\b(live|demo|remix|rmx|karaoke|rehearsal|skit|interlude|intro|outro|reprise|"
-    r"alternate|dal vivo)\b|\btake \d",
+    r"(?:\b(?:live|demo|remix|rmx|karaoke|rehearsal|skit|interlude|intro|outro|"
+    r"reprise|alternate|dal vivo)\b|\btake \d)",
     re.IGNORECASE,
 )
-_TITLE_SUFFIX = re.compile(r"[\(\[]([^\)\]]*)[\)\]]|\s+-\s+(.*)$")
+_TITLE_SUFFIX = re.compile(r"[\(\[]([^\)\]]*)[\)\]]|\s+-\s+([^\n]*)$")
 _ALTERNATE_SUFFIX = re.compile(
     r"\b(mix|mixed|edit|version|ver|instrumental|acoustic|a ?capp?ella|sessions?|outtake|"
     r"commentary|interview|show|concert|stripped|orchestral|symphonic|extended|dub|unplugged|"
@@ -312,7 +315,7 @@ def _axis_index():
 
         return {label: index for index, (_axis, label) in enumerate(axis_columns())}
     except Exception:
-        logger.info("Lyric themes are unavailable; album sequencing runs on audio alone.")
+        logger.exception("Lyric themes are unavailable; album sequencing runs on audio alone")
         return {}
 
 
@@ -691,7 +694,12 @@ def median_year(tracks):
 
 def other_voices(units, query_unit, has_lyrics):
     flags = np.asarray(has_lyrics, dtype=np.float32)
-    nearest = np.argsort(-(units @ units.T), axis=1)[:, :VOICE_NEIGHBOURS + 1]
+    wanted = min(VOICE_NEIGHBOURS, len(units) - 1)
+    if wanted < 1:
+        return [False] * len(units)
+    similarity = units @ units.T
+    np.fill_diagonal(similarity, -np.inf)
+    nearest = np.argpartition(-similarity, wanted - 1, axis=1)[:, :wanted]
     sung = flags[nearest].mean(axis=1) >= 0.5
     around_seed = np.argsort(-(units @ query_unit))[:ANCHOR_NEAREST]
     seed_is_sung = 2 * float(flags[around_seed].sum()) >= len(around_seed)
@@ -719,7 +727,7 @@ def keep_lyric_neighbours(tracks, lyric_query, needed):
     if len(sung) < needed:
         return tracks
     scores = unit_rows([track['lyrics'] for track in sung]) @ unit_rows([lyric_query])[0]
-    floor = float(np.quantile(scores, 1.0 - share)) if share > 0.0 else float(scores.max())
+    floor = float(np.quantile(scores, 1.0 - share))
     near = {track['item_id'] for track, score in zip(sung, scores) if score >= floor}
     silent = [track['item_id'] for track in tracks if track['lyrics'] is None]
     near.update(silent[:int(round(share * len(silent)))])
@@ -750,11 +758,17 @@ def _song_seed(item_id, axis_index):
     }
 
 
+def _as_words(text):
+    return _SPACES.sub(' ', _NOT_WORD.sub(' ', str(text or '').lower())).strip()
+
+
 def tag_vocabulary():
-    return sorted(
-        {str(label).strip().lower() for label in config.MOOD_LABELS if str(label).strip()},
-        key=len, reverse=True,
-    )
+    labels = {}
+    for label in config.MOOD_LABELS:
+        spelled = _as_words(label)
+        if spelled:
+            labels.setdefault(spelled, str(label).strip())
+    return sorted(labels.items(), key=lambda pair: len(pair[0]), reverse=True)
 
 
 def concept_vocabulary():
@@ -768,15 +782,17 @@ def concept_vocabulary():
 
 
 def named_attributes(query):
-    words = ' ' + _SPACES.sub(' ', _NOT_WORD.sub(' ', (query or '').lower())).strip() + ' '
-    tags, concepts, taken = [], [], words
-    for label in tag_vocabulary():
-        if f' {label} ' in taken:
+    taken = ' ' + _as_words(query) + ' '
+    tags, concepts = [], []
+    for spelled, label in tag_vocabulary():
+        if f' {spelled} ' in taken:
             tags.append(label)
-            taken = taken.replace(f' {label} ', ' ')
+            taken = taken.replace(f' {spelled} ', ' ')
     for term in concept_vocabulary():
-        if f' {term.lower()} ' in f' {words.strip()} ':
+        spelled = _as_words(term)
+        if spelled and f' {spelled} ' in taken:
             concepts.append(term)
+            taken = taken.replace(f' {spelled} ', ' ')
     return tags, concepts
 
 
@@ -806,14 +822,16 @@ def attribute_columns(tracks, tags, concepts):
     return columns
 
 
-def attribute_scores(tracks, tags, concepts):
-    columns = attribute_columns(tracks, tags, concepts)
-    if not columns:
-        return None
-    product = np.ones(len(tracks))
+def _rank_product(columns, size):
+    product = np.ones(size)
     for column in columns:
         product = product * np.maximum(column, 1e-6)
     return product
+
+
+def attribute_scores(tracks, tags, concepts):
+    columns = attribute_columns(tracks, tags, concepts)
+    return _rank_product(columns, len(tracks)) if columns else None
 
 
 def enough_artists(tracks, indexes):
@@ -835,12 +853,10 @@ def keep_named_attributes(tracks, tags, concepts, needed):
     for _pass in range(ATTRIBUTE_PASSES):
         for column in columns:
             wanted = max(target, int(round(len(kept) * step)))
-            narrowed = sorted(kept, key=lambda index: -column[index])[:wanted]
+            narrowed = sorted(kept, key=lambda index, scores=column: -scores[index])[:wanted]
             if len(narrowed) >= needed and enough_artists(tracks, narrowed):
                 kept = narrowed
-    product = np.ones(len(tracks))
-    for column in columns:
-        product = product * np.maximum(column, 1e-6)
+    product = _rank_product(columns, len(tracks))
     keep = max(needed, ATTRIBUTE_KEEP)
     best = sorted(kept, key=lambda index: -product[index])[:keep]
     return [tracks[index] for index in sorted(best)]
@@ -878,7 +894,7 @@ def _text_embedding(query, steering=None):
     return np.asarray(embedding, dtype=np.float32).reshape(-1)
 
 
-def _text_seed(query, axis_index, steering=None):
+def _text_seed(query, steering=None):
     words = (query or '').split()
     if not words:
         raise AlbumSeedError("Describe the album you want in a few words.")
@@ -910,12 +926,12 @@ def resolve_seed(seed_type, item_id=None, query=None, axis_index=None, steering=
     if seed_type == SEED_SONG:
         return _song_seed(item_id, axis_index)
     if seed_type == SEED_TEXT:
-        return _text_seed(query, axis_index, steering)
+        return _text_seed(query, steering)
     raise AlbumSeedError("Unknown seed type; expected one of: " + ", ".join(SEED_TYPES) + ".")
 
 
 def is_enabled():
-    return bool(config.LYRICS_ENABLED)
+    return bool(config.LYRICS_ENABLED and config.CLAP_ENABLED)
 
 
 def similar_song_ids(vector, count):
@@ -957,12 +973,18 @@ def clap_song_ids(vector, count):
     return available_ids([row['item_id'] for row in found])
 
 
-def candidate_pool(query_vector, axis_index=None, clap_query=None, first=POOL_FIRST_QUERY):
+def candidate_pool(query_vector, axis_index=None, clap_query=None, first=POOL_FIRST_QUERY,
+                   carried=None):
     if not ensure_ivf_index_loaded():
         raise RuntimeError("The similarity index is not loaded; run the analysis first.")
-    seen = dict.fromkeys(similar_song_ids(query_vector, first))
-    seen.update(dict.fromkeys(clap_song_ids(clap_query, min(first, POOL_CLAP_QUERY))))
-    tracks = load_tracks(list(seen), axis_index)
+    seen, tracks = (carried if carried is not None else (dict(), []))
+    fresh = [item_id for item_id in similar_song_ids(query_vector, first) if item_id not in seen]
+    fresh += [
+        item_id for item_id in clap_song_ids(clap_query, min(first, POOL_CLAP_QUERY))
+        if item_id not in seen and item_id not in set(fresh)
+    ]
+    seen.update(dict.fromkeys(fresh))
+    tracks = tracks + load_tracks(fresh, axis_index)
     query_unit = unit_rows([query_vector])[0]
     frontier = tracks
     for _ in range(POOL_HOPS):
@@ -981,7 +1003,7 @@ def candidate_pool(query_vector, axis_index=None, clap_query=None, first=POOL_FI
         seen.update(dict.fromkeys(fresh))
         frontier = load_tracks(fresh, axis_index)
         tracks.extend(frontier)
-    return tracks
+    return tracks, (seen, tracks)
 
 
 def _public_track(track, slot, role):
@@ -1000,13 +1022,14 @@ def _public_track(track, slot, role):
     }
 
 
-def text_pool_ids_for(seed, first):
+def text_pool_ids_for(seed, first, seen=None):
     named = seed.get('named_queries') or []
     ids = list(text_pool_ids(seed['clap_query'], first))
     share = max(first // 2, POOL_FIRST_QUERY)
     for embedding in named:
         ids.extend(text_pool_ids(embedding, share))
-    return list(dict.fromkeys(ids))
+    known = seen if seen is not None else set()
+    return [item_id for item_id in dict.fromkeys(ids) if item_id not in known]
 
 
 def seed_unit(seed, tracks, units, clap_vectors):
@@ -1014,11 +1037,13 @@ def seed_unit(seed, tracks, units, clap_vectors):
         return mixed_rows(
             [seed['query']], None if clap_vectors is None else [seed['clap_query']]
         )[0]
-    nearest = unit_rows([track['clap'] for track in tracks]) @ unit_rows([seed['clap_query']])[0]
+    if clap_vectors is None or seed['clap_query'] is None:
+        return units[0]
+    nearest = unit_rows(clap_vectors) @ unit_rows([seed['clap_query']])[0]
     return units[int(np.argmax(nearest))]
 
 
-def _voice_query(seed, tracks, clap_vectors):
+def _voice_query(seed, clap_vectors):
     if seed['clap_query'] is not None:
         return unit_rows([seed['clap_query']])[0]
     return unit_rows(clap_vectors)[0]
@@ -1028,11 +1053,16 @@ def gather_candidates(seed, axis_index, holiday_allowed, needed):
     skipped = seed['excluded_ids'] | {track['item_id'] for track in seed['required']}
     first = POOL_FIRST_QUERY if seed['type'] == SEED_SONG else TEXT_POOL_QUERY
     ceiling = POOL_MAX_QUERY if seed['type'] == SEED_SONG else TEXT_POOL_MAX
+    carried, text_seen, found = None, set(), []
     while True:
         if seed['type'] == SEED_TEXT:
-            found = load_tracks(text_pool_ids_for(seed, first), axis_index)
+            wanted = text_pool_ids_for(seed, first, text_seen)
+            text_seen.update(wanted)
+            found = found + load_tracks(wanted, axis_index)
         else:
-            found = candidate_pool(seed['query'], axis_index, seed['clap_query'], first)
+            found, carried = candidate_pool(
+                seed['query'], axis_index, seed['clap_query'], first, carried
+            )
         clean = [
             track for track in found
             if track['item_id'] not in skipped and has_clean_title(track, holiday_allowed)
@@ -1080,7 +1110,7 @@ def create_album(seed_type, item_id=None, query=None, steering=None, rng=None, t
     units = mixed_rows([track['vector'] for track in tracks], clap_vectors)
     query_unit = seed_unit(seed, tracks, units, clap_vectors)
     voice_units = units if clap_vectors is None else unit_rows(clap_vectors)
-    voice_query = query_unit if clap_vectors is None else _voice_query(seed, tracks, clap_vectors)
+    voice_query = query_unit if clap_vectors is None else _voice_query(seed, clap_vectors)
     chosen = select_album_tracks(
         units,
         query_unit,

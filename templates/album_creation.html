@@ -82,7 +82,7 @@
             font-weight: 700;
             color: var(--text-title);
             line-height: 1.1;
-            word-break: break-word;
+            overflow-wrap: break-word;
         }
         #album-seed-line {
             font-size: 0.875rem;
@@ -96,12 +96,12 @@
 <section>
     <header class="page-header">
         <h1>AudioMuse-AI - Album Creation</h1>
-        <p>Pick one song, album or artist and get a {{ album_tracks }}-track album, sequenced like a real one.</p>
+        <p>Pick a song or describe what you want, and get a {{ album_tracks }}-track album, sequenced like a real one.</p>
     </header>
 
     {% if not album_creation_enabled %}
     <div id="album-creation-disabled" class="status-error" style="padding: 0.75rem; border-radius: 0.375rem; text-align: center;">
-        Album Creation needs the lyrics analysis, which is turned off (LYRICS_ENABLED). Enable it in the Setup Wizard to use this page.
+        Album Creation needs both the lyrics analysis (LYRICS_ENABLED) and DCLAP (CLAP_ENABLED). Enable them in the Setup Wizard to use this page.
     </div>
     {% else %}
     <form id="album-creation-form">
@@ -541,6 +541,7 @@
                     renderChosen();
                 } catch (error) {
                     concepts = [];
+                    console.warn('Concept refinement is unavailable', error);
                 }
             };
 
@@ -564,6 +565,7 @@
                     });
                 } catch (error) {
                     examplesBox.dataset.loaded = '';
+                    console.warn('Recommended searches could not be loaded', error);
                 }
             };
 
@@ -574,7 +576,10 @@
                 document.getElementById('stat-tracks').textContent = stats.tracks;
                 document.getElementById('stat-minutes').textContent = stats.minutes + ' min';
                 document.getElementById('stat-artists').textContent = stats.artists;
-                document.getElementById('stat-cohesion').textContent = Number(stats.cohesion).toFixed(2);
+                const cohesion = document.getElementById('stat-cohesion');
+                const known = typeof stats.cohesion === 'number' && isFinite(stats.cohesion);
+                cohesion.textContent = known ? Number(stats.cohesion).toFixed(2) : '';
+                cohesion.closest('.album-stat-card').classList.toggle('hidden', !known);
                 seedLine.textContent = 'Seed: ' + album.seed.label;
                 seedLine.classList.remove('hidden');
                 statsBox.classList.remove('hidden');
@@ -594,7 +599,7 @@
                 statusDiv.className = '';
                 createButton.disabled = true;
 
-                const payload = Object.assign({ seed_type: seedType }, SEEDS[seedType].payload(selectedRow));
+                const payload = { seed_type: seedType, ...SEEDS[seedType].payload(selectedRow) };
                 if (isText() && chosen.length) payload.steering = chosen;
                 try {
                     const response = await fetch("{{ url_for('album_creation_bp.generate_album_endpoint') }}", {
