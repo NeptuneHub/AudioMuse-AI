@@ -83,7 +83,7 @@ def clap_search_api():
             properties:
               query:
                 type: string
-                minLength: 3
+                minLength: 1
                 example: "upbeat summer songs"
               limit:
                 type: integer
@@ -114,8 +114,12 @@ def clap_search_api():
                       example: piano
                     weight:
                       type: number
-                      enum: [0.1, 0.2, 0.5, 1.0, 2.0]
-                      default: 1.0
+                      default: 3.0
+                      description: >
+                        Any number. It is SNAPPED to the nearest of the steps
+                        /api/clap/concepts publishes as alpha_steps
+                        (CLAP_SAE_ALPHA_STEPS, currently 1, 2, 3, 5), never
+                        rejected, so this is not an enum.
                     direction:
                       type: string
                       enum: [more, less]

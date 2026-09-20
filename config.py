@@ -1418,6 +1418,11 @@ FLASK_HTTPS_CERT_DIR = os.environ.get("FLASK_HTTPS_CERT_DIR", "") or _https_cert
 PATH_DISTANCE_METRIC = os.environ.get("PATH_DISTANCE_METRIC", "angular").lower()
 # Default number of songs in the path if not specified in the API request.
 PATH_DEFAULT_LENGTH = int(os.environ.get("PATH_DEFAULT_LENGTH", "25"))
+# Ceiling the API clamps max_steps to, matching the cap the Song Path page puts
+# on its own input. Without it one GET can hold a request thread for minutes:
+# this is one gunicorn worker with a handful of threads, so a few such calls
+# starve the dashboard, the task poll and every other page.
+PATH_MAX_LENGTH = int(os.environ.get("PATH_MAX_LENGTH", "200"))
 # Number of random songs to sample for calculating the average jump distance.
 PATH_AVG_JUMP_SAMPLE_SIZE = int(os.environ.get("PATH_AVG_JUMP_SAMPLE_SIZE", "200"))
 # Number of candidate songs to retrieve from IVF for each step in the path.

@@ -111,6 +111,26 @@ class TestStartAnalysis:
         assert response.status_code == 202
         assert queued[0]['args'] == (config.NUM_RECENT_ALBUMS, config.TOP_N_MOODS)
 
+    @pytest.mark.parametrize('body', [
+        {'num_recent_albums': 'not-a-number'},
+        {'top_n_moods': 'lots'},
+        {'num_recent_albums': None},
+        {'num_recent_albums': []},
+        {'top_n_moods': {'a': 1}},
+    ])
+    def test_a_count_that_is_not_a_number_is_refused_instead_of_crashing(
+        self, client, queued, body
+    ):
+        response = client.post('/api/analysis/start', json=body)
+
+        assert response.status_code == 400, (
+            'an unguarded int() on the posted counts answered 500 with an '
+            '"unexpected error", which is exactly what the error contract says '
+            'a bad request must never get'
+        )
+        assert 'whole numbers' in response.get_json()['error']
+        assert not queued, 'a refused start must never reach the queue'
+
     def test_previous_main_tasks_are_archived_before_the_claim(self, client, monkeypatch):
         order = []
         monkeypatch.setattr(

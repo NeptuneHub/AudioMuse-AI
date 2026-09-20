@@ -750,3 +750,39 @@ class TestNeighborResultDeduplication:
             )
 
         assert [r['item_id'] for r in results] == ['fp_2b']
+
+
+class TestSearchEscapesTheUsersOwnWildcards:
+    """A song search is a LIKE over title, author and album. The token used to be
+    interpolated as f"%{token}%", so a '%' or '_' the user typed became a SQL
+    wildcard: searching for "100%" silently dropped the percent and searching for
+    "%" alone matched the whole catalogue. database.like_contains_pattern is the
+    escaper the rest of the app already uses for exactly this, and this file
+    already imports it for the fuzzy match a few hundred lines above."""
+
+    def _patterns(self, search_query):
+        from tasks import ivf_manager
+
+        cur = Mock()
+        cur.fetchall.return_value = []
+        conn = Mock()
+        conn.cursor.return_value = cur
+        with patch('database.get_db', return_value=conn):
+            ivf_manager.search_tracks_unified(search_query, limit=5)
+        return [p for p in cur.execute.call_args[0][1] if isinstance(p, str)]
+
+    def test_a_percent_the_user_typed_is_a_literal_not_a_wildcard(self):
+        assert all(r'\%' in p for p in self._patterns('100%')), (
+            'an unescaped % matched every row, so searching for a title like '
+            '"100%" returned arbitrary songs instead of that song'
+        )
+
+    def test_an_underscore_the_user_typed_is_a_literal_too(self):
+        assert all(r'\_' in p for p in self._patterns('a_b'))
+
+    def test_a_backslash_the_user_typed_is_escaped(self):
+        assert all(r'\\' in p for p in self._patterns('a\\b'))
+
+    def test_an_ordinary_query_is_still_a_contains_match(self):
+        patterns = self._patterns('love')
+        assert patterns and all(p == '%love%' for p in patterns)
