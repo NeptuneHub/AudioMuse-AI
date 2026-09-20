@@ -7,8 +7,11 @@
     width: 250px;
     background-color: #111827;
     color: white;
-    padding: 1.5rem 1.5rem 0 1.5rem; /* bottom padding is added via ::after so
-                                        it stays inside the scrollable area */
+    /* No top padding: the band below is the top of the sidebar, and a sticky
+       element sticks to the padding edge, so any padding here would leave a
+       strip above it for the list to scroll through. Bottom padding is added
+       via ::after so it stays inside the scrollable area. */
+    padding: 0 1.5rem;
     box-sizing: border-box;
     height: 100vh;
     height: 100dvh;
@@ -140,7 +143,7 @@ html.sidebar-open .sidebar-actions {
     top: 0;
     z-index: 1;
     height: 4rem;
-    margin: -1.5rem -1.5rem 0.5rem;
+    margin: 0 -1.5rem 0.5rem;
     background: inherit;
 }
 
