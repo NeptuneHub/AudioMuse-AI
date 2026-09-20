@@ -8,12 +8,11 @@
 
 """Library cleanup task: unbind server mappings for tracks a server no longer has.
 
-Runs as a queue job. Fetches the current track set of every configured media
-server through the sweep's OWN enumeration and pruning
-(multiserver_sync.fetch_server_catalogue / prune_stale_mappings, library filter
-applied), so the prune baseline can never disagree with the enumeration that
-created the mappings, and removes ONLY that server's rows from track_server_map
-for tracks it no longer has. A song found on NO server (an orphan) is deleted
+Runs as a queue job. Fetches every configured server's track set through the
+sweep's OWN enumeration and pruning (multiserver_sync.fetch_server_catalogue /
+prune_stale_mappings, library filter applied), so the prune baseline can never
+disagree with the enumeration that created the mappings, and removes ONLY that
+server's track_server_map rows for tracks it no longer has. A song found on NO server (an orphan) is deleted
 from the catalogue when catalogue cleaning is on, at most CLEANING_SAFETY_LIMIT
 albums per run; the next run deletes the next albums. Every run then executes
 the same full similarity-index rebuild analysis runs, INLINE, and is not
@@ -21,7 +20,7 @@ reported complete until Flask reloads the indexes.
 
 Main Features:
 * identify_and_clean_orphaned_albums_task: the queue entry point.
-* Reuses the sweep's public helpers so cleaning and the sweep never drift apart.
+* Reuses the sweep's helpers so cleaning and the sweep never drift apart.
 * What a server returns is what it has: no ratio or share guard ever blocks the
   unbind or the orphan delete. The ONE limit is CLEANING_SAFETY_LIMIT albums
   deleted per run.
@@ -30,7 +29,7 @@ Main Features:
   list), was not read, so only the songs it may still hold (its own mappings,
   plus unmapped legacy rows when it is the default server) are kept; every
   other orphan is still cleaned. A partial but non-empty list is trusted.
-* Refreshes each server's stored library size (music_servers.track_count).
+* Refreshes each server's library size (music_servers.track_count).
 * Runs the Chromaprint dedup (Path B) each time: splits merged groups whose
   stored fingerprints prove they are different recordings (skip-if-missing).
 * Cleaning is a MAIN_TASK_TYPE, so it holds the one-live-main index and the
@@ -39,11 +38,11 @@ Main Features:
   rebuild. Each is a single call that writes no row while it runs, which the
   nudge cannot tell from a wedge; both are bounded, so a fetch that really never
   returns is still handed back to it.
-* A run with a server that could not be read ends in CleaningIncomplete, which is a
-  TaskFailed: the run itself COMPLETED (every readable server was cleaned and
-  the summary is on the row), and a queue retry would repeat one
-  whole-catalogue fetch per server plus the full index rebuild while holding
-  the one-live-main slot. The next cron run is the retry.
+* A server that could not be read ends the run in CleaningIncomplete, a
+  TaskFailed: the run COMPLETED (every readable server was cleaned and the
+  summary is on the row), and a retry would repeat one whole-catalogue fetch per
+  server plus the index rebuild while holding the one-live-main slot. The next
+  cron run is the retry.
 """
 
 import logging

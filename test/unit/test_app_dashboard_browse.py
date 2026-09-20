@@ -47,7 +47,7 @@ class TestBrowseSongsSql:
     def test_no_id_in_projection_and_no_limit_in_builder(self):
         sql, params = dash._browse_songs_sql(None, 'all', '')
         assert 'item_id' not in _projection(sql)
-        assert 'LIMIT' not in sql  # the caller appends LIMIT/OFFSET
+        assert 'LIMIT' not in sql
         assert 'ORDER BY' in sql
         assert params == []
 
@@ -60,10 +60,10 @@ class TestBrowseSongsSql:
         sql, params = dash._browse_songs_sql('srv1', 'duplicates', '')
         assert 'HAVING COUNT(*) > 1' in sql
         assert 'd.copies' in _projection(sql)
-        assert 'd.files' in _projection(sql)          # per-copy file paths
+        assert 'd.files' in _projection(sql)
         assert 'array_agg' in sql
-        assert 'file_path' in sql and 'provider_track_id' not in sql  # paths only, no ids
-        assert 'ORDER BY d.copies DESC' in sql        # most-duplicated on top
+        assert 'file_path' in sql and 'provider_track_id' not in sql
+        assert 'ORDER BY d.copies DESC' in sql
         assert 'item_id' not in _projection(sql)
         assert params == ['srv1']
 
@@ -197,7 +197,7 @@ class TestBrowseApi:
         cur.__enter__ = lambda self: self
         cur.__exit__ = lambda self, *a: None
         cur.fetchall.return_value = rows
-        cur.fetchone.return_value = None  # _load_dashboard_stats -> ({}, None)
+        cur.fetchone.return_value = None
         conn = MagicMock()
         conn.__enter__ = lambda self: self
         conn.__exit__ = lambda self, *a: None
@@ -207,7 +207,7 @@ class TestBrowseApi:
 
     def test_default_songs_page_is_limit_bounded(self, client, monkeypatch):
         monkeypatch.setattr(dash.config, 'DASHBOARD_BROWSE_PAGE_SIZE', 3)
-        rows = [('T%d' % i, 'A', 'Al', 'AA', 2020, None) for i in range(4)]  # page_size + 1
+        rows = [('T%d' % i, 'A', 'Al', 'AA', 2020, None) for i in range(4)]
         cur = self._mock_db(monkeypatch, rows)
 
         resp = client.get('/api/dashboard/browse?kind=songs')
@@ -215,13 +215,13 @@ class TestBrowseApi:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['kind'] == 'songs'
-        assert len(data['results']) == 3           # trimmed to page_size
-        assert data['has_more'] is True            # the 4th row proved there is more
+        assert len(data['results']) == 3
+        assert data['has_more'] is True
         browse_calls = [c for c in cur.execute.call_args_list
                         if 'LIMIT %s OFFSET %s' in c[0][0]]
         assert browse_calls, "the list query must be LIMIT-bounded"
         params = browse_calls[0][0][1]
-        assert params[-2] == 4 and params[-1] == 0  # LIMIT page_size+1 OFFSET 0
+        assert params[-2] == 4 and params[-1] == 0
         assert all('item_id' not in row for row in data['results'])
 
     def test_has_more_is_false_on_the_last_reachable_page(self, client, monkeypatch):
@@ -229,8 +229,6 @@ class TestBrowseApi:
         monkeypatch.setattr(dash.config, 'DASHBOARD_BROWSE_MAX_OFFSET', 6)
         rows = [('T%d' % i, 'A', 'Al', 'AA', 2020, None) for i in range(4)]
         self._mock_db(monkeypatch, rows)
-        # page 3 -> offset 6 (== cap, still runs); the NEXT offset (9) exceeds the
-        # cap, so Next must be disabled even though 4 rows came back.
         data = client.get('/api/dashboard/browse?kind=songs&page=3').get_json()
         assert data['capped'] is False
         assert data['has_more'] is False
@@ -240,7 +238,7 @@ class TestBrowseApi:
         monkeypatch.setattr(dash.config, 'DASHBOARD_BROWSE_MAX_OFFSET', 6)
         rows = [('T%d' % i, 'A', 'Al', 'AA', 2020, None) for i in range(4)]
         self._mock_db(monkeypatch, rows)
-        data = client.get('/api/dashboard/browse?kind=songs&page=2').get_json()  # next offset 6 <= 6
+        data = client.get('/api/dashboard/browse?kind=songs&page=2').get_json()
         assert data['has_more'] is True
 
     def test_duplicates_without_server_is_400(self, client, monkeypatch):
@@ -260,12 +258,12 @@ class TestBrowseApi:
         monkeypatch.setattr(dash.config, 'DASHBOARD_BROWSE_MAX_OFFSET', 200)
         cur = self._mock_db(monkeypatch, [])
 
-        resp = client.get('/api/dashboard/browse?kind=songs&page=10')  # offset 900 > 200
+        resp = client.get('/api/dashboard/browse?kind=songs&page=10')
 
         data = resp.get_json()
         assert data['capped'] is True
         assert data['results'] == []
-        cur.execute.assert_not_called()  # never touched the DB past the clamp
+        cur.execute.assert_not_called()
 
     def test_orphan_drops_a_stray_server(self, client, monkeypatch):
         srv = {'server_id': 'id1', 'name': 'Jelly'}
@@ -285,7 +283,7 @@ class TestBrowseApi:
         data = client.get('/api/dashboard/browse?kind=songs&filter=orphan').get_json()
         assert data['results'] == []
         assert data['has_more'] is False
-        cur.execute.assert_not_called()  # the score anti-join was never run
+        cur.execute.assert_not_called()
 
     def test_orphan_runs_the_query_when_count_is_nonzero(self, client, monkeypatch):
         cur = self._mock_db(monkeypatch, [('Orphan', 'A', 'Al', 'AA', 2020, None)])

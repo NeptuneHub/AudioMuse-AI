@@ -10,55 +10,39 @@
 
 run_clustering_task runs the whole pipeline once per target server,
 sequentially: each server clusters only its own availability-scoped catalogue,
-runs its own evolutionary/elitist search via run_clustering_batch_task child
-jobs, and gets its own playlists. Delegates per-iteration work to
-clustering_helper, models to clustering_gpu, and
-dedup/size/diversity filtering to clustering_postprocessing.
+runs its own evolutionary search through run_clustering_batch_task children and
+gets its own playlists. Per-iteration work goes to clustering_helper, models to
+clustering_gpu, dedup/size/diversity filtering to clustering_postprocessing.
+Progress and cancellation go through the shared reporter and cancel check
+(tasks.task_run); the queue writes the terminal row.
 
 Main Features:
 * Per-server persistence: playlists replace ITS OWN rows, so the table is always
-  the last run per server, never a growing history.
+  the last run per server, never a growing history
 * Fan-out of parameter sets into batch jobs with elite tracking and adaptive
-  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES that brought back
-  nothing better. A CRASHED batch counts as one of those, deliberately: after
-  that many failures the run ends with the best result it holds rather than
-  feeding more batches to workers that keep dying.
-* The drain loop REAPS finished children (row deleted as the result is read) so
-  a batch is never counted twice; no per-batch timeout, and
-  CLUSTERING_STALL_TIMEOUT_MINUTES bounds the one wedge case (native code
-  that never returns) by revoking and finishing with the best result held.
-  That window SLIDES on any sign of life - a batch finishing, failing, launching,
-  or a live batch merely advancing its own iteration counter - so a slow batch and
-  a batch a fresh worker picked up after the old one died both hold it open.
-  The window, the victim rule and the give-up bound are ChildDrainSupervisor in
-  tasks.recovery, shared with the analysis twin so the two cannot drift again.
-* ONE iteration is a single opaque fit (spectral/GMM over CLUSTERING_SUBSET_SONGS
-  songs) and the batch writes its row only AFTER it returns, so with one worker
-  container - the default - an iteration slower than the stall window looked
-  exactly like a wedge and a healthy batch was revoked. run_clustering_batch_task
-  now holds a row_heartbeat across each iteration and the parent reads the child's
-  beat_at, so being alive is visible without waiting for the iteration to end. The
-  heartbeat is bounded, so a fit that never returns is still caught.
-* The PARENT runs two opaque phases of its own, and both hold a row_heartbeat for
-  the same reason the batch does: the wedged-main nudge reads task_status.timestamp
-  and nothing else, so a phase that writes no row while it runs is indistinguishable
-  from a wedge and a healthy run gets its worker ended at
-  QUEUE_WEDGED_MAIN_TASK_MINUTES. The phases are calibration, which runs up to
-  CLUSTERING_CALIBRATION_MAX_TRIES of the very same fit the batch heartbeats, and
-  the tail: AI naming is one LLM call PER PLAYLIST with no output-token cap, and
-  playlist creation is one media-server write per playlist, neither writing a row
-  in between. Both are bounded, so a phase that really never returns is still caught.
-* The parent persists its own progress on its row (_resumable_progress), so a
-  crashed main task resumes with the winning result instead of redoing the search.
-* Reap and launch ride the SAME status write (never a separate commit), so a
-  parent dying mid-pass cannot lose a finished batch or double-count a launch.
-* Genre-stratified sampling and per-server calibration
-  (_calibrate_cluster_params) auto-tune every algorithm via quick probes.
-* Progress goes through the one shared reporter and cancellation through the
-  one shared cancel check (tasks.task_run); the queue writes the terminal row
-  from what the task returns or raises. The parent hands the reporter a live
-  view of its resume state so every progress write carries it, which is what
-  lets a crashed parent resume with the winning result.
+  sampling; early-stop after CLUSTERING_EARLY_STOP_BATCHES that brought nothing
+  better. A CRASHED batch counts as one deliberately: past that many failures
+  the run ends with its best result rather than feeding workers that keep dying
+* The drain loop REAPS finished children (the row is deleted as its result is
+  read) so a batch is never counted twice; there is no per-batch timeout, and
+  CLUSTERING_STALL_TIMEOUT_MINUTES bounds the one wedge case by revoking and
+  finishing with the best result held. That window SLIDES on any sign of life -
+  a batch finishing, failing, launching, or merely advancing its own iteration
+  counter. The window, the victim rule and the give-up bound are
+  ChildDrainSupervisor in tasks.recovery, shared with the analysis twin
+* ONE iteration is a single opaque fit over CLUSTERING_SUBSET_SONGS songs whose
+  row is written only after it returns, so an iteration slower than the stall
+  window looked exactly like a wedge. The batch now holds a row_heartbeat across
+  each iteration and the parent reads the child's beat_at. The PARENT heartbeats
+  its own two opaque phases (calibration, and the tail of AI naming and playlist
+  creation) because the wedged-main nudge reads task_status.timestamp and
+  nothing else. Every heartbeat is bounded, so a fit that never returns is still
+  caught
+* The parent persists its progress on its row (_resumable_progress) and hands
+  the reporter a live view of it, so a crashed main task resumes with the
+  winning result instead of redoing the search
+* Reap and launch ride the SAME status write, so a parent dying mid-pass cannot
+  lose a finished batch or double-count a launch
 """
 
 from collections import defaultdict
@@ -1405,10 +1389,6 @@ _RESUMABLE_KEYS = (
     "failed_batches", "stale_batches", "batches_launched", "server_idx",
 )
 
-# The PCA component matrix (n_components x EMBEDDING_DIMENSION floats) is
-# produced by every iteration but read by NOBODY once the run is over. Dropping
-# it is what makes the winning result cheap enough to keep on the parent row.
-# The centroid maps below it ARE read, by clustering_postprocessing.
 _UNUSED_BEST_RESULT_KEYS = ("pca_model_details",)
 
 

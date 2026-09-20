@@ -718,7 +718,6 @@ def call_with_tools_ollama(
     is_chat_url = "/api/chat" in ollama_url.lower()
     is_generate_url = "/api/generate" in ollama_url.lower()
 
-    # Determine the actual endpoints for each path
     if is_chat_url:
         chat_url = ollama_url
         generate_url = re.sub(r"/api/chat", "/api/generate", ollama_url, flags=re.IGNORECASE)
@@ -732,7 +731,6 @@ def call_with_tools_ollama(
     timeout = config.AI_REQUEST_TIMEOUT_SECONDS
     log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")
 
-    # -- Primary path: native tool-calling via /api/chat --
     if not is_generate_url:
         try:
             result = _try_native_ollama_tool_call(
@@ -748,7 +746,6 @@ def call_with_tools_ollama(
             )
             log_messages.append("Native /api/chat tool-calling failed; falling back to format=schema")
 
-    # -- Fallback path: prompt-based JSON with format=<schema> --
     log_messages.append("Using Ollama structured-output (format=schema) path")
     try:
         base_prompt = build_ollama_tool_calling_prompt(user_message, tools, library_context)

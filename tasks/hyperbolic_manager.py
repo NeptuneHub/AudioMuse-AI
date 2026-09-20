@@ -10,82 +10,41 @@
 
 Projects raw MusiCNN embeddings into the Poincare ball on top of
 ``tasks.hyperbolic_geometry``, keeps the ``poincare_embedding`` and
-``hyperbolic_radius`` columns in sync (analysis time and backfill), and powers
-the similarity and directory-tree endpoints while staying in canonical item_id
-space (id translation to the selected server happens in the request layer).
+``hyperbolic_radius`` columns in sync, and powers the similarity and
+directory-tree endpoints in canonical item_id space.
 
 Main Features:
-* resolve_hyperbolic_scale derives and caches the projection scale s from the
-  catalogue norm distribution and persists it in app_config for cross-process
-  reuse by analysis workers, the web app, and the backfill job
-* save_hyperbolic_projection / backfill_hyperbolic_columns keep the hyperbolic
-  columns in sync with the raw embedding, skipping rows with NULL embeddings
-* fetch_poincare_rows, fetch_all_poincare_rows and
-  get_projected_genre_subgenres are the public reads other managers need
-  (tasks.hyperbolic_journey_manager builds the geodesic journey on top of
-  them), so nothing outside this module has to reach into a private helper
-  the unit suite monkeypatches by name
-* fetch_all_poincare_rows streams every row through a NAMED server-side
-  cursor on its own side connection (the same _open_side_connection /
-  itersize convention tasks.index_build_helpers uses for every other
-  full-catalogue read), never the shared request/worker connection from
-  database.get_db(). This matters because it is the one read that always
-  covers the whole catalogue - the union Poincare IVF index rebuild
-  (tasks.hyperbolic_index) calls it unconditionally with no server scope on
-  every rebuild, and an unstreamed SELECT ... ORDER BY item_id ... fetchall()
-  there forces Postgres to sort and buffer the entire embedding table inside
-  one backend, whose RSS then does not shrink back down afterward
-* hyperbolic_similar ranks candidates by exact Poincare distance through the
-  disk-paged Poincare index (exact top-k, no IVF index and no cosine
-  shortcut), and raises a "run analysis to build it" ValueError when that
-  index is not built rather than scanning the whole catalogue - the Flask
-  layer turns that into a 400 with the message, the same way the geodesic
-  journey does; roots / niche instead draw their candidate pool from the
-  embedding table by radius (at least radial_spread of the radial range away
-  from the seed, caller-supplied and defaulting to HYPERBOLIC_RADIAL_SPREAD) so the two
-  modes visibly leave the seed's radius band, then rank by exact distance. All
-  modes end with the same content-dedup + MAX_SONGS_PER_ARTIST pass as the
-  similar-song page, followed by a Poincare-distance near-duplicate pass at
+* resolve_hyperbolic_scale derives the projection scale s from the catalogue
+  norm distribution and persists it in app_config
+* save_hyperbolic_projection / backfill_hyperbolic_columns keep those columns in
+  sync with the raw embedding, skipping NULL ones
+* fetch_poincare_rows, fetch_all_poincare_rows and get_projected_genre_subgenres
+  are the public reads other managers need. fetch_all_poincare_rows streams
+  through a NAMED server-side cursor on its own side connection: the Poincare
+  IVF rebuild calls it unscoped on every rebuild, and an unstreamed fetchall
+  makes one backend sort and buffer the whole embedding table without giving
+  the RSS back
+* hyperbolic_similar ranks by exact Poincare distance through the disk-paged
+  index and raises a "run analysis to build it" ValueError the Flask layer turns
+  into a 400, rather than scanning the catalogue; roots and niche instead draw
+  their pool by radius (at least radial_spread of the radial range from the
+  seed). Every mode ends with the content-dedup and MAX_SONGS_PER_ARTIST pass of
+  the similar-song page, then a near-duplicate pass at
   DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC (arccosh units, not cosine)
 * build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
-  partition, the mood fallback, and the named Poincare k-means clusters - PER SERVER,
-  and persists one tree per configured server as gzipped JSON blobs chunked
-  into 50 MB segmented BYTEA rows in ivf_dir (the same pattern the music map
-  and IVF directory use), worker-side only (analysis end).
-  load_hyperbolic_tree_cache is
-  the cheap counterpart: one row read per server, no reclustering, used at Flask
-  startup and by the index-reload NOTIFY handler, exactly like the music map keeps
-  its expensive UMAP fit in map_projection_data and only re-does cheap JSON
-  assembly in Flask. The request path (build_hyperbolic_tree) is then a pure
-  dict lookup against the selected server's cached tree, returning canonical
-  ids for the caller to translate. Clusters are sized to
-  HYPERBOLIC_TARGET_LEAF_SIZE (default 150, i.e. ~100-200 songs) with a floor of
-  HYPERBOLIC_MIN_CLUSTER_SIZE (default 20): clusters below that floor are
-  pruned and a subgenre left without a valid cluster is hidden; a genre whose
-  subgenres all vanished lists its tracks directly instead, so the genre root
-  is always shown when the genre data is usable (only genuinely unusable data
-  falls back to the legacy mood partition).
-  The returned node is a reference into the shared cache, not a copy - callers
-  must build a new structure rather than mutate it in place (id translation
-  does this already). The persisted blob carries a schema version and is
-  discarded on load when it does not match, so an upgraded Flask never serves a
-  stale pre-upgrade tree.
-* The directory tree is a three-level semantic taxonomy over the same
-  embedding space: GENRE -> SUBGENRE -> NAMED CLUSTER. The root splits by
-  MAIN GENRE taken from the data-driven genre_subgenre.json centroids
-  (nearest main genre at level 0), then by SUBGENRE (nearest of that genre's
-  subgenres at level 1), then into named clusters for any subgenre
-  still above HYPERBOLIC_TARGET_LEAF_SIZE - nothing deeper. That cluster level
-  is a Poincare k-means (_fit_clusters): k-means++ seeding, assignment and
-  centroid update all run in the exact hyperbolic metric, with the centroid
-  being the Frechet mean from tasks.hyperbolic_geometry.karcher_mean, so no
-  Euclidean or cosine step survives anywhere in the hyperbolic path. When the file is
-  absent or dimensionally incompatible the tree falls back to a legacy MOOD
-  partition (nearest of the precomputed mood centroids in
-  mood_centroids_real_080_clap.json) followed by a main-genre partition and
-  the same named-cluster level. Clusters are always the terminal level and
-  are named from the nearest mood-centroid tags (or the ancestor genre path
-  plus the dominant mood) instead of a bare "Cluster N" label
+  partition, the mood fallback and the named Poincare k-means clusters - PER
+  SERVER and worker-side only, persisting one gzipped JSON tree per server in
+  50 MB segmented ivf_dir rows. load_hyperbolic_tree_cache is one row read per
+  server, used at Flask startup and on the reload NOTIFY, so
+  build_hyperbolic_tree is a pure dict lookup returning a reference into the
+  shared cache, never a copy. The blob carries a schema version and is discarded
+  on a mismatch
+* The tree is a three-level taxonomy: GENRE -> SUBGENRE -> NAMED CLUSTER, from
+  genre_subgenre.json, splitting a subgenre only above
+  HYPERBOLIC_TARGET_LEAF_SIZE and pruning clusters under
+  HYPERBOLIC_MIN_CLUSTER_SIZE. The cluster level is a Poincare k-means whose
+  centroid is the Frechet mean, so no Euclidean step survives in the hyperbolic
+  path. An absent or incompatible file falls back to the legacy MOOD partition
 """
 
 import gzip
@@ -103,12 +62,6 @@ from .idle_unload import IdleUnloadTimer
 
 logger = logging.getLogger(__name__)
 
-# The tree cache is a gzipped JSON blob stored as segmented BYTEA rows
-# (IVF_MAX_PART_SIZE_MB-sized chunks: "hyperbolic_tree_cache_1_3", ...) in
-# the same ivf_dir table the other indexes use. That keeps it under
-# Postgres' row-size limit like every other index and makes it immune to the
-# web-startup app_config prune (which only ever touches the app_config
-# table), so analysis persists it and Flask loads it back at startup.
 _TREE_CACHE_TABLE = "ivf_dir"
 _TREE_CACHE_BLOB_NAME = "hyperbolic_tree_cache"
 _TREE_SKELETON_BLOB_NAME = "hyperbolic_tree_skeleton"
@@ -155,10 +108,6 @@ def _load_persisted_scale():
 
 
 def _persist_scale(value):
-    # Not swallowed, for the same reason as _persist_tree_cache_blob: a
-    # failure here must reach the worker step's error handling with a real
-    # traceback, not disappear behind a one-line warning with no exception
-    # info while resolve_hyperbolic_scale's caller believes it succeeded.
     from database import set_app_config_value
 
     set_app_config_value("hyperbolic_radius_scale", repr(float(value)))
@@ -634,16 +583,9 @@ _TREE_STATE = {"full_loaded": False, "full_load_running": False}
 
 _FULL_LOAD_LOCK = threading.Lock()
 
-# Bump whenever the persisted tree schema changes (node id scheme, node kinds,
-# level structure). load_hyperbolic_tree_cache discards blobs whose version
-# does not match so an upgraded Flask never serves a stale pre-upgrade tree.
 _TREE_CACHE_VERSION = 3
 
 
-# The default server's tree is kept under the "__default__" key (requests with
-# no ?server= resolve to it) and mirrored into the legacy top-level fields so
-# single-server installs and tests keep working unchanged. Each configured
-# secondary server gets its own tree under its server_id.
 _DEFAULT_SERVER_KEY = "__default__"
 
 
@@ -788,9 +730,6 @@ def _scan_tree_cache_blob_names(base_name):
     from tasks.index_build_helpers import like_escape
 
     prefix = base_name + "__"
-    # The trailing % must be an UNESCAPED wildcard: prefix's underscores are
-    # escaped with backslashes, but the suffix separator is a real LIKE
-    # wildcard so "<base>__<server_id>" blobs are discovered.
     like = like_escape(prefix) + "%"
     try:
         db_conn = get_db()
@@ -817,9 +756,6 @@ def load_hyperbolic_tree_cache():
         return 0
 
     if payload.get("version") != _TREE_CACHE_VERSION:
-        # A blob written by an older schema (radial bands, second/third genre
-        # levels, ...) would serve a stale, incompatible tree after an upgrade.
-        # Discard it so the next analysis run rebuilds the current structure.
         logger.warning(
             "Hyperbolic tree cache has schema version %r (current %r); discarding "
             "it - run analysis to rebuild.", payload.get("version"), _TREE_CACHE_VERSION,
@@ -905,12 +841,6 @@ def _delete_tree_cache_blob():
 
 
 def _persist_tree_cache_blob(payload, name=None):
-    # Deliberately not wrapped in try/except: a persist failure here must
-    # propagate to the worker step (_run_all_index_builds catches it,
-    # records it through error_manager, and the run continues since this
-    # step is non-fatal) rather than being swallowed into a log line nobody
-    # reads while the caller still reports "built and persisted" as if it
-    # worked.
     from database import get_db
     from tasks.index_build_helpers import store_segmented_blob
 
@@ -922,8 +852,6 @@ def _persist_tree_cache_blob(payload, name=None):
     payload["version"] = _TREE_CACHE_VERSION
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     db_conn = get_db()
-    # store_segmented_blob clears any stale rows first, then stores the blob
-    # as one row or as IVF_MAX_PART_SIZE_MB (50 MB) "name_i_n" rows.
     store_segmented_blob(db_conn, _TREE_CACHE_TABLE, name, gzip.compress(raw))
     db_conn.commit()
 
@@ -954,12 +882,6 @@ def is_hyperbolic_tree_cache_loaded() -> bool:
     return _TREE_CACHE.get("nodes") is not None
 
 
-# The tree cache is a fully materialized Python object tree (one dict per
-# track/folder), not disk-paged like the IVF indexes, so its RSS cost scales
-# with catalogue size. It is lazy-loaded on the first /hyperbolic page open
-# (or tree API call after an idle unload) and dropped again after
-# HYPERBOLIC_TREE_WARMUP_DURATION seconds with no further activity - the same
-# warm-cache-timer shape as tasks.gte_warm_cache and the CLAP text model.
 _TREE_TIMER = IdleUnloadTimer()
 
 
@@ -1035,10 +957,6 @@ def build_hyperbolic_tree(node_id=None, server_id=None):
         tree = tree_for_server(server_id)
         nodes = tree.get("nodes")
         if not nodes:
-            # A specific (non-default) server with no tree of its own is a
-            # different situation from "nothing analyzed at all yet" - tell
-            # the caller so the UI can say so, instead of silently rendering
-            # an indistinguishable empty folder.
             if server_id and server_id != _DEFAULT_SERVER_KEY and server_id not in _TREE_CACHE["servers"]:
                 raise ValueError(
                     "Hyperbolic Explorer tree is not available for this "
@@ -1136,8 +1054,6 @@ def _branch_folder(node_id, name, summary, summary_items, nodes, flat_ids, kind=
         "children_count": len(summary_items), "summary": summary, "items": summary_items,
     }
     nodes[node_id] = node
-    # Non-leaf folders never carry tracks directly - nothing here needs
-    # per-server id translation until the caller drills into an actual leaf.
     flat_ids[node_id] = []
     return node
 
@@ -1231,8 +1147,6 @@ def _partition_by_genre(members, vec_map, score_by_id, genre_subgenres, level, p
             members, vec_map, genre_subgenres, level, parent_genre
         )
     if level != 0:
-        # The genre-less fallback has no subgenre data: only the main-genre
-        # partition exists and anything below it is the named-cluster level.
         return None
     groups = {}
     for iid in members:
@@ -1341,15 +1255,8 @@ def _materialize_genre_folder(node_id, label, members, vec_map, radii_map, score
         )
         if sub_items:
             return _branch_folder(node_id, name, summary, sub_items, nodes, flat_ids, kind=kind)
-        # No subgenre could form a real cluster (small library): list all of
-        # the genre's tracks directly under it instead of the mood fallback.
         return _leaf_folder(node_id, name, members, summary, score_by_id, nodes, flat_ids, kind=kind)
 
-    # SUBGENRE, or a main genre in the legacy mood fallback (no usable genre
-    # file): split into named clusters of ~HYPERBOLIC_TARGET_LEAF_SIZE songs.
-    # Clusters below HYPERBOLIC_MIN_CLUSTER_SIZE are pruned; a subgenre left
-    # with no valid cluster is hidden, and a folder in the legacy mood fallback
-    # lists its tracks as a leaf so tiny single-server moods still browse.
     prefix = _genre_path_prefix(node_id)
     cluster_items = _materialize_children(
         node_id, members, vec_map, radii_map, score_by_id,
@@ -1438,12 +1345,8 @@ def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, m
     for label, iid in zip(labels, members):
         clusters.setdefault(int(label), []).append(iid)
     ordered = [clusters[j] for j in sorted(clusters)]
-    # A split was expected (k > 1) but k-means collapsed everything into one
-    # giant cluster: the set cannot be meaningfully separated, so bail.
     if k > 1 and max(len(c) for c in ordered) > 0.95 * n:
         return None
-    # Prune clusters smaller than the minimum; a folder with no surviving
-    # cluster is hidden entirely rather than shown as an empty/giant node.
     kept = [c for c in ordered if len(c) >= min_cluster]
     if not kept:
         return None
@@ -1468,9 +1371,6 @@ def _materialize_children(parent_id, members, vec_map, radii_map, score_by_id, m
 
 
 def _materialize_cluster(node_id, members, vec_map, radii_map, score_by_id, mood_centroids, nodes, flat_ids, name=None):
-    # Clusters are always the terminal level of the tree (GENRE -> SUBGENRE ->
-    # NAMED CLUSTER): every track below them is listed directly, so a cluster
-    # never recurses into further folders.
     radii = np.array([radii_map[i] for i in members], dtype=np.float32)
     summary = {
         "radius_min": float(radii.min()),
@@ -1582,12 +1482,6 @@ def _cluster_name(members, vec_map, mood_centroids):
     mean_vec = np.mean(np.stack([vec_map[i] for i in members]).astype(np.float32), axis=0)
     ranked = sorted(mood_centroids, key=lambda c: hyperbolic_distance(mean_vec, c["vec"]))
 
-    # One representative tag per nearest centroid, walking outward only to
-    # avoid an exact duplicate. Two centroids that agree collapse to a tight,
-    # confident pairing (e.g. "Pop / Electronic"); two that disagree surface
-    # the cluster's genuine specialization as a visibly mixed pairing
-    # (e.g. "Jazz / Metal") - the distance ordering IS the specialization
-    # signal, with no separate qualifier word needed.
     tags = []
     for c in ranked:
         top_tag = next((t for t in c["tags"] if t not in tags), None)

@@ -123,14 +123,11 @@ class TestArtistMappingMigration:
 
         _run(db)
 
-        # a1/a2 folded under the default server; the NULL-id row is skipped.
         assert _server_map(db) == [
             ('Air', 'srv', 'a2'),
             ('Daft Punk', 'srv', 'a1'),
         ]
-        # The legacy table is gone.
         assert not _table_exists(db, 'artist_mapping')
-        # Second run is a crash-free no-op (table already dropped).
         _run(db)
         assert not _table_exists(db, 'artist_mapping')
 
@@ -155,7 +152,6 @@ class TestArtistMappingMigration:
         assert not _table_exists(db, 'artist_mapping')
 
     def test_no_default_server_drops_empty_but_keeps_non_empty(self, db):
-        # No default server: an empty legacy table is safe to drop.
         _run(db)
         assert not _table_exists(db, 'artist_mapping')
 
@@ -168,6 +164,5 @@ class TestArtistMappingMigration:
 
         _run(db)
 
-        # Nothing to attribute the rows to yet: keep the table for a later boot.
         assert _table_exists(db, 'artist_mapping')
         assert _server_map(db) == []

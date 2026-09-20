@@ -18,7 +18,7 @@ concept latents. Equations 6 and 7 of the paper steer by editing the query's own
 sparse activations rather than by displacing the query vector: the query is
 encoded, the concept's coordinates are raised (amplification) or lowered and
 clipped at zero (suppression) by alpha times each latent's mean activation, and
-and the edited code is decoded back. Only the difference between the edited and
+the edited code is decoded back. Only the difference between the edited and
 the unedited reconstruction is applied to the query, because the autoencoder does
 not round trip a text embedding exactly and returning the raw reconstruction
 would change half the results before any concept was touched. Editing coordinates
@@ -36,10 +36,6 @@ Main Features:
   GTE models are handled, so an unused feature costs no resident memory.
 * Each concept is a unit norm mask over its latents, so one strength setting
   means the same step for every concept in the catalogue.
-* Only the difference between the edited and the unedited reconstruction is
-  applied to the query. The autoencoder does not round trip a text embedding
-  exactly, and returning the raw reconstruction would change most of the results
-  before any concept was touched.
 * Suppression clamps the code at zero, amplification does not: clamping a
   positive edit could only distort it.
 * The shipped catalogue carries no track names: a concept is a latent support

@@ -8,10 +8,8 @@
 
 """Orchestrate the media-provider migration as queued tasks.
 
-Drives the multi-step migration flow whose dry-run and source-refresh phases run
-as queued tasks polled by the UI; delegates track matching to
-provider_migration_matcher and reuses the app's core routines under an app
-context.
+Drives the migration flow whose dry-run and source-refresh phases run as queued
+tasks polled by the UI; track matching is provider_migration_matcher's.
 
 Main Features:
 * The centralized catalogue is NEVER touched: score rows, their canonical ids
@@ -26,9 +24,9 @@ Main Features:
   file ever receives another file's fingerprint.
 * A default server still carrying the automatic name of its old provider is
   renamed after the new one, unless another server already uses that name.
-* A song held as several files keeps every file the dry run found on the
-  target: the duplicate rows are collapsed to repoint the ids safely, then the
-  extra files are mapped back to the same song, so none of them is analysed again.
+* A song held as several files keeps every file the dry run found on the target:
+  the duplicate rows are collapsed to repoint the ids safely, then the extra
+  files are mapped back to the same song, so none is analysed again.
 * Queues a full-refresh alignment of the migrated server, its task row written
   INSIDE the migration transaction so the intent survives a crash; the root task
   stays non-terminal until every worker acknowledges the restart.
@@ -42,9 +40,8 @@ Main Features:
   row at once instead of spending three backed-off attempts on it: a session
   that is gone or not in the status the step needs, an empty mapping, target
   credentials missing a field the registry requires, and a restart request
-  another recovery has since superseded. The handshake wait
-  timing out stays a plain raise, because a retry resumes the wait and the
-  workers may acknowledge on it.
+  another recovery has superseded. A handshake wait that times out stays a plain
+  raise, because a retry resumes the wait.
 """
 
 import json
@@ -77,13 +74,8 @@ _ADVISORY_LOCK_KEY = 7421536190082003
 
 _MIG_TMP_PREFIX = '__audiomuse_mig_tmp__'
 
-# The orphan snapshot lives in migration_session.state, which the wizard
-# rewrites key by key precisely to avoid multi-MB blobs. Cap it and record the
-# real total rather than persisting one row per unbound song forever.
 _ORPHAN_REPORT_MAX_ROWS = 5000
 
-# Upper bound on the post-commit restart handshake. The migration itself is
-# already durable by then; this only bounds how long one worker is held.
 _XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s)"
 
 _RESTART_HANDSHAKE_MAX_SECONDS = 900
@@ -92,7 +84,6 @@ _RESTART_PUBLISH_ATTEMPTS = 3
 
 _RESTART_PUBLISH_RETRY_SECONDS = 2
 
-# Once the catalogue commit is durable the execute root is the admission barrier.
 _RESTART_HANDSHAKE_RETRY_SECONDS = 5
 
 _RESTART_RECOVERY_TASK_KEY = 'restart_recovery_task_id'
@@ -144,9 +135,6 @@ def find_fk(cur, table, column, ref_table='score', ref_column='item_id'):
     return row[0] if row else None
 
 
-# The migration itself no longer rewrites score.item_id, so it has no need to drop
-# these. The one-time fingerprint canonicalization DOES relabel item_ids (that is its
-# whole purpose) and imports both from here.
 def _drop_fk_constraints(cur, fk_embedding, fk_clap_embedding, lyrics_exists, fk_lyrics_embedding):
     if fk_embedding:
         cur.execute(f"ALTER TABLE embedding DROP CONSTRAINT IF EXISTS {fk_embedding}")

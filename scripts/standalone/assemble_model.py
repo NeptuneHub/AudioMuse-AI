@@ -30,8 +30,6 @@ from pathlib import Path
 MODEL = Path("model")
 DCLAP_REPO = "NeptuneHub/AudioMuse-AI-DCLAP"
 SAE_REPO = "NeptuneHub/AudioMuse-AI-SAE"
-# Only the two graphs come from the release; the concept catalogue that names
-# their latents ships inside the repository.
 SAE_ASSETS = [
     "dclap_sae_k20_d1024_best_encoder.onnx",
     "dclap_sae_k20_d1024_best_decoder.onnx",

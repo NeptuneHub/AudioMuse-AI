@@ -14,7 +14,11 @@ capping message detail so no raw traceback leaks to callers.
 
 Main Features:
 * ``classify`` / ``from_exception`` map exception types to registry codes using
-  module-qualified name matching plus HTTP 401/403 auth detection. Both walk the
+  module-qualified name matching plus HTTP 401/403 auth detection. An entry is
+  (class name, module prefixes, code): no prefix matches that name in any
+  module, for names unique to this app, while a prefix tuple stops an unrelated
+  library reusing a common name (psycopg2.OperationalError, the builtin
+  BrokenPipeError) from stealing a media-server or database code. Both walk the
   exception chain once, outermost first, the way a traceback prints it: the
   explicit ``__cause__``, else the implicit ``__context__`` unless the raise
   suppressed it (``raise ... from None``). A permanent failure raised ``from`` a
@@ -67,11 +71,6 @@ _DETAIL_SCAN_LIMIT = _MAX_MESSAGE_DETAIL * 4
 
 _AUTH_STATUS_CODES = (401, 403)
 
-# (class_name, module_prefixes, code). module_prefixes is None to match the name
-# in any module (used for names unique to this app), or a tuple of import-path
-# prefixes to restrict the match. The restriction stops unrelated libraries that
-# reuse a common class name (e.g. psycopg2.OperationalError, builtin
-# BrokenPipeError) from stealing a media-server or database code.
 _EXCEPTION_RULES = (
     ("LyrionAPIError", None, ERR_MEDIASERVER_UNREACHABLE),
     ("UnknownServerError", ("app_server_context",), ERR_UNKNOWN_SERVER),

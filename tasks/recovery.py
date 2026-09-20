@@ -8,67 +8,41 @@
 
 """Every way a batch task can block forever, and who unblocks it.
 
-There are exactly five of them (SCENARIOS). Four are generic and live in
+There are exactly five (SCENARIOS). Four are generic and live in
 taskqueue.maintenance; the fifth, a child whose worker is alive but whose work
-never comes back, can only be judged by the parent that is waiting on it. Before
-this module each fan-out parent carried its own copy of that judgement and they
-DRIFTED: clustering and analysis fixed the same bug in opposite directions, and
-three of the four long-opaque-phase tasks were simply never given a heartbeat at
-all because nothing listed what a task was supposed to have.
-
-So the judgement lives here once (ChildDrainSupervisor), each task supplies only
-the part that is genuinely its own (how to END a child), and RECOVERY records the
-stance of EVERY task type on EVERY scenario - including "not applicable", with
-the reason. A missing stance is a test failure, not a silence.
+never comes back, can only be judged by the parent waiting on it. Each fan-out
+parent used to carry its own copy of that judgement and they DRIFTED, and three
+of the four long-opaque-phase tasks had no heartbeat at all. So it lives here
+once, each task supplies only what is genuinely its own, and RECOVERY records
+the stance of EVERY task type on EVERY scenario - including "not applicable",
+with the reason. A missing stance is a test failure, not a silence.
 
 Main Features:
 * SCENARIOS names the five ways a run blocks: the main task's worker dies, its
   worker lives but its row goes silent, a child's worker dies, a child's worker
-  lives but never returns, and the parent giving up over and over forever.
+  lives but never returns, and the parent gives up forever
 * ChildDrainSupervisor is the ONE implementation of the sliding no-progress
-  window, of WHICH children a give-up ends, and of how many give-ups a run gets.
-  Both fan-out parents drive it through observe, handing it the same child_marks
-  record and, for analysis, the ids it has launched that the database has not
-  shown it yet; they differ only in end_child. The two used to compute the
-  victim set and the empty-queue guard on their own, differently, so both now
-  live inside observe. observe answers (moved, gave_up): moved says the run
-  changed since the last look, gave_up carries (ended, stalled_minutes) after
-  a give-up and is None otherwise, so no caller infers movement from the clock.
-  child_marks reads on the connection it is handed, so a parent that lists its
-  children inside its reap transaction does not commit that reap by accident.
-* OUTSIDE_THE_QUEUE names the two retry engines that are deliberately NOT the
-  queue's: the cron retry of a BLOCKED START and the provider-migration
-  restart HANDSHAKE. Neither is a failure retry, so neither is a gap.
+  window, of WHICH children a give-up ends and of how many give-ups a run gets.
+  Both fan-out parents drive it through observe with the same child_marks record
+  and differ only in end_child; observe answers (moved, gave_up), so no caller
+  infers movement from the clock
 * stalled_victims is the victim rule: the children a worker is HOLDING, or every
-  live child when nothing is running at all, because then the queue itself is the
-  wedge and sparing it hangs the parent forever.
-* row_heartbeat answers the sixth thing, which is not a way to block but a way to
-  be WRONGLY unblocked: a phase that is one long opaque call writes no row while
-  it runs and is indistinguishable from a wedge. It bumps the row from its own
-  connection under a lock_timeout, so a task whose own transaction is sitting on
-  that row cannot make its heartbeat block instead, and it stops after
-  stop_after_minutes so a phase that really never returns still gets caught
-  instead of being propped up forever. EVERY caller passes that bound: an
-  unbounded heartbeat on a main task is strictly worse than no heartbeat, because
-  it holds the one-live-main index open against every other run forever. The
-  budget is measured against the clock, not by adding up intervals, so a database
-  outage that skips beats cannot quietly extend it either. It bounds ONE step,
-  not one `with` block: a caller whose label names the step it is on (the nine
-  index builds, naming then creating) restarts the budget every time that label
-  changes, so a loop of legitimately slow steps cannot spend a budget sized for
-  one of them. That is what lets the budget be short. It is deliberately short -
-  _MAX_SLOW_STEP_WINDOWS is 2, not the 6 it started at - because this is
-  overnight work: at 6 windows a main task that hung at 23:00 was still holding
-  the queue at 20:00 the next day (18h propped up, then the nudge's own limit on
-  top). Two windows puts the whole detect-and-clear inside a night, and being
-  wrong is cheap: the task is requeued and resumes from its persisted progress.
-* RECOVERY maps every task type to its stance on every scenario, so a gap is
-  visible in one table instead of being spread over six modules.
-
-This module is imported eagerly by every task that can block, so it deliberately
-imports database INSIDE the heartbeat thread rather than at the top: at the top it
-put app -> ... -> recovery -> database -> config over the eager-import ceiling
-test_import_architecture pins.
+  live child when nothing runs at all, because then the queue is the wedge and
+  sparing it hangs the parent
+* row_heartbeat answers the sixth thing, which is not a way to block but a way
+  to be WRONGLY unblocked: a phase that is one long opaque call writes no row
+  and is indistinguishable from a wedge. It bumps from its own connection under
+  a lock_timeout, so a task sitting on that row cannot block its own beat,
+  and it stops after stop_after_minutes, which EVERY caller passes - an
+  unbounded heartbeat on a main task is worse than none, holding the
+  one-live-main index open forever. It bounds ONE step: a caller whose label
+  names the step restarts it on every change, so a loop of slow steps cannot
+  spend a budget sized for one. _MAX_SLOW_STEP_WINDOWS is 2, not the 6 it
+  started at: being wrong is cheap, the task resumes from its progress
+* OUTSIDE_THE_QUEUE names the two retry engines deliberately not the queue's:
+  the cron retry of a BLOCKED START and the migration restart HANDSHAKE
+* database is imported INSIDE the heartbeat thread: at the top it put
+  recovery -> database -> config over the eager-import ceiling
 """
 
 import logging

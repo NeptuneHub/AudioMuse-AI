@@ -53,8 +53,6 @@ class FakeCursor:
             return (self.conn.state.get('lock_free', True),)
         if self._last and self._last.startswith('SELECT count(*) FROM track_server_map'):
             server_id = self._last_params[0]
-            # default 0 => the "if mapped" guard is inert => the server is
-            # processed; a test wanting the unreliable-skip sets a big count.
             return (self.conn.state.get('mapped', {}).get(server_id, 0),)
         return None
 
@@ -142,8 +140,6 @@ def _deletes(conn):
 
 
 def test_reads_and_writes_no_app_config(harness, monkeypatch):
-    # The old marker lived in app_config and got purged as an unknown key every
-    # boot. The check must never touch app_config at all now.
     monkeypatch.delattr(dr, 'get_app_config_value', raising=False)
     monkeypatch.delattr(dr, 'set_app_config_value', raising=False)
     assert dr.repair_duplicate_track_maps(conn=harness['conn']) == _totals()
@@ -154,16 +150,12 @@ def test_no_null_duration_rows_is_instant_noop(harness):
     assert result == _totals()
     assert _deletes(harness['conn']) == []
     assert harness['stamped'] == []
-    # No START banner, no server contact when there is nothing to check.
     assert not any(
         'START OF CATALOGUE' in str(sql) for sql, _p in harness['conn'].executed
     )
 
 
 def test_single_file_rows_get_their_length_backfilled(harness):
-    # The 88% case: rows mapping ONE file just need their length stamped so they
-    # can be a duration-confirmed merge target for a future copy. They are never
-    # unmapped, even when the group set has no duplicates at all.
     harness['servers']['srv'] = _server_row('srv')
     harness['groups'] = {'srv': {'fp_2aaa': ['p1'], 'fp_2bbb': ['p2']}}
     harness['durations']['srv'] = {'p1': 200.0, 'p2': 314.0}
@@ -176,10 +168,6 @@ def test_single_file_rows_get_their_length_backfilled(harness):
 
 
 def test_prefetched_durations_are_reused_without_relisting(harness):
-    # A mixed upgrade: the legacy migration already listed this server this same
-    # boot and handed its durations here. The repair MUST reuse them and never
-    # list the same server a second time. The fetcher is armed to raise, so if it
-    # were called at all the test would fail.
     harness['servers']['srv'] = _server_row('srv')
     harness['groups'] = {'srv': {'fp_2aaa': ['p1'], 'fp_2bbb': ['p2']}}
     harness['durations']['srv'] = RuntimeError('must not re-list an already-listed server')
@@ -194,8 +182,6 @@ def test_prefetched_durations_are_reused_without_relisting(harness):
 
 
 def test_prefetch_covers_one_server_the_other_is_still_listed(harness):
-    # Only the server the legacy migration listed is reused; a different server
-    # with older-scheme rows is listed normally.
     harness['servers']['a'] = _server_row('a')
     harness['servers']['b'] = _server_row('b')
     harness['groups'] = {'a': {'fp_2aaa': ['p1']}, 'b': {'fp_2bbb': ['p2']}}
@@ -213,12 +199,9 @@ def test_prefetch_covers_one_server_the_other_is_still_listed(harness):
 
 
 def test_single_file_with_no_server_length_gets_the_sentinel(harness):
-    # A single file the server reports no length for is stamped with the 0
-    # sentinel so the whole catalogue is not re-listed for it on every boot; it
-    # is NOT unmapped.
     harness['servers']['srv'] = _server_row('srv')
     harness['groups'] = {'srv': {'fp_2aaa': ['p1'], 'fp_2bbb': ['p2']}}
-    harness['durations']['srv'] = {'p1': 200.0}  # p2 unknown
+    harness['durations']['srv'] = {'p1': 200.0}
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
 
@@ -231,14 +214,12 @@ def test_real_duplicates_are_kept_and_stamped(harness):
     tol = dr.config.DURATION_TOLERANCE_SECONDS
     harness['servers']['srv'] = _server_row('srv')
     harness['groups'] = {'srv': {'fp_2aaa': ['p1', 'p2', 'p3']}}
-    # Spans exactly the tolerance, so it stays a REAL group whatever the tolerance is.
     harness['durations']['srv'] = {'p1': 200.0, 'p2': 200.0, 'p3': 200.0 + tol}
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
 
     assert result == _totals(checked=1, real=1)
     assert _deletes(harness['conn']) == []
-    # The survivor's length is recorded so the group is never re-examined.
     assert harness['stamped'] == [{'fp_2aaa': 200.0}]
 
 
@@ -330,13 +311,10 @@ def test_unreachable_server_leaves_its_groups_for_next_start(harness):
 
     assert result['removed'] == 0
     assert _deletes(harness['conn']) == []
-    # nothing stamped => the group is still NULL-duration => retried next start
     assert harness['stamped'] == []
 
 
 def test_unreliable_listing_skips_the_server(harness):
-    # The server has 1000 mapped tracks but the listing returned only 2: a broken
-    # fetch, skip and retry. (Reliability is fetched-vs-mapped, not vs NULL rows.)
     harness['servers']['srv'] = _server_row('srv')
     harness['mapped']['srv'] = 1000
     harness['groups'] = {'srv': {
@@ -353,13 +331,9 @@ def test_unreliable_listing_skips_the_server(harness):
 
 
 def test_orphan_null_rows_do_not_skip_a_healthy_server(harness):
-    # THE BUG: the NULL rows are orphans (not in the server listing), but the
-    # server IS healthy (its whole catalogue came back). It must NOT be skipped -
-    # the orphans get the sentinel so the catalogue is never re-listed for them.
     harness['servers']['srv'] = _server_row('srv')
-    harness['mapped']['srv'] = 500  # a real catalogue...
+    harness['mapped']['srv'] = 500
     harness['groups'] = {'srv': {'fp_2orph1': ['x1'], 'fp_2orph2': ['x2']}}
-    # ...but the server returns 480 OTHER tracks and none of the two orphans
     harness['durations']['srv'] = {'other%d' % i: 100.0 + i for i in range(480)}
 
     result = dr.repair_duplicate_track_maps(conn=harness['conn'])
@@ -409,10 +383,6 @@ def test_servers_are_fetched_in_parallel(harness, monkeypatch):
         harness['durations'][sid] = {'pa': 200.0, 'pb': 200.0}
 
     def barrier_fetch(server):
-        # Only returns once ALL n servers are fetching at the same instant.
-        # A sequential fetch arrives one at a time -> the barrier times out ->
-        # BrokenBarrierError -> the server is skipped (real stays 0). Parallel
-        # fetch has all n threads reach the barrier together and pass.
         barrier.wait()
         return harness['durations'][server['server_id']]
 
@@ -439,17 +409,13 @@ def test_another_replica_holding_the_lock_skips(harness):
 
 class TestChromaprintDisagreement:
     def test_only_a_definitive_disagreeing_pair_marks_a_group(self, monkeypatch):
-        # chromaprints_agree stubbed: equal blobs agree, different blobs disagree.
         monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: a == b)
 
         assert dr._group_chromaprints_disagree([b'a', b'b']) is True
         assert dr._group_chromaprints_disagree([b'a', b'a']) is False
-        # any one disagreeing pair inside a larger group is enough
         assert dr._group_chromaprints_disagree([b'a', b'a', b'b']) is True
 
     def test_missing_fingerprints_are_skipped_never_split(self, monkeypatch):
-        # A blob that is present but undecodable makes chromaprints_agree abstain
-        # (None); a None entry is filtered out before comparison. Neither may split.
         monkeypatch.setattr(dr, 'chromaprints_agree', lambda a, b: None)
         assert dr._group_chromaprints_disagree([b'x', b'y']) is False
 

@@ -53,10 +53,6 @@ _label_text_embeddings_cache = None
 
 _SEGMENT_LENGTH_SAMPLES = 480000
 
-# Providers whose graph compiler needs the CLAP audio model's symbolic
-# time-frame axis pinned to a fixed value before it can compile the graph
-# (none of them compiles a dynamic dim). Plugin providers join this set by
-# registering with needs_static_shapes=True, so core never has to know their names.
 _PREPARED_MODEL_PROVIDERS = {'CoreMLExecutionProvider'}
 
 

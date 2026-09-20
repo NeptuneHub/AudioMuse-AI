@@ -59,12 +59,6 @@ def _reporter(**kwargs):
 
 
 def _reporter_with_log_snapshots(**kwargs):
-    # `logs` inside the reporter is ONE mutable list, appended to (or trimmed) in
-    # place and handed to save_task_status by reference every time - a mock's
-    # call_args_list stores that same reference, so inspecting an EARLIER call
-    # after the fact would show the list's FINAL state, not what it looked like
-    # when that call actually happened. A copy of `log` taken inside the fake
-    # save_task_status, at the instant of the call, is the only faithful record.
     from tasks.task_run import make_task_reporter
 
     snapshots = []

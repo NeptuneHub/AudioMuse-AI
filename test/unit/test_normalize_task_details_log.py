@@ -78,9 +78,6 @@ class TestASuccessfulTaskGetsAOneLineRecapOnlyWhenItSuppliedNone:
         assert details['log'] == ['Task completed successfully.']
 
     def test_a_success_that_already_supplied_its_own_log_keeps_it_uncut(self):
-        # A long-running task hands its own tail of recent lines to the final
-        # write (see tasks/clustering.py's final_db_summary); the generic
-        # success recap must not clobber it even past the cap.
         lines = [f'line {i}' for i in range(database.MAX_LOG_ENTRIES_STORED + 5)]
         details = {'log': list(lines)}
 
@@ -98,7 +95,7 @@ class TestASuccessfulTaskGetsAOneLineRecapOnlyWhenItSuppliedNone:
 
 class TestNonListOrNonDictInputsAreLeftAlone:
     def test_a_non_dict_details_value_does_not_crash(self):
-        database._normalize_task_details('not a dict', 'PROGRESS')  # must not raise
+        database._normalize_task_details('not a dict', 'PROGRESS')
 
     def test_a_details_dict_with_no_log_key_at_all_is_left_alone(self):
         details = {'progress': 40}

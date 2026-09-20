@@ -27,7 +27,6 @@ def _wire(monkeypatch, server_id, mapping):
     monkeypatch.setattr(app_server_context, 'resolve_request_server_id',
                         lambda *a, **k: server_id)
     monkeypatch.setattr(registry, 'has_secondary_servers', lambda *a, **k: True)
-    # translate_ids returns {canonical_item_id: provider_track_id} for mapped ids only
     monkeypatch.setattr(registry, 'translate_ids',
                         lambda ids, sid, conn=None: {i: mapping[i] for i in ids if i in mapping})
 
@@ -43,7 +42,7 @@ def test_output_id_is_rewritten_to_the_servers_provider_id(monkeypatch):
 
 
 def test_rows_not_on_the_server_are_dropped(monkeypatch):
-    _wire(monkeypatch, 'srv1', {'fp_2aaa': 'jelly-1'})  # fp_2bbb not on this server
+    _wire(monkeypatch, 'srv1', {'fp_2aaa': 'jelly-1'})
     rows = [{'item_id': 'fp_2aaa', 'title': 'A'}, {'item_id': 'fp_2bbb', 'title': 'B'}]
 
     out = app_server_context.scope_results(rows, None, id_key='item_id')
@@ -112,6 +111,6 @@ def test_provider_echo_id_translates_a_supplied_fp_to_the_provider_id(monkeypatc
 
 
 def test_provider_echo_id_never_echoes_an_fp_not_on_the_server(monkeypatch):
-    _wire(monkeypatch, 'srv1', {'fp_2aaa': 'jelly-1'})  # fp_2zzz has no mapping
+    _wire(monkeypatch, 'srv1', {'fp_2aaa': 'jelly-1'})
     monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda rid, data=None: rid)
     assert app_server_context.provider_echo_id('fp_2zzz') is None

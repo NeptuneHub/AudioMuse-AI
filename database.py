@@ -26,6 +26,23 @@ Main Features:
 * stage_pending_task_row is the one way to stage a placeholder row that a later
   taskqueue.enqueue on the same transaction adopts (returns True only for a row
   this call created).
+* MAIN_TASK_START_LOCK_KEY serializes the whole check-cleanup-claim sequence a
+  main-task start runs. It is SESSION scoped on purpose: clean_up_previous_main
+  _tasks commits in the middle of that sequence, and a transaction lock would be
+  released by that commit, reopening the very gap it closes.
+* The start filters come from task_types. sonic_fingerprint is deliberately not
+  a blocking type, so a running fingerprint no longer refuses an analysis or a
+  clustering over the same catalogue, and the rows that may never refuse a batch
+  start (restart handshake, inline radio, migration PLANNER) are machinery, not
+  catalogue work. server_sweep and the plugin tasks DO block, because they write
+  the mappings a cleaning or a migration rewrites; excluding nothing at all is
+  what once made a restart handshake answer 409 to a cleaning the user asked for.
+* _CONNECT_OPTIONS goes on every app connection: statement_timeout caps a
+  runaway query at 10 minutes, and max_parallel_workers_per_gather=0 forces
+  SERIAL plans - a parallel plan allocates a dynamic shared-memory segment in
+  /dev/shm, which is small by default in containers, so a big scan such as the
+  analysis work map died with DiskFull; a serial plan spills to ordinary temp
+  files and runs on any cluster.
 * Embedding, projection, and alchemy CRUD shared by workers and the web app.
 """
 
@@ -136,10 +153,6 @@ DEFAULT_TEXT_SEARCH_QUERIES = [
     "pop energetic synthesizer",
 ]
 
-# Serializes the whole check-cleanup-claim sequence every main-task start runs.
-# Session scoped rather than transaction scoped on purpose: clean_up_previous_main_tasks
-# commits in the middle of that sequence, and a transaction lock would be released
-# by that commit - reopening the very gap this closes.
 MAIN_TASK_START_LOCK_KEY = 5512740318664902
 
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_lock(%s)"
@@ -147,9 +160,6 @@ _ADVISORY_UNLOCK_SQL = "SELECT pg_advisory_unlock(%s)"
 
 GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 
-# sonic_fingerprint is deliberately NOT here: a running fingerprint blocked an
-# analysis or clustering start on main, and quietly excluding it here let the two
-# run concurrently over the same catalogue.
 SELF_MANAGED_TASK_TYPES = task_types.SELF_MANAGED_TASK_TYPES
 
 SELF_MANAGED_TASK_TYPE_PREFIXES = task_types.SELF_MANAGED_TASK_TYPE_PREFIXES
@@ -157,12 +167,6 @@ _BLOCKING_TASK_TYPE_PATTERNS = [
     prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
 ]
 
-# Rows that must never refuse a batch start. A restart handshake, the inline radio
-# and the migration PLANNER are machinery, not work that touches the catalogue.
-# server_sweep and the plugin tasks are deliberately NOT here: those really do
-# write the mappings a cleaning or a migration rewrites, so they must still block.
-# The starts used to pass an empty tuple, which excluded NOTHING, so a restart
-# handshake in flight answered 409 to a cleaning the user had just asked for.
 NON_BLOCKING_TASK_TYPES = task_types.NON_BLOCKING_TASK_TYPES
 
 INLINE_FLASK_TASK_TYPES = task_types.INLINE_FLASK_TASK_TYPES
@@ -176,14 +180,6 @@ MAP_PROJECTION_CACHE = None
 
 _embedded_server = None
 
-# Server-side options applied to every app connection.
-#  - statement_timeout: cap runaway queries (10 min).
-#  - max_parallel_workers_per_gather=0: force SERIAL query plans. A parallel plan
-#    allocates a dynamic shared-memory segment in /dev/shm, which is small by
-#    default on containers; a big scan (e.g. the analysis work-map over a large
-#    library) then dies with DiskFull ("could not resize shared memory segment").
-#    Serial plans need no DSM and spill to normal temp files, so the app runs on
-#    any cluster regardless of /dev/shm size.
 _CONNECT_OPTIONS = '-c statement_timeout=600000 -c max_parallel_workers_per_gather=0'
 
 

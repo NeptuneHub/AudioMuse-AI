@@ -11,16 +11,14 @@
 The ONLY place that walks a server's whole catalogue to reconcile it with the
 analyzed database. A sweep is a pure metadata pass, never a download or an
 analysis: track mappings via normalized path, path tail and metadata tiers, plus
-the server's artist links and a set-based catalogue metadata refresh. It runs
-automatically when a server is added or its matching settings change, and from
-the Align button.
+artist links and a set-based metadata refresh. It runs when a server is added,
+when its matching settings change, and from the Align button.
 
 Runs as a high-priority queue job. Progress goes through the one shared reporter
 and cancellation through the one shared cancel check (tasks.task_run); the queue
-writes the terminal row from what the sweep returns or raises. It used to catch
-every exception, write FAILURE itself and return normally, so the queue recorded
-SUCCESS and never retried a sweep that had merely hit a media server that was
-down for two minutes. Unmatched tracks are left unmapped; re-sweeps are incremental.
+writes the terminal row from what the sweep returns or raises, so a sweep that
+merely hit a server down for two minutes is retried instead of recorded as a
+success. Unmatched tracks are left unmapped and re-sweeps are incremental.
 Full-refresh sweeps prune mappings whose provider track is gone (only map rows,
 never analyzed tracks): what the server returns is what it has, except that an
 empty list (what a failed library lookup returns) never prunes.
@@ -28,27 +26,23 @@ empty list (what a failed library lookup returns) never prunes.
 Main Features:
 * sweep_server / sweep_all_secondary_servers entry points; the catalogue
   helpers are shared with the cleaning task so the two can never drift apart.
-* Zero-download alignment, artist link upserts, and batch metadata refresh.
-  A song held as several files on the new server gets every file whose path
-  matches one it already has elsewhere, or whose title, artist and duration are
-  the song's own, and songs already mapped on the server get the same duplicate
-  check, so duplicates are never re-analysed.
+* Zero-download alignment, artist link upserts and batch metadata refresh. A
+  song held as several files on the new server gets every file whose path
+  matches one it has elsewhere, or whose title, artist and duration are its own,
+  and an already mapped song gets the same check, so no duplicate is re-analysed.
 * A song with no path left anywhere (unbound by an earlier migration) is still
   matched from the catalogue itself by title, artist and duration.
 * Lean memory: fetched catalogue is condensed into a slim CandidateIndex and the
   local side streams through it in keyset-paginated chunks.
-* A sweep whose worker died is restarted by the queue's own reclaim, and one
-  whose worker is ALIVE but wedged is ended by the wedged-main nudge, which
-  watches this task type as well (taskqueue.sql.NUDGE_TASK_TYPES): a live sweep
-  refuses a cleaning start and a provider-migration execute, so a wedged one
-  locked out far more than the next sweep. Its one whole-catalogue fetch per
-  server therefore holds a row_heartbeat, so only a sweep that is really stuck
-  runs the nudge's limit out.
+* A sweep whose worker died is restarted by reclaim; one whose worker is ALIVE
+  but wedged is ended by the wedged-main nudge, which watches this task type
+  too (taskqueue.sql.NUDGE_TASK_TYPES) because a live sweep refuses a cleaning
+  start and a migration execute. Its one whole-catalogue fetch per server holds
+  a row_heartbeat, so only a really stuck sweep runs the limit out.
 * prune_stale_mappings invalidates BOTH the paged-IVF and the hyperbolic
-  availability-mask caches whenever it actually removes track_server_map
-  rows, so every index's per-server view corrects itself the moment a
-  server's catalogue changes instead of relying solely on the masks' own
-  30s TTL.
+  availability-mask caches whenever it removes track_server_map rows, so every
+  index's per-server view corrects itself the moment a catalogue changes rather
+  than on the masks' own 30s TTL.
 """
 
 import logging

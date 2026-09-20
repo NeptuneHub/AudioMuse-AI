@@ -9,68 +9,41 @@
 """Everything a worker task shares: the prologue, the cancel check, the reporter.
 
 The contract with the queue is one sentence: the queue writes the terminal row
-and decides every retry; the task returns a summary or raises. A task never
+and decides every retry, the task returns a summary or raises. A task never
 writes SUCCESS, FAIL or REVOKED on its own row. It raises TaskFailed for an
 error no retry can fix, TaskCancelled from its cancel check, and anything else
-for a failure the queue should try again. The message it wants on the dashboard
-recap goes in the dict it returns. The one terminal row a task writes is its
-own child's, through taskqueue.end_child, when it gives up on that child.
-
-Before this module held them, every task carried its own copy of the three
-things below and they drifted: seven progress reporters, four cancellation
-mechanisms of which four tasks had none past their first line, and a sweep that
-caught every exception, wrote FAILURE itself and returned normally, so the
-queue recorded SUCCESS and never retried it. A fifth copy survived longer: a
-pre-check, hand-written in six places, that read the row before any work to
-refuse a run whose row was gone or terminal, next to a cancel check that
-already answers exactly that. The pre-check is gone; the first forced cancel
-check is the one place a task learns its row is dead.
+for a failure worth retrying; the recap line goes in the dict it returns.
+The one terminal row a task writes is its own child's, through
+taskqueue.end_child. Before this module every task carried its own copy of the
+three things below - seven reporters, four cancellation mechanisms - and they
+drifted.
 
 Main Features:
-* task_run_prologue: resolve the claimed id and the id to report under. It
-  reads no row; the cancel check does that
-* make_cancel_check / cancel_guard: the ONE cooperative cancellation. It reads
+* task_run_prologue resolves the claimed id and the id to report under; it
+  reads no row
+* make_cancel_check / cancel_guard is the ONE cooperative cancellation: it reads
   the task's own row and its parent's on a dedicated autocommit connection,
   throttled to QUEUE_CANCEL_CHECK_SECONDS, and raises TaskCancelled. A read
   that fails never cancels: a database blip is not a cancel. Every task calls
-  it once with force=True BEFORE its first report, so a row a cancel wiped or
-  a parent finished is never written to again and never does a line of work.
-  cancel_guard is the form to reach for; make_cancel_check is the same check
-  for a body that already owns a finally block for other cleanup (the album
-  task, the analysis phase), where a second with-block would only re-indent
-  hundreds of lines. A parent is passed only by a supervised child (an album,
-  a batch) that has nothing to report to once its parent is over. A task that
-  merely carries lineage on its row, like the alignment a migration queues,
-  watches its own row alone: its parent finishes first by design. A task whose
-  OWN row is already terminal stops too: a parent that gave up on it wrote
-  that row, so there is nothing left to report and the queue will not accept
-  a verdict
-* make_task_reporter: the ONE progress reporter. It writes RUNNING and only
-  RUNNING; a terminal state handed to it is logged as an error and downgraded,
-  because that row belongs to the queue. It keeps the capped log, the
-  progress window, the write throttle, and can merge a live details dict on
-  every write for a task that persists its resume state on its own row. A
-  write passed force=True skips the throttle, for the one line that must
-  land: the failure a child records on its row before it raises
-* for_each_server_in_scope: the shared per-server loop for a task that runs
-  the same step against every server and reports which ones failed. A
-  TaskFailed raised by the step is the task's own verdict and passes through,
-  and so does a lost database connection, OperationalError or InterfaceError
-  alike: psycopg2 reports a connection closed under the caller as the latter,
-  and swallowing it as one server's failure would march the loop over every
-  remaining server on a dead connection and cost the task a charged attempt
-  where the worker has an uncharged path for exactly this
-* run_playlist_task_per_server: the WHOLE body of a scheduled task that builds
-  one playlist per server. The sonic fingerprint and the album of the week
-  carried a line-for-line copy of it, ninety lines each, differing only in
-  three strings and the call that picks the track ids, and a copy is how the
-  older scaffolds drifted. A caller now passes its label, its playlist name,
-  the name to fall back to on a backend without upsert, and a callable that
-  returns the ids; everything else - the prologue, the forced cancel check,
-  the reporter, the heartbeat around a step that can run for minutes, the
-  empty result that PRESERVES the previous playlist rather than emptying it,
-  the NotImplementedError fallback to a dated playlist, and the rule that only
-  a failure on EVERY server fails the task - lives here once
+  it once with force=True BEFORE its first report, so a row a cancel wiped is
+  never written to again. A parent is passed only by a supervised child that has
+  nothing to report to once its parent is over; a task that merely carries
+  lineage watches its own row alone
+* make_task_reporter is the ONE progress reporter. It writes RUNNING and only
+  RUNNING - a terminal state handed to it is logged as an error and downgraded,
+  because that row belongs to the queue - and keeps the capped log, the progress
+  window and the throttle. force=True skips it for the one line
+  that must land: the failure a child records before it raises
+* for_each_server_in_scope is the shared per-server loop: a TaskFailed from the
+  step is the task's verdict and passes through, and so does a lost database
+  connection (OperationalError or InterfaceError): swallowing that would march
+  the loop over every remaining server on a dead connection
+* run_playlist_task_per_server is the WHOLE body of a scheduled one-playlist-
+  per-server task. The caller passes its label, playlist name, the name to fall
+  back to on a backend without upsert and a callable returning the ids;
+  the prologue, forced cancel check, reporter, heartbeat, the empty result that
+  PRESERVES the previous playlist, the dated-playlist fallback and the rule that
+  only a failure on EVERY server fails the task live here once
 """
 
 import logging

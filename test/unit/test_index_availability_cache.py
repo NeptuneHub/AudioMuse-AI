@@ -163,9 +163,6 @@ class TestAvailabilityCacheHeapRelease:
         cache = AvailabilityCache(ttl_seconds=0.4)
         cache.get('s1', 'scope', lambda: frozenset({'a'}))
 
-        # Fire a sweep while the entry is still fresh. It is kept, so the sweep
-        # must reschedule itself: without that, nothing else is coming and the
-        # entry sits resident for the life of the process.
         cache._idle_timer.arm(0.05, cache._drop_idle_entries)
 
         deadline = time.time() + 10

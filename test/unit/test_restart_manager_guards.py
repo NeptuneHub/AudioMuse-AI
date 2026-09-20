@@ -9,51 +9,44 @@
 """The local half of a restart: the IPC budget, the self-restart gate, the poll.
 
 The native control server answers only AFTER it has synchronously stopped and
-started every worker child, so the socket timeout is a correctness constant and
-not a convenience: undershooting it makes a correct restart report failure, and
-the tasks that restart killed are then reclaimed with an attempt charge. The
-delayed Flask self-restart is equally one-sided - it belongs to the Flask process
-and to nothing else - and the control-result poll runs every few seconds for up
-to fifteen minutes, so it may not open a connection per column it reads.
+started every worker child, so the socket timeout is a correctness constant:
+undershooting it makes a correct restart report failure, and the tasks that
+restart killed are then reclaimed with an attempt charge. The delayed Flask
+self-restart belongs to the Flask process and nothing else, and the
+control-result poll runs for up to fifteen minutes, so it may not open a
+connection per column.
 
-The budget's floor is pinned WITHOUT reloading config. Importing config runs
-``_apply_db_overrides``, which on anything that is not an explicit worker calls
-``ensure_table()`` and bootstraps schema into whatever DATABASE_URL happens to
-resolve to, so re-executing that module from a unit test is a landmine that only
-goes off on the machine where the role env var is set. The floor is therefore
-resolved by lifting the single assignment expression out of config.py with ``ast``
-and evaluating that expression alone against a patched environment: the same
-contract, none of the module body.
+The floor is pinned WITHOUT reloading config: importing it runs
+``_apply_db_overrides``, which outside an explicit worker calls ``ensure_table()``
+and bootstraps schema into whatever DATABASE_URL resolves to. The floor is
+instead lifted out of config.py with ``ast`` and that one assignment expression
+evaluated against a patched environment.
 
-Both NUMBERS are pinned exactly, not merely bounded from below by the fleet stop
-they have to cover. A floor of 60 and a default of 60 satisfy every "at least a
-three-worker shutdown" assertion in this file while quietly halving the action
-window derived from them, and config says in as many words that this floor is not
-negotiable downwards because it was already raised once after a real incident.
+Both NUMBERS are pinned exactly, not merely bounded below by the fleet stop they
+cover: a floor of 60 and a default of 60 satisfy every "at least a three-worker
+shutdown" assertion here while quietly halving the action window derived from
+them, and the floor was already raised once after a real incident.
 
-``_supervisorctl_already_satisfied`` is the container-side other half: supervisord
-exits non-zero when a start finds the program already running or a stop finds it
-already down, and both of those ARE the requested end state. It is per-action and
-per-line on purpose - "already started" answers a start and not a stop, and one
-genuinely failed service in a multi-service command still fails the command.
+``_supervisorctl_already_satisfied`` is the container-side half: supervisord
+exits non-zero when a start finds the program running or a stop finds it down,
+and both ARE the requested end state. It is per-action and per-line on purpose.
 
 Main Features:
 * The control IPC budget covers three sequential worker shutdowns, floor included
-* The floor is exactly the 75s an incident raised it to and the default exactly 120s
-* An override under the floor is raised back to it; one over the floor is honoured
-* Resolving an override never re-executes config, so the live constant never moves
+* The floor is exactly the 75s an incident raised it to, the default exactly 120s
+* An override under the floor is raised back to it, one over it is honoured
+* Resolving an override never re-executes config
 * The socket really receives that budget before it connects
 * Only a Flask process arms the delayed self-restart timer
 * DISABLE_FLASK_RESTART suppresses the restart without raising
 * An already-running start and an already-stopped stop are successes, not failures
 * Neither one answers the OTHER action, and a mixed result is still a failure
-* A legacy JSONB details column still identifies the recorded action
-* A details payload that is not an object falls back to a match instead of raising
-* One control-result poll opens exactly one database connection
+* A legacy JSONB details column still identifies the recorded action, and a
+  payload that is not an object falls back to a match instead of raising
+* One control-result poll opens exactly one connection
 * The setup-wizard parameter catalog cannot drift: every bootstrap-excluded key
-  stays hidden or basic, and every static/setup.js section key exists in config,
-  reaches the advanced list (neither hidden nor basic) and is listed in exactly
-  one section
+  stays hidden or basic, and every setup.js section key exists in config, is
+  advanced and is listed in exactly one section
 """
 
 import ast

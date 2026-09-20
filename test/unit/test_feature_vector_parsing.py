@@ -87,8 +87,6 @@ class TestMalformedScoreTolerance:
 
     @patch('tasks.clustering_helper.STRATIFIED_GENRES', ['synthwave', 'vaporwave'])
     def test_genre_set_follows_a_patched_stratified_list(self):
-        # Genres absent from the shipped list: a set frozen at import would miss
-        # them entirely and fall through to __other__.
         assert _get_track_primary_genre({'mood_vector': 'synthwave:0.2,rock:0.9'}) == 'synthwave'
 
     @patch('tasks.clustering_helper.STRATIFIED_GENRES', ['rock', 'pop'])

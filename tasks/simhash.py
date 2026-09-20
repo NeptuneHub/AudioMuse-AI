@@ -45,13 +45,9 @@ SIGNATURE_BITS = 200
 SIGNATURE_MATCH_MAX_HAMMING = 10
 
 _ID_PREFIX = "fp_"
-# The current scheme digit comes from config so a future bump is a one-line change.
-# Every fp_<n> with n in 1..9 encodes the same 200-bit signature the same way, so an
-# older-version id still decodes; only the digit (and thus the id STRING) differs, and
-# the startup migration relabels older versions up to the current one.
 _ID_SCHEME = str(CATALOGUE_ID_SCHEME_VERSION)
 _ID_HEAD = _ID_PREFIX + _ID_SCHEME
-CURRENT_ID_HEAD = _ID_HEAD  # public: the current-scheme head, e.g. "fp_3"
+CURRENT_ID_HEAD = _ID_HEAD
 _HEX_LEN = ((SIGNATURE_BITS + 7) // 8) * 2
 CANONICAL_ID_LEN = len(_ID_HEAD) + _HEX_LEN
 _SIGNATURE_MASK = (1 << SIGNATURE_BITS) - 1
@@ -87,19 +83,12 @@ def _band_bit_ranges():
 
 _BAND_BITS = _band_bit_ranges()
 
-# Popcount table: "how many bits differ" becomes one vectorized lookup and sum
-# over packed signatures, instead of a Python XOR + bin().count('1').
 _POPCOUNT = (
     np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1)
     .sum(axis=1)
     .astype(np.uint8)
 )
 
-# Candidate pairs are GENERATED and filtered in slices of this size, so peak
-# memory stays flat no matter how crowded a band gets. A real library clusters
-# hard enough that one band can hold hundreds of millions of candidate pairs;
-# materializing them all at once is worth gigabytes and gets the container
-# OOM-killed, while a slice is worth tens of megabytes - per scanning thread.
 _PAIR_CHUNK = 150_000
 
 

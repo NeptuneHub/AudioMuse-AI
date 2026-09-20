@@ -8,15 +8,15 @@
 
 """Single-call plan builder and executor for AI playlist requests.
 
-Orchestrates the AI pipeline between ``api``/``prompts`` (LLM calls),
-``vocab`` (label normalization), and ``tools`` (execution): one tool-calling
-LLM request over the full tool surface emits the plan, which is then
-validated, deduplicated, merged into a normalized plan, run, and composed.
+Orchestrates the pipeline between ``api``/``prompts`` (LLM calls), ``vocab``
+(label normalization) and ``tools`` (execution): one tool-calling request over
+the full tool surface emits the plan, which is then validated, deduplicated,
+merged, run and composed.
 
 Main Features:
 * Regex pre-extraction of years/decades/BPM/tempo/energy/genre (and negated-genre) hints; hints the model omitted are deterministically merged back into the filter (hint backstop), while hallucinated year/instrumental/exclusion args absent from the request are stripped (exclusions survive only when the request carries a negation cue); unsupported constraints (duration) surface as plan notes.
 * Deterministic repair of what small models get wrong, because the output grammar cannot express it: repeated array values are collapsed (Ollama ignores uniqueItems, so a model pads a list to maxItems), and exclusions that contradict the request itself are dropped - an excluded artist that is also a seed or the filter's own artist, an excluded genre the request asks for positively, and exclusions naming something absent from the request (fuzzy-matched, so a misspelling still counts).
-* Soft categorical-priority re-rank (matching songs first, continuous dims order within tiers) that blends the primary tool's similarity rank as an extra dimension and down-ranks intro/skit/interlude titles; exclude_artists/exclude_genres are the one HARD cut, reverted only when they would empty the whole pool; multiple finder tools get an intersection boost (songs returned by several tools rank first).
+* Soft categorical-priority re-rank (matching songs first, continuous dims within tiers) that blends the primary tool's similarity rank as an extra dimension and down-ranks intro/skit/interlude titles; exclude_artists/exclude_genres are the one HARD cut, reverted only when they would empty the pool; songs returned by several finder tools get an intersection boost.
 * knowledge_lookup (AI brainstorm) output is never post-filtered: the parsed filter is instead injected INTO the tool call, so the recipe is grounded and the channels are gated inside the brainstorm itself. The planner filter is still cleared, keeping brainstorm results out of the composition re-rank.
 * A request always yields a plan that can find songs: an empty or fully-dropped plan replans ONCE with failure feedback and then falls back to a deterministic match of the user's own words (text_match, or the hint-derived filter alone for a year-only request), and the same fallback covers a zero-result run and an unreachable provider. score_threshold relax loop backfills when a filter pool is short, and a filter-only query that still underfills the target re-runs without its soft dims (tempo/energy/moods/key/scale/rating) and applies them as the soft re-rank over the broader pool.
 """

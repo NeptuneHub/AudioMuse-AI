@@ -17,6 +17,15 @@ Main Features:
 * ``PluginContext`` accumulates flask-vs-worker component registrations.
 * Facade helpers (``get_db``, ``get_setting``/``set_setting``, ``table``, ``enqueue``)
   auto-resolve the calling plugin id from the import namespace.
+* ``ANALYSIS_COMPONENTS`` names the analysis steps a plugin may replace
+  wholesale through ``register_analysis_provider``, and ``ONNX_POSITIONS`` where
+  a plugin provider goes in the ONNX chain (``register_onnx_provider``).
+* ``RESERVED_TASK_PARAMS`` are the argument names
+  ``plugin.manager.run_plugin_task`` consumes itself, so a plugin task function
+  that declared one could never receive it.
+* ``enqueue`` holds a user-triggered plugin action to the queue guard, exactly
+  like a manual batch start. A plugin task queueing follow-up work from inside
+  its own running task is exempt: that task already holds the guard.
 """
 
 import inspect
@@ -52,14 +61,10 @@ logger = logging.getLogger('audiomuse.plugin')
 _ID_RE = re.compile(r'^[a-z][a-z0-9_]{1,63}$')
 _NAME_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
 
-# Analysis steps a plugin may replace wholesale with register_analysis_provider.
 ANALYSIS_COMPONENTS = frozenset({'asr'})
 
-# Where a plugin provider goes in the ONNX chain, see register_onnx_provider.
 ONNX_POSITIONS = frozenset({'before_cuda', 'before_cpu'})
 
-# Argument names plugin.manager.run_plugin_task consumes itself, so a plugin task
-# function that declares one of them could never receive it.
 RESERVED_TASK_PARAMS = frozenset({'server_scope', 'task_claim_required'})
 
 __all__ = [
@@ -180,9 +185,6 @@ def enqueue(func, *args, queue='default', **kwargs):
             "Task arguments must be JSON-serializable (str, int, float, bool, None, "
             "list, dict); pass an ISO string instead of a datetime, a list instead of a set."
         ) from exc
-    # A user-triggered plugin action must respect the queue guard, exactly like
-    # the manual batch starts. A plugin task enqueueing follow-up work from
-    # inside its own running task is exempt: that task already holds the guard.
     if taskqueue.current_task_id() is None:
         from error import AudioMuseError
         from error.error_dictionary import ERR_TASK_IN_PROGRESS

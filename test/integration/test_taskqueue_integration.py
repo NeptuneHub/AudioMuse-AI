@@ -353,10 +353,6 @@ class TestAdmissionIsAUniqueIndexNotALock:
     def test_upgrade_retires_conflicting_live_roots_before_recreating_the_index(
         self, queue_db
     ):
-        # Simulate a pre-upgrade state: no one-live-main index, and a live batch
-        # root alongside a live sonic-fingerprint root (the gap this feature
-        # closes). ensure_schema must retire every live main root but the newest
-        # before it can build the unique index, or the CREATE would fail.
         with queue_db.cursor() as cur:
             cur.execute(f"DROP INDEX IF EXISTS {sql.MAIN_INDEX_NAME}")
         queue_db.commit()

@@ -40,10 +40,6 @@ import urllib.parse
 import numpy as np
 import psycopg2
 
-# Connection is taken from the environment so no credentials live in the
-# repo (SonarCloud S2068/S1313). Example:
-#   AUDIOMUSE_DB_HOST=<db-host> AUDIOMUSE_DB_PASSWORD=<password> python \
-#       query/brainstorm_genre_subgenre_080.py
 DB_CONFIG = {
     'host': os.environ.get('AUDIOMUSE_DB_HOST', '127.0.0.1'),
     'port': int(os.environ.get('AUDIOMUSE_DB_PORT', '5432')),

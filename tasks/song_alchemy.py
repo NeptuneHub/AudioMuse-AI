@@ -8,17 +8,16 @@
 
 """Blend and subtract musical anchors to generate an alchemy playlist.
 
-Powers the song-alchemy feature (and the radios built on it): callers add and
-subtract songs, artists, moods, playlists, or saved anchors and get back a
-ranked set of tracks near the blended centroid.
+Powers the song-alchemy feature and the radios built on it: callers add and
+subtract songs, artists, moods, playlists or saved anchors and get back tracks
+ranked around the blended centroid.
 
 Main Features:
-* Gathers anchor points across item types (song/artist GMM/mood centroid/
-  playlist/saved anchor), forms add and subtract centroids, and multi-queries
-  the similarity index around them.
+* Gathers anchor points across types (song, artist GMM, mood, playlist, saved
+  anchor), forms add and subtract centroids and multi-queries the index.
 * Temperature controls exploration, with a zero-temperature single-song shortcut
   to plain nearest-neighbours; subtracted regions are filtered by distance and a
-  2D projection of the centroid is returned for the UI.
+  2D projection of the centroid goes to the UI.
 * Returns the subtract vectors with their exclusion radius as `exclusions` and
   every ADD point, not averaged, with its weight as `inclusions` so a saved
   anchor can persist both; an anchor used as input contributes each stored
@@ -36,14 +35,14 @@ Main Features:
   many-point anchor competes like a single song and a re-run of a saved anchor
   queries the same points as the run it was saved from.
 * Anchors are loaded once per run; one whose centroid size differs from the
-  embedding dimension, or whose include points are stamped with another
-  embedding model file (SHA-256 prefix) or dimension, is ignored everywhere in
-  the run with a warning. A model file that cannot be read yields no
-  fingerprint, and then only the dimension is compared.
+  embedding dimension, or whose include points are stamped with another model
+  file (SHA-256 prefix) or dimension, is ignored for the whole run with a
+  warning. An unreadable model file yields no fingerprint, and then only the
+  dimension is compared.
 * Governed by config: ALCHEMY_DEFAULT_N_RESULTS (50) when the caller names no
-  count, ALCHEMY_TEMPERATURE (1.0), and the metric-dependent subtract cutoffs
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0). There is no upper
-  bound on n_results here: ALCHEMY_MAX_N_RESULTS only caps the page's input box.
+  count, ALCHEMY_TEMPERATURE (1.0) and the metric-dependent subtract cutoffs
+  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0). n_results has no
+  upper bound here: ALCHEMY_MAX_N_RESULTS only caps the page's input box.
 """
 
 import hashlib
@@ -190,8 +189,6 @@ def _get_playlist_components(playlist_id: str) -> Tuple[List[np.ndarray], List[f
     if not track_ids:
         logger.warning(f"Playlist '{playlist_id}' returned no tracks")
         return [], []
-    # Duplicate provider files in the playlist resolve to one canonical id; keeping
-    # both would weight that song's IVF cell twice in the anchor.
     track_ids = list(
         dict.fromkeys(
             canonical_input_ids(track_ids, ms_context.active_server_id()).values()

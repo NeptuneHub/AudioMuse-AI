@@ -156,7 +156,6 @@ class TestSanitizeTaskDetails:
             },
             'SUCCESS', 'cleaning',
         )
-        # A legacy provider id is not an internal fp_ id, so it must NOT be stripped.
         assert out['final_summary_details']['orphaned_albums'][0]['tracks'][0]['item_id'] == 'jelly-legacy-1'
 
     def test_non_list_orphaned_albums_does_not_crash(self):
@@ -181,13 +180,7 @@ class TestSanitizeTaskDetails:
             },
             'PROGRESS', 'main_clustering',
         )
-        # best_result never reached this response on remote main, since the task
-        # never persisted it at all before the queue moved onto Postgres - matched
-        # here rather than picked apart key by key, so a new heavy key added to
-        # best_result later cannot silently start leaking through again.
         assert 'best_result' not in out
-        # The score and the hyperparameters of the best candidates found so far -
-        # everything the UI actually shows - survive untouched.
         assert out['best_score'] == 16.76
         assert out['elite_solutions'] == [{'score': 16.76, 'params': {'n_clusters': 67}}]
 

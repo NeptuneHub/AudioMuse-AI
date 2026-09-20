@@ -714,9 +714,6 @@ class TestExecuteGate:
         assert 'dry' in err or 'status' in err
 
     def test_rejects_while_a_server_sweep_is_running(self, bp_mod, client, fake_db):
-        # A migration rewrites track_server_map the same way a sweep does, so
-        # it must keep blocking on a live sweep too - the same invariant the
-        # cleaning start already enforces - not just the queue-guard types.
         db, cur = fake_db
         cur._fetchone_queue.extend([(0,), (0,)])
         cur._fetchone_queue.append((True,))

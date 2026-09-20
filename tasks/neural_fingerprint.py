@@ -9,17 +9,15 @@
 """Neural audio fingerprint: one 32-byte code per half second of a track.
 
 The encoder is the neural music fingerprinter of Araz, Serra and Bogdanov
-("Enhancing Neural Audio Fingerprint Robustness to Audio Degradation for
-Music Identification", ISMIR 2025; AGPLv3 code and weights, the triplet
-checkpoint), the NAFP architecture of Chang et al. (ICASSP 2021) trained with
-real room impulse responses, microphone responses and background noise so
-that a second of a recording heard through a phone lands where the same
-second of the clean track lands. It was exported once from the TensorFlow
-checkpoint to neural_fingerprint.onnx (17.2 million parameters, 71 MB;
-scripts/onnx_export/export_neural_fingerprint_to_onnx.py), published in the
-model release and downloaded into the model directory like the MusiCNN graphs.
-The analysis stores the whole sequence for every track and the Search by
-Recording page finds which track, and where in it, a clip aligns with.
+("Enhancing Neural Audio Fingerprint Robustness to Audio Degradation for Music
+Identification", ISMIR 2025; AGPLv3 code and weights, the triplet checkpoint):
+the NAFP architecture of Chang et al. (ICASSP 2021) trained with real room
+impulse responses, microphone responses and background noise, so a second heard
+through a phone lands where the clean second lands. It was exported once to
+neural_fingerprint.onnx (17.2M parameters, 71 MB;
+scripts/onnx_export/export_neural_fingerprint_to_onnx.py) and ships in the model
+release like the MusiCNN graphs. The analysis stores the whole sequence per
+track; Search by Recording finds which track, and where in it, a clip aligns.
 
 Main Features:
 * mel_patches: the audio resampled once to 8 kHz (the same helper the other
@@ -33,13 +31,12 @@ Main Features:
   fingerprint_audio chains both one batch of segments at a time, so a
   one-hour recording costs the same transient memory as a three-minute song,
   and is what the analysis stage and the search share
-* product quantisation: every 128-vector is stored as 32 bytes, one byte per
-  slice of four numbers, against a codebook of 256 centroids per slice that
-  ships next to the model (neural_fingerprint_pq.npz, trained once on library
-  fingerprints by scripts/onnx_export/train_neural_fingerprint_codebook.py
-  through train_codebook); encode_codes and decode_codes convert both ways,
-  the decoded vectors renormalised, and the codebook's checksum travels in
-  every blob so a blob and a codebook that do not belong together are refused
+* product quantisation: every 128-vector is stored as 32 bytes, one per slice of
+  four numbers, against a codebook of 256 centroids per slice shipped next to
+  the model (neural_fingerprint_pq.npz, trained by train_codebook);
+  encode_codes/decode_codes convert both ways with the decoded vectors
+  renormalised, and the codebook checksum travels in every blob, so a blob and a
+  codebook that do not belong together are refused
 * encode_blob / decode_blob: the code sequence behind a small header (magic
   NFP2, dimension, count, slices, codebook id), 14 KB per average track; a
   blob with another magic, dimension, slice count or codebook is refused

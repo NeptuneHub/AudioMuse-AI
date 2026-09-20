@@ -43,16 +43,12 @@ def _cursor_with(mood_rows=(('happy:0.9,sad:0.1', 'danceable:0.5'),),
 
 class TestRefreshInterval:
     def test_fast_refresh_is_60s_with_no_db_probe(self, monkeypatch):
-        # The fast tier is cheap enough to recompute every 60s, and it must not
-        # touch the DB just to decide when to run again.
         def _fail_if_db_touched():
             raise AssertionError('refresh interval must not query the DB')
         monkeypatch.setattr(dash, 'get_db', _fail_if_db_touched)
         assert dash.dashboard_refresh_interval() == 60
 
     def test_charts_stay_on_their_own_hourly_cadence(self):
-        # The distribution charts (one needs a full-table scan) run far less often
-        # than the fast tier.
         assert dash.DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS == 3600
         assert (dash.DASHBOARD_CHARTS_REFRESH_INTERVAL_SECONDS
                 > dash.DASHBOARD_REFRESH_INTERVAL_SECONDS)
@@ -60,9 +56,6 @@ class TestRefreshInterval:
 
 class TestSnapshotCompleteness:
     def test_a_failed_count_blocks_the_whole_snapshot(self, monkeypatch):
-        # A transient DB error must not be published as a real 0. The old code
-        # used a 0-on-failure count for clap, so one blip pinned "CLAP: 0 (0.0%)"
-        # on screen until the next refresh.
         monkeypatch.setattr(dash, '_collect_music_server_metrics',
                             lambda cur, total_songs=None: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None:
@@ -85,9 +78,6 @@ class TestSnapshotCompleteness:
 
 class TestCadenceSplit:
     def test_fast_block_carries_no_distribution_chart_keys(self, monkeypatch):
-        # The distribution charts (Genres, Moods Coverage, Tempo) are the hourly
-        # block - one needs a full-table scan - so NONE of them may ride in the
-        # 60s fast block.
         monkeypatch.setattr(dash, '_collect_music_server_metrics',
                             lambda cur, total_songs=None: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
@@ -105,11 +95,8 @@ class TestCadenceSplit:
         assert 'top_genre' in metrics
         assert 'moods_coverage' in metrics
         assert 'tempo_profile' in metrics
-        # Its OWN stamp, so the UI can say "hourly" honestly instead of borrowing
-        # the fast tier's every-minute stamp.
         assert metrics['charts_updated_at']
         assert 'total_songs' not in metrics
-        # 'happy' is the dominant label of the single mocked row.
         assert metrics['top_genre'][0]['label'] == 'happy'
 
 
@@ -143,8 +130,6 @@ class TestMoodsCoverageIsAPartitionNotASumOfScores:
             assert isinstance(row['count'], int)
 
     def test_a_near_tie_library_still_separates_instead_of_flattening(self):
-        # The exact #826 shape: every score is ~0.6 and the labels differ only in
-        # the second decimal. Summing gives six ~equal slices; argmax gives 3:1.
         flat = tuple(
             ('happy:0.9', 'danceable:0.62,sad:0.61,party:0.60')
             for _ in range(3)
@@ -156,10 +141,6 @@ class TestMoodsCoverageIsAPartitionNotASumOfScores:
         assert counts == {'danceable': 3, 'party': 1}
 
     def test_a_song_awaiting_clap_is_left_out_entirely(self):
-        # analyze_track writes ZERO_OTHER_FEATURES up front; refresh_other_features
-        # fills it in only once CLAP lands. An all-zero row must not be credited to
-        # whichever label happens to parse first, or every un-CLAPped song in the
-        # library piles onto 'danceable'.
         zero = 'danceable:0.00,aggressive:0.00,happy:0.00,party:0.00,relaxed:0.00,sad:0.00'
         rows = (
             ('happy:0.9', zero),
@@ -173,8 +154,6 @@ class TestMoodsCoverageIsAPartitionNotASumOfScores:
         assert counts == {'relaxed': 1}
 
     def test_tempo_and_energy_are_not_emotional_labels(self):
-        # other_features also carries tempo_normalized / energy_normalized, which
-        # are near 1.0 for fast songs and would win every argmax.
         rows = (('happy:0.9',
                  'tempo_normalized:0.98,energy_normalized:0.95,relaxed:0.60'),)
 
@@ -196,9 +175,6 @@ class TestMoodsCoverageIsAPartitionNotASumOfScores:
 
 class TestSnapshotContract:
     def test_no_tautological_musicnn_percentage(self, monkeypatch):
-        # A song only enters `score` when it is analyzed, and its embedding row
-        # is written in the same transaction, so musicnn/total is ~100% by
-        # construction. Publishing it invited a permanent, meaningless 100%.
         monkeypatch.setattr(dash, '_collect_music_server_metrics',
                             lambda cur, total_songs=None: [])
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
@@ -208,8 +184,6 @@ class TestSnapshotContract:
         assert 'musicnn_indexed' not in metrics
 
     def test_per_server_block_rides_in_the_snapshot(self, monkeypatch):
-        # The per-server counts are a GROUP BY over track_server_map. They belong
-        # to the snapshot tier, never to the 30s request path.
         monkeypatch.setattr(dash, '_counted_or_none', lambda cur, sql, params=None: 10)
         monkeypatch.setattr(
             dash, '_collect_music_server_metrics',
@@ -222,8 +196,6 @@ class TestSnapshotContract:
         assert metrics['music_servers'][0]['name'] == 'Jellyfin'
 
     def test_summary_never_recomputes_the_heavy_aggregates(self):
-        # dashboard_summary must not reach for a scan of `score`. It reads the
-        # precomputed snapshot and three cheap tables, nothing else.
         import inspect
 
         src = inspect.getsource(dash.dashboard_summary)
@@ -236,15 +208,11 @@ class TestSnapshotContract:
 class TestOrphanAndOverlapRows:
     @staticmethod
     def _cursor(server_rows, distinct_mapped):
-        # One fetchone() call: COUNT(DISTINCT item_id) over track_server_map. The
-        # orphan count is arithmetic from the passed total_songs, not a query.
         cur = MagicMock()
         cur.fetchall.return_value = server_rows
         cur.fetchone.return_value = (distinct_mapped,)
         return cur
 
-    # Jellyfin 181366 uniques + Plex 2166 = 183532; 183380 distinct mapped means
-    # 152 songs sit on both servers; with 186135 total, 2755 are bound to no server.
     _TWO_SERVERS = [
         ('s1', 'Jellyfin', 'jellyfin', True, 183732, 181366),
         ('s2', 'Plex', 'plex', False, 2212, 2166),
@@ -260,7 +228,6 @@ class TestOrphanAndOverlapRows:
         assert orphan['name'] == 'Orphan'
         assert orphan['is_orphan'] is True
         assert orphan['unique_songs'] == 2755
-        # An orphan is bound to no server, so it has no duplicate FILES.
         assert orphan['duplicate_copies'] == 0
 
     def test_shared_songs_become_a_negative_overlap_row(self, monkeypatch):
@@ -275,7 +242,6 @@ class TestOrphanAndOverlapRows:
         assert overlap[0]['unique_songs'] == -152
 
     def test_unique_column_sums_to_the_catalogue_total(self, monkeypatch):
-        # 181366 + 2166 - 152 (overlap) + 2755 (orphan) == 186135.
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
         cur = self._cursor(self._TWO_SERVERS, 183380)
 
@@ -284,9 +250,6 @@ class TestOrphanAndOverlapRows:
         assert sum(s['unique_songs'] for s in servers) == 186135
 
     def test_orphan_derived_by_arithmetic_never_scans_score(self, monkeypatch):
-        # The orphan count is total_songs - distinct_mapped, so the ONLY query the
-        # helper runs past the per-server GROUP BY is the overlap COUNT(DISTINCT);
-        # it must never issue an anti-join / COUNT over score.
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
         cur = self._cursor(self._TWO_SERVERS, 183380)
 
@@ -306,8 +269,6 @@ class TestOrphanAndOverlapRows:
         assert cur.connection.rollback.call_count == 0
 
     def test_no_synthetic_rows_when_disjoint_and_fully_bound(self, monkeypatch):
-        # distinct_mapped == sum of per-server uniques (no overlap) and == total
-        # (no orphan): neither adjustment row appears.
         monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
         cur = self._cursor([('s1', 'Jellyfin', 'jellyfin', True, 100, 100)], 100)
 
@@ -329,11 +290,8 @@ class TestTemplateCannotRoundUpToOneHundred:
 
     def test_no_round_half_up_on_a_percentage(self):
         src = self._script()
-        # Math.round(100 * x / y) printed "100%" for anything >= 99.5%.
         assert not re.search(r'Math\.round\s*\(\s*100', src)
-        # Math.min(100, ...) hid a genuine overshoot instead of surfacing it.
         assert not re.search(r'Math\.min\s*\(\s*100\s*,', src)
-        # clampPct was the toFixed(1) helper that turned 99.97% into "100.0%".
         assert 'clampPct' not in src
 
     def test_the_shared_floor_formatter_is_present(self):

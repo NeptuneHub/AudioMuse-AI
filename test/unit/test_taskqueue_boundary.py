@@ -41,47 +41,24 @@ _SKIP_DIRS = {
     'node_modules', 'test', 'taskqueue', 'query', 'screenshot', 'scripts',
 }
 
-# Columns that exist only because task_status is also the queue. A caller naming
-# one of these has reached past the API into the storage layout.
 _QUEUE_ONLY_COLUMNS = ('queue_name', 'worker_id', 'max_attempts', 'next_run_at')
 
-# The primitives that decide who runs what. These belong to exactly one module.
-#
-# Advisory locks are deliberately NOT on this list: the app has used them for
-# years for the schema lock, the CLAP text-search lock and the duplicate-repair
-# locks, and they are not a queue concept. What is queue-only is the LOCK_CLASS
-# namespace, which is checked separately below.
 _QUEUE_PRIMITIVES = (
     'FOR UPDATE SKIP LOCKED',
     'audiomuse_job',
     'audiomuse_cancel',
 )
 
-# The whole surface a caller is allowed to use.
 _PUBLIC_API = frozenset((
     'enqueue', 'cancel', 'request_cancel', 'request_cancel_all', 'publish_event',
     'current_task_id', 'set_current_task_id', 'resolve_func',
     'reap_finished_children', 'live_children', 'task_statuses', 'worker_snapshot',
     'queue_backlog',
-    # The one terminal row a task may write is its child's, when it gives up on
-    # it; the queue writes it, guarded by the parent's id, and cancels the child
-    # in the same transaction.
     'end_child',
-    # Cancel has to be ordered against a Start, and which key does that is the
-    # queue's business, not a blueprint's - so it is exposed here rather than
-    # letting app_helper reach into taskqueue.sql for the lock id.
     'take_start_lock',
-    # A fan-out stores one large shared input on the parent instead of copying it
-    # into every child row; callers name the kwarg, the queue owns the storage.
     'put_shared_payload', 'clear_shared_payload', 'SHARED_KWARG_REF',
-    # An enqueue outcome callers must be able to catch: a resumed parent
-    # re-launching a child whose row already exists gets this instead of a row.
     'TaskNotQueued',
-    # The two things a task may raise to steer the queue's verdict; every other
-    # exception is retried, so a task needs no other vocabulary.
     'TaskFailed', 'TaskCancelled',
-    # What the queue records on a row it failed because the worker died, so a
-    # status page can say the run was interrupted rather than that it failed.
     'WORKER_LOST_ERROR',
     'TaskAlreadyRunning', 'UnknownTaskFunction', 'ALLOWED_FUNCS',
     'QUEUE_HIGH', 'QUEUE_DEFAULT', 'PRIORITY_FRONT', 'CANCEL_ALL',

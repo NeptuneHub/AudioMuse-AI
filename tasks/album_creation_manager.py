@@ -8,120 +8,42 @@
 
 """Assemble a CD-format album from one seed and sequence it like a real album.
 
-Holds all the business logic of the Album Creation feature. The Flask layer
-(app_album_creation) only parses the request and scopes the answer to a server;
-the cron entry point run_album_of_the_week_task is dispatched by app_cron and
-runs here once per server through the shared tasks.task_run helpers, exactly
-like the sonic fingerprint task.
+app_album_creation only parses the request; the cron entry point
+run_album_of_the_week_task runs per server through tasks.task_run. The page and
+API need LYRICS_ENABLED and CLAP_ENABLED; the schedule needs neither, being
+switched only from the Scheduled Tasks page.
 
 Main Features:
-* One seed of two kinds: a SONG, kept in the album in the slot that fits it, or a
-  DESCRIPTION of a few words, which DCLAP turns into a point in the audio space.
-* A description needs the DCLAP index, and says so before loading anything: the
-  text model costs seconds to warm and is useless without the index to search.
-* A description can also be REFINED with the same concept dictionary the DCLAP
-  search page offers: the chosen concepts steer the query point itself, and a
-  concept asked for rather than pushed away is checked against the candidates
-  like any word the description named.
-* A description is also read for the attributes it NAMES, and each one is judged
-  by the index that knows it: a genre word by the analysis tags (independent of
-  DCLAP, so the genre cannot be diluted by it) and an instrument word by the
-  DCLAP concept dictionary, which was validated against tracks that name the
-  instrument in their title (piano 0.91, cello 0.89, trumpet 0.83, choir 0.83
-  AUC). Candidates are then ranked by the PRODUCT of those per-attribute ranks,
-  because a text embedding averages a compound query into one point and returns
-  tracks that satisfy neither half. Measured over ten genre-plus-instrument
-  queries, this lifted the median genre score to 96 and the median instrument
-  score to 97 out of 100. Each named attribute also queries the DCLAP index on
-  its own, because the text point for "rock with piano" lands in piano country
-  and the pool would otherwise hold no rock at all. Each attribute then narrows
-  the candidates by the same factor, so three named words shrink a pool of 2000
-  to 620, then 192, then ATTRIBUTE_KEEP: a rare word like viola has to bite as
-  hard as a common one like pop, which keeping a fixed half never made it do.
-  The attributes take turns over ATTRIBUTE_PASSES rounds rather than each taking
-  one big bite, because whichever one narrows first otherwise wins outright: the
-  instrument first gave instrument 100 and genre 33, the genre first the reverse.
-* TWO indexes feed the pool. The similar-song engine
-  (find_nearest_neighbors_by_vector over the MusiCNN embedding) is scoped to the
-  active server and its duplicate removal already ran; the DCLAP index adds the
-  neighbours that sound like the seed rather than merely measuring like it. On
-  real albums the MusiCNN pool held 2.4 of the album's other tracks and the two
-  indexes together hold 3.8. The pool then walks one hop outward from the seed,
-  so the album is more varied than a nearest-neighbour list.
-* Both embeddings are then mixed into ONE vector per track
-  (ALBUM_CREATION_MUSICNN_SHARE of MusiCNN, the rest DCLAP, each part scaled so
-  a cosine in the mixed space is exactly that weighted average), so every step
-  below works on one space. Without DCLAP the album is built on MusiCNN alone.
-* Selection is a guided greedy on that vector: every step samples candidates and
-  keeps the one that brings the mean pairwise cosine closest to the target
-  cohesion, and no track may sit below PAIR_FLOOR from any other, so the album
-  makes sense as a whole and not only on average.
-* The target is CALIBRATED, not copied from real albums. One artist's album sits
-  at cosine 0.80, but 0.80 between DIFFERENT artists is a change of genre: at
-  that target a Nick Drake seed gave indie rock and a Battisti seed gave ambient
-  piano. The calibration measures a created album against real albums on the
-  DCLAP concept model, which names instruments and voices: at 0.86 in the mixed
-  space a created album holds its instruments together as tightly as a real
-  album does (0.79) and its voices as tightly as a real album does (0.81).
-* The pool is ADAPTIVE: it starts at POOL_FIRST_QUERY and widens, up to
-  POOL_MAX_QUERY, until three albums' worth of candidates survive the hygiene
-  filters AND they come from enough artists to fill the album under the
-  per-artist cap: a thin corner of the catalogue otherwise returns a nine-track
-  album with six of its songs by two bands. A conjunction of named attributes needs a wide pool to have survivors,
-  and a thin corner of a small library needs one to have an album at all.
-* Preferences hold while enough candidates remain: tracks with a tagged artist,
-  tracks of album length and tracks within ERA_WINDOW_YEARS of the seed (it
-  halves the year span at no cost). A description has no year of its own, so the
-  era comes from the median year of its best matches, which cut a folk album's
-  span from 66 years to 27. An "Unknown Artist" placeholder is no artist at all,
-  so a library of untagged files is not held to the artist cap.
-* What the songs are ABOUT is a last preference: of the candidates that have
-  lyrics, only the ALBUM_CREATION_LYRIC_SHARE nearest the seed in the lyrics
-  embedding stay, while enough of them remain. Real albums are only slightly
-  tighter in their lyrics than the same artist's other songs (they beat a random
-  set of songs 98% of the time but their own artist's other songs only 59% of
-  the time), so this is a preference and never a rule, and the sound of the album
-  does not change. A track without lyrics is never judged on them, but the same
-  share of those is kept as of the sung ones: keeping them all instead left the
-  pool half instrumental and pushed every album up against OTHER_VOICE_CAP.
-* At most OTHER_VOICE_CAP tracks may be sung in an instrumental album or the
-  other way round, which is what real albums do. Sung or instrumental is a vote
-  of each track's nearest pool neighbours, never its own lyrics flag: 4 in 10
-  tracks without lyrics are sung songs whose lyrics are simply missing, and the
-  raw flag built albums out of exactly those. The vote runs on DCLAP where it is
-  available, because DCLAP hears a voice far better than MusiCNN does (it tells
-  sung tracks from instrumental ones with 0.97 AUC against MusiCNN's 0.91). The
-  track itself is excluded from its own vote, which is the whole point of asking
-  the neighbours.
-* Dedup on top of the engine's: one version per song (title without its
-  bracketed suffix or year tag + artist), no live, demo, remix or skit tracks,
-  no alternate rendition named in a title suffix (acoustic, instrumental,
-  extended mix, session, outtake; remasters, mono, single and radio cuts are the
-  song itself and stay), no holiday songs outside December, and at most
-  MAX_SONGS_PER_ARTIST tracks per artist. Tracks outside the album-length bounds
-  stay out only while enough others remain, so a library of short songs still
-  gets its album.
-* Sequencing follows what real albums measure: the calmest, longest, least
-  typical track closes, the two most intense and typical tracks take slots two
-  and three, the opener is an intro or a bang depending on the dominant genre,
-  the middle declines and turns inward in its lyrics, and neither two calm
-  tracks nor two tracks of one artist sit next to each other when it can be
-  avoided.
-* Intensity is led by the mood scores, centred per song because the raw scores
-  share one factor that tracks the release year. Energy is a minor term and the
-  tempo a smaller one, folded into one octave because the detector doubles it.
-* The page and its API need both analyses: the lyric themes for the sequencing
-  and DCLAP for the mixed space and the text seed, so is_enabled turns them off
-  unless LYRICS_ENABLED and CLAP_ENABLED are both on, and the menu entry follows. The schedule is NOT behind that flag or any other: it is
-  switched on and off from the Scheduled Tasks page only, like every other
-  schedule, and without lyric themes the album is sequenced on audio alone.
-* run_album_of_the_week_task picks a random analysed seed per server and upserts
-  one playlist under a fixed name, so every run cleans and refills it. It owns
-  nothing but that choice of track ids: the per-server loop, the cancel check,
-  the reporter, the heartbeat, the empty-result and unsupported-backend rules
-  and the raise-only-when-every-server-failed verdict are the scaffold in
-  tasks.task_run.run_playlist_task_per_server, shared with the sonic
-  fingerprint.
+* The seed is a SONG kept in the album, or a DESCRIPTION turned into a DCLAP
+  point, refinable with the search page's concepts and refused without an index.
+* A description is also read for the attributes it NAMES, each judged by the
+  index that knows it (a genre by the analysis tags, an instrument by the DCLAP
+  concepts) and ranked by the PRODUCT of those ranks, because one text point for
+  a compound query satisfies neither half. Each also queries DCLAP alone and
+  narrows the pool by the same factor, taking turns over ATTRIBUTE_PASSES rounds
+  so whichever narrows first does not win outright.
+* TWO indexes feed the pool: the similar-song engine over MusiCNN (server-scoped,
+  deduped) and DCLAP, which hears what merely measures alike. The pool steps one
+  hop out and widens to POOL_MAX_QUERY until three albums of
+  candidates survive from enough artists for the per-artist cap. Both embeddings
+  then mix into ONE vector (ALBUM_CREATION_MUSICNN_SHARE) so every later step
+  works in one space; without DCLAP the album is MusiCNN alone.
+* Selection is a guided greedy towards a CALIBRATED cohesion target (0.86 mixed:
+  the 0.80 real albums show within ONE artist is, across artists, a change of
+  genre), with no pair below PAIR_FLOOR.
+* Preferences hold only while enough candidates remain: tagged artist, album
+  length, ERA_WINDOW_YEARS of the seed, and the ALBUM_CREATION_LYRIC_SHARE
+  nearest in the lyrics space.
+* At most OTHER_VOICE_CAP tracks break the album's sung/instrumental character,
+  voted by each track's DCLAP neighbours (0.97 AUC) rather than its own lyrics
+  flag, which is missing on 4 in 10 sung tracks.
+* Dedup beyond the engine's: one version per song, no live/demo/remix/skit or
+  rendition named in a title suffix, no holiday song outside December, at most
+  MAX_SONGS_PER_ARTIST per artist.
+* Sequencing follows what real albums measure: the calmest, least typical track
+  closes, the two most intense take slots two and three, the opener is an intro
+  or a bang by genre, and neither two calm tracks nor two of one artist sit
+  together. Intensity is led by per-song centred mood scores.
 """
 
 import logging

@@ -421,10 +421,6 @@ def _cached_track_rows(item_ids, use_embeddings, tracks_cache):
             row_data[PRIMARY_GENRE_KEY] = _get_track_primary_genre(row_data)
             tracks_cache[row_data['item_id']] = row_data
     rows = [tracks_cache[iid] for iid in item_ids if iid in tracks_cache]
-    # Evict what this iteration did not ask for: consecutive iterations overlap
-    # heavily, so keeping only the live subset preserves nearly every cache hit
-    # while pinning the cache (embeddings included) at one subset instead of
-    # letting it grow towards the whole batch's union.
     wanted = set(item_ids)
     for stale_id in [iid for iid in tracks_cache if iid not in wanted]:
         del tracks_cache[stale_id]

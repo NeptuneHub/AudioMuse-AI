@@ -66,10 +66,6 @@ def _provider_owner():
         return None
 
 
-# Rejects a backend that cannot stand in for whisper_onnx. A missing method would
-# surface far from here: a broken is_loaded makes is_lyrics_loaded() report True
-# forever, so every album pays a full memory cleanup for nothing, and a broken
-# transcribe fails every song with no way back to the built-in.
 def _has_required_surface(backend):
     missing = [
         name for name in REQUIRED_METHODS if not callable(getattr(backend, name, None))

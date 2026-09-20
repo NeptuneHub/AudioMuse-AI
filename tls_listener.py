@@ -9,47 +9,40 @@
 """HTTPS on the HTTP port, so the microphone works on a LAN address with no deployment change.
 
 Browsers hand the microphone only to pages on HTTPS or on localhost, and a
-self-hosted AudioMuse-AI is reached as http://<ip>:8000. No script can lift
-that rule, and a second port would have to be published in every container
-deployment, so the one port the app already binds answers both protocols. The
-first byte of a new connection tells a TLS handshake (0x16) from an HTTP
-request line; a TLS connection is terminated here, with a self-signed
-certificate the app generates once, through a memory BIO on a single thread,
-and its plaintext reaches the HTTP server (gunicorn, waitress or werkzeug)
-over a local socket pair, so none of them has to know about TLS.
+self-hosted AudioMuse-AI is reached as http://<ip>:8000. No script can lift that
+rule, and a second port would have to be published in every deployment, so the
+one port the app already binds answers both protocols. The first byte tells a
+TLS handshake (0x16) from an HTTP request line; TLS is terminated here with a
+self-signed certificate the app generates once, through a memory BIO on a single
+thread, and its plaintext reaches the HTTP server (gunicorn, waitress or
+werkzeug) over a local socket pair, so none of them has to know about TLS.
 
 Main Features:
-* ensure_certificate writes a 10-year RSA certificate whose subject
-  alternative names cover localhost, the host name and every address the host
-  answers on, through the cryptography package or, failing that, the openssl
-  binary; an existing pair is reused so the browser exception stays valid
-* prepare_tls loads that certificate once per process; a failure is logged and
-  reported through https_status, and HTTP keeps serving
-* DualProtocolListener is a listening socket with its own sniffing thread:
-  that thread accepts every connection, waits up to SNIFF_TIMEOUT for its
-  first byte on a selector (never one connection at a time, so an idle
-  browser preconnect delays nobody), hands an HTTP connection to the server
-  untouched and, for TLS, hands over the app's end of a loopback TCP pair (a
-  Unix pair refuses the TCP options waitress sets on every connection) with
-  the real client address while a daemon thread relays bytes between the
-  client and the pair; the server's accept() only pops the next sniffed
-  connection, and fileno() is a wake-up descriptor that becomes readable
-  exactly when one is ready, so gunicorn, waitress and werkzeug keep their
-  own select loops unchanged; at most _MAX_PENDING connections wait for
-  their first byte at once (the oldest is handed over as HTTP past that),
-  which keeps the sniffer under the 512-descriptor limit of select on
-  Windows however many idle connections a burst opens
+* ensure_certificate writes a 10-year RSA certificate whose SANs cover
+  localhost, the host name and every address the host answers on, through the
+  cryptography package or the openssl binary; an existing pair is reused so the
+  browser exception stays valid. prepare_tls loads it once per process, and a
+  failure is logged, reported through https_status, and left on HTTP
+* DualProtocolListener is a listening socket with its own sniffing thread: it
+  accepts every connection and waits up to SNIFF_TIMEOUT for the first byte on a
+  selector (never one connection at a time, so a browser preconnect delays
+  nobody), hands an HTTP connection over untouched and, for TLS, hands over the
+  app's end of a loopback TCP pair (a Unix pair refuses the TCP options waitress
+  sets) with the real client address while a daemon thread relays bytes. The
+  server's accept() only pops the next sniffed connection and fileno() is a
+  wake-up descriptor, so every server keeps its own select loop unchanged; at
+  most _MAX_PENDING connections wait for a first byte, which keeps the sniffer
+  under the 512-descriptor limit of select on Windows
 * the relay keeps at most _HIGH_WATER bytes in flight per direction: a client
   sending faster than the app reads is simply not read from until the app
   catches up, so a large upload costs no memory beyond that
 * the relay never closes a connection for being silent: a request the app takes
-  minutes to answer keeps its connection exactly as the plain-HTTP path does,
-  and a peer that vanishes is left to TCP keepalive rather than to an idle
-  timer that cannot tell a dead client from a busy server
-* dual_listener binds one for waitress, adopt_listener turns the socket
+  minutes to answer keeps its connection as the plain-HTTP path does, and a peer
+  that vanishes is left to TCP keepalive, which an idle timer cannot tell from a
+  busy server
+* dual_listener binds one for waitress and adopt_listener turns the socket
   gunicorn or werkzeug already bound into one (the descriptor moves, the port
-  does not), and https_status tells the page whether HTTPS answers on the
-  app's port or why not
+  does not)
 """
 
 import datetime

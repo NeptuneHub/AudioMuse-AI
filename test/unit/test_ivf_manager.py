@@ -739,7 +739,6 @@ class TestNeighborResultDeduplication:
             )
 
         assert [r['item_id'] for r in results] == ['fp_2a', 'fp_2b', 'fp_2c']
-        # Neighbours arrive nearest-first, so the slot kept is the closest one.
         assert results[0]['distance'] == pytest.approx(0.01)
 
     def test_target_and_unknown_slots_are_dropped(self):

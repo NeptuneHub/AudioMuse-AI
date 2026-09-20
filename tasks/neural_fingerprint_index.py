@@ -6,88 +6,43 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Neural fingerprint index: built by the worker into ivf_dir and ivf_cell, paged by Flask.
+"""Neural fingerprint index: built by the worker into ivf_dir/ivf_cell, paged by Flask.
 
 Every analysed track stores one 32-byte code per half second in
-embedding.neural_fingerprint (tasks.neural_fingerprint). This index follows the
-lifecycle and the storage of the other similarity indexes: the worker builds
-it at the rebuild points of the analysis run, in one transaction it commits
-itself, stores the directory in ivf_dir and the cells in ivf_cell, and
-publishes the index-reload event; the web process loads the directory at
-startup (a few megabytes, seconds at any library size, blocking like every
-other index load) and reads the cells a query probes from ivf_cell on demand,
-keeping them in a RAM cache bounded by NEURAL_FINGERPRINT_CACHE_MB that is
-dropped when the recording search has been idle. Nothing is copied to local
-disk and no step on either side holds more than one part or one training
-sample in memory.
+embedding.neural_fingerprint. The worker builds at the analysis run's rebuild
+points, in one transaction it commits itself, and publishes the reload event;
+Flask loads the directory at startup and pages probed cells into a RAM cache
+bounded by NEURAL_FINGERPRINT_CACHE_MB, dropped once the search goes idle.
 
 Main Features:
-* index rows: every NEURAL_FINGERPRINT_INDEX_STRIDE-th stored row of a track,
-  at most _MAX_TRACK_ROWS of them (index_rows); the blobs keep every row and
-  the alignment check reads them, so the stride only trades index size and
-  query work against recall on degraded clips
-* two-level quantizer (train_quantizer): about sqrt(rows) cells, at most
-  _MAX_CELLS, trained on at least _TRAIN_ROWS_PER_CELL rows per cell sampled
-  100 per track from random tracks; past _SINGLE_LEVEL_CELLS the cells are
-  grouped under sqrt(cells) coarse centroids and a row is assigned to the
-  nearest cell of its nearest group, so assigning a million tracks costs
-  minutes instead of hours; a query still ranks the flat cell list exactly
-* build_and_store_neural_fingerprint_index: full build or append, in parts of
-  at most _PART_ROWS rows cut at track boundaries (label_tracks yields them
-  with their codes). Every part writes one ivf_cell row per cell under the
-  index name neural_fingerprint_index/p<part>: the cell's codes, then the
-  track index, the offset in the track and the inverse norm of the decoded
-  vector, 40 bytes per row (pack_cell / unpack_cell); a slice larger than
-  IVF_MAX_PART_SIZE_MB is split over rows p<part>.1, p<part>.2 and so on, so
-  every stored value stays under the cap like the other indexes' cells, and
-  the reader concatenates whatever rows a cell has. A full build retrains
-  the quantizer and replaces every part; an append keeps the quantizer,
-  labels only the tracks fingerprinted since the last build and adds parts.
-  The quantizer is retrained when the library has grown
-  NEURAL_FINGERPRINT_RETRAIN_GROWTH times since it was trained, when more than
-  a tenth of the indexed tracks are gone, when the largest cell holds more
-  than ten times the average, or when the codebook, the stride or the layout
+* Indexed rows are every NEURAL_FINGERPRINT_INDEX_STRIDE-th stored row, at most
+  _MAX_TRACK_ROWS; the blobs keep every row for the alignment check
+* Two-level quantizer: about sqrt(rows) cells capped at _MAX_CELLS, trained on
+  _TRAIN_ROWS_PER_CELL rows per cell; past _SINGLE_LEVEL_CELLS the cells sit
+  under sqrt(cells) coarse centroids and a row joins the nearest cell of its
+  nearest group, so a million tracks cost minutes not hours. It is retrained
+  when the library grew NEURAL_FINGERPRINT_RETRAIN_GROWTH-fold, a tenth of the
+  tracks are gone, the largest cell holds ten times the average, or the layout
   changed
-* directory blob (ivf_dir, neural_fingerprint_index__ivf_dir): build id,
-  codebook id, stride, the quantizer, ids and lengths in build order, per-cell
-  sizes, part count, the library size the quantizer was trained on; a tiny
-  neural_fingerprint_index__build row carries the build id alone so a
-  freshness check costs one small read
-* Flask side: load_at_startup and ensure_loaded read the directory into ONE
-  immutable Pack swapped by a single reference assignment; reload_from_db
-  swaps to a new build on the index-reload event and drops the old build's
-  cached cells; a directory of an older layout or another codebook is
-  reported as IndexUnavailable with a message that is safe to show;
-  indexed_track_count hands the loaded build's track count to the wizard's
-  coverage bar without touching the database
-* Search: each pass first lists the cells its segments probe, fetches the
-  ones not cached in one query (every part of each cell, concatenated), then
-  scores the segments in parallel threads (NEURAL_FINGERPRINT_QUERY_THREADS,
-  0 = one per core) through the codebook lookup table; every third segment
-  votes first and, when one track already leads the runner-up by
-  _EARLY_EXIT_RATIO with at least _EARLY_EXIT_VOTES, the rest is skipped.
-  Every neighbour votes for (track, offset) with its similarity, votes within
-  one hop are pooled, and the best candidates are verified by the mean cosine
-  between the whole clip and the track at that offset, read from the
-  candidates' blobs in one query; a track deleted since the build has no blob
-  and therefore never comes back. Rows carry item_id, score, votes,
-  offset_seconds, identified and lead, the last two set by flag_identified
-  over the full candidate list (the search-by-song merge reuses it). identify
-  embeds a clip first; identify_vectors takes a fingerprint sequence directly
-  and can leave given tracks out, which is how a stored song is searched for
-  its other recordings without finding itself
-* IndexUnavailable is the one exception whose text may reach a user: it
-  carries the curated "not built yet", "being prepared", "older version" and
-  similar messages, and any other failure of a load is wrapped into it with a
-  generic text, so an internal id or a library error never leaves the log
-* Per-server scope like every other index: the index holds the union of all
-  servers, and a request scoped to a server votes only over that server's
-  tracks through the shared availability mask (tasks.index_availability),
-  cached per server and build for 30 s and dropped by
-  invalidate_availability_cache when the mappings change
-* picker_where gives the song picker of the Search by Song tab a server-side
-  filter (songs that have a fingerprint) once the index is loaded, and None
-  before, so the picker never ships a list of every indexed id per keystroke
+* Builds run full or append, in parts of _PART_ROWS rows cut at track
+  boundaries, one ivf_cell row per cell under neural_fingerprint_index/p<part>
+  (40 bytes a row), split further past IVF_MAX_PART_SIZE_MB. An append keeps
+  the quantizer, labelling only new tracks
+* The directory blob carries build and codebook id, stride, quantizer, ids and
+  lengths, cell sizes and part count; a tiny __build row holds the build id
+  alone, so a freshness check is one small read
+* One union of every server, scoped per request through the availability mask
+* Flask holds ONE immutable Pack swapped by a single reference assignment, and
+  drops the old build's cells. A foreign layout or codebook raises
+  IndexUnavailable, the one exception whose text may reach a user
+* A search fetches every uncached probed cell in one query and scores it over
+  NEURAL_FINGERPRINT_QUERY_THREADS threads through the codebook table; every
+  third segment votes first and the rest is skipped once a track leads by
+  _EARLY_EXIT_RATIO with _EARLY_EXIT_VOTES. Votes pool per (track, hop) and the
+  best are verified by the mean cosine against the candidates' blobs, so a
+  track deleted since the build cannot come back. identify_vectors can exclude
+  tracks, which is how a stored song finds its other recordings
+* picker_where gives the Search by Song picker a server-side filter
 """
 
 import io

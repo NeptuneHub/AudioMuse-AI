@@ -56,9 +56,6 @@ logger = logging.getLogger(__name__)
 _CHUNK_ROWS = 10000
 _CONFIRM_PAIRS = 50000
 
-# Indexes keyed by track id, which a relabel therefore invalidates. The artist
-# index and the artist projection are keyed by artist NAME, which a relabel does
-# not touch, so they are deliberately absent.
 _TRACK_KEYED_INDEXES = (
     config.INDEX_NAME,
     'clap_index',
@@ -66,23 +63,10 @@ _TRACK_KEYED_INDEXES = (
     'lyrics_axes_index',
     'sem_grove_index',
 )
-# Any signature content id (fp_1..fp_9), current or older, is already a resolved
-# catalogue row - canonicalize only turns PROVIDER ids into content ids and never
-# re-resolves an existing one; bumping the scheme version (fp_2 -> fp_3) is the
-# duration migration's cheap relabel, not a re-hash from embeddings.
 _CURRENT_SCHEME_SQL = (
     "(s.item_id LIKE E'fp\\\\_%%' AND length(s.item_id) = %s "
     "AND substring(s.item_id from 4 for 1) BETWEEN '1' AND '9')"
 )
-# Analysis deliberately keeps a track whose embedding yields no usable signature
-# (non-finite or constant) under its PROVIDER id, and records that with the
-# 'analysis' match tier. Such a row can never be relabelled, so counting it as
-# legacy work made this "one-time" migration re-hash the whole catalogue on EVERY
-# boot and relabel nothing.
-# The fp_0 head IS the marker for a row minted as unsignable, and unlike the map
-# row it cannot be taken away: a provider migration unbinds an unmatched song from
-# its server, which used to strip the only evidence and hand the row straight back
-# to this migration as legacy work it can never relabel.
 _UNSIGNABLE_SQL = (
     "((s.item_id LIKE E'fp\\\\_0%%' AND length(s.item_id) = "
     + str(simhash.CANONICAL_ID_LEN)

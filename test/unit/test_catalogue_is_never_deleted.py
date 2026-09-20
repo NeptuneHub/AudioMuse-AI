@@ -41,16 +41,11 @@ import re
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# Pruned during the walk, not filtered after it: descending into .venv costs ~90s.
 _SKIP_DIRS = {
     '.venv', '.venv-windows', '.git', 'dist', 'build', 'native-build', 'test',
     'node_modules', '__pycache__',
 }
 
-# The sanctioned deleters: the canonicalizer's duplicate merge (deletes a row only
-# after folding it into the canonical row for the same audio), the cleaning pass
-# (deletes only orphans bound to no server, and only on a complete server view), and
-# the migration orphan purge (deletes only rows bound to no server, migration-only).
 _SANCTIONED = {
     'tasks/fingerprint_canonicalize.py': 'duplicate merge into the canonical row',
     'tasks/cleaning.py': 'orphan delete: tracks bound to no server, complete view only',
@@ -110,6 +105,5 @@ def test_provider_migration_unbinds_instead_of_deleting():
     text = (REPO_ROOT / 'tasks' / 'provider_migration_tasks.py').read_text(encoding='utf-8')
     assert not _DELETE_SCORE.search(text)
     assert 'DELETE FROM track_server_map' in text
-    # And it must never rewrite the canonical id, which is derived from the audio.
     assert 'UPDATE score s SET item_id' not in text
     assert 'SET item_id = m.new_id' not in text

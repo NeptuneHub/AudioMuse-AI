@@ -47,8 +47,6 @@ try:
     HAVE_NUMKONG = True
     NUMKONG_IMPORT_ERROR = None
 except Exception as _exc:  # pragma: no cover - missing wheel OR a broken native load
-    # Keep the reason: a present-but-unloadable extension (e.g. a dyld symbol
-    # error from a mismatched libomp) looks identical to a missing wheel here.
     _nk = None
     HAVE_NUMKONG = False
     NUMKONG_IMPORT_ERROR = f"{type(_exc).__name__}: {_exc}"
