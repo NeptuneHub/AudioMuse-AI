@@ -756,14 +756,14 @@ def search_artists_by_name(
     if not query:
         return []
 
-    from database import get_db
+    from database import get_db, like_contains_pattern
     from tasks.mediaserver import registry
 
     conn = get_db()
     cur = conn.cursor()
 
     try:
-        query_pattern = f"%{query}%"
+        query_pattern = like_contains_pattern(query)
 
         availability = ""
         availability_params = []

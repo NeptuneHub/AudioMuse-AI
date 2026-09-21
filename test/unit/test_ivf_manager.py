@@ -786,3 +786,23 @@ class TestSearchEscapesTheUsersOwnWildcards:
     def test_an_ordinary_query_is_still_a_contains_match(self):
         patterns = self._patterns('love')
         assert patterns and all(p == '%love%' for p in patterns)
+
+    def test_no_search_path_anywhere_builds_a_contains_pattern_by_hand(self):
+        import pathlib
+        import re
+
+        repo = pathlib.Path(__file__).resolve().parents[2]
+        offenders = []
+        for path in repo.rglob('*.py'):
+            parts = set(path.parts)
+            if parts & {'.venv', 'SAE', 'dist', 'build', 'test', 'node_modules'}:
+                continue
+            for number, line in enumerate(path.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+                if re.search(r"""f["']%\{[A-Za-z_][A-Za-z0-9_]*\}%["']""", line):
+                    offenders.append(f'{path.relative_to(repo)}:{number}: {line.strip()[:70]}')
+        assert not offenders, (
+            'a LIKE contains-pattern built with an f-string leaves the user\'s own '
+            '% and _ acting as wildcards, so a search for "100%" silently drops the '
+            'percent and "_" matches everything. database.like_contains_pattern is '
+            f'the one escaper. Offenders: {offenders}'
+        )
