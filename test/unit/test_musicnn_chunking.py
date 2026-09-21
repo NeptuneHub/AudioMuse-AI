@@ -29,7 +29,6 @@ def _fake_inference(calls):
         (batch,) = feed_dict.values()
         calls.append((label, batch.shape[0]))
         if label == 'embedding':
-            # one distinctive 200-dim embedding per patch: its first cell
             out = np.repeat(batch[:, :1, 0], 200, axis=1).astype(np.float32)
         else:
             out = batch[:, :50].astype(np.float32)
@@ -55,7 +54,6 @@ def test_embedding_calls_never_exceed_batch_size(monkeypatch):
     _, _, calls = _run(monkeypatch, 3, patches)
     embedding_calls = [n for label, n in calls if label == 'embedding']
     assert embedding_calls == [3, 3, 3, 1]
-    # prediction input is the tiny (N, 200) matrix and stays a single call
     assert [n for label, n in calls if label == 'prediction'] == [10]
 
 
@@ -72,5 +70,4 @@ def test_every_patch_processed_once_and_in_order(monkeypatch):
     patches = np.zeros((5, 187, 96), dtype=np.float32)
     patches[:, 0, 0] = np.arange(5)
     embedding, _, _ = _run(monkeypatch, 2, patches)
-    # pooled embedding is the mean of the per-patch markers 0..4
     np.testing.assert_allclose(embedding, np.full(200, np.arange(5).mean()))

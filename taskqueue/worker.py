@@ -8,118 +8,40 @@
 
 """One worker process: claim a task, run it, finish it, repeat.
 
-Run as python -m taskqueue.worker --queue high or --queue default. The
-claim is a single UPDATE whose subquery takes FOR UPDATE SKIP LOCKED, so N
-workers racing need no coordination.
-
-In the container (a non-frozen Linux process) the job runs in a FORKED CHILD
-that reports its outcome over a pipe and exits, so all the memory the job
-allocated - ONNX models, the transformers stack, numpy buffers - is returned
-to the OS the moment the job ends, exactly like the old RQ fork-per-job
-worker. The child inherits the claim by copy but only
-the parent ever touches the claim connection and the advisory lock; the child
-opens its own database connections through the task's app context and leaves
-through os._exit, so the parent's sockets are never written or closed by the
-child. A child that dies without reporting (OOM kill, segfault) fails the job
-with its signal or exit code instead of taking the whole worker down. The
-child binds itself to the parent's death (PR_SET_PDEATHSIG on Linux; a
-getppid() watchdog thread on other POSIX platforms), so a worker killed
-uncleanly cannot leave an orphaned job still writing after the task's
-advisory lock died with the parent and reclaim handed the row to another
-worker. Config is hydrated in the parent before forking so a first-success
-refresh latches in the worker instead of being thrown away with the child.
-
-Frozen native builds (Windows, macOS, Linux) run the job in the worker
-process itself (the shape the old SimpleWorker had) instead of forking:
-macOS cannot fork and keep its CoreML/Metal sessions alive, and Windows
-cannot fork at all. Any heavy analysis models the job loaded are unloaded
-again when it finishes (_unload_job_models): the sessions are dropped and
-the heap trimmed, keeping an idle worker at the library floor instead of the
-loaded-model footprint. Either way cancelling means ending the worker's
-process tree, which includes the job child, and the worker recycles after
-QUEUE_MAX_JOBS.
-
-Liveness is the advisory lock held on the task's own connection; if the process
-dies the lock dies with it, so no heartbeat is needed. ensure_hold retakes
-the lock the moment the listener reconnects after a Postgres restart or failover,
-before reclaim can hand the still-running task elsewhere.
-
-Thread caps at the bottom of this module must be applied BEFORE numpy/ONNX/BLAS
-import, so heavy imports are deferred into main, and
-service_roles.declare_worker_role runs before import config for the same
-ordering reason.
+Run as python -m taskqueue.worker --queue high|default. The claim is a single
+UPDATE whose subquery takes FOR UPDATE SKIP LOCKED, so N workers racing need no
+coordination. Liveness is the advisory lock on the task's own connection: it
+dies with the process, so no heartbeat is needed, and ensure_hold retakes it as
+soon as the listener reconnects, before reclaim can move a running task. Thread
+caps must be applied BEFORE numpy/ONNX/BLAS import, so heavy imports are
+deferred into main; declare_worker_role runs before import config likewise.
 
 Main Features:
-* Claim/drain loop that blocks on LISTEN when no work exists
-* Fork-per-job in the container gives every byte of job memory back to the
-  OS; frozen native builds run the job in-process and unload the models
-  after each job
-* A cancel notification ends the process tree in about 50ms. The held-task check
-  and the claim share one lock, and a stopping worker claims nothing, so the kill
-  grace period can never pick up a new job that the exit then orphans
-* The claim connection is re-checked at every listener poll while a job runs:
-  one Postgres dropped mid-job is reopened and the task lock re-taken at once,
-  and a lock that meanwhile went to a reclaim ends this worker as the duplicate
-  it has become, instead of running unlocked until the job ends
-* Boot reclaims orphaned tasks bounded by QUEUE_MAX_ATTEMPTS
-* A lost connection (SQLSTATE class 08, 57Pxx, InterfaceError) requeues the row
-  without charging an attempt, up to UNCHARGED_REQUEUE_LIMIT free passes,
-  then charges and fails as usual
+* Claim/drain loop blocking on LISTEN when idle, recycling after QUEUE_MAX_JOBS
+* In the container the job runs in a FORKED CHILD that reports over a pipe and
+  leaves through os._exit, giving the OS back every byte it allocated. Only the
+  parent touches the claim connection and the lock, config is hydrated before
+  the fork, and the child binds itself to the parent's death (PR_SET_PDEATHSIG,
+  or a getppid watchdog) so no orphan writes after reclaim. A cancel ends the
+  whole tree; a stopping worker claims nothing
+* Frozen native builds run the job in-process (macOS cannot fork and keep CoreML
+  alive, Windows cannot fork) and unload its models afterwards
+* The claim connection is re-checked at every listener poll: a dropped Postgres
+  is reopened and the lock retaken; a lock gone to a reclaim ends this worker
+* Boot reclaims orphans bounded by QUEUE_MAX_ATTEMPTS; a lost connection
+  (SQLSTATE 08, 57Pxx) requeues uncharged UNCHARGED_REQUEUE_LIMIT times
 * The queue writes EVERY terminal row and decides EVERY retry (taskqueue.retry):
-  a task that raises is requeued with a backoff until QUEUE_MAX_ATTEMPTS is
-  spent, a task that raises TaskFailed is failed at once, a task that raises
-  TaskCancelled is revoked, and a job child the kernel killed is retried like
-  any other failure. The retry is requeued only AFTER the worker has dropped
-  its hold on the task: requeue_or_fail publishes the same reclaim notice a
-  maintenance reclaim does, and on_reclaimed ends a worker whose held task and
-  attempt number match that notice, so requeueing while still holding would
-  make the worker end itself on every retry
-* The terminal row carries the message the task returned and the log its
-  progress reports built up, so the dashboard recap reads exactly as it did
-  when tasks wrote that row themselves; and because tasks used to write that
-  row through save_task_status, the worker now also records task_history and
-  collapses the finished rows to the one recap, which that path did for them.
-  The terminal row is COMMITTED first and that bookkeeping runs after it on
-  its own transactions: record_task_history rolls back on failure, and while
-  the two shared one transaction that rollback silently undid the verdict and
-  left the row RUNNING under a worker that had already moved on
-* The payload is checked against the function's signature before the call, and a
-  func outside ALLOWED_FUNCS never resolves: both are permanent failures, not
-  three wasted retries. A verdict the task declared (TaskFailed, TaskCancelled)
-  is logged as one line; the traceback is kept for the exceptions it did not
-* Every FAIL the queue writes carries a structured error record (error_code,
-  error_class, error_message) built by error.error_manager: the exception is
-  classified against the task function's own domain code
-  (taskqueue.TASK_FUNC_ERROR_CODES), and a connection lost past the free passes
-  records ERR_DB_CONNECTION. A job child that dies without reporting is diagnosed
-  from its signal instead of being called an out-of-memory crash: SIGKILL is
-  ERR_OUT_OF_MEMORY when the kernel log names this job's pid as the
-  out-of-memory victim (read only where /dev/kmsg is readable from the initial
-  pid namespace, so the pid means the same thing to both, and only for records
-  newer than the job's start), and a kill the log pins on another process is
-  ERR_JOB_PROCESS_DIED. Where the log is not readable (a normal container, macOS)
-  or names no victim at all (a record rotated out of the ring buffer, or logged
-  on a clock that lags the job's start), the worker's own cgroup oom_kill counter
-  decides, which cannot name the victim and says so; Windows runs jobs inline and
-  never reaches this path, SIGSEGV/SIGBUS/SIGABRT/SIGFPE/SIGILL are
-  ERR_PROCESS_CRASHED (a native crash, typically the model runtime), a stop this
-  worker ordered is ERR_WORKER_LOST and anything else is ERR_JOB_PROCESS_DIED.
-  One verdict table holds every SIGKILL outcome's code and wording
-* The record rides in the outcome's third slot, which a success fills with the
-  task's summary, so the child's pickled report keeps its shape. A record the
-  task itself wrote during this attempt (a union analysis run records
-  ERR_INDEX_BUILD and then re-raises) wins over the queue's generic
-  classification. A record that was already on the row when the attempt was
-  claimed is an earlier attempt's, because a retry keeps the row's details, so
-  the queue's record for this attempt replaces it. The claim reads the row's
-  error for exactly this comparison
-* A declared verdict's message is the task's own recap line and is kept whole
-  (up to _VERDICT_SUMMARY_LIMIT); the text of an unexpected exception is cut at
-  _SUMMARY_LIMIT, because a traceback's first line is all the dashboard needs
-* A shared payload that is gone or no longer matches its token cannot come back
-  on a retry, so that failure is permanent too, decided here rather than by
-  making sql.SharedPayloadUnavailable a TaskFailed: sql must stay a leaf of the
-  package, and importing its sibling would lengthen the eager import chain
+  a raise is requeued with backoff, TaskFailed fails at once, TaskCancelled is
+  revoked, a killed child is retried. The requeue waits until the hold is
+  dropped, whose notice would otherwise end this very worker
+* The terminal row (task message plus log) is COMMITTED before task_history and
+  the recap collapse, on their own transactions
+* A payload that does not match the signature, a func outside ALLOWED_FUNCS and
+  a vanished shared payload are permanent failures, never retries
+* Every FAIL carries a record from error.error_manager, and a child that died
+  without reporting is diagnosed from its signal: SIGKILL is ERR_OUT_OF_MEMORY
+  when /dev/kmsg names this pid, else the cgroup oom counter decides; SIGSEGV
+  and friends are ERR_PROCESS_CRASHED, anything else ERR_JOB_PROCESS_DIED
 """
 
 import errno
@@ -690,8 +612,6 @@ class Worker:
             _bind_to_parent_death(parent_pid)
             os.close(read_fd)
             _close_inherited_sockets(self)
-            # The parent already hydrated the worker config before forking;
-            # hydrating again here would throw that refresh away with the child.
             payload = _encode_outcome(self._attempt(job, kwargs, hydrate=False))
             with os.fdopen(write_fd, 'wb') as pipe:
                 pipe.write(payload)

@@ -193,7 +193,6 @@ def test_roots_mode_filters_radius_below_target(monkeypatch):
     results = hm.hyperbolic_similar("fp_t", mode="roots", limit=2)
     assert captured["below"] is True
     assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.15))
-    # both candidates sit inside the window; the nearest (fp_inner, R 0.2) ranks first
     assert [r["item_id"] for r in results] == ["fp_inner", "fp_deep"]
 
 
@@ -213,7 +212,6 @@ def test_niche_mode_filters_radius_above_target(monkeypatch):
     results = hm.hyperbolic_similar("fp_t", mode="niche", limit=2)
     assert captured["below"] is False
     assert captured["bound"] == pytest.approx(0.6 + (1.0 - 0.6) * 0.15)
-    # both candidates sit outside the window; the nearest (fp_outer, R 0.8) ranks first
     assert [r["item_id"] for r in results] == ["fp_outer", "fp_edge"]
 
 
@@ -229,8 +227,6 @@ def test_roots_empty_window_returns_empty(monkeypatch):
 
 
 def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
-    # spread=0 degenerates to the whole inner half (radius < seed), so the
-    # closest inward candidate is the one just below the seed's radius.
     captured = {}
 
     def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
@@ -255,7 +251,6 @@ def test_roots_mode_caller_spread_overrides_config(monkeypatch):
     monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
     hm.hyperbolic_similar("fp_t", mode="roots", limit=2, radial_spread=0.5)
-    # A caller-supplied spread wins over the HYPERBOLIC_RADIAL_SPREAD default.
     assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.5))
 
 
@@ -289,7 +284,7 @@ def test_roots_mode_clamps_out_of_range_caller_spread(monkeypatch):
 def test_deduplicate_and_cap_results_matches_similar_song_rules(monkeypatch):
     fake_details = [
         {"item_id": "d1", "title": "Same Song", "author": "Artist A"},
-        {"item_id": "d2", "title": "same song", "author": "artist a"},  # content dup of d1 (case-insensitive)
+        {"item_id": "d2", "title": "same song", "author": "artist a"},
         {"item_id": "d3", "title": "Other", "author": "Artist A"},
         {"item_id": "d4", "title": "Another", "author": "Artist A"},
         {"item_id": "d5", "title": "Yet Another", "author": "Artist A"},
@@ -302,12 +297,12 @@ def test_deduplicate_and_cap_results_matches_similar_song_rules(monkeypatch):
     )
     results = [
         {"item_id": "d1", "distance": 0.1, "hyperbolic_radius": 0.5},
-        {"item_id": "d2", "distance": 0.2, "hyperbolic_radius": 0.5},  # duplicate -> dropped
+        {"item_id": "d2", "distance": 0.2, "hyperbolic_radius": 0.5},
         {"item_id": "d3", "distance": 0.3, "hyperbolic_radius": 0.6},
         {"item_id": "d4", "distance": 0.4, "hyperbolic_radius": 0.6},
-        {"item_id": "d5", "distance": 0.5, "hyperbolic_radius": 0.7},  # 4th Artist A -> capped
+        {"item_id": "d5", "distance": 0.5, "hyperbolic_radius": 0.7},
         {"item_id": "d6", "distance": 0.6, "hyperbolic_radius": 0.7},
-        {"item_id": "d7", "distance": 0.7, "hyperbolic_radius": 0.8},  # no author -> exempt from the cap, kept
+        {"item_id": "d7", "distance": 0.7, "hyperbolic_radius": 0.8},
     ]
     out = hm._deduplicate_and_cap_results(results)
     assert [r["item_id"] for r in out] == ["d1", "d3", "d4", "d6", "d7"]
@@ -485,8 +480,6 @@ def test_tree_root_partitions_by_mood(monkeypatch):
     assert all(item["type"] == "folder" for item in node["items"])
     assert {item["id"] for item in node["items"]} == {"mhappy", "msad", "mdanceable"}
     assert all(item.get("kind") == "mood" for item in node["items"])
-    # Non-leaf nodes carry no per-track ids - only the leaf being displayed
-    # needs its own members for id translation; ancestors never aggregate them.
     assert flat == []
 
 
@@ -500,14 +493,8 @@ def test_tree_build_cache_returns_track_count(monkeypatch):
 
 
 def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
-    # The default server and each secondary server get their OWN tree, built
-    # from only that server's tracks (the caller feeds per-server rows via
-    # _fetch_all_poincare_rows(server_id=...)), persisted under distinct blob
-    # names, and the request path resolves the right tree per server.
     default_mapping = _make_catalogue(n_per_band=200, bands=1)
     sec_mapping = _make_catalogue(n_per_band=20, bands=1)
-    # Make the secondary set distinguishable: fewer bands -> different cluster
-    # structure than the default tree.
     sec_mapping = {f"sec_{iid}": row for iid, row in sec_mapping.items()}
     persisted = {}
 
@@ -531,13 +518,10 @@ def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
              patch.object(hm, "_persist_tree_cache_blob", side_effect=_fake_persist):
             default_count = hm.build_hyperbolic_tree_cache()
 
-        # The default tree is mirrored into the legacy top-level fields; the
-        # secondary tree lives only under its own server key.
         assert default_count == len(default_mapping)
         assert hm._TREE_CACHE["servers"][hm._DEFAULT_SERVER_KEY]["track_count"] == len(default_mapping)
         assert hm._TREE_CACHE["servers"]["sec"]["track_count"] == len(sec_mapping)
         assert hm._TREE_CACHE["nodes"]["root"]["summary"]["track_count"] == len(default_mapping)
-        # Distinct blob names per server.
         assert hm._blob_name_for(hm._DEFAULT_SERVER_KEY) == hm._TREE_CACHE_BLOB_NAME
         assert hm._blob_name_for("sec") == f"{hm._TREE_CACHE_BLOB_NAME}__sec"
         assert set(persisted) == {
@@ -548,16 +532,9 @@ def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
             nid for nid, n in persisted[hm._TREE_CACHE_BLOB_NAME]["nodes"].items()
             if not n.get("leaf")
         }
-        # The request path resolves the right tree per server.
         assert hm.tree_for_server(None)["track_count"] == len(default_mapping)
         assert hm.tree_for_server("sec")["track_count"] == len(sec_mapping)
         assert hm.tree_for_server("sec")["nodes"]["root"]["summary"]["track_count"] == len(sec_mapping)
-        # A server with no tree of its own (e.g. added after the last analysis
-        # run) must never fall back to the default server's tree - that would
-        # leak the default server's genres/subgenres under another server's
-        # selection. tree_for_server reports no tree, and build_hyperbolic_tree
-        # raises a clear "not available yet" error instead of silently
-        # rendering an empty folder the user could mistake for a real result.
         assert hm.tree_for_server("third") == {}
         with pytest.raises(ValueError, match="not available"):
             hm.build_hyperbolic_tree(None, server_id="third")
@@ -566,10 +543,6 @@ def test_tree_cache_builds_separate_trees_per_server(monkeypatch):
 
 
 def test_tree_for_server_resolves_default_by_its_real_server_id(monkeypatch):
-    # The default tree is stored under the sentinel _DEFAULT_SERVER_KEY, but a
-    # request can legitimately pass the default server's real id (a client
-    # explicitly selecting "the server that happens to be default"). That must
-    # still resolve to the default tree, not to the untreed-server empty case.
     default_mapping = _make_catalogue(n_per_band=20, bands=1)
     hm.reset_hyperbolic_tree_cache()
     try:
@@ -738,8 +711,6 @@ def test_tree_genre_nesting_stops_at_named_clusters(monkeypatch):
     finally:
         hm.reset_hyperbolic_tree_cache()
     assert mood.get("leaf") is False
-    # The genre-less fallback is mood -> main genre -> named clusters: the
-    # old second/third genre levels are gone.
     assert "main_genre" in kinds
     assert "second_genre" not in kinds
     assert "third_genre" not in kinds
@@ -782,10 +753,6 @@ def test_tree_root_is_genre_and_splits_into_subgenres(monkeypatch):
 
 
 def test_tree_genre_root_lists_tracks_directly_when_subgenres_cannot_cluster(monkeypatch):
-    # On a small library no subgenre can form a cluster of HYPERBOLIC_MIN_CLUSTER_SIZE
-    # or more, so the strict path used to hide every genre and silently fall back to
-    # the mood root. A genre whose subgenres all vanished must instead list its
-    # tracks directly under the genre, keeping the genre root (not mood).
     mapping, score_rows = _make_mood_catalogue(n_per_mood=2, moods=("happy",))
     mood_centroids = _mood_centroids_for(("happy",))
     monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 20)
@@ -861,8 +828,6 @@ def test_tree_leaf_folders_stay_near_target_size(monkeypatch):
     finally:
         hm.reset_hyperbolic_tree_cache()
     assert leaf_sizes
-    # Generous slack over the target: k-means cluster sizes are never exactly
-    # even, and the degenerate-split guard can let one leaf run a bit larger.
     assert all(size <= 20 * 3 for size in leaf_sizes)
 
 
@@ -1025,11 +990,6 @@ def _fake_segmented_store():
 
 
 def test_build_tree_cache_raises_when_persist_fails(monkeypatch):
-    # A worker-side persist failure must propagate to the caller
-    # (_run_all_index_builds' per-step handler records it and the run
-    # continues) rather than being swallowed into a log line while the
-    # function still reports success - that silent-failure mode is exactly
-    # what let a real deployment's tree cache never actually reach the DB.
     mapping = _make_catalogue()
     hm.reset_hyperbolic_tree_cache()
     try:
@@ -1111,9 +1071,6 @@ def test_load_tree_cache_empty_when_nothing_persisted(monkeypatch):
 
 
 def test_load_tree_cache_discards_an_old_schema_blob(monkeypatch):
-    # A blob written by a previous tree schema (no "version" or an older one)
-    # must be discarded, not served: after an upgrade Flask would otherwise
-    # keep showing the stale pre-upgrade tree until the next analysis run.
     import gzip
     import json as _json
 

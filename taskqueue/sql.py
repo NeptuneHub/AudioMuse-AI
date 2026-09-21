@@ -209,10 +209,6 @@ _ONE_LIVE_SWEEP_INDEX = """
         AND task_type = '{sweep}'
 """.format(name=SWEEP_INDEX_NAME, statuses=_LIVE_STATUS_SQL, sweep=SWEEP_TASK_TYPE)
 
-# PENDING, STARTED, PROGRESS and FAILURE are the spellings this table held before
-# the queue existed. They are history, not vocabulary, so they stay literal here:
-# config's aliases of those names point at the CURRENT spellings and would make
-# every one of these statements a no-op.
 _MIGRATE_STATUSES = (
     f"UPDATE task_status SET status='{_NEW}' WHERE status='PENDING'",
     f"UPDATE task_status SET status='{_RUNNING}' WHERE status IN ('STARTED','PROGRESS')",
@@ -265,9 +261,6 @@ _CREATE_BASE_TABLE = """
     )
 """
 
-# This probe gates the WHOLE _ADD_COLUMNS block, so it must always name the
-# column added LAST: an install that already has every earlier column skips the
-# ALTER entirely, and a column appended without moving the probe never arrives.
 NEWEST_COLUMN = 'next_run_at'
 
 _PROBE_NEWEST_COLUMN = (
@@ -309,13 +302,6 @@ def ensure_schema(cur):
     if _index_missing(cur, PARENT_INDEX_NAME):
         cur.execute(PARENT_INDEX_SQL)
     if _index_missing(cur, MAIN_INDEX_NAME):
-        # The one-live-main index now also covers sonic_fingerprint. An upgrade
-        # can leave a live batch root and a live fingerprint side by side (the
-        # old index never admitted the fingerprint), so retire every live main
-        # root but the newest before the unique index is (re)created. A row a
-        # live worker is still executing (its per-task advisory lock is held) is
-        # never revoked; if two are executing the build is deferred to a later
-        # boot rather than force-revoking a running task.
         if _retire_surplus_main_live_roots(cur):
             cur.execute(_ONE_LIVE_MAIN_INDEX)
             cur.execute(_DROP_STALE_INDEXES, (MAIN_INDEX_PREFIX + '%', MAIN_INDEX_NAME))
@@ -622,9 +608,6 @@ _REQUEUE_OR_FAIL = f"""
     FROM reclaimed, prev
 """
 
-# The ASCII unit separator, written as an escape so it stays visible: a raw
-# U+001F byte in the source is invisible in every editor and diff, and an
-# editor that normalises it silently breaks decode_reclaim's three-way split.
 RECLAIM_SEPARATOR = '\x1f'
 
 
@@ -833,19 +816,8 @@ def reap_children(cur, parent_task_id):
     return reaped
 
 
-# server_sweep is watched too, even though it is not a MAIN_TASK_TYPE and holds
-# its own index rather than the one-live-main one. "It blocks only other sweeps"
-# was wrong: the cleaning start and the provider-migration execute both refuse
-# while a sweep is live, so a wedged sweep locked out cleaning, migration and
-# every future sweep, and nothing else was watching it - reclaim needs the worker
-# to DIE, and a wedged worker does not.
 NUDGE_TASK_TYPES = task_types.NUDGE_TASK_TYPES
 
-# A plugin task is matched by PREFIX, not by name: the namespace is open, so
-# there is no fixed list to put in an IN clause. It refuses every cron start
-# and every manual batch start (get_queue_blocking_task ORs in 'plugin.%'), so
-# a wedged one locks the catalogue out exactly the way a wedged sweep did, and
-# reclaim cannot help because reclaim needs the worker to DIE.
 NUDGE_TASK_TYPE_PATTERNS = [
     prefix + '%' for prefix in task_types.NUDGE_TASK_TYPE_PREFIXES
 ]
@@ -897,10 +869,6 @@ def wedged_main_tasks(cur, silent_seconds):
     ]
 
 
-# beat_at is the child's own timestamp, and a fan-out parent puts it in its
-# no-progress signature. Without it the only sign of life a child can give is a
-# progress WRITE, so a child whose one step is a single opaque call - a spectral
-# fit over 10k songs - looked identical to a wedge and was revoked while healthy.
 _LIVE_CHILDREN = f"""
     SELECT task_id, sub_type_identifier, progress, status, timestamp, task_type
     FROM task_status
@@ -920,12 +888,6 @@ def live_children(cur, parent_task_id):
     ]
 
 
-# Finished, and NOT a child some parent is still draining. A fan-out leaves its
-# album or batch children terminal until the parent's next reap, so a wipe that
-# only looked at the status deleted them out from under it - and the parent then
-# waited for children that no longer existed. Both wipes share this one predicate
-# because getting it right in one of them and not the other hangs a run just the
-# same.
 TERMINAL_AND_NOT_A_LIVE_PARENTS_CHILD = (
     f"status IN ({_TERMINAL_IN_LIST}) "
     "AND (parent_task_id IS NULL "

@@ -547,6 +547,13 @@ var ADVANCED_SECTIONS = [
         ]
     },
     {
+        title: 'Album Creation',
+        items: [
+            'ALBUM_CREATION_TRACKS', 'ALBUM_CREATION_MUSICNN_SHARE', 'ALBUM_CREATION_COHESION',
+            'ALBUM_CREATION_LYRIC_SHARE', 'ALBUM_OF_THE_WEEK_PLAYLIST_NAME'
+        ]
+    },
+    {
         title: 'Lyrics & SemGrove Search',
         items: [
             'LYRICS_API_ENABLE', 'LYRICS_MUSICNN_SKIP',

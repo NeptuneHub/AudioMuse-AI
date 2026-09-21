@@ -251,7 +251,6 @@ class TestRelaxTrackServerMapPk:
             )
         old_schema_db.commit()
 
-        # Jellyfin holds TWO copies of the same audio; Plex holds one, elsewhere.
         registry.upsert_track_maps(
             'srv',
             {
@@ -283,8 +282,6 @@ class TestRelaxTrackServerMapPk:
             ('srv', 'jf-2', '/music/Compilations/80s Hits/07 Rio.flac'),
         ]
 
-        # Three files, three paths, one song. This is the evidence the sweep matcher
-        # now offers a NEW server: every path the catalogue knows, not the default's.
         with old_schema_db.cursor() as cur:
             cur.execute(
                 "SELECT ARRAY(SELECT DISTINCT p.file_path FROM track_server_map p "
@@ -326,8 +323,6 @@ class TestRelaxTrackServerMapPk:
 
         with old_schema_db.cursor() as cur:
             database.relax_track_server_map_pk(cur)
-            # A weaker-tier row whose provider id sorts BEFORE the fingerprint
-            # row, so only tier priority (not id ordering) can select 'provA'.
             cur.execute("UPDATE track_server_map SET provider_track_id = 'zzz' WHERE item_id = 'X'")
             cur.execute(
                 "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier) "

@@ -666,7 +666,6 @@ def test_availability_mask_is_built_for_canonical_ids_even_on_a_single_server(mo
 
     conn = MagicMock()
     cur = conn.cursor.return_value.__enter__.return_value
-    # Only fp_kept is still mapped; fp_orphan was unbound by a cleaning run.
     cur.fetchall.return_value = [('fp_kept',)]
     cur.fetchone.return_value = (True, '2026-01-01 00:00:00')
 
@@ -674,8 +673,6 @@ def test_availability_mask_is_built_for_canonical_ids_even_on_a_single_server(mo
         pv, 'orphan_idx', 'genB', ['fp_kept', 'fp_orphan', 'legacy-1'], lambda: conn
     )
     mask = idx._availability_mask()
-    # The legacy id survives (the default server always keeps non-fp_ rows), the
-    # unbound canonical id is hidden.
     np.testing.assert_array_equal(mask, np.array([True, False, True], dtype=np.bool_))
 
 

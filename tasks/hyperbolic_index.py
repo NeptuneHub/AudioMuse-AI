@@ -8,104 +8,41 @@
 
 """Disk-paged Poincare IVF index for the Hyperbolic Explorer.
 
-A nearest-neighbour index over the Poincare-projected embeddings, built per
-music server and persisted as segmented blobs in ivf_dir (the same storage
-pattern the tree cache and the other indexes use). Only the cell directory and
-the coarse centroids are held in memory; the projected vectors live on disk and
-are decoded cell by cell on demand under a process-wide byte cap, so the full
-projected catalogue never stays resident.
+Only the cell directory and the coarse centroids stay in memory; the projected
+vectors live in ivf_dir blobs and are decoded cell by cell under a process-wide
+byte cap. hyperbolic_nearest / hyperbolic_nearest_multi return item ids by
+exact Poincare distance, or None when nothing is built yet.
 
 Main Features:
-* The catalogue is partitioned by HYPERBOLIC k-means (tasks.hyperbolic_geometry
-  .poincare_kmeans): k-means++ seeding, assignment and the Frechet-mean centroid
-  update all run in the exact Poincare metric, so no Euclidean or cosine step
-  enters the partition. Cell count follows the same rule as the other IVF
-  indexes, 8*sqrt(n) capped at IVF_NLIST_MAX, and training runs on an
-  IVF_TRAIN_POINTS_PER_CELL sample before every track is assigned to its
-  nearest centroid.
-* This REPLACED a radial-band split, which measured out as useless: radius
-  alone cannot separate points in 200 dimensions, because almost all of the
-  distance between two tracks comes from direction. On a 200k catalogue the
-  band layout still scanned 63-95% of the library per query and adding bands
-  barely moved it (8 bands 97.2%, 384 bands 93.8%). A centroid encodes
-  direction as well as radius, which is what makes IVF_NPROBE cells out of
-  8*sqrt(n) an actual reduction rather than a full scan with extra steps.
-* Querying takes the exact Poincare distance to every coarse centroid, probes
-  the nearest IVF_NPROBE cells, and heaps the top-k over their members. Like
-  every IVF this is approximate: a neighbour parked in an unprobed cell is
-  missed, and IVF_NPROBE is the recall/latency knob. Probing N cells would be N
-  Postgres round trips, so _prefetch_cells pulls every uncached probed cell in
-  ONE ANY() read and hands the arrays straight to the scan. It returns them
-  rather than relying on the cell cache to still hold them, because a probe set
-  larger than HYPERBOLIC_INDEX_CACHE_MB would otherwise evict its own earlier
-  cells during the prefetch and the scan would re-read them one at a time,
-  which is the exact round-trip storm the bulk read exists to prevent.
-* IVF_NPROBE and _RERANK_OVERFETCH are NOT redundant: IVF_NPROBE decides which
-  cells are looked at at all, while the overfetch decides how many of the
-  scanned candidates survive i8 ranking error into the exact re-rank. Neither
-  covers the other's failure mode.
-* Cell vectors are quantized through tasks.ivf_quant on config.IVF_STORAGE_DTYPE
-  (default i8), the same knob and the same codec every other index uses, so the
-  projected catalogue on disk costs 1 byte per dimension instead of 4. This
-  path deliberately does NOT go through ivf_quant.effective_code: that helper
-  downgrades i8 to f16 for any non-angular metric, and the Poincare metric is
-  non-angular, but the storage dtype here is taken literally so i8 means i8.
-  The coarse centroids stay float32, exactly as they do for the paged IVF.
-* i8 makes the cell scan coarser here than it would for an angular index,
-  because the Poincare metric divides by (1 - ||u||^2), which for a track near
-  the ball boundary is ~1e-6 while the i8 grid of 1/127 moves a radius by
-  ~1e-2. Two things absorb that. Decoded cells are pushed back inside the ball
-  with clip_into_ball, so a quantized point can never land on or past the
-  boundary and blow the denominator up. And the scan overfetches
-  _RERANK_OVERFETCH-fold (capped at _RERANK_SCAN_CAP) before hyperbolic_nearest
-  re-ranks those candidates against the exact float32 poincare_embedding rows,
-  so the distances and ordering it returns are exact for everything the probed
-  cells reached. Measured on a 60k catalogue, 4x already recovers 100% of the
-  exact top-20 and 1x recovers 85%, at every nprobe from 32 to 1024, so the
-  factor is set to 8 for margin rather than the 32 the retired radial layout
-  needed. Cells are why: a boundary track whose i8 distances are scrambled now
-  lands in its own cell instead of polluting every query's global ranking.
-  hyperbolic_nearest_multi skips the re-rank on purpose: it is a candidate
-  generator whose caller (the geodesic journey) already re-ranks on the exact
-  vectors itself.
-* Those two callers want OPPOSITE things from the scan width, so they size it
-  separately. hyperbolic_nearest wants PRECISION at rank k, and 8x delivers it.
-  hyperbolic_nearest_multi wants BREADTH: waypoints along one geodesic are
-  near-duplicates of each other, so their top-k lists overlap almost entirely
-  and the union collapses to a narrow tube of songs. Sizing it on top-k recall
-  starves it - on a 198-step journey 8x yielded 903 distinct candidates where
-  64x (_MULTI_OVERFETCH) yields 3776, and a journey that has to fill 198 steps
-  from 903 songs runs dry against content-dedup and MAX_SONGS_PER_ARTIST and
-  returns a truncated walk. _multi_scan_width is also deliberately independent
-  of the storage dtype: breadth is a property of the geodesic, not of i8.
-* hyperbolic_nearest_multi is BATCHED over its waypoints rather than looping
-  the single-vector search. Waypoints along one geodesic are neighbours, so
-  their probe sets overlap almost completely, and looping meant decoding the
-  same cells once per waypoint: on a 198-step journey that was ~4s of pure
-  repeated decode. It instead takes the union of the probed cells, decodes each
-  one ONCE, and scores it against every waypoint that probed it in a single
-  hyperbolic_distance_matrix call. Measured 4-6x faster end to end, and the
-  candidate pool it returns is a strict superset of what the loop produced.
-* hyperbolic_nearest / hyperbolic_nearest_multi return item ids ranked by exact
-  Poincare distance, or None when no index is built yet; callers surface that
-  as a "run analysis to build it" error instead of scanning the catalogue.
-* The index stores ONE union of every server's projected tracks. A request
-  scoped to a server filters candidates through the shared availability mask
-  from tasks.index_availability, so no per-server copy of the index is built.
-  A rebuild also sweeps the blobs of the retired radial-band layout and any
-  legacy per-server index, which nothing names any more.
-* hyperbolic_nearest_multi applies that mask (and the exclude set) to each
-  probed cell's members BEFORE the per-waypoint top-k selection, not after:
-  filtering the already-selected top candidates could throw away every
-  visible one in favour of ids from another server that merely outrank them
-  on raw distance, starving the geodesic journey's candidate pool.
-* invalidate_availability_cache clears that mask cache on demand.
-  tasks.multiserver_sync calls it (alongside the paged-IVF one) whenever a
-  sweep actually removes track_server_map rows, so a server's availability
-  view corrects itself immediately instead of waiting out the TTL - it was
-  missing that hook until it was found only replaying the 30s poll forever,
-  never the event a real membership change already fires for every other
-  index.
+* The catalogue is partitioned by HYPERBOLIC k-means (hyperbolic_geometry
+  .poincare_kmeans) in the exact Poincare metric, 8*sqrt(n) cells capped at
+  IVF_NLIST_MAX. This REPLACED a radial-band split that still scanned 63-95% of
+  a 200k library: radius alone cannot separate points in 200 dimensions, where
+  the distance between two tracks is almost all direction
+* A query takes the exact distance to every centroid, probes IVF_NPROBE cells
+  and heaps the top-k, so a neighbour in an unprobed cell is missed.
+  _prefetch_cells pulls every uncached probed cell in ONE ANY() read and
+  returns the arrays rather than trusting the cache, which a probe set larger
+  than HYPERBOLIC_INDEX_CACHE_MB would evict mid-read
+* Cells are quantized through ivf_quant on config.IVF_STORAGE_DTYPE taken
+  LITERALLY (not effective_code, which downgrades a non-angular metric to f16);
+  centroids stay float32. Decoded points are pushed back inside the ball with
+  clip_into_ball, since the metric divides by (1 - ||u||^2) and the i8 grid
+  moves a boundary radius by far more than that
+* The scan overfetches _RERANK_OVERFETCH-fold (capped at _RERANK_SCAN_CAP)
+  before re-ranking on the exact float32 rows, so its order is exact for what
+  the probed cells reached: 4x recovered 100% of the top-20 on a 60k catalogue
+* hyperbolic_nearest_multi skips that re-rank (the geodesic journey re-ranks
+  itself) and sizes its scan on BREADTH: waypoints of one geodesic are
+  near-duplicates whose top-k lists collapse into a tube, so 8x gave 903
+  candidates on a 198-step journey where _MULTI_OVERFETCH gives 3776. It
+  decodes the union of probed cells ONCE and scores every waypoint in one
+  hyperbolic_distance_matrix call, and masks each cell BEFORE its top-k, since
+  filtering after can drop every visible id in favour of another server's
+* ONE union of every server's tracks is stored; a scoped request filters
+  through tasks.index_availability, whose cache multiserver_sync drops when a
+  sweep removes mappings. A rebuild also sweeps the retired radial layout's
+  blobs and any legacy per-server index
 """
 
 import gzip

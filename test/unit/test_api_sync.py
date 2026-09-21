@@ -477,8 +477,6 @@ class TestErrorHandling:
         _setup_payload(cur, total=0, tracks=[])
         cur._raise_on_execute = RuntimeError("simulated DB failure")
         resp = client.get('/api/sync?limit=1')
-        # A DB failure on this data endpoint now surfaces the coded database error
-        # (503 Service Unavailable) instead of a generic, uncoded 500.
         assert resp.status_code == 503
         body = resp.get_json()
         assert body['error_code'] == 4002

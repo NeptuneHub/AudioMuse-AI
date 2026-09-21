@@ -16,9 +16,11 @@ Main Features:
 * Routes: `/cron` page and `/api/cron` (GET list, POST create/update), rejecting a
   cron expression that could never fire before it is stored as enabled.
 * Cron evaluation that ENQUEUES the batch task types (analysis, clustering, sonic
-  fingerprint, plugin tasks) and runs the alchemy radio INLINE here in Flask,
-  because a radio is an online feature: it queries the in-memory similarity index,
-  which only this process holds.
+  fingerprint, album of the week, plugin tasks) and runs the alchemy radio INLINE
+  here in Flask, because a radio is an online feature: it queries the in-memory
+  similarity index, which only this process holds. Analysis and clustering pass
+  their own arguments, so each keeps a branch; the per-server playlist builders
+  take nothing but a scope and share one, driven by task_types.CRON_QUEUED_TASKS.
 * Each row is claimed atomically for its wall-clock minute, so a restart or a
   second web process cannot double-fire it.
 * A central queue guard makes analysis, clustering, sonic fingerprint, plugin
@@ -152,7 +154,7 @@ def get_cron_entries():
                     type: string
                   task_type:
                     type: string
-                    enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
+                    enum: [analysis, clustering, sonic_fingerprint, album_of_the_week, alchemy_radio]
                   cron_expr:
                     type: string
                     description: 5-field cron expression "min hour day month dow".
@@ -227,7 +229,7 @@ def save_cron_entry():
                 type: string
               task_type:
                 type: string
-                enum: [analysis, clustering, sonic_fingerprint, alchemy_radio]
+                enum: [analysis, clustering, sonic_fingerprint, album_of_the_week, alchemy_radio]
               cron_expr:
                 type: string
                 description: 5-field cron expression "min hour day month dow".
@@ -567,28 +569,19 @@ def _admit_and_enqueue_cron_job(job_id, task_type, enqueue, *, conn):
     return 'enqueued'
 
 
-_CRON_RETRY_TASK_TYPES = ('analysis', 'clustering', 'sonic_fingerprint')
-
-# Plugin cron rows are not in the fixed tuple above (their task_type is the
+# Plugin cron rows are not in the registry's cron table (their task_type is the
 # plugin's own dotted path, not a fixed name), but they are still admitted
 # through the same blocking=True queue guard, so a busy queue can starve them
-# exactly like the three fixed types - they get the same retry coverage via
-# the task_types.PREFIXES checks below.
-_CRON_TASK_TYPE_TO_QUEUE_TYPE = {
-    'analysis': 'main_analysis',
-    'clustering': 'main_clustering',
-    'sonic_fingerprint': 'sonic_fingerprint',
-}
-
-
+# exactly like the fixed types - they get the same retry coverage via the
+# task_types.PREFIXES checks below.
 def _cron_retry_eligible(task_type):
-    return task_type in _CRON_RETRY_TASK_TYPES or task_types.matches(
+    return task_type in task_types.CRON_RETRY_TASK_TYPES or task_types.matches(
         task_type, prefixes=task_types.PREFIXES
     )
 
 
 def _queue_type_for_cron_task_type(task_type):
-    return _CRON_TASK_TYPE_TO_QUEUE_TYPE.get(task_type, task_type)
+    return task_types.CRON_TASK_TYPE_TO_QUEUE_TYPE.get(task_type, task_type)
 
 
 def _dispatch_cron_row(db, r):
@@ -723,15 +716,18 @@ def _dispatch_cron_row(db, r):
                 },
             )
             return 'failed'
-    elif task_type == 'sonic_fingerprint':
-        # Enqueued, not run inline: this one walks the media server's play
-        # history per user, and doing that on the 60s poll thread let one
-        # unreachable provider swallow whole scheduling windows.
+    elif task_type in task_types.CRON_QUEUED_TASKS:
+        # Enqueued, not run inline: the sonic fingerprint walks the media
+        # server's play history per user and the album of the week queries the
+        # similarity index once per server, and doing either on the 60s poll
+        # thread let one unreachable provider swallow whole scheduling windows.
+        # They take nothing but a server scope, so the registry's dotted path is
+        # the whole difference between them.
         return _enqueue_cron_job(
             job_id,
             task_type,
             lambda job_id=job_id, server_scope=server_scope, task_type=task_type: taskqueue.enqueue(
-                'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
+                task_types.CRON_QUEUED_TASKS[task_type],
                 kwargs={'server_scope': server_scope},
                 task_id=job_id,
                 task_type=task_type,

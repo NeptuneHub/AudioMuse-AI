@@ -15,22 +15,21 @@ reads liveness from ``pg_stat_activity`` and this worker process is still alive
 under the same identity, so its own row is excluded from reclaim for as long as
 the container lives.
 
-The free retry is narrow and it is bounded, and both halves are pinned here.
+The free retry is narrow and bounded, and both halves are pinned here.
 ``psycopg2.OperationalError`` is NOT a synonym for "the connection died": its
-hierarchy is flat, so the same base class covers ``QueryCanceled`` (which is what
-the app's own ``statement_timeout=600000`` produces), ``DeadlockDetected``,
+hierarchy is flat, so the same base class covers ``QueryCanceled`` (what the
+app's own ``statement_timeout=600000`` produces), ``DeadlockDetected``,
 ``SerializationFailure``, ``DiskFull`` and ``OutOfMemory``. Handing those the
 uncharged requeue meant a ten-minute statement timeout, or a deadlock that
-reproduces in milliseconds, requeued its row for ever with no attempt ever
-charged and no sleep anywhere on the path. Even a genuinely lost connection now
-gets only ``UNCHARGED_REQUEUE_LIMIT`` free passes per row before the requeue
-starts costing a worker-loss attempt, and a repeat pass waits first.
+reproduces in milliseconds, requeued its row for ever. Even a genuinely lost
+connection gets only ``UNCHARGED_REQUEUE_LIMIT`` free passes per row, and a
+repeat pass waits first.
 
 Main Features:
-* Only a lost connection remembers the row: the database refusing the work fails it
-* SQLSTATE class 08, the 57Pxx shutdown codes and 53300 are the lost-connection codes
-* A libpq error with no SQLSTATE at all, InterfaceError and ConnectionLostError count too
-* The abandoned row is requeued with no worker-loss attempt charged, bound to this worker
+* Only a lost connection remembers the row: the database refusing work fails it
+* SQLSTATE class 08, the 57Pxx shutdown codes and 53300 are the lost codes
+* A libpq error with no SQLSTATE, InterfaceError and ConnectionLostError count
+* The abandoned row is requeued uncharged, bound to this worker
 * After UNCHARGED_REQUEUE_LIMIT free passes the same row's requeue charges an attempt
 * A charged requeue is refused unless the row is still this worker's RUNNING row
 * A repeat pass sleeps first, doubling and capped, so the loop cannot spin hot

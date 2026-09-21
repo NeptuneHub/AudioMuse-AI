@@ -110,7 +110,7 @@ class TestEveryLongOpaquePhaseHasAHeartbeat:
         'tasks/analysis/main.py',
         'tasks/cleaning.py',
         'tasks/clustering.py',
-        'tasks/sonic_fingerprint_manager.py',
+        'tasks/task_run.py',
         'tasks/provider_migration_tasks.py',
         'plugin/manager.py',
     ])
@@ -139,7 +139,8 @@ class TestEveryLongOpaquePhaseHasAHeartbeat:
             'main_analysis': ('tasks/analysis/index.py', 'tasks/analysis/main.py'),
             'main_clustering': ('tasks/clustering.py',),
             'cleaning': ('tasks/analysis/index.py', 'tasks/cleaning.py'),
-            'sonic_fingerprint': ('tasks/sonic_fingerprint_manager.py',),
+            'sonic_fingerprint': ('tasks/task_run.py',),
+            'album_of_the_week': ('tasks/task_run.py',),
             'provider_migration': ('tasks/provider_migration_tasks.py',),
             'server_sweep': ('tasks/multiserver_sync.py',),
             'plugin.': ('plugin/manager.py',),

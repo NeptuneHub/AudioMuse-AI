@@ -16,8 +16,8 @@ Main Features:
   persisted result via the index-reload NOTIFY, never reclusters); non-fatal
   failures are recorded through the central error registry at WARNING and the
   run continues.
-* rebuild_all_indexes_task: the queue entry point, reporting into task_status and
-  re-raising on failure so its enqueue-time Retry policy actually fires.
+* rebuild_all_indexes_task: the queue entry point, reporting into task_status
+  and re-raising so its enqueue-time Retry policy fires.
 * The shared g.db connection is CLOSED between build steps. A Postgres backend
   never returns memory to the OS while its session lives, so running all nine
   builds on one connection made that single backend accumulate the union of
@@ -29,12 +29,11 @@ Main Features:
   nudge reads task_status.timestamp and nothing else, but a step is ONE opaque
   call that writes no row while it runs, so on a big library the IVF, artist-GMM
   or hyperbolic backfill outlived QUEUE_WEDGED_MAIN_TASK_MINUTES and had a
-  perfectly healthy analysis cancelled out from under it. The heartbeat also
-  names the running step at WARNING each time it fires, so a step that really is
-  stuck is loud rather than silent. It bumps from this process, so a worker that
-  actually dies stops bumping and reclaim still takes the row, and it is BOUNDED:
-  a build that never returns stops being propped up after several windows, or the
-  nudge could never fire and one wedged rebuild would lock out every main task.
+  healthy analysis cancelled out from under it. The heartbeat names the running
+  step at WARNING each time it fires, bumps from this process so reclaim still
+  takes the row of a worker that dies, and is BOUNDED: a build that never
+  returns stops being propped up after several windows, or the nudge could never
+  fire and one wedged rebuild would lock out every main task.
 * After the nine builds finish, the worker issues a CHECKPOINT on its own
   connection and closes it. Postgres only releases WAL segments and flushed
   dirty buffers at a checkpoint, so without it the hundreds of MB written as

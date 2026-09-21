@@ -820,12 +820,6 @@ class PagedIvfIndex:
         try:
             from tasks.mediaserver import registry
 
-            # The fast path may only skip the mask on a catalogue that has NO
-            # canonical ids: there every id is legacy, the mask would be all-True
-            # and building it is waste. Once ids are canonical the mask is the ONLY
-            # thing hiding a song that no longer exists on any server, so skipping
-            # it merely because the install has one server left deleted tracks
-            # surfacing in Similar Songs forever.
             if (
                 server_id == str(registry.get_default_server_id() or '')
                 and not registry.has_secondary_servers()
@@ -1368,12 +1362,6 @@ def build_and_store_paged_ivf(
         n_items,
         dim,
     )
-    # init='random', not scikit-learn's default k-means++: seeding 8*sqrt(N) cells
-    # the k-means++ way is a sequential scan per cell (3394 of them at 180k tracks)
-    # and cost 29s at 200 dims, 126s at 768 - more than the whole rest of the build.
-    # The minibatch passes that follow do the actual fitting; measured against an
-    # exact brute-force top-10, both seedings give the same recall and the same
-    # cell balance, which is why FAISS trains its IVF cells this way too.
     km = MiniBatchKMeans(
         n_clusters=nlist, batch_size=10000, n_init=1, max_iter=25,
         random_state=0, init="random",
@@ -1414,13 +1402,7 @@ def build_and_store_paged_ivf(
     id2cell = np.empty(n_items, dtype=np.uint32)
     centroid_list: List[np.ndarray] = [centroids[c] for c in range(nlist)]
     next_cell_id = nlist
-    # One INSERT per cell is one network round trip per cell, and an index has
-    # 8*sqrt(N) of them - 3394 at 180k tracks, measured at 6.8s against a LOCAL
-    # database and far worse against one across a network. They go out in batches
-    # instead; the batch is small enough that only a few MB of packed cells are
-    # ever buffered.
     pending: List[tuple] = []
-    # Cell members come from one sort of the labels, not one scan of them per cell.
     order = np.argsort(labels, kind="stable")
     bounds = np.concatenate(([0], np.cumsum(np.bincount(labels, minlength=nlist))))
     with db_conn.cursor() as cur:

@@ -595,7 +595,6 @@ class TestNavidromeAuthParams:
         from tasks.mediaserver import context
         from tasks.mediaserver.navidrome import get_navidrome_auth_params
 
-        # Default / config projection still holds an apiKey from another server.
         mock_config.NAVIDROME_USER = 'default-user'
         mock_config.NAVIDROME_PASSWORD = 'default-pass'
         mock_config.NAVIDROME_API_KEY = 'default-server-api-key'
@@ -764,7 +763,6 @@ class TestNavidromeRequest:
         mock_config.NAVIDROME_URL = 'http://navidrome:4533'
         mock_config.NAVIDROME_USER = user
         mock_config.NAVIDROME_PASSWORD = password
-        # MagicMock is truthy; unset NAVIDROME_API_KEY would pick the apiKey path.
         mock_config.NAVIDROME_API_KEY = ''
         mock_config.APP_VERSION = version
 
@@ -818,11 +816,6 @@ class TestNavidromeRequest:
     def test_migration_target_creds_win_over_source_default_api_key(
         self, mock_config, mock_request
     ):
-        # Provider Migration passes the TARGET server's creds explicitly and
-        # never binds a server context (unlike the bound-secondary-server
-        # tests in TestNavidromeAuthParams). If the app's own default/source
-        # Navidrome server authenticates via apiKey, that key must not leak
-        # into a request meant for a different (password-auth) target.
         from tasks.mediaserver.navidrome import _navidrome_request
 
         mock_config.NAVIDROME_URL = 'http://source-navidrome:4533'
@@ -995,8 +988,6 @@ class TestNavidromeAuthDetection:
     @patch('tasks.mediaserver.navidrome.requests.request')
     @patch('tasks.mediaserver.navidrome.config')
     def test_request_ex_network_error_does_not_leak_creds_to_logs(self, mock_config, mock_request):
-        # Guards against reverting logger.error -> logger.exception here: the
-        # exception traceback embeds the unredacted URL with auth params.
         import logging
         from tasks.mediaserver import navidrome
 

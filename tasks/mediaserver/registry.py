@@ -27,23 +27,20 @@ Main Features:
   against the default row and binds the row when they disagree, so a stale boot
   never talks to the wrong machine.
 * upsert_track_maps hands each mapping the Chromaprint already stored for its
-  canonical track, in the SAME transaction that writes the mapping. Matching a
-  track and knowing its fingerprint are one step, so a sweep always carries the
-  fingerprint with the mapping. The inherit rides a SAVEPOINT and can only ever
-  be skipped: the mapping write is the job and always stands. It COPIES stored
-  prints and computes none, so CHROMAPRINT_COLLECTION_ENABLED (compute new ones)
-  is the wrong switch to gate it on alone: an install with fpcalc missing but
-  CHROMAPRINT_GATE_ENABLED on still uses stored prints, and with the backfill
-  gone this is the only path that would ever fill them. The hand-over runs on
-  EVERY call, and the analysis calls this once per TRACK with a single row, so
-  nothing here may cost more than that one row is worth. Two things keep it that
-  way: the keyset index on the staging table is built only when the staged set is
-  big enough for the chunking to loop (the sweep, never the per-track flush), and
-  the whole hand-over - savepoint, statement, release - is skipped outright when
-  the catalogue has ONE server. That skip is exact, not a heuristic: a mapping can
-  only borrow from a mapping of the same item_id on a DIFFERENT server, because
-  the same server holding two files for one item_id is the ambiguity both sides
-  already refuse. One server therefore cannot inherit anything, ever.
+  canonical track, in the SAME transaction that writes the mapping, since
+  matching a track and knowing its fingerprint are one step. The inherit rides a
+  SAVEPOINT and can only ever be skipped: the mapping write is the job and
+  always stands. It COPIES stored prints and computes none, so gating it on
+  CHROMAPRINT_COLLECTION_ENABLED alone would be wrong - an install with fpcalc
+  missing but CHROMAPRINT_GATE_ENABLED on still uses stored prints, and with the
+  backfill gone this is the only path that fills them. The analysis calls this
+  once per TRACK with a single row, so nothing here may cost more than that row
+  is worth: the keyset index on the staging table is built only when the staged
+  set is big enough for the chunking to loop, and the whole hand-over is skipped
+  outright on a ONE-server catalogue. That skip is exact, not a heuristic: a
+  mapping can only borrow from one of the same item_id on a DIFFERENT server,
+  since one server holding two files for an item_id is the ambiguity both sides
+  already refuse.
 """
 
 import logging
@@ -326,10 +323,6 @@ def context_for(server_id, conn=None):
         return _default_context(default)
     server = get_server(server_id, db)
     if server is not None:
-        # Providers read a missing credential from the config globals, which are
-        # the DEFAULT server's projection - so an incomplete secondary would
-        # quietly talk to the wrong machine. The API refuses to store one, but
-        # say so loudly if a legacy row ever gets here.
         missing = missing_required_creds(server['server_type'], server['creds'])
         if missing:
             logger.error(
@@ -441,9 +434,6 @@ def set_default(server_id, conn=None):
             (server_id,),
         )
         if not cur.rowcount:
-            # The row vanished between the caller's check and this write (a
-            # concurrent delete). Committing now would clear the old default and
-            # promote nothing, leaving the install with NO default server.
             raise ValueError(f"Server '{server_id}' no longer exists; the default was not changed.")
         db.commit()
         invalidate_server_cache()
@@ -563,10 +553,6 @@ def translate_ids(item_ids, server_id=None, conn=None):
     cur = db.cursor()
     mapped = {}
     try:
-        # N provider tracks may map to one item_id on a server (duplicate files);
-        # pick ONE deterministically - strongest match tier, then the smallest
-        # provider id as a stable tiebreak - so a playlist target never changes
-        # between runs.
         for start in range(0, len(ids), _TRANSLATE_IDS_CHUNK):
             chunk = ids[start:start + _TRANSLATE_IDS_CHUNK]
             cur.execute(
@@ -886,14 +872,6 @@ def upsert_track_maps(server_id, mapping, conn=None):
     try:
         written = _run()
     except (psycopg2.errors.InvalidColumnReference, psycopg2.errors.UniqueViolation) as exc:
-        # Two distinct broken schemas reach here, and only one of them raises 42P10.
-        #  - The (server_id, provider_track_id) key is missing entirely: the ON
-        #    CONFLICT arbiter is unknown, so Postgres raises InvalidColumnReference.
-        #  - The PK swap failed halfway, leaving the NEW unique index AND the OLD
-        #    (item_id, server_id) primary key both enforced. The arbiter then
-        #    resolves fine, so 42P10 never fires - but an N:1 insert (the whole
-        #    point of the relaxed key) dies with a UniqueViolation on the surviving
-        #    old PK, which nothing used to catch.
         logger.warning(
             "track_server_map does not have the (server_id, provider_track_id) "
             "primary key; ensuring the schema and retrying the upsert."
@@ -902,8 +880,6 @@ def upsert_track_maps(server_id, mapping, conn=None):
         ensure_track_server_map_schema(db)
         columns = track_server_map_pk_columns(db)
         if columns != ['server_id', 'provider_track_id']:
-            # ensure_ returns True even when the swap silently rolled back, so trust
-            # the catalog, not the boolean. Retrying here would hit the same 23505.
             raise RuntimeError(
                 "track_server_map primary key is still %s; the relaxation migration "
                 "did not complete. Check the container logs from startup." % (columns,)

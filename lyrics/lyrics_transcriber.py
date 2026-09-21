@@ -820,11 +820,6 @@ def _lyrics_result(
     }
 
 
-# Decides whether an ASR transcript is too poor to keep. asr_avg_logprob is None
-# when the backend reported no confidence at all (see _asr_confidence): the
-# confidence thresholds are then skipped rather than treated as the worst possible
-# score, so a plugin backend that omits the key loses no transcript. The language
-# checks still apply.
 def _asr_should_drop(
     raw_text: str, whisper_raw_len: int, asr_lang: str, asr_avg_logprob: Optional[float]
 ) -> bool:
@@ -971,11 +966,6 @@ def _run_asr_transcription(audio_clip: np.ndarray, sr: int, threads: int) -> Dic
             signal.signal(signal.SIGALRM, _old_handler)
 
 
-# Reads the backend's avg_logprob, or None when it reported none. The built-in
-# backend always returns it, but a plugin ASR backend registered with
-# register_analysis_provider may not. None means "unknown confidence" and switches
-# off the confidence gates in _asr_should_drop; assuming the worst score here would
-# silently turn a whole library into instrumentals.
 def _asr_confidence(transcription: Dict[str, object]) -> Optional[float]:
     value = transcription.get('avg_logprob')
     if value is None:

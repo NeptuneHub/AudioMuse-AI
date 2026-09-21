@@ -133,15 +133,7 @@ def hyper_db(pg_dsn):
 
 @pytest.fixture
 def _point_get_db_to_test(monkeypatch, hyper_db, pg_dsn):
-    # NOTE: patch with the raw pg_dsn, never hyper_db.dsn - psycopg2's
-    # conn.dsn REDACTS the password to 'xxx', so the streaming side
-    # connection (_open_side_connection) would fail auth on any server that
-    # actually checks passwords (CI's postgres service does).
     monkeypatch.setattr("database.get_db", lambda: hyper_db)
-    # tasks.mediaserver.registry binds get_db by value at import time, and the
-    # tree build now imports the registry (per-server tree targets), so point
-    # its captured reference at the live test connection too. Without this the
-    # registry keeps talking to a previous test's closed hyper_db connection.
     monkeypatch.setattr("tasks.mediaserver.registry.get_db", lambda: hyper_db)
     monkeypatch.setattr(config, "DATABASE_URL", pg_dsn)
     yield hyper_db
@@ -281,8 +273,6 @@ class TestSimilarityEngine:
         assert niche
         assert all(r["hyperbolic_radius"] < target_radius for r in roots)
         assert all(r["hyperbolic_radius"] > target_radius for r in niche)
-        # The radius window must move the modes visibly away from the seed's
-        # radius band, not just a hair inward / outward.
         roots_hi = target_radius * (1.0 - 0.15)
         niche_lo = target_radius + (1.0 - target_radius) * 0.15
         assert all(r["hyperbolic_radius"] < roots_hi for r in roots)
@@ -297,8 +287,6 @@ class TestSimilarityEngine:
 
     def test_get_poincare_radius_none_when_unavailable(self, _point_get_db_to_test):
         hm = _load_hyperbolic_manager()
-        # Unknown id and empty id must not raise, and an id whose hyperbolic
-        # columns are still NULL must yield None too.
         assert hm.get_poincare_radius("item-999") is None
         assert hm.get_poincare_radius("") is None
         assert hm.get_poincare_radius(None) is None
@@ -319,9 +307,6 @@ class TestTreeEngine:
             assert node["type"] == "folder"
             assert node["items"]
             assert all(i["type"] == "folder" for i in node["items"])
-            # Root is never a leaf, so its own flat_ids stays empty; the total
-            # track count is reported separately (build_hyperbolic_tree_cache's
-            # return value), not derived from aggregating descendant lists.
             assert track_count == 20
             assert flat == []
 
@@ -370,13 +355,6 @@ class TestTreeEngine:
             hm.reset_hyperbolic_tree_cache()
 
     def test_load_tree_cache_warms_per_server_blobs(self, _point_get_db_to_test):
-        # A secondary server's tree blob must actually be DISCOVERED and loaded
-        # at startup, not silently skipped. The scan LIKE pattern escapes the
-        # prefix's underscores but the trailing % must stay a WILDCARD - a
-        # literal-escaped % would match nothing and every server except the
-        # default would silently fall back to the union tree (clusters labeled
-        # with the union's track counts that only held that server's few tracks
-        # when opened).
         conn = _point_get_db_to_test
         hm = _load_hyperbolic_manager()
         blob_name = f"{hm._TREE_CACHE_BLOB_NAME}__sec"
@@ -397,8 +375,6 @@ class TestTreeEngine:
         }
         hm.reset_hyperbolic_tree_cache()
         try:
-            # The load path requires the default blob to exist (as it always
-            # does after an analysis run) before it scans for per-server blobs.
             hm._persist_tree_cache_blob(default_payload, name=hm._TREE_CACHE_BLOB_NAME)
             hm._persist_tree_cache_blob(payload, name=blob_name)
             assert hm._scan_tree_cache_blob_names(hm._TREE_CACHE_BLOB_NAME) == [blob_name]
@@ -419,8 +395,6 @@ class TestTreeEngine:
     def test_tree_cache_persists_segmented_and_reassembles(
         self, _point_get_db_to_test, monkeypatch
     ):
-        # Force 1 MB parts so a payload that gzips above that threshold must
-        # be split into multiple "name_i_n" rows, then reassembled on load.
         monkeypatch.setattr(config, "IVF_MAX_PART_SIZE_MB", 1)
         conn = _point_get_db_to_test
         hm = _load_hyperbolic_manager()
@@ -492,16 +466,10 @@ class TestTreeEngine:
         conn = _point_get_db_to_test
         _seed_poincare(conn)
         monkeypatch.setattr(config, "HYPERBOLIC_TARGET_LEAF_SIZE", 2)
-        # This test catalog is tiny (20 tracks) purely to exercise the naming
-        # path; the per-server pruning floor would otherwise hide every cluster.
         monkeypatch.setattr(config, "HYPERBOLIC_MIN_CLUSTER_SIZE", 1)
         hm = _load_hyperbolic_manager()
         hm.reset_hyperbolic_tree_cache()
         try:
-            # The mood fallback path (no genre_subgenre.json data) is the one
-            # whose clusters are named by blending the nearest mood-centroid
-            # tags; with the genre file usable the clusters sit under a genre
-            # path and are prefix-named instead.
             with patch.object(hm, "_load_projected_genre_subgenres", return_value={}):
                 hm.build_hyperbolic_tree_cache()
             nodes = hm._TREE_CACHE["nodes"]
@@ -531,10 +499,6 @@ class TestTreeEngine:
         _seed_poincare(conn)
 
         with conn.cursor() as cur:
-            # Other integration files (run earlier in the shared test DB) may
-            # leave a music_servers table behind with an older schema plus a
-            # chromaprint FK into it; DROP CASCADE + fresh CREATE guarantees
-            # this test's own schema instead of silently no-opping against theirs.
             cur.execute("DROP TABLE IF EXISTS track_server_map, music_servers CASCADE")
             cur.execute(
                 "CREATE TABLE music_servers ("
@@ -556,8 +520,6 @@ class TestTreeEngine:
                     ("sec", "Plex", "plex", False),
                 ],
             )
-            # 10 tracks only on the default server, 10 only on Plex. Each
-            # server's tree must be built from only that server's tracks.
             cur.executemany(
                 "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier) "
                 "VALUES (%s, %s, %s, %s)",
@@ -577,17 +539,11 @@ class TestTreeEngine:
             with patch.object(hm, "_persist_tree_cache_blob", side_effect=_fake_persist):
                 default_count = hm.build_hyperbolic_tree_cache()
 
-            # The default server keeps the legacy whole-catalogue semantic
-            # (all non-fp_ tracks are available on it), so its tree spans the
-            # full catalogue; the secondary server is strictly scoped to its
-            # own mapped tracks.
             assert default_count == 20
             default_tree = hm._TREE_CACHE["servers"][hm._DEFAULT_SERVER_KEY]
             sec_tree = hm._TREE_CACHE["servers"]["sec"]
             assert default_tree["track_count"] == 20
             assert sec_tree["track_count"] == 10
-            # No cross-server leakage: the secondary tree's leaf ids are
-            # exactly the tracks mapped to that server.
             def _leaf_ids(tree):
                 ids = set()
                 for node in tree["nodes"].values():
@@ -597,22 +553,13 @@ class TestTreeEngine:
 
             assert _leaf_ids(default_tree) == {f"item-{i:03d}" for i in range(20)}
             assert _leaf_ids(sec_tree) == {f"item-{i:03d}" for i in range(10, 20)}
-            # Persisted under distinct per-server blob names (full + skeleton).
             assert set(persisted) == {
                 hm._TREE_CACHE_BLOB_NAME, f"{hm._TREE_CACHE_BLOB_NAME}__sec",
                 hm._TREE_SKELETON_BLOB_NAME, f"{hm._TREE_SKELETON_BLOB_NAME}__sec",
             }
-            # The request path resolves the right tree per server.
             assert hm.tree_for_server(None)["track_count"] == 20
             assert hm.tree_for_server("sec")["track_count"] == 10
-            # "def" is the default server's own real id (not the sentinel key)
-            # - it must resolve to the default tree, not to the empty case below.
             assert hm.tree_for_server("def")["track_count"] == 20
-            # A server added after this analysis run has no tree of its own yet
-            # and must NEVER fall back to the default tree - that would leak
-            # the default server's genres/subgenres under its selection. The
-            # request path must surface a clear "not available yet" error
-            # instead of silently rendering an empty folder.
             assert hm.tree_for_server("new-server-not-yet-analyzed") == {}
             with pytest.raises(ValueError, match="not available"):
                 hm.build_hyperbolic_tree(None, server_id="new-server-not-yet-analyzed")
@@ -818,10 +765,6 @@ class TestEndpoints:
         _seed_poincare(conn)
 
         with conn.cursor() as cur:
-            # Other integration files (run earlier in the shared test DB) may
-            # leave a music_servers table behind with an older schema plus a
-            # chromaprint FK into it; DROP CASCADE + fresh CREATE guarantees
-            # this test's own schema instead of silently no-opping against theirs.
             cur.execute("DROP TABLE IF EXISTS track_server_map, music_servers CASCADE")
             cur.execute(
                 "CREATE TABLE music_servers ("
@@ -843,8 +786,6 @@ class TestEndpoints:
                     ("sec", "Plex", "plex", False),
                 ],
             )
-            # item-001 and item-002 exist on BOTH servers; item-003 only on the
-            # default server; item-004 only on Plex.
             cur.executemany(
                 "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier) "
                 "VALUES (%s, %s, %s, %s)",
@@ -882,7 +823,6 @@ class TestEndpoints:
         assert response.status_code == 200
         payload = response.get_json()
         result_ids = [r["item_id"] for r in payload["results"]]
-        # Plex only: item-003 (default-only) dropped, ids are Plex provider ids.
         assert result_ids == ["plex-001", "plex-002", "plex-004"]
         assert not any(str(i).startswith(("item-", "home-", "fp_")) for i in result_ids)
         assert payload["seed_item_id"] == "plex-001"
@@ -904,9 +844,6 @@ class TestEndpoints:
             "children_count": 1,
             "items": [{"id": "item-001", "name": "T - A", "type": "track", "children_count": 0, "items": []}],
         }
-        # The API scopes the tree to the request's server by walking the shared
-        # cache, so the test must populate the cache's nodes/flat_ids the way a
-        # real build does.
         saved = dict(_TREE_CACHE)
         try:
             _TREE_CACHE["nodes"] = {"root": node}
@@ -993,8 +930,6 @@ class TestEndpoints:
                 },
             ],
         }
-        # Populate the shared cache the way a real build does so the per-server
-        # scope walk can find every track under the non-leaf band b0.
         cached_b0 = dict(root["items"][0])
         cached_b0["items"] = [
             {"id": "b0.c0", "name": "Cluster 1", "type": "folder", "children_count": 60,

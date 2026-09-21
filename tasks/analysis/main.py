@@ -9,67 +9,41 @@
 """Analysis orchestration: FOR EACH SERVER, dispatch FOR EACH ALBUM and drain.
 
 run_analysis_task runs one phase per enabled server (union catalogue, default
-first): loads the work map ONCE, walks albums, enqueues
-tasks.analysis.album.analyze_album_task children, drains them, and rebuilds the
-indexes. A run fails only if it crashed or analyzed not one song (2005/2006/2007).
+first): it loads the work map ONCE, walks albums, enqueues
+tasks.analysis.album.analyze_album_task children, drains them and rebuilds the
+indexes. A run fails only if it crashed or analyzed not one song.
 
 Main Features:
-* run_analysis_task / run_analysis_server_task queue entry points.
-* _run_analysis_server_task_impl: work map -> skip-or-enqueue -> drain -> rebuild.
-* _verify_media_server_reachable: pre-flight probe aborting early (1101/1104).
-* _carried_over_tracks: a reclaim requeues the parent (row back to NEW), carrying
-  an earlier attempt's analysed songs into this attempt's total.
+* run_analysis_task / run_analysis_server_task are the queue entry points, with
+  _verify_media_server_reachable as the pre-flight probe
+* _carried_over_tracks: a reclaim requeues the parent with its row back to NEW,
+  so an earlier attempt's analysed songs still count towards this attempt
 * BOTH album waits - the dispatch throttle that holds at
-  MAX_QUEUED_ANALYSIS_JOBS and the tail drain - watch one ChildDrainSupervisor on
-  ANALYSIS_STALL_TIMEOUT_MINUTES. The throttle is where a wedge on a real library
-  actually lands, and its own progress writes keep the parent row fresh, so the
-  wedged-main nudge cannot see it either: guarding only the tail left the hang.
-  An album whose worker is alive but whose native code never returns holds its
-  advisory lock, so reclaim cannot take it and the parent would wait on it
-  forever. The window slides on any sign of life, a live album advancing one
-  track included, so only a wedged album runs it out; it is then FAILED (not
-  revoked) so the ordinary reap counts it into the album failure tally the run
-  reports, instead of vanishing from the totals.
+  MAX_QUEUED_ANALYSIS_JOBS and the tail drain - watch ONE ChildDrainSupervisor
+  on ANALYSIS_STALL_TIMEOUT_MINUTES. The throttle is where a wedge actually
+  lands, and its own progress writes keep the parent row fresh, so the
+  wedged-main nudge cannot see it either; an album whose worker is alive but
+  whose native code never returns holds its advisory lock, so reclaim cannot
+  take it. A wedged album is FAILED, not revoked, so the ordinary reap counts it
+  into the failure tally the run reports
 * It watches EVERY live child, not only the albums. The default queue has ONE
-  worker, and this task puts index_rebuild children on that same queue every
-  REBUILD_INDEX_BATCH_SIZE albums. While one runs, no album can start - so
-  filtering the albums out of the window made a rebuild look like total silence,
-  and a rebuild slower than ANALYSIS_STALL_TIMEOUT_MINUTES made the parent FAIL
-  every queued album, three times over, and then stop dispatching: a big library
-  could end a run having analysed almost nothing because of its own rebuild.
-  Counting the rebuild fixes both halves at once - a rebuild that is progressing
-  holds the window open, and a rebuild that is genuinely wedged is the RUNNING
-  child, so it is the one that gets ended and the albums it was starving go on.
-* The window, WHO a give-up ends and how many give-ups a run gets are all
-  ChildDrainSupervisor in tasks.recovery, shared with the clustering twin so the
-  two cannot drift apart again. Normally it ends only the children a worker is
-  actually HOLDING, because a queued album is not wedged, it is waiting; when
-  NOTHING is running the queue itself is the wedge and it ends every live child,
-  which costs a MAX_QUEUED_ANALYSIS_JOBS window the NEXT run re-enqueues anyway.
-  ANALYSIS_MAX_STALL_GIVE_UPS then bounds how often that may happen: without it a
-  worker that wedges on every album makes the run last one window PER ALBUM.
-* The final index rebuild runs under a row_heartbeat. It is nine opaque calls that
-  write a row per STEP and nothing inside one, so on a big library a single build
-  outlived QUEUE_WEDGED_MAIN_TASK_MINUTES and the nudge cancelled a healthy run;
-  the union path was worse still, one row at 92% then silence for all nine.
-* The OPENING of a run is the same shape and holds a row_heartbeat too. Between
-  "Starting main analysis process..." and the first per-album report there is one
-  whole-catalogue album listing against the media server plus one bulk work-map
-  scan, neither writing a row; the union path runs that listing once PER SERVER
-  back to back before any phase starts. Both are bounded, so a listing that really
-  never returns is still handed back to the nudge.
-* A swept track keeps its Chromaprint: upsert_track_maps hands each new mapping
-  the Chromaprint already stored for its canonical track in the SAME transaction
-  it is written, so a sweep never leaves a mapping fingerprintless.
-* AnalysisNotRetryable is the one failure the queue must not retry: a media
-  server that refused the credentials, and a union run where EVERY server failed
-  that way. It is both the structured AudioMuseError the dashboard reads and a
-  TaskFailed, so the row fails once and the next scheduled run is the retry, as
-  cleaning already does. An unreachable server, or a run where any server failed
-  for another reason, keeps the ordinary backed-off retry.
-
-TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
-task having no live children; if they cannot be read the wipe is skipped.
+  worker and this task puts index_rebuild children on it every
+  REBUILD_INDEX_BATCH_SIZE albums, during which no album can start - so watching
+  albums alone made a rebuild look like total silence and FAILED every queued
+  album
+* The window, WHO a give-up ends and how many a run gets are
+  ChildDrainSupervisor in tasks.recovery, shared with the clustering twin: it
+  ends only the children a worker is HOLDING, unless NOTHING runs, when the
+  queue itself is the wedge. ANALYSIS_MAX_STALL_GIVE_UPS bounds the give-ups
+* The final index rebuild holds a row_heartbeat: it is nine opaque calls that
+  write a row per STEP and nothing inside one. So does the OPENING of a run,
+  where a whole-catalogue album listing and a bulk work-map scan write no row
+  and the union path repeats the listing once PER SERVER
+* AnalysisNotRetryable is the one failure the queue must not retry - a server
+  that refused the credentials - and is both the structured AudioMuseError the
+  dashboard reads and a TaskFailed, so the next scheduled run is the retry
+* TEMP_DIR is SHARED by every worker, so the start-of-run wipe is gated on this
+  task having no live children
 """
 
 import os

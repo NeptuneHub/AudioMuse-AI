@@ -449,8 +449,6 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             ('/api/setup/plex/pin/12345', True),
             ('/api/setup/providers/libraries', True),
             ('/api/setup/lyrics-api/analyze', True),
-            # The wizard configures its media servers through the registry API
-            # and polls the alignment sweep that adding one enqueues.
             ('/api/servers', True),
             ('/api/servers/test', True),
             ('/api/servers/libraries', True),

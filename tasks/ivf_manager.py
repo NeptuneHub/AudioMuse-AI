@@ -1274,12 +1274,12 @@ def search_tracks_unified(
         params = []
 
         for token in tokens:
-            like_pattern = f"%{token}%"
+            like_pattern = like_contains_pattern(token)
             where_clauses.append("search_u LIKE unaccent(%s)")
             params.append(like_pattern)
 
         for token in tokens:
-            like_pattern = f"%{token}%"
+            like_pattern = like_contains_pattern(token)
             score_clauses.append("""
                 (CASE WHEN lower(unaccent(title))  LIKE unaccent(%s) THEN 3 ELSE 0 END) +
                 (CASE WHEN lower(unaccent(author)) LIKE unaccent(%s) THEN 2 ELSE 0 END) +

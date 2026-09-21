@@ -28,6 +28,13 @@ Main Features:
   a background app context and a request rejected before our before_request ran
   both leave a live request's count alone, and wiring it either of the two wrong
   ways is shown to steal that live request's count
+* No armed timer outlives a test in this file. The idle-trim cases install a REAL
+  IdleUnloadTimer, and monkeypatch restores the real release_memory_to_os when a
+  test ends but cannot stop a thread already armed. Such a thread fired during a
+  LATER test, ran the real _resolve_heap_trim, and raced the ctypes.CDLL call
+  counter in the unresolvable-symbol case, which failed in a full-suite run and
+  passed on its own. The autouse teardown clears the timer's expiry, which is
+  what its worker loop breaks on, and joins the thread
 """
 
 import gc
@@ -358,6 +365,20 @@ class TestAnalyzeAlbumMemoryCleanup:
 
 
 class TestIdleHeapTrim:
+    @pytest.fixture(autouse=True)
+    def _no_timer_thread_outlives_the_test(self):
+        yield
+        from tasks import memory_utils
+
+        timer = getattr(memory_utils, '_IDLE_TRIM_TIMER', None)
+        if timer is None or not hasattr(timer, 'lock'):
+            return
+        with timer.lock():
+            timer._expiry_time = None
+        thread = getattr(timer, '_timer_thread', None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
+
     def _armed(self, monkeypatch, window):
         import config
         from tasks import memory_utils

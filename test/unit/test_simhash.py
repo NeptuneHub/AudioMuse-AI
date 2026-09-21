@@ -158,7 +158,7 @@ class TestDurationsCompatible:
     def test_within_tolerance_is_compatible(self):
         tol = simhash.DURATION_TOLERANCE_SECONDS
         assert simhash.durations_compatible(200.0, 200.0)
-        assert simhash.durations_compatible(200.0, 200.0 + tol)   # exactly at the tolerance
+        assert simhash.durations_compatible(200.0, 200.0 + tol)
         assert simhash.durations_compatible(200.0 + tol, 200.0)
 
     def test_beyond_tolerance_is_not_compatible(self):
@@ -183,7 +183,6 @@ class TestCatalogResolver:
         kind, first = resolver.resolve(emb, duration=200.0)
         assert kind == 'new' and first.startswith(simhash.CURRENT_ID_HEAD)
         reencoded = emb + np.float32(1e-4) * _embedding(14)
-        # A re-encode within the length tolerance is the same recording.
         kind2, second = resolver.resolve(
             reencoded, duration=200.0 + simhash.DURATION_TOLERANCE_SECONDS)
         assert (kind2, second) == ('existing', first)
@@ -257,10 +256,6 @@ class TestCatalogResolver:
         assert duration_fetched == [cid]
 
     def test_duration_mismatch_skips_the_expensive_cosine(self):
-        # In a homogeneous library resolve() walks every same-signature candidate;
-        # a length mismatch must reject BEFORE the embedding is fetched, or every
-        # candidate costs an embedding fetch + 200-dim cosine and analysis pins a
-        # core scanning the whole cluster per track (the O(n^2) regression).
         emb = _embedding(13)
         signature = simhash.embedding_signature(emb)
         cid = simhash.canonical_id_str(signature)
@@ -357,10 +352,6 @@ class TestFolderRule:
         assert resolved != cid
 
     def test_merge_pairs_folder_rule_is_group_level_not_pairwise(self):
-        # Three near-identical rows; 0 and 2 share a folder. Both match row 1 (a
-        # different folder), so a pairwise reject of the 0-2 pair would still let
-        # them co-merge via row 1. The group-level rule must keep 2 out of 0's
-        # group, so a same-folder merge is never formed in the first place.
         packed = np.stack([simhash._pack_signature(0)] * 3)
         left = np.array([0, 0, 1], dtype=np.int64)
         right = np.array([1, 2, 2], dtype=np.int64)

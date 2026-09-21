@@ -194,9 +194,6 @@ def test_record_cron_retry_skips_types_outside_the_retry_set(mock_get_db):
         patch('app_cron.record_cron_retry') as record,
         patch('app_cron.get_queue_blocking_task', return_value=None),
     ):
-        # alchemy_radio runs inline and never goes through the blocking=True
-        # gate, so it can never legitimately produce a 'blocked' dispatch -
-        # it stays outside the retry set.
         _record_cron_retry(db, 'alchemy_radio')
 
     record.assert_not_called()
@@ -224,6 +221,7 @@ def test_queue_type_for_cron_task_type_passes_plugin_types_through():
     assert _queue_type_for_cron_task_type('analysis') == 'main_analysis'
     assert _queue_type_for_cron_task_type('clustering') == 'main_clustering'
     assert _queue_type_for_cron_task_type('sonic_fingerprint') == 'sonic_fingerprint'
+    assert _queue_type_for_cron_task_type('album_of_the_week') == 'album_of_the_week'
     assert _queue_type_for_cron_task_type('plugin.demo.sync') == 'plugin.demo.sync'
 
 

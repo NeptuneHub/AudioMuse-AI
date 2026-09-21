@@ -612,10 +612,14 @@ def get_max_distance_endpoint():
     try:
         result = get_max_distance_for_id(item_id)
         if result is None:
+            # provider_echo_id answers None for an internal id that is not on
+            # the selected server, because echoing it would leak an fp_ id.
+            # Naming no id at all beats rendering that None as "Item 'None'".
+            echo = app_server_context.provider_echo_id(raw_item_id)
             return json_error(
                 ERR_NOT_FOUND,
-                f"Item '{app_server_context.provider_echo_id(raw_item_id)}' not found in index "
-                "or index unavailable.",
+                f"Item '{echo}' not found in index or index unavailable." if echo
+                else "That item is not on this server, or the index is unavailable.",
             )
         # farthest_item_id comes from the internal index; expose the selected
         # server's provider id (None when that item is not on it), never the fp_ id.
@@ -687,8 +691,10 @@ def get_track_endpoint():
         canonical_id = app_server_context.resolve_input_item_id(item_id)
         details = get_score_data_by_ids([canonical_id])
         if not details:
+            echo = app_server_context.provider_echo_id(item_id)
             return json_error(
-                ERR_NOT_FOUND, f"Item '{app_server_context.provider_echo_id(item_id)}' not found."
+                ERR_NOT_FOUND,
+                f"Item '{echo}' not found." if echo else "That item is not on this server.",
             )
         d = details[0]
         row = {
@@ -700,8 +706,10 @@ def get_track_endpoint():
         }
         scoped = app_server_context.scope_results([row], None, id_key='item_id')
         if not scoped:
+            echo = app_server_context.provider_echo_id(item_id)
             return json_error(
-                ERR_NOT_FOUND, f"Item '{app_server_context.provider_echo_id(item_id)}' not found."
+                ERR_NOT_FOUND,
+                f"Item '{echo}' not found." if echo else "That item is not on this server.",
             )
         return jsonify(scoped[0]), 200
     except Exception as exc:
@@ -817,7 +825,12 @@ def create_media_server_playlist():
         )
         return jsonify(
             {
-                "message": f"Playlist '{playlist_name}' created on the selected server ({info['mapped']} tracks, {info['skipped']} unavailable).",
+                # The name is deliberately NOT quoted here: every provider saves
+                # an instant playlist under its own suffixed name, so naming the
+                # requested one told the caller a playlist existed that did not,
+                # and a client looking it up by that name found nothing. The id
+                # below is what resolves.
+                "message": f"Playlist created on the selected server ({info['mapped']} tracks, {info['skipped']} unavailable).",
                 "playlist_id": new_playlist_id,
                 "mapped": info['mapped'],
                 "skipped": info['skipped'],

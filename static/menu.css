@@ -7,8 +7,11 @@
     width: 250px;
     background-color: #111827;
     color: white;
-    padding: 1.5rem 1.5rem 0 1.5rem; /* bottom padding is added via ::after so
-                                        it stays inside the scrollable area */
+    /* No top padding: the band below is the top of the sidebar, and a sticky
+       element sticks to the padding edge, so any padding here would leave a
+       strip above it for the list to scroll through. Bottom padding is added
+       via ::after so it stays inside the scrollable area. */
+    padding: 0 1.5rem;
     box-sizing: border-box;
     height: 100vh;
     height: 100dvh;
@@ -54,31 +57,100 @@ html.sidebar-open .sidebar {
     color: white;
 }
 
+/* The toggle carries its own card background at every width: on a scrolled page
+   the bare glyph used to sit on whatever passed underneath it. */
 .menu-toggle {
-    background: none;
-    border: none;
-    color: var(--text-main); /* Default color matches theme text */
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    box-shadow: var(--shadow-card);
+    color: var(--text-main);
     font-size: 1.5rem;
     cursor: pointer;
     position: fixed;
     top: 1.5rem;
     left: 1.5rem; /* Always on the left */
     z-index: 1001;
-    transition: color 0.3s;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    transition: color 0.3s, background-color 0.3s;
 }
 
-/* When the sidebar is open, make the button color match the sidebar text */
-.sidebar.open + .main-content .menu-toggle {
+/* When the sidebar is open, the toggle joins the sidebar's own colours, and the
+   action buttons beside it are always painted exactly the same way. */
+.sidebar.open + .main-content .menu-toggle,
+.sidebar-action {
     color: white;
+    background-color: #111827;
+    border: 1px solid #374151;
+    box-shadow: none;
+}
+
+/* They live beside the toggle, outside the sidebar, so they are fixed to the
+   viewport exactly as it is: scrolling or overscrolling the list never moves
+   them. They exist only while the menu is open. */
+.sidebar-actions {
+    position: fixed;
+    top: 1.5rem;
+    left: calc(1.5rem + 48px);
+    z-index: 1001;
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.sidebar.open + .main-content .sidebar-actions,
+html.sidebar-open .sidebar-actions {
+    display: flex;
+}
+
+.sidebar-actions form {
+    display: inline-flex;
+    margin: 0;
+    padding: 0;
+}
+
+.sidebar-action {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    line-height: 1;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.sidebar-action:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: -2px;
+}
+
+/* The band the three buttons sit on: its own line, above the list, at every
+   width. Sticky so the list scrolls underneath it and never shows through. */
+.sidebar::before {
+    content: '';
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    height: 4rem;
+    margin: 0 -1.5rem 0.5rem;
+    background: inherit;
 }
 
 .sidebar-nav {
     list-style: none;
     padding: 0;
     margin: 0;
-    /* Clears the fixed menu-toggle button (top: 1.5rem, ~1.9rem tall), which
-       floats above the open sidebar: without this the first entry sits under it. */
-    margin-top: 2.25rem;
 }
 
 .sidebar-nav li a,
@@ -124,38 +196,6 @@ html.sidebar-open .sidebar {
     outline-offset: -2px;
 }
 
-/* Dark mode toggle button styling */
-#dark-mode-toggle,
-#logout-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    font: inherit;
-    color: inherit;
-    text-align: left;
-    width: 100%;
-    padding: 0.75rem 0;
-    font-size: 1rem;
-    white-space: nowrap;
-    transition: background-color 0.2s, color 0.2s;
-    border-radius: 0.375rem;
-    padding-left: 0;
-}
-
-#logout-btn {
-    color: #d1d5db;
-}
-
-body.dark-mode #logout-btn,
-html.dark-mode #logout-btn {
-    color: #d1d5db;
-}
-
-#logout-form {
-    display: block;
-    margin: 0;
-    padding: 0;
-}
 
 .main-content {
     /* Default state: full width */
@@ -271,32 +311,20 @@ html.sidebar-open .main-content {
     }
 
     .menu-toggle {
-        top: 0.75rem;
+        top: 10px;
         left: 0.75rem;
         width: 44px;
         height: 44px;
-        padding: 0;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        line-height: 1;
-        background-color: var(--bg-card);
-        border: 1px solid var(--border-color);
-        border-radius: 0.5rem;
-        box-shadow: var(--shadow-card);
-        transition: color 0.3s, background-color 0.3s;
     }
 
-    .sidebar.open + .main-content .menu-toggle {
-        background-color: #111827;
-        border-color: #374151;
-        box-shadow: none;
+    .sidebar-actions {
+        top: 10px;
+        left: calc(0.75rem + 52px);
     }
 
-    body.dark-mode .sidebar.open + .main-content .menu-toggle,
-    html.dark-mode .sidebar.open + .main-content .menu-toggle {
-        background-color: var(--bg-card);
-        border-color: var(--border-color);
+    .sidebar-action {
+        width: 44px;
+        height: 44px;
     }
 }
 
@@ -351,6 +379,15 @@ html.dark-mode .sidebar-nav li a.active {
 body.dark-mode .sidebar.open + .main-content .menu-toggle,
 html.dark-mode .sidebar.open + .main-content .menu-toggle {
     color: var(--text-main);
+    background-color: var(--bg-card);
+    border-color: var(--border-color);
+}
+
+body.dark-mode .sidebar-action,
+html.dark-mode .sidebar-action {
+    color: var(--text-main);
+    background-color: var(--bg-card);
+    border-color: var(--border-color);
 }
 
 /* --- Submenu / Accordion --- */

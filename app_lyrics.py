@@ -198,7 +198,7 @@ def lyrics_search_text_api():
             properties:
               query:
                 type: string
-                minLength: 3
+                minLength: 1
                 example: "songs about heartbreak in the rain"
               limit:
                 type: integer
@@ -246,7 +246,8 @@ def lyrics_search_text_api():
 
     try:
         data = request.get_json() or {}
-        query = (data.get('query') or '').strip()
+        raw_query = data.get('query')
+        query = raw_query.strip() if isinstance(raw_query, str) else ''
         if not query:
             return json_error(ERR_INVALID_REQUEST, 'Missing "query".')
         if len(query) < 1:

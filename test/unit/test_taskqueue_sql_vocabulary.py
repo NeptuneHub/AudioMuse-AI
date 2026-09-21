@@ -195,8 +195,6 @@ class TestTheShippedPredicatesKeepTheirExactText:
 
     def test_the_main_retire_keeps_only_the_newest_live_main_root(self):
         cur = _RecordingCursor()
-        # ORDER BY id DESC means the first row is the newest; the retire keeps
-        # it and revokes every older live main root.
         cur.rows = [('fingerprint-live',), ('analysis-live',)]
 
         with (

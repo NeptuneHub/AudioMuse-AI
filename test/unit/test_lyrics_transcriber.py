@@ -289,7 +289,6 @@ class TestAsrConfidence:
         assert 'cannot drop this transcript' not in caplog.text
 
     def test_postprocess_keeps_a_transcript_without_confidence(self, lt):
-        # Long enough to clear the minimum-length quality check on its own.
         text = (
             'I walked alone into the pouring rain and thought about the days '
             'we spent together, the summer light, the empty street, the sound '
@@ -323,8 +322,6 @@ class TestAsrShouldDrop:
         assert self._drop(lt, 'en', float('-inf')) is True
 
     def test_unknown_confidence_skips_the_gate(self, lt):
-        # The whole point: a backend that reports no confidence must not lose
-        # every transcript to the quality gate.
         assert self._drop(lt, 'en', None) is False
 
     def test_unknown_confidence_skips_the_non_english_gate(self, lt):

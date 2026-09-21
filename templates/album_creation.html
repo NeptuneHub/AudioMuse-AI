@@ -1,0 +1,758 @@
+{% extends "includes/layout.html" %}
+
+{% block headAdditions %}
+<style>
+        #seed-examples-heading {
+            font-size: 0.9rem;
+            margin: 0.75rem 0 0.25rem;
+            color: var(--text-sub);
+        }
+        .seed-examples-tag {
+            display: inline-block;
+            padding: 0.25rem 0.6rem;
+            margin: 0.25rem 0.25rem 0 0;
+            border-radius: 999px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-body);
+            color: var(--text-sub);
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+        .seed-examples-tag:hover { color: var(--text-title); }
+        #refine-box {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+        }
+        #refine-named { margin-top: 0.6rem; }
+        #refine-named-label {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 0.35rem;
+        }
+        #refine-named-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .refine-named-tag {
+            background: none;
+            border: 1px dashed var(--border-color);
+            border-radius: 1rem;
+            padding: 0.15rem 0.6rem;
+            font-size: 0.8rem;
+            color: var(--text-body);
+            cursor: pointer;
+        }
+        .refine-named-tag:hover { border-style: solid; color: var(--text-title); }
+        .refine-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+        }
+        #refine-empty { color: var(--text-sub); font-size: 0.9rem; margin: 0; }
+        .refine-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            padding: 0.35rem 0;
+        }
+        .refine-row .refine-term { flex: 1 1 8rem; }
+        .refine-row select { width: auto; }
+        .seed-types {
+            display: inline-flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+        }
+        /* This one names the button group through aria-labelledby, so it is a
+           span and not a label. style.css gives its typography to the label
+           element itself, so the span has to restate it or "Start from:" stops
+           matching the real labels beside it. */
+        #seed-type-label {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        #seed-selected {
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+        #results-container > h2 {
+            margin-bottom: 1.25rem;
+        }
+        .album-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+            gap: 12px;
+            margin-bottom: 1.25rem;
+        }
+        .album-stat-card {
+            background: var(--bg-body);
+            border: 1px solid var(--border-color);
+            border-radius: 0.6rem;
+            padding: 12px;
+            min-width: 0;
+        }
+        .album-stat-card h3 {
+            margin: 0 0 6px 0;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+        .album-stat {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--text-title);
+            line-height: 1.1;
+            overflow-wrap: break-word;
+        }
+        #album-seed-line {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin: 0 0 1rem;
+        }
+</style>
+{% endblock %}
+
+{% block content %}
+<section>
+    <header class="page-header">
+        <h1>AudioMuse-AI - Album Creation</h1>
+        <p>Pick a song or describe what you want, and get a {{ album_tracks }}-track album, sequenced like a real one.</p>
+    </header>
+
+    {% if not album_creation_enabled %}
+    <div id="album-creation-disabled" class="status-error" style="padding: 0.75rem; border-radius: 0.375rem; text-align: center;">
+        Album Creation needs both the lyrics analysis (LYRICS_ENABLED) and DCLAP (CLAP_ENABLED). Enable them in the Setup Wizard to use this page.
+    </div>
+    {% else %}
+    <form id="album-creation-form">
+        <fieldset>
+            <legend>Seed</legend>
+            <div class="param-group">
+                <div>
+                    <span id="seed-type-label" class="label-with-tooltip">
+                        Start from:
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">A song stays in the album, in the slot that fits it. A text search builds the album from your words: every candidate is ranked by how close it sounds to the whole description, so a genre and an instrument together both count.</span>
+                        </span>
+                    </span>
+                    <div class="seed-types" role="group" aria-labelledby="seed-type-label">
+                        <button type="button" class="btn btn-primary btn-sm" data-seed="song" aria-pressed="true">Song</button>
+                        <button type="button" class="btn btn-ghost btn-sm" data-seed="text" aria-pressed="false">Text Search</button>
+                    </div>
+                </div>
+                <div class="autocomplete-container">
+                    <label for="seed_query" id="seed-query-label">Song name:</label>
+                    <input type="text" id="seed_query" name="seed_query" placeholder="Start typing..." autocomplete="off"
+                           role="combobox" aria-expanded="false" aria-controls="seed-suggestions" aria-autocomplete="list">
+                    <div id="seed-suggestions" class="autocomplete-results hidden" role="listbox" aria-label="Seed suggestions"></div>
+                    <div id="seed-selected"></div>
+                    <p id="seed-hint" class="hidden">Name a genre and an instrument, for example "jazz with trumpet" or "folk with piano".</p>
+                    <div id="seed-examples" class="hidden">
+                        <h3 id="seed-examples-heading">Top Recommended Searches:</h3>
+                        <div id="seed-examples-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div id="refine-box" class="hidden">
+                <div class="refine-heading">
+                    <span>Refine with concepts</span>
+                    <button type="button" id="refine-add" class="btn btn-ghost btn-sm">+ Add concept</button>
+                </div>
+                <p id="refine-empty">No concept added. The description alone decides the album.</p>
+                <div id="refine-named" class="hidden">
+                    <span id="refine-named-label">Your words name these concepts. Add one to weigh it above the rest of the description:</span>
+                    <div id="refine-named-list"></div>
+                </div>
+                <div id="refine-list"></div>
+                <select id="refine-picker" class="hidden" aria-label="Pick a concept"></select>
+            </div>
+        </fieldset>
+
+        <button type="submit" id="create-album-btn" class="btn btn-primary btn-block" disabled>
+            Search
+        </button>
+    </form>
+    {% endif %}
+</section>
+
+<section id="results-container" class="hidden">
+    <h2>Album Proposal</h2>
+    <div id="status"></div>
+    <p id="album-seed-line" class="hidden"></p>
+    <div id="album-stats" class="album-stats hidden">
+        <div class="album-stat-card"><h3>Tracks</h3><div class="album-stat" id="stat-tracks"></div></div>
+        <div class="album-stat-card"><h3>Length</h3><div class="album-stat" id="stat-minutes"></div></div>
+        <div class="album-stat-card"><h3>Artists</h3><div class="album-stat" id="stat-artists"></div></div>
+        <div class="album-stat-card"><h3>Cohesion</h3><div class="album-stat" id="stat-cohesion"></div></div>
+    </div>
+    <div id="results-table-wrapper"></div>
+</section>
+
+<section id="playlist-creator" class="hidden">
+    <h3>Create a Playlist from this Album</h3>
+    <form id="playlist-form">
+        <div class="param-group">
+            <div>
+                <label for="playlist_name">Playlist Name:</label>
+                <input type="text" id="playlist_name" name="playlist_name" required placeholder="e.g., My New Album">
+            </div>
+        </div>
+        <button type="submit" class="btn btn-success btn-block">
+            Create Playlist on Media Server
+        </button>
+    </form>
+    <div id="playlist-status"></div>
+</section>
+{% endblock %}
+
+{% block bodyAdditions %}
+    {% if album_creation_enabled %}
+    <script>
+        (() => {
+            const PAGE_SIZE = 20;
+            const SEEDS = {
+                song: {
+                    label: 'Song, Artist or Album name:',
+                    minLength: 1,
+                    url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
+                    param: 'search_query',
+                    placeholder: 'Start typing...',
+                    lines: (row) => [row.title || 'N/A', row.author || 'N/A', 'Album: ' + (row.album || 'Unknown')],
+                    selected: (row) => 'Song: ' + (row.title || 'Unknown') + ' - ' + (row.author || 'Unknown'),
+                    payload: (row) => ({ item_id: row.item_id }),
+                },
+                text: {
+                    label: 'Text search:',
+                    minLength: 3,
+                    placeholder: 'jazz with trumpet',
+                    payload: () => ({ query: queryInput.value.trim() }),
+                },
+            };
+            const MIN_WORDS_LENGTH = 3;
+            const ROLE_BADGES = {
+                opener: { text: 'Opener', cls: 'badge-high' },
+                single: { text: 'Single', cls: 'badge-medium' },
+                track: { text: 'Track', cls: 'badge-low' },
+                closer: { text: 'Closer', cls: 'badge-neutral' },
+            };
+
+            const form = document.getElementById('album-creation-form');
+            const seedButtons = document.querySelectorAll('.seed-types button');
+            const queryLabel = document.getElementById('seed-query-label');
+            const queryInput = document.getElementById('seed_query');
+            const suggestions = document.getElementById('seed-suggestions');
+            const selectedLine = document.getElementById('seed-selected');
+            const seedHint = document.getElementById('seed-hint');
+            const createButton = document.getElementById('create-album-btn');
+            const resultsContainer = document.getElementById('results-container');
+            const statusDiv = document.getElementById('status');
+            const seedLine = document.getElementById('album-seed-line');
+            const statsBox = document.getElementById('album-stats');
+            const resultsWrapper = document.getElementById('results-table-wrapper');
+            const playlistCreator = document.getElementById('playlist-creator');
+            const playlistForm = document.getElementById('playlist-form');
+            const playlistStatus = document.getElementById('playlist-status');
+
+            let seedType = 'song';
+            let selectedRow = null;
+            let currentTrackIds = [];
+            let searchTimer;
+            let searchQuery = '';
+            let searchOffset = 0;
+            let searchRun = 0;
+            let loadingMore = false;
+            let activeIndex = -1;
+            let optionSeq = 0;
+
+            const hideSuggestions = () => {
+                suggestions.classList.add('hidden');
+                queryInput.setAttribute('aria-expanded', 'false');
+                queryInput.removeAttribute('aria-activedescendant');
+                activeIndex = -1;
+            };
+
+            const isText = () => seedType === 'text';
+
+            const clearSelection = () => {
+                selectedRow = null;
+                selectedLine.textContent = '';
+                createButton.disabled = !(isText() && queryInput.value.trim().length >= MIN_WORDS_LENGTH);
+            };
+
+            const selectRow = (row) => {
+                selectedRow = row;
+                selectedLine.textContent = SEEDS[seedType].selected(row);
+                createButton.disabled = false;
+                hideSuggestions();
+            };
+
+            const setSeedType = (next) => {
+                seedType = next;
+                seedButtons.forEach(button => {
+                    const on = button.dataset.seed === next;
+                    button.classList.toggle('btn-primary', on);
+                    button.classList.toggle('btn-ghost', !on);
+                    button.setAttribute('aria-pressed', on ? 'true' : 'false');
+                });
+                queryLabel.textContent = SEEDS[next].label;
+                queryInput.placeholder = SEEDS[next].placeholder;
+                queryInput.value = '';
+                seedHint.classList.toggle('hidden', !isText());
+                examplesBox.classList.toggle('hidden', !isText());
+                refineBox.classList.toggle('hidden', !isText() || concepts === null || !concepts.length);
+                if (isText()) {
+                    loadExamples();
+                    loadRefinement();
+                }
+                renderNamed();
+                clearSelection();
+                hideSuggestions();
+            };
+
+            const messageItem = (text) => {
+                const item = document.createElement('div');
+                item.className = 'autocomplete-item';
+                const em = document.createElement('em');
+                em.textContent = text;
+                item.appendChild(em);
+                return item;
+            };
+
+            const showMessage = (text) => {
+                suggestions.innerHTML = '';
+                suggestions.appendChild(messageItem(text));
+                suggestions.classList.remove('hidden');
+                queryInput.setAttribute('aria-expanded', 'true');
+            };
+
+            const fetchPage = async (offset) => {
+                const seed = SEEDS[seedType];
+                const params = new URLSearchParams({ start: offset, end: offset + PAGE_SIZE });
+                params.set(seed.param, searchQuery);
+                const response = await fetch(seed.url + '?' + params);
+                const rows = await readJsonBody(response);
+                if (!response.ok || !Array.isArray(rows)) {
+                    throw new Error(apiErrorText(rows, 'Search failed (HTTP ' + response.status + ')'));
+                }
+                return rows;
+            };
+
+            const loadMore = async (run) => {
+                if (loadingMore) return;
+                loadingMore = true;
+                try {
+                    const rows = await fetchPage(searchOffset);
+                    if (run !== searchRun) return;
+                    searchOffset += rows.length;
+                    showRows(rows, true, run);
+                } catch (error) {
+                    const sentinel = suggestions.querySelector('.autocomplete-load-more');
+                    if (sentinel) sentinel.textContent = error.message;
+                } finally {
+                    loadingMore = false;
+                }
+            };
+
+            const showRows = (rows, append, run) => {
+                if (!append) {
+                    suggestions.innerHTML = '';
+                    activeIndex = -1;
+                    optionSeq = 0;
+                }
+                const oldSentinel = suggestions.querySelector('.autocomplete-load-more');
+                if (oldSentinel) oldSentinel.remove();
+                if (!rows.length && !append) {
+                    suggestions.appendChild(messageItem('No results found'));
+                }
+                const classes = ['title', 'artist', 'album'];
+                rows.forEach(row => {
+                    const item = document.createElement('div');
+                    item.className = 'autocomplete-item';
+                    item.setAttribute('role', 'option');
+                    item.id = 'seed-opt-' + (optionSeq++);
+                    item._row = row;
+                    SEEDS[seedType].lines(row).forEach((text, index) => {
+                        const line = document.createElement('div');
+                        line.className = classes[index];
+                        line.textContent = text;
+                        item.appendChild(line);
+                    });
+                    item.addEventListener('click', () => selectRow(row));
+                    suggestions.appendChild(item);
+                });
+                if (rows.length >= PAGE_SIZE) {
+                    const sentinel = messageItem('Loading more...');
+                    sentinel.classList.add('autocomplete-load-more');
+                    suggestions.appendChild(sentinel);
+                    const observer = new IntersectionObserver((entries) => {
+                        if (entries[0].isIntersecting) {
+                            observer.disconnect();
+                            loadMore(run);
+                        }
+                    }, { root: suggestions });
+                    observer.observe(sentinel);
+                }
+                suggestions.classList.remove('hidden');
+                queryInput.setAttribute('aria-expanded', 'true');
+            };
+
+            const setActiveOption = (index) => {
+                const options = suggestions.querySelectorAll('[role="option"]');
+                if (!options.length) return;
+                activeIndex = ((index % options.length) + options.length) % options.length;
+                options.forEach((option, i) => option.classList.toggle('active', i === activeIndex));
+                const current = options[activeIndex];
+                current.scrollIntoView({ block: 'nearest' });
+                queryInput.setAttribute('aria-activedescendant', current.id);
+            };
+
+            queryInput.addEventListener('input', () => {
+                clearTimeout(searchTimer);
+                clearSelection();
+                if (isText()) {
+                    hideSuggestions();
+                    renderNamed();
+                    return;
+                }
+                searchTimer = setTimeout(async () => {
+                    const query = queryInput.value.trim();
+                    if (query.length < SEEDS[seedType].minLength) {
+                        hideSuggestions();
+                        return;
+                    }
+                    searchQuery = query;
+                    searchOffset = 0;
+                    const run = ++searchRun;
+                    try {
+                        const rows = await fetchPage(0);
+                        if (run !== searchRun) return;
+                        searchOffset = rows.length;
+                        showRows(rows, false, run);
+                    } catch (error) {
+                        if (run === searchRun) showMessage(error.message);
+                    }
+                }, 300);
+            });
+
+            queryInput.addEventListener('keydown', (event) => {
+                const open = !suggestions.classList.contains('hidden') && !isText();
+                if (event.key === 'ArrowDown' && open) {
+                    event.preventDefault();
+                    setActiveOption(activeIndex + 1);
+                } else if (event.key === 'ArrowUp' && open) {
+                    event.preventDefault();
+                    setActiveOption(activeIndex < 0 ? -1 : activeIndex - 1);
+                } else if (event.key === 'Enter') {
+                    const options = suggestions.querySelectorAll('[role="option"]');
+                    if (open && activeIndex >= 0 && options[activeIndex]) {
+                        event.preventDefault();
+                        selectRow(options[activeIndex]._row);
+                    } else if (!selectedRow) {
+                        event.preventDefault();
+                    }
+                } else if (event.key === 'Escape' && open) {
+                    event.preventDefault();
+                    hideSuggestions();
+                }
+            });
+
+            document.addEventListener('click', (event) => {
+                if (!event.target.closest('.autocomplete-container')) hideSuggestions();
+            });
+
+            seedButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    if (button.dataset.seed !== seedType) setSeedType(button.dataset.seed);
+                });
+            });
+
+
+            const examplesBox = document.getElementById('seed-examples');
+            const examplesList = document.getElementById('seed-examples-list');
+            const refineBox = document.getElementById('refine-box');
+            const refineAdd = document.getElementById('refine-add');
+            const refineEmpty = document.getElementById('refine-empty');
+            const refineList = document.getElementById('refine-list');
+            const refinePicker = document.getElementById('refine-picker');
+            const refineNamed = document.getElementById('refine-named');
+            const refineNamedList = document.getElementById('refine-named-list');
+            let concepts = null;
+            let alphaSteps = [1, 2, 3, 5, 10];
+            let defaultAlpha = 3;
+            let maxTerms = 10;
+            let chosen = [];
+
+            const renderChosen = () => {
+                refineEmpty.classList.toggle('hidden', chosen.length > 0);
+                refineAdd.disabled = chosen.length >= maxTerms;
+                refineList.innerHTML = '';
+                chosen.forEach((entry, index) => {
+                    const row = document.createElement('div');
+                    row.className = 'refine-row';
+                    const name = document.createElement('span');
+                    name.className = 'refine-term';
+                    name.textContent = entry.term;
+                    row.appendChild(name);
+                    const direction = document.createElement('select');
+                    [['more', 'More'], ['less', 'Less']].forEach(([value, label]) => {
+                        const option = document.createElement('option');
+                        option.value = value;
+                        option.textContent = label;
+                        option.selected = entry.direction === value;
+                        direction.appendChild(option);
+                    });
+                    direction.addEventListener('change', () => { chosen[index].direction = direction.value; });
+                    row.appendChild(direction);
+                    const strength = document.createElement('select');
+                    alphaSteps.forEach(step => {
+                        const option = document.createElement('option');
+                        option.value = step;
+                        option.textContent = 'x' + step;
+                        option.selected = Number(entry.weight) === step;
+                        strength.appendChild(option);
+                    });
+                    strength.addEventListener('change', () => { chosen[index].weight = Number(strength.value); });
+                    row.appendChild(strength);
+                    const remove = document.createElement('button');
+                    remove.type = 'button';
+                    remove.className = 'btn btn-ghost btn-sm';
+                    remove.textContent = 'Remove';
+                    remove.addEventListener('click', () => { chosen.splice(index, 1); renderChosen(); renderNamed(); });
+                    row.appendChild(remove);
+                    refineList.appendChild(row);
+                });
+            };
+
+            const allTerms = () => (concepts || [])
+                .flatMap(category => (category.terms || []).map(item => item.term))
+                .sort((left, right) => right.length - left.length);
+
+            const namedInQuery = () => {
+                let taken = ' ' + queryInput.value.toLowerCase().replace(/[^\w\s]/g, ' ')
+                    .replace(/\s+/g, ' ').trim() + ' ';
+                const found = [];
+                allTerms().forEach(term => {
+                    const spelled = ' ' + term.toLowerCase().replace(/[^\w\s]/g, ' ')
+                        .replace(/\s+/g, ' ').trim() + ' ';
+                    if (spelled.trim() && taken.includes(spelled)) {
+                        found.push(term);
+                        taken = taken.replace(spelled, ' ');
+                    }
+                });
+                return found;
+            };
+
+            const renderNamed = () => {
+                if (!concepts || !isText()) {
+                    refineNamed.classList.add('hidden');
+                    return;
+                }
+                const free = namedInQuery().filter(
+                    term => !chosen.some(entry => entry.term === term)
+                );
+                refineNamedList.innerHTML = '';
+                free.forEach(term => {
+                    const tag = document.createElement('button');
+                    tag.type = 'button';
+                    tag.className = 'refine-named-tag';
+                    tag.textContent = '+ ' + term;
+                    tag.addEventListener('click', () => {
+                        chosen.push({ term: term, direction: 'more', weight: defaultAlpha });
+                        renderChosen();
+                        renderNamed();
+                    });
+                    refineNamedList.appendChild(tag);
+                });
+                refineNamed.classList.toggle('hidden', free.length === 0);
+            };
+
+            const fillPicker = () => {
+                refinePicker.innerHTML = '';
+                const blank = document.createElement('option');
+                blank.value = '';
+                blank.textContent = 'Pick a concept...';
+                refinePicker.appendChild(blank);
+                (concepts || []).forEach(category => {
+                    const group = document.createElement('optgroup');
+                    group.label = category.label || category.category;
+                    category.terms.forEach(item => {
+                        const option = document.createElement('option');
+                        option.value = item.term;
+                        option.textContent = item.term;
+                        option.disabled = chosen.some(entry => entry.term === item.term);
+                        group.appendChild(option);
+                    });
+                    refinePicker.appendChild(group);
+                });
+            };
+
+            refineAdd.addEventListener('click', () => {
+                fillPicker();
+                refinePicker.classList.toggle('hidden');
+                if (!refinePicker.classList.contains('hidden')) refinePicker.focus();
+            });
+
+            refinePicker.addEventListener('change', () => {
+                if (!refinePicker.value) return;
+                chosen.push({ term: refinePicker.value, direction: 'more', weight: defaultAlpha });
+                refinePicker.classList.add('hidden');
+                renderChosen();
+            });
+
+            const loadRefinement = async () => {
+                if (concepts !== null) return;
+                try {
+                    const response = await fetch("{{ url_for('clap_search_bp.clap_concepts_api') }}");
+                    const data = await readJsonBody(response);
+                    if (!response.ok || !data || !data.available) return;
+                    concepts = data.categories || [];
+                    alphaSteps = data.alpha_steps || alphaSteps;
+                    defaultAlpha = data.default_alpha || defaultAlpha;
+                    maxTerms = data.max_terms || maxTerms;
+                    refineBox.classList.remove('hidden');
+                    renderChosen();
+                    renderNamed();
+                } catch (error) {
+                    concepts = [];
+                    console.warn('Concept refinement is unavailable', error);
+                }
+            };
+
+            const loadExamples = async () => {
+                if (examplesBox.dataset.loaded) return;
+                examplesBox.dataset.loaded = '1';
+                try {
+                    const response = await fetch("{{ url_for('clap_search_bp.top_queries_api') }}");
+                    const data = await readJsonBody(response);
+                    const queries = (data && data.queries) || [];
+                    if (!queries.length) return;
+                    const preset = (data && data.steering) || {};
+                    queries.forEach(text => {
+                        const tag = document.createElement('span');
+                        tag.className = 'seed-examples-tag';
+                        tag.textContent = text;
+                        tag.addEventListener('click', () => {
+                            queryInput.value = text;
+                            const carried = preset[text];
+                            chosen = (Array.isArray(carried) ? carried : []).map(entry => ({
+                                term: entry.term,
+                                direction: entry.direction || 'more',
+                                weight: Number(entry.weight) || defaultAlpha,
+                            }));
+                            renderChosen();
+                            queryInput.dispatchEvent(new Event('input'));
+                        });
+                        examplesList.appendChild(tag);
+                    });
+                } catch (error) {
+                    examplesBox.dataset.loaded = '';
+                    console.warn('Recommended searches could not be loaded', error);
+                }
+            };
+
+            const roleBadge = (track) => ROLE_BADGES[track.role] || null;
+
+            const showAlbum = (album) => {
+                const stats = album.stats || {};
+                document.getElementById('stat-tracks').textContent = stats.tracks;
+                document.getElementById('stat-minutes').textContent = stats.minutes + ' min';
+                document.getElementById('stat-artists').textContent = stats.artists;
+                const cohesion = document.getElementById('stat-cohesion');
+                const known = Number.isFinite(stats.cohesion);
+                cohesion.textContent = known ? Number(stats.cohesion).toFixed(2) : '';
+                cohesion.closest('.album-stat-card').classList.toggle('hidden', !known);
+                seedLine.textContent = 'Seed: ' + album.seed.label;
+                seedLine.classList.remove('hidden');
+                statsBox.classList.remove('hidden');
+                resultsWrapper.innerHTML = renderSongList(album.tracks, { metric: roleBadge });
+            };
+
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                if (!selectedRow && !isText()) return;
+                if (isText() && queryInput.value.trim().length < MIN_WORDS_LENGTH) return;
+                resultsContainer.classList.remove('hidden');
+                playlistCreator.classList.add('hidden');
+                statsBox.classList.add('hidden');
+                seedLine.classList.add('hidden');
+                resultsWrapper.innerHTML = '';
+                statusDiv.textContent = 'Building your album... This may take a moment.';
+                statusDiv.className = '';
+                createButton.disabled = true;
+
+                const payload = { seed_type: seedType, ...SEEDS[seedType].payload(selectedRow) };
+                if (isText() && chosen.length) payload.steering = chosen;
+                try {
+                    const response = await fetch("{{ url_for('album_creation_bp.generate_album_endpoint') }}", {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                    });
+                    const album = await readJsonBody(response);
+                    if (!response.ok || album === null) {
+                        throw new Error(apiErrorText(album, 'Server returned an error (HTTP ' + response.status + ')'));
+                    }
+                    if (!Array.isArray(album.tracks) || !album.tracks.length) {
+                        throw new Error('No album could be built from this seed.');
+                    }
+                    currentTrackIds = album.tracks.map(track => track.item_id);
+                    statusDiv.textContent = 'Album ready: ' + album.tracks.length + ' tracks in running order.';
+                    showAlbum(album);
+                    document.getElementById('playlist_name').value = album.suggested_name || 'My New Album';
+                    playlistStatus.textContent = '';
+                    playlistStatus.className = '';
+                    playlistCreator.classList.remove('hidden');
+                } catch (error) {
+                    statusDiv.textContent = 'Error: ' + error.message;
+                    statusDiv.className = 'status-error';
+                } finally {
+                    createButton.disabled = !selectedRow && !isText();
+                }
+            });
+
+            playlistForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const playlistName = document.getElementById('playlist_name').value.trim();
+                if (!playlistName) {
+                    playlistStatus.textContent = 'Please enter a playlist name.';
+                    playlistStatus.className = 'status-error';
+                    return;
+                }
+                if (!currentTrackIds.length) {
+                    playlistStatus.textContent = 'No tracks to add. Create an album first.';
+                    playlistStatus.className = 'status-error';
+                    return;
+                }
+                playlistStatus.textContent = 'Creating playlist...';
+                playlistStatus.className = '';
+                try {
+                    const response = await fetch("{{ url_for('ivf_bp.create_media_server_playlist') }}", {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ playlist_name: playlistName, track_ids: currentTrackIds }),
+                    });
+                    const result = await readJsonBody(response);
+                    if (!response.ok || result === null) {
+                        throw new Error(apiErrorText(result, 'Server returned an error (HTTP ' + response.status + ')'));
+                    }
+                    playlistStatus.textContent = result.message;
+                    playlistStatus.className = 'status-success';
+                } catch (error) {
+                    playlistStatus.textContent = 'Error: ' + error.message;
+                    playlistStatus.className = 'status-error';
+                }
+            });
+        })();
+    </script>
+    {% endif %}
+    <script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% endblock %}

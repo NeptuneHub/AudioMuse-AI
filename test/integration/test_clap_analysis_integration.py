@@ -24,7 +24,6 @@ import numpy as np
 
 
 def _ensure_stubs():
-    # no-op hook: integration run uses real modules, no stubbing needed
     pass
 
 

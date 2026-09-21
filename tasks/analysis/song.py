@@ -436,8 +436,6 @@ def _run_musicnn_models(final_patches, mood_labels_list, model_paths, onnx_sessi
             onnx_sessions, model_paths
         )
 
-        # Chunked so peak memory stays flat: a whole-track batch needs several
-        # GB of convolution activations, well past small worker memory caps.
         batch = MUSICNN_BATCH_SIZE if MUSICNN_BATCH_SIZE > 0 else len(final_patches)
         embedding_chunks = []
         for start in range(0, len(final_patches), batch):

@@ -9,24 +9,39 @@
 """Repo-wide guard that every tracked .py file carries the house header.
 
 Every file must start with a legalese `#` comment block (AudioMuse-AI, the
-repo link, and the AGPL-3.0 SPDX line) followed by a module docstring; every
-docstring except bare `__init__.py` package markers must also contain a
-`Main Features:` bullet list.
+repo link, and the AGPL-3.0 SPDX line) followed by a module docstring that
+stays within a character budget; every docstring except bare `__init__.py`
+package markers must also contain a `Main Features:` bullet list. That header
+is the only prose allowed: `#` comments below it belong to `app*.py`,
+`config.py` and tool pragmas alone.
 
 Main Features:
 * The candidate file list is non-empty so the scan cannot silently pass
 * Every tracked .py file has the legalese header block and a module docstring
 * Every non-`__init__.py` module docstring contains a `Main Features:` section
+* Every module docstring stays inside the 2500 character budget
+* No `#` comment below the header outside `app*.py`, `config.py` and pragmas
 """
 
 import ast
+import fnmatch
+import io
 import os
+import re
 import subprocess
+import tokenize
 
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
 LEGALESE_MARKERS = ('AudioMuse-AI', 'AGPL-3.0')
 MAIN_FEATURES_MARKER = 'Main Features:'
+MAX_DOCSTRING_CHARS = 2500
+COMMENT_EXEMPT_GLOBS = ('app*.py', 'config.py')
+PRAGMA_RE = re.compile(
+    r'\b(?:noqa|pragma|nosec|nosonar|type:\s*ignore|fmt:\s*(?:off|on)'
+    r'|isort:|black:|pylint:|mypy:|ruff:|coding[:=])',
+    re.IGNORECASE,
+)
 
 
 def _git_ls_files():
@@ -36,6 +51,19 @@ def _git_ls_files():
 
 def _candidate_files():
     return _git_ls_files()
+
+
+def _read(rel_path):
+    with open(os.path.join(REPO_ROOT, rel_path), encoding='utf-8') as handle:
+        return handle.read()
+
+
+def _leading_comment_lines(source):
+    lines = source.splitlines()
+    index = 1 if lines and lines[0].startswith('#!') else 0
+    while index < len(lines) and lines[index].startswith('#'):
+        index += 1
+    return index
 
 
 def _leading_comment_block(source):
@@ -51,6 +79,24 @@ def _leading_comment_block(source):
     return '\n'.join(block)
 
 
+def _is_comment_exempt(rel_path):
+    base = os.path.basename(rel_path)
+    return any(fnmatch.fnmatch(base, pattern) for pattern in COMMENT_EXEMPT_GLOBS)
+
+
+def _body_comments(source):
+    header_end = _leading_comment_lines(source)
+    found = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type != tokenize.COMMENT or token.start[0] <= header_end:
+            continue
+        text = token.string.strip()
+        if PRAGMA_RE.search(text):
+            continue
+        found.append((token.start[0], text))
+    return found
+
+
 def test_candidate_file_list_is_non_empty():
     assert _candidate_files(), 'no candidate .py files found via git ls-files'
 
@@ -58,10 +104,8 @@ def test_candidate_file_list_is_non_empty():
 def test_every_file_has_legalese_header_and_docstring():
     failures = []
     for rel_path in _candidate_files():
-        abs_path = os.path.join(REPO_ROOT, rel_path)
         try:
-            with open(abs_path, encoding='utf-8') as handle:
-                source = handle.read()
+            source = _read(rel_path)
         except (OSError, UnicodeDecodeError) as exc:
             failures.append(f'{rel_path}: could not read file ({exc})')
             continue
@@ -91,4 +135,56 @@ def test_every_file_has_legalese_header_and_docstring():
         'docstring with a "Main Features:" bullet list (package-marker '
         '__init__.py files are exempt from the Main Features requirement):\n  '
         + '\n  '.join(failures)
+    )
+
+
+def test_module_docstring_stays_within_budget():
+    failures = []
+    for rel_path in _candidate_files():
+        try:
+            source = _read(rel_path)
+            tree = ast.parse(source, filename=rel_path)
+        except (OSError, UnicodeDecodeError, SyntaxError) as exc:
+            failures.append(f'{rel_path}: could not read file ({exc})')
+            continue
+
+        docstring = ast.get_docstring(tree, clean=False) or ''
+        if len(docstring) > MAX_DOCSTRING_CHARS:
+            failures.append(f'{rel_path}: {len(docstring)} chars')
+
+    assert not failures, (
+        f'A module docstring is a summary, not a manual: keep it under '
+        f'{MAX_DOCSTRING_CHARS} characters (the legalese "#" block above it does '
+        f'not count). Condense the "Main Features:" bullets instead of growing '
+        f'them:\n  ' + '\n  '.join(failures)
+    )
+
+
+def test_no_comments_below_the_header():
+    failures = []
+    for rel_path in _candidate_files():
+        if _is_comment_exempt(rel_path):
+            continue
+        try:
+            source = _read(rel_path)
+        except (OSError, UnicodeDecodeError) as exc:
+            failures.append(f'{rel_path}: could not read file ({exc})')
+            continue
+
+        try:
+            comments = _body_comments(source)
+        except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
+            failures.append(f'{rel_path}: could not tokenize for comment check ({exc})')
+            continue
+
+        for line_no, text in comments:
+            failures.append(f'{rel_path}:{line_no}: {text[:70]}')
+
+    assert not failures, (
+        'Code below the file header carries no "#" comments: the header docstring '
+        'explains the module and the code explains itself. Only '
+        + ', '.join(COMMENT_EXEMPT_GLOBS)
+        + ' may carry body comments, plus tool pragmas (noqa / pragma / nosec / '
+        'NOSONAR / type: ignore / fmt: / isort:), which may sit anywhere in the '
+        'comment:\n  ' + '\n  '.join(failures)
     )

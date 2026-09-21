@@ -158,7 +158,6 @@ class TestResolveProvidersScoping:
              'position': 'before_cpu', 'only_models': ['musicnn'], 'exclude_models': None},
         ])
         assert 'FakeGpuExecutionProvider' in self._names(song.resolve_providers(label='musicnn'))
-        # clap is not in only_models, so it keeps the plain CPU chain.
         assert self._names(song.resolve_providers(label='clap')) == ['CPUExecutionProvider']
 
     def test_exclude_models_skips_matching_label(self, song, monkeypatch):
@@ -187,7 +186,6 @@ class TestResolveProvidersScoping:
         assert self._names(song.resolve_providers(label='musicnn'))[-1] == 'CPUExecutionProvider'
 
     def test_string_scope_is_accepted(self, song, monkeypatch):
-        # A provider stored by an older plugin (or by hand) may carry a bare string.
         monkeypatch.setattr(song, '_plugin_onnx_providers', lambda: [
             {'name': 'FakeGpuExecutionProvider', 'options': {},
              'position': 'before_cpu', 'only_models': 'musicnn', 'exclude_models': None},
@@ -317,7 +315,6 @@ class TestManagerOnnxProviders:
         assert providers == [loaded]
 
     def test_deps_failed_status_still_contributes(self):
-        # 'deps_failed' is a loaded status: the plugin registered before pip failed.
         mgr = manager.PluginManager()
         provider = {'name': 'FakeGpuExecutionProvider', 'options': {}, 'position': 'before_cpu',
                     'only_models': None, 'exclude_models': None}
@@ -429,7 +426,6 @@ class TestRegisterAnalysisProvider:
 
         mgr.records = {'noisy_plugin': _record('noisy_plugin', analysis_providers={'asr': boom})}
         mgr.get_analysis_provider('asr')
-        # Without the id the admin cannot tell which plugin to fix or remove.
         assert 'noisy_plugin' in caplog.text
 
     def test_factory_returning_none_is_logged(self, caplog):
@@ -469,7 +465,6 @@ class TestRegisterAnalysisProvider:
 
         mgr.records = {'p': _record('p', analysis_providers={'asr': factory})}
         assert mgr.get_analysis_provider('asr') is None
-        # None means "not this time", so a later call asks the plugin again.
         assert mgr.get_analysis_provider('asr') is backend
 
     def test_broken_factory_reinvoked_and_logged_on_every_call(self, caplog):

@@ -131,8 +131,6 @@ def client(environment):
     app.config['TESTING'] = True
     app.before_request(app_auth.auth_setup_barrier)
     app.register_blueprint(app_models.models_bp)
-    # Execute the actual app.py route in an isolated Flask app; importing the
-    # whole server would also start unrelated process/bootstrap infrastructure.
     source = Path(__file__).resolve().parents[2] / 'app.py'
     node = next(n for n in ast.parse(source.read_text(encoding='utf-8')).body
                 if isinstance(n, ast.FunctionDef) and n.name == 'version_api')

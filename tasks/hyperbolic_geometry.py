@@ -8,67 +8,47 @@
 
 """Pure NumPy Poincare-ball geometry over the MusiCNN embeddings.
 
-Implements the hyperbolic projection, radius, exact Poincare distance and the
-quantile radial bands used by the Hyperbolic Explorer feature, with no
-dependency beyond NumPy (this project is ONNX-only by design, so no
-geoopt/PyTorch is allowed).
+Implements the projection, radius, exact Poincare distance and quantile radial
+bands the Hyperbolic Explorer needs, with no dependency beyond NumPy (this
+project is ONNX-only, so geoopt/PyTorch are not allowed).
 
 Main Features:
-* project_to_poincare maps raw vectors into the open Poincare ball with
-  proj(x) = tanh(||x|| / s) * (x / ||x||)
-* poincare_radius returns R = ||proj(x)|| for 1-D or 2-D input
-* hyperbolic_distance / hyperbolic_distances_to implement the exact Poincare
-  metric d_H(u, v) = arccosh(1 + 2*||u-v||^2 / ((1-||u||^2)(1-||v||^2)))
-* calibrate_scale picks the scale s from a percentile of the norm distribution
-  so tanh stays in its active region instead of saturating
-* split_radial_bands / assign_radial_bands derive quantile band boundaries
-  from the actual radius distribution
-* mobius_add / mobius_scalar_mul are the gyrovector operations of the Poincare
-  ball, from which poincare_geodesic builds the exact constant-speed geodesic
-  gamma(t) = x (+) (t (x) (-x (+) y)) with gamma(0) = x and gamma(1) = y
-* einstein_midpoint is the closed-form Lorentz-weighted average taken in the
-  Klein model, and karcher_mean refines it into the true Frechet mean with
-  Riemannian gradient steps. The step is divided by the mean of d*coth(d) over
-  the members because the Hessian of d^2 grows with d in negative curvature: an
-  undamped unit step overshoots as soon as the members span more than a couple
-  of units of hyperbolic distance, and the iteration then walks OUTWARD to the
-  boundary with the Frechet cost rising on every pass instead of converging
-* poincare_kmeans is k-means done entirely in the Poincare metric: k-means++
-  seeding on hyperbolic distance, assignment through nearest_centroid, and the
-  Frechet mean above as the centroid update. nearest_centroid skips the arccosh
-  because argmin over centroids of arccosh(1 + 2*d2/((1-|t|^2)(1-|c|^2))) is the
-  argmin of d2/(1-|c|^2) once the target-only factor is dropped, which turns a
-  full-catalogue assignment pass into one BLAS matmul per chunk. Both the tree
-  builder and the disk-paged Poincare IVF index partition through this.
-  nearest_centroid clips and upcasts one CHUNK at a time rather than the whole
-  input, so callers can hand it the catalogue in float32 and its working set
-  stays flat: clipping and upcasting up front cost two extra full-size float32
-  copies, which at 1M x 200 was ~3.2GB of the index build's peak on its own
-* geodesic_apex returns the point of the geodesic closest to the origin: the
-  continuous analogue of the lowest common ancestor of the two endpoints,
-  because a geodesic between two points bows inward toward the more general
-  region that contains both
-* apply_radial_dive deepens that inward bow by a bump that is zero at both
-  endpoints, so a caller can ask the walk to travel further back toward the
-  shared root without moving where it starts or ends
-* unproject_from_poincare inverts the projection exactly (the map is radial, so
-  direction is preserved), which is what lets a synthetic ball point be looked
-  up in the raw-space IVF index
-* geodesic_plane_basis / plane_angles give the 2-plane the whole geodesic lives
-  in, so a Poincare disk drawing of it is an exact picture and not a sketch
+* project_to_poincare maps raw vectors into the open ball with
+  proj(x) = tanh(||x|| / s) * (x / ||x||); poincare_radius returns ||proj(x)||
+* hyperbolic_distance / hyperbolic_distances_to implement the exact metric
+  d_H(u, v) = arccosh(1 + 2*||u-v||^2 / ((1-||u||^2)(1-||v||^2)))
+* calibrate_scale picks s from a percentile of the norm distribution so tanh
+  stays in its active region, and split_radial_bands / assign_radial_bands
+  derive quantile band boundaries from the actual radius distribution
+* mobius_add / mobius_scalar_mul are the ball's gyrovector operations, from
+  which poincare_geodesic builds the exact constant-speed geodesic
+  gamma(t) = x (+) (t (x) (-x (+) y))
+* einstein_midpoint is the closed-form Lorentz-weighted average in the Klein
+  model, and karcher_mean refines it into the true Frechet mean with Riemannian
+  gradient steps damped by the mean of d*coth(d): the Hessian of d^2 grows with
+  d in negative curvature, so an undamped step overshoots once the members span
+  a couple of units and the iteration walks OUTWARD to the boundary
+* poincare_kmeans is k-means entirely in the Poincare metric: k-means++ seeding
+  on hyperbolic distance, assignment through nearest_centroid, the Frechet mean
+  as the update. Both the tree builder and the disk-paged IVF index partition
+  through it. nearest_centroid skips the arccosh, since the argmin of
+  arccosh(1 + 2*d2/((1-|t|^2)(1-|c|^2))) is the argmin of d2/(1-|c|^2) once the
+  target-only factor drops, turning an assignment pass into one BLAS matmul per
+  chunk; it clips and upcasts one CHUNK at a time, so a float32 catalogue keeps
+  a flat working set
+* geodesic_apex returns the geodesic's point closest to the origin: the
+  continuous analogue of the endpoints' lowest common ancestor
+* apply_radial_dive deepens that bow by a bump zero at both endpoints, so a
+  walk can travel further back toward the shared root
+* unproject_from_poincare inverts the projection exactly (it is radial, so
+  direction is preserved), letting a ball point be looked up in raw space
+* geodesic_plane_basis / plane_angles give the 2-plane the geodesic lives in,
+  so a Poincare disk drawing of it is exact
 """
 
 import numpy as np
 
 
-# Every projected point must stay STRICTLY inside the open ball, because the
-# Poincare metric divides by (1 - ||u||^2). The old 1 - 1e-7 was chosen under
-# float64 and is finer than float32 can hold: at 200 dimensions, re-measuring
-# the norm of a vector scaled to that limit rounds back to exactly 1.0, so
-# 1 - ||u||^2 became 0 and every distance to that point collapsed onto the
-# 1e-12 denominator guard. 1e-5 survives a float32 norm round trip at 200 and
-# 768 dimensions with 1 - ||u||^2 >= 1.9e-5 to spare, and costs nothing real:
-# no catalogue ever projects past ~0.99 anyway.
 _BALL_LIMIT = 1.0 - 1e-5
 
 
@@ -78,10 +58,6 @@ def project_to_poincare(vectors, scale):
     norms = np.linalg.norm(vecs, axis=-1, keepdims=True)
     safe = np.where(norms <= 1e-12, 1.0, norms)
     unit = vecs / safe
-    # tanh mathematically stays in (-1, 1), but the separate unit-vector
-    # division can reintroduce enough float error that the product's norm
-    # lands fractionally over 1.0 - clip so callers always get a point
-    # strictly inside the open ball, never exactly on or past the boundary.
     radii = np.minimum(np.tanh(norms / scale), _BALL_LIMIT)
     out = unit * radii
     if np.ndim(vectors) == 1:

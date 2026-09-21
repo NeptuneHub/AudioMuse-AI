@@ -54,14 +54,7 @@ _DELETE_CHUNK = 5000
 _STAMP_PAGE = 5000
 _MIN_KNOWN_DURATION_RATIO = 0.5
 _MAX_FETCH_THREADS = 6
-# Written to score.duration for a single-file row whose server reports no length,
-# so it is no longer NULL (never re-listed) yet still never confirms a merge
-# (durations_compatible rejects <= 0). A re-analysis overwrites it with the real
-# length via COALESCE, so it is self-healing.
 _NO_SERVER_DURATION = 0.0
-# Its own lock, distinct from the legacy migration's, so exactly one Flask
-# replica runs this check on a multi-replica boot instead of every replica
-# pulling each server's catalogue at once.
 _REPAIR_ADVISORY_LOCK = 726354823
 _SAME_FOLDER_ADVISORY_LOCK = 726354824
 _CHROMAPRINT_ADVISORY_LOCK = 726354825
@@ -128,10 +121,6 @@ def _groups_needing_check(cur):
 
 
 def _server_durations(server):
-    # apply_filter=True so a server whose AudioMuse config is a subset of a much
-    # larger media library only lists the configured folders, not the whole
-    # server. The duplicate provider ids are all analyzed tracks, so they live in
-    # the configured libraries and are always covered.
     with ms_context.use_server(server):
         tracks = provider_probe.fetch_all_tracks(
             server['server_type'], server['creds'], apply_filter=True
@@ -348,32 +337,20 @@ def _classify_group(item_id, provider_ids, file_paths, durations, totals, to_sta
         false_ids.append(item_id)
         totals['false'] += 1
     elif consensus is not None:
-        # single file -> its length; real duplicate -> the agreed length
         to_stamp[item_id] = consensus
         totals['real' if is_duplicate else 'backfilled'] += 1
     elif is_duplicate:
-        # lengths disagree or are missing -> a false merge; unmap and re-analyze
         false_ids.append(item_id)
         totals['false'] += 1
     else:
-        # single file the server has no length for: stamp the sentinel so the
-        # catalogue is not re-listed for it forever (never unmap a single file)
         to_stamp[item_id] = _NO_SERVER_DURATION
         totals['no_length'] += 1
 
 
 def _process_server(db, cur, server_id, groups, durations, totals, total_groups, step):
     if durations is None:
-        # server gone or unreachable (already logged) - retried next start
         totals['checked'] += len(groups)
         return
-    # Reliability is measured against the server's WHOLE catalogue vs how many
-    # tracks we have mapped for it - NOT against the NULL rows. The NULL rows are
-    # exactly the ones the server could not give a length for last time, i.e. the
-    # orphans (files deleted from the server) we now want to stamp with the
-    # sentinel; measuring "known of the NULL rows" declared a perfectly healthy
-    # server unreliable whenever its leftovers were orphans, skipped it, never
-    # stamped the sentinel, and re-listed the whole catalogue on every restart.
     cur.execute(
         "SELECT count(*) FROM track_server_map WHERE server_id = %s", (server_id,)
     )
@@ -412,9 +389,6 @@ def _run_backfill(db, cur, prefetched=None):
         return totals
     _log_start_banner(total_groups, len(groups_by_server))
     step = max(1, total_groups // 10)
-    # Fetch every server's catalogue concurrently, THEN write sequentially on
-    # the single DB cursor (the fetch is the slow part; the DB writes are not
-    # thread-safe and stay on this thread).
     logger.info(
         "Catalogue duration backfill: listing %d server catalogue(s) for track "
         "lengths - this is the slow part (metadata only, no audio downloaded); "
@@ -434,11 +408,6 @@ def _run_backfill(db, cur, prefetched=None):
 def _run_migration(db, cur, prefetched=None):
     try:
         totals = _run_backfill(db, cur, prefetched)
-        # HARD version gate: bump every older id that now carries a length (plus any
-        # orphan no server maps) up to the current scheme. Rows a skipped/unreliable
-        # server left NULL keep their old id and retry next boot; everything else
-        # becomes current, so the gate above goes false and this step is skipped
-        # forever - an unmappable orphan can no longer keep it alive.
         from tasks.fingerprint_canonicalize import relabel_scheme_to_current
         totals['relabelled'] = relabel_scheme_to_current(cur, only_with_duration=True)
         db.commit()
@@ -460,8 +429,6 @@ def repair_duplicate_track_maps(conn=None, prefetched_durations=None):
             )
             return {'skipped': 'locked'}
         cur, db = scope
-        # Hard version gate: no older-scheme ids left -> already migrated -> instant
-        # no-op, the server is never listed again (survives orphans with no length).
         if not _old_scheme_rows_exist(cur):
             return {'skipped': 'up_to_date'}
         return _run_migration(db, cur, prefetched_durations)
@@ -552,9 +519,6 @@ def split_same_folder_merges(conn=None):
 
 
 def _group_chromaprints_disagree(fingerprints):
-    # True only when TWO stored fingerprints in the group definitively DISAGREE
-    # (chromaprints_agree returns False). Missing/undecodable ones return None and
-    # are ignored, so a group we cannot fully judge is left merged (skip-if-missing).
     present = [fp for fp in fingerprints if fp is not None]
     for i in range(len(present)):
         for j in range(i + 1, len(present)):
@@ -564,10 +528,6 @@ def _group_chromaprints_disagree(fingerprints):
 
 
 def _chromaprint_false_merges(cur):
-    # Merges to split: a group of TWO OR MORE files on ONE server sharing an item_id
-    # whose stored Chromaprints prove at least one pair is a different recording.
-    # Only same-server duplicate groups are considered - the same song legitimately
-    # maps across servers, which count(*) > 1 per (server_id, item_id) never sees.
     cur.execute(
         "SELECT tsm.server_id, tsm.item_id, cp.fingerprint "
         "FROM track_server_map tsm "

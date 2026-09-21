@@ -37,6 +37,8 @@ import taskqueue
 import database
 
 from app_helper import admit_and_enqueue_main_task
+from error.error_dictionary import ERR_INVALID_REQUEST
+from error.responses import json_error
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +118,15 @@ def start_analysis_endpoint():
     data = request.get_json(silent=True) or {}
     # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.
     # The task now gets these details from the central config.
-    num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
-    top_n_moods = int(data.get('top_n_moods', TOP_N_MOODS))
+    try:
+        num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
+        top_n_moods = int(data.get('top_n_moods', TOP_N_MOODS))
+    except (TypeError, ValueError):
+        logger.warning("Analysis start refused: the counts were not whole numbers.")
+        return json_error(
+            ERR_INVALID_REQUEST,
+            "'num_recent_albums' and 'top_n_moods' must be whole numbers.",
+        )
     logger.info(
         f"Starting analysis request: num_recent_albums={num_recent_albums}, top_n_moods={top_n_moods}"
     )

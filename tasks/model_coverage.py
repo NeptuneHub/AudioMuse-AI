@@ -61,7 +61,7 @@ def get_model_coverage(server_id=None, include_legacy=False):
         pairs = model_coverage_pairs(db)
         total = pairs['musicnn'][1]
         enabled = {
-            'musicnn': True,  # The setup wizard's always-on model has no flag.
+            'musicnn': True,
             'clap': bool(config.CLAP_ENABLED),
             'lyrics': bool(config.LYRICS_ENABLED),
             'neural-fingerprint': bool(config.NEURAL_FINGERPRINT_ENABLED),

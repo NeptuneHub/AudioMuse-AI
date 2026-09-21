@@ -48,7 +48,7 @@ TASK_STATUS_LIVE = (TASK_STATUS_NEW, TASK_STATUS_RUNNING)
 # for the cron scheduler and the manual start endpoints alike.
 QUEUE_BLOCKING_TASK_TYPES = (
     'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
-    'sonic_fingerprint',
+    'sonic_fingerprint', 'album_of_the_week',
 )
 
 # --- Media Server Type ---
@@ -264,6 +264,14 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # above it: a stale row from an older version would let a task type that has
     # since become blocking run in parallel with a catalogue job.
     'QUEUE_BLOCKING_TASK_TYPES',
+    # The steering strengths the refine control offers are a correctness constant
+    # too, not a preference: _snap_weight rounds every incoming weight to the
+    # NEAREST of them, so a stale row silently rewrites what an API caller asked
+    # for. An instance carrying an older row snapped a requested x10 back to x5,
+    # halving a strength the caller had asked for and making the refinement look
+    # ignored. Excluded so the shipped list always wins and any older row is
+    # pruned.
+    'CLAP_SAE_ALPHA_STEPS',
     # Import-time facts about THIS process, not settings. They are reassigned at
     # the end of _apply_db_overrides anyway, so a row only ever added junk.
     'DB_OVERRIDES_LOADED',
@@ -323,7 +331,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.6.1"
+APP_VERSION = "v3.6.2"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1287,7 +1295,7 @@ NEURAL_FINGERPRINT_MIN_LEAD = float(os.environ.get("NEURAL_FINGERPRINT_MIN_LEAD"
 # concept reorders the results it is given; past roughly 8 it stops refining the
 # query and substitutes its own, which is why the range stops at 5. The reference
 # implementation's own grid stops at 2.0.
-CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0]
+CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0, 10.0]
 CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "3.0"))
 # Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
 CLAP_SAE_IDLE_UNLOAD_SECONDS = int(os.environ.get("CLAP_SAE_IDLE_UNLOAD_SECONDS", "300"))
@@ -1418,6 +1426,11 @@ FLASK_HTTPS_CERT_DIR = os.environ.get("FLASK_HTTPS_CERT_DIR", "") or _https_cert
 PATH_DISTANCE_METRIC = os.environ.get("PATH_DISTANCE_METRIC", "angular").lower()
 # Default number of songs in the path if not specified in the API request.
 PATH_DEFAULT_LENGTH = int(os.environ.get("PATH_DEFAULT_LENGTH", "25"))
+# Ceiling the API clamps max_steps to, matching the cap the Song Path page puts
+# on its own input. Without it one GET can hold a request thread for minutes:
+# this is one gunicorn worker with a handful of threads, so a few such calls
+# starve the dashboard, the task poll and every other page.
+PATH_MAX_LENGTH = int(os.environ.get("PATH_MAX_LENGTH", "200"))
 # Number of random songs to sample for calculating the average jump distance.
 PATH_AVG_JUMP_SAMPLE_SIZE = int(os.environ.get("PATH_AVG_JUMP_SAMPLE_SIZE", "200"))
 # Number of candidate songs to retrieve from IVF for each step in the path.
@@ -1569,6 +1582,33 @@ SONIC_FINGERPRINT_NEIGHBORS = int(os.environ.get("SONIC_FINGERPRINT_NEIGHBORS", 
 SONIC_FINGERPRINT_CRON_PLAYLIST_NAME = os.environ.get(
     "SONIC_FINGERPRINT_CRON_PLAYLIST_NAME",
     "Sonic Fingerprint by AudioMuse-AI",
+)
+
+# --- Album Creation Constants ---
+# Tracks in a created album: the CD format measured on real albums (12 tracks, about 48 minutes).
+ALBUM_CREATION_TRACKS = int(os.environ.get("ALBUM_CREATION_TRACKS", "12"))
+# Share of MusiCNN in the space the album is measured in; the rest is DCLAP. Half and
+# half is calibrated: DCLAP alone knows an album's instruments and voices better
+# (it finds 55% more tracks of the same real album), MusiCNN alone keeps the genre
+# tighter, and the mix matches real albums on both. 1.0 turns DCLAP off.
+ALBUM_CREATION_MUSICNN_SHARE = float(os.environ.get("ALBUM_CREATION_MUSICNN_SHARE", "0.5"))
+# Target mean pairwise cosine between the album's tracks in that mixed space
+# (nearest-neighbour sets sit at 0.92). 0.86 is calibrated: there an album of several
+# artists matches real albums on instrument and voice coherence. Lower is more
+# eclectic and 0.80 already changes genre; on MusiCNN alone the same point is 0.90.
+ALBUM_CREATION_COHESION = float(os.environ.get("ALBUM_CREATION_COHESION", "0.86"))
+# Share of the candidates kept by what their lyrics are about: the tracks whose
+# lyrics embedding sits nearest the seed's. Real albums are only slightly tighter
+# in their lyrics than the same artist's other songs, so this is a preference and
+# not a rule: it applies while enough candidates remain, never to a track without
+# lyrics, and it does not change the sound of the album. Measured on 120 seeds it
+# lifts lyric cohesion from 0.16 to 0.21 (real albums sit at 0.22) and leaves the
+# audio measures untouched. 1.0 turns it off.
+ALBUM_CREATION_LYRIC_SHARE = float(os.environ.get("ALBUM_CREATION_LYRIC_SHARE", "0.25"))
+# Playlist the scheduled Album of the Week run cleans and refills on every server.
+ALBUM_OF_THE_WEEK_PLAYLIST_NAME = os.environ.get(
+    "ALBUM_OF_THE_WEEK_PLAYLIST_NAME",
+    "Album of the Week by AudioMuse-AI",
 )
 
 # --- Cron Scheduler Retry ---

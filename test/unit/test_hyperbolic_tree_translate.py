@@ -283,8 +283,6 @@ def test_nested_lazy_folder_pruning_propagates_up():
         "children_count": 1,
         "items": [_lazy_summary("genre")],
     }
-    # The only genre's only subgenre has no track on the selected server, so the
-    # whole root collapses to None; the API turns that into an empty node.
     out = _translate_tree_ids(
         root, {},
         tree_nodes=tree_nodes, tree_flat_ids=tree_flat_ids,

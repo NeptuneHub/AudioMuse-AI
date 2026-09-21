@@ -9,34 +9,28 @@
 """One window covers a deliberate restart, and every consumer measures the same one.
 
 A restart the control plane asked for is not a worker loss, so nothing may charge
-its tasks an attempt while it runs. That guarantee is only as wide as the narrowest
-consumer of the window, and the window has to be measured against how long the
-ACTION legitimately takes - the acknowledgement budget is how long a CALLER waits,
-and a wizard save stops waiting after five seconds while the fleet keeps stopping
-for another forty. When the two were the same number, the first worker back did its
-grace-0 boot reclaim into an already-expired guard and charged every still-restarting
-worker's row, three wizard saves during one analysis exhausted the attempts, and the
-uncharged requeue that arrived seconds later could no longer undo it.
+its tasks an attempt while it runs. That guarantee is only as wide as the
+narrowest consumer of the window, and the window is measured against how long the
+ACTION takes - the acknowledgement budget is how long a CALLER waits, and a
+wizard save stops waiting after five seconds while the fleet keeps stopping for
+another forty. When the two were one number, the first worker back reclaimed into
+an already-expired guard and charged every still-restarting row.
 
 The window is bounded by construction and these tests say how: the request row's
 timestamp is written once at publish and never refreshed, so a control row a crashed
 listener left RUNNING stands reclaim down for exactly one action window.
 
-Its SIZE is pinned as a number and not only as an inequality. Every "wide enough"
-assertion here still passes if the budget it is derived from is quietly refloored
-at the 60s fleet stop it merely has to cover, and the window loses a full minute
-without one test going red - so the two budgets are also re-resolved out of
-config.py's own source against a hostile environment, and the documented 150s and
-its 105s floor are asserted outright.
+Its SIZE is pinned as a number, not only as an inequality: every "wide enough"
+assertion still passes if the budget is quietly refloored at the 60s fleet stop
+it merely has to cover, so the budgets are re-resolved out of config.py's own
+source against a hostile environment and the documented 150s and its 105s floor
+are asserted outright.
 
-The stand-down is checked as a QUERY, not as one parameter. The guard cursor
+The stand-down is checked as a QUERY, not as one parameter: the guard cursor
 models a single unfinished parentless control request, so a stand-down that stops
-asking for that shape - a different task type bound, the parentless condition
-dropped, the window bound anywhere but last - stops matching the row it exists to
-find, and every test here that depends on standing down fails with it. Which
-STATUS the request must be in is deliberately checked more loosely than the rest,
-because that predicate is the control plane's to define; what is pinned is that
-one still exists.
+asking for that shape stops matching the row it exists to find, and every test
+that depends on standing down fails with it. Which STATUS the request must be in
+is checked loosely, because that predicate is the control plane's to define.
 
 Restore is the other end of the same truth: a stop request that gives up early
 answers 503 while the workers are still legitimately stopping, so it has to wait

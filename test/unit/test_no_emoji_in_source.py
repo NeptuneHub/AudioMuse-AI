@@ -49,18 +49,13 @@ PATH_FRAGMENT_EXCLUDES = (
     'screenshot/',
 )
 
-# Codepoints that are the deliberate, functional payload of a string literal
-# (not decoration), scoped to the one file that legitimately needs them.
 ALLOWED_CODEPOINTS_BY_FILE = {
-    'tasks/ai/planner.py': {0x266D, 0x266F},  # musical flat/sharp key normalization
-    'tasks/ai/tool_impl.py': {0x266D, 0x266F},  # musical flat/sharp key normalization
-    'test/unit/test_ai.py': {0x2605},  # black-star sanitization test fixture
-    'app_chat.py': {0x2B50},  # rating-intent regex matches the literal star emoji
+    'tasks/ai/planner.py': {0x266D, 0x266F},
+    'tasks/ai/tool_impl.py': {0x266D, 0x266F},
+    'test/unit/test_ai.py': {0x2605},
+    'app_chat.py': {0x2B50},
 }
 
-# Decorative/pictographic ranges banned in code: emoji blocks, arrows, misc
-# technical symbols, misc symbols & dingbats (check/cross marks, stars, ...),
-# the arrows/stars supplement, and the bullet character.
 _BANNED_RANGES = (
     (0x1F000, 0x1FAFF),
     (0x2190, 0x21FF),

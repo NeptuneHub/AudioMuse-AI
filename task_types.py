@@ -9,48 +9,41 @@
 """Every task type the queue can hold, and the properties every filter reads.
 
 Nine separate tuples used to spell out overlapping subsets of the same task
-types - the one-live-main index, the wedged-task nudge, the queue guard, the
-archive exemption, the non-blocking starts, the inline Flask rows - and each was
-edited by hand. They drifted: plugin tasks and the migration planner reached the
-recovery table through none of them, and NUDGE_TASK_TYPES gained server_sweep
-only after a stuck sweep locked out cleaning and migration with nothing watching
-it. A task type that is absent from a list nobody cross-checks is invisible.
-
-This module is the one declaration. Every list above is DERIVED from it, so a
-new task type cannot be added to one filter and forgotten in another.
-
-It imports nothing, deliberately. config.py is a foundation leaf that may not
-import a project module at all, and database.py already sits at the bottom of a
-five-module eager chain, which is the ceiling test_import_architecture pins. A
-leaf with no imports of its own can hang below database without lengthening that
-chain, which is the same reason queue_names.py exists.
-
-config.QUEUE_BLOCKING_TASK_TYPES therefore stays a literal in config.py, because
-the wizard's two exclusion lists reference it by name; it is pinned against this
-module by test instead of imported.
+types - the one-live-main index, the nudge, the queue guard, the archive
+exemption, the non-blocking starts, the inline Flask rows - and they drifted,
+because a type absent from a list nobody cross-checks is invisible. This module
+is the one declaration and every list above is DERIVED from it. It imports nothing deliberately, so it can hang below database.py
+without lengthening the eager chain test_import_architecture pins.
+config.QUEUE_BLOCKING_TASK_TYPES stays a literal there, pinned against this
+module by test.
 
 Main Features:
 * ALL is the single ordered declaration of every queue-written task type
 * MAIN_TASK_TYPES keeps its historical order, which the one-live-main index name
   is a checksum of, so deriving it never forces an index rebuild
-* Nudge, archive-exemption, non-blocking and inline lists all derive from flags
-* PREFIXES carries the plugin namespace, which is matched by prefix not by name
+* PREFIXES carries the plugin namespace, matched by prefix, not by name
 * restarts is the restart budget a type declares and taskqueue.enqueue reads
   when its caller passes none. A child (album, clustering batch, index rebuild)
-  gets ONE: the next run re-queues whatever it missed, so three restarts only
-  made its parent wait out three backoffs on a failure that would not heal. The
-  migration planner gets none, because a silently re-run dry run holds its
-  session claimed for a whole extra attempt. None means QUEUE_MAX_ATTEMPTS
-* side_job marks a short read-only batch the user starts from a page, such as the
-  setup wizard naming preview. SIDE_JOB_TASK_TYPES derives every rule it needs in
-  one place: it shows as the running task so the dashboard can stop it, but it
-  never becomes the last task recap and is left out of the cancel history, its
-  start never erases the last task recap, its finish neither collapses the table nor
-  records task history, and it refuses and is refused by every other batch start
-  through get_queue_blocking_task, because only one batch runs at a time
-* BATCH_GATE_TASK_TYPES is every named type that batch admission refuses to
-  start beside: the main types plus the side jobs. server_sweep blocks starts
-  only through the active-task check, never through this gate
+  gets ONE, since the next run re-queues what it missed; the migration planner
+  gets none, because a re-run dry run holds its session claimed for another
+  attempt. None means QUEUE_MAX_ATTEMPTS
+* cron is the name a Scheduled Tasks row carries for a schedule that ENQUEUES
+  this type, where the names differ (the analysis row queues main_analysis).
+  CRON_TASK_TYPE_TO_QUEUE_TYPE and CRON_RETRY_TASK_TYPES derive from it, so a
+  blocked start and the retry that looks for its SUCCESS cannot name different
+  types. A row that never reaches the queue declares none: alchemy_radio runs
+  inline in Flask under its own name
+* dotted is the function a cron row enqueues verbatim, for the scheduled
+  builders that take nothing but a server scope; CRON_QUEUED_TASKS derives from
+  it and IS app_cron's dispatch for them
+* side_job marks a short read-only batch a page starts, such as the wizard's
+  naming preview. SIDE_JOB_TASK_TYPES derives every rule: it shows as the
+  running task so the dashboard can stop it, but never becomes the last recap,
+  stays out of the cancel history, records no task history, and refuses and is
+  refused by every other batch start
+* BATCH_GATE_TASK_TYPES is every named type batch admission refuses to start
+  beside: the main types plus the side jobs. server_sweep blocks starts only
+  through the active-task check
 """
 
 ROLE_MAIN = 'main'
@@ -66,7 +59,7 @@ class TaskType:
     def __init__(self, name, role, queue=None, holds_main_index=False,
                  watched_by_nudge=False, blocks_starts=False,
                  self_managed=False, is_prefix=False, restarts=None,
-                 side_job=False):
+                 side_job=False, cron=None, dotted=None):
         self.name = name
         self.role = role
         self.queue = queue
@@ -77,18 +70,26 @@ class TaskType:
         self.is_prefix = is_prefix
         self.restarts = restarts
         self.side_job = side_job
+        self.cron = cron
+        self.dotted = dotted
 
 
 ALL = (
-    TaskType('main_analysis', ROLE_MAIN, queue='high',
+    TaskType('main_analysis', ROLE_MAIN, queue='high', cron='analysis',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
-    TaskType('main_clustering', ROLE_MAIN, queue='high',
+    TaskType('main_clustering', ROLE_MAIN, queue='high', cron='clustering',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('cleaning', ROLE_MAIN, queue='high',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('provider_migration', ROLE_MAIN, queue='high',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('sonic_fingerprint', ROLE_MAIN, queue='default',
+             cron='sonic_fingerprint',
+             dotted='tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
+             holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
+    TaskType('album_of_the_week', ROLE_MAIN, queue='default',
+             cron='album_of_the_week',
+             dotted='tasks.album_creation_manager.run_album_of_the_week_task',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('server_sweep', ROLE_MAIN, queue='high',
              watched_by_nudge=True, blocks_starts=True, self_managed=True),
@@ -152,6 +153,14 @@ SIDE_JOB_TASK_TYPES = tuple(
 )
 
 BATCH_GATE_TASK_TYPES = QUEUE_BLOCKING_TASK_TYPES + SIDE_JOB_TASK_TYPES
+
+CRON_TASK_TYPE_TO_QUEUE_TYPE = {
+    entry.cron: entry.name for entry in ALL if entry.cron
+}
+
+CRON_RETRY_TASK_TYPES = tuple(CRON_TASK_TYPE_TO_QUEUE_TYPE)
+
+CRON_QUEUED_TASKS = {entry.cron: entry.dotted for entry in ALL if entry.dotted}
 
 
 def matches(task_type, names=(), prefixes=()):

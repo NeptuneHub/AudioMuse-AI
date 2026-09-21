@@ -33,9 +33,6 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 UMAP_N_NEIGHBORS = 15
-# Below this many rows, UMAP's neighbour graph can end up with zero edges
-# (all vertices disconnected) and crash inside simplicial_set_embedding
-# instead of degrading gracefully; PCA is used directly in that regime.
 UMAP_MIN_SAMPLES = UMAP_N_NEIGHBORS + 1
 
 
@@ -83,12 +80,6 @@ def _project_with_umap(
     mat = _stacked(vectors)
     if mat.shape[0] == 0:
         return []
-    # Random init instead of the default spectral one: the spectral embedding is an
-    # eigendecomposition of the whole neighbour graph, and on a 180k-track map it
-    # cost more than every other stage of the projection put together (44s -> 17s
-    # by dropping it, and 12s at 100 epochs). Measured by trustworthiness on a
-    # sample, the resulting map is not worse - 0.937 against 0.935 - and the layout
-    # was never stable across rebuilds anyway (random_state stays None).
     reducer = umap.UMAP(
         n_components=n_components, n_neighbors=UMAP_N_NEIGHBORS, random_state=None,
         n_jobs=-1, init="random", n_epochs=100,

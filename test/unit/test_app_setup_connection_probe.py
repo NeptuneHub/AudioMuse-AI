@@ -192,8 +192,6 @@ class TestListLibrariesSeesUserValues:
                 'NAVIDROME_URL': 'http://nd:4533',
                 'NAVIDROME_USER': 'typed-user',
                 'NAVIDROME_PASSWORD': 'typed-pass',
-                # Stale key still present in the form payload (masked/saved),
-                # but password mode must clear it before the probe.
                 'NAVIDROME_API_KEY': '********',
             },
             navidrome_auth_mode='password',
@@ -205,9 +203,6 @@ class TestListLibrariesSeesUserValues:
         assert result['libraries'][0]['name'] == 'Music'
 
     def test_list_libraries_applies_navidrome_apikey_auth_mode(self, saved_config, monkeypatch):
-        # The reverse switch: existing config is password-based, the user
-        # switches the wizard to apiKey mode. Password mode's fields must be
-        # cleared before the probe, or a stale saved password could leak in.
         captured = {}
         monkeypatch.setattr(config, 'NAVIDROME_API_KEY', '')
         monkeypatch.setattr(config, 'NAVIDROME_USER', 'saved-user')

@@ -199,10 +199,6 @@ _SCHEMA_DDL = [
     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
     "CREATE UNIQUE INDEX idx_music_servers_single_default "
     "ON music_servers (is_default) WHERE is_default",
-    # The PRODUCTION shape: relax_track_server_map_pk() moves the primary key to
-    # (server_id, provider_track_id) so N provider files may map to one song. Held
-    # at the old (item_id, server_id) key, this harness could not even seed the
-    # duplicate the migration has to collapse.
     "CREATE TABLE track_server_map ("
     "item_id TEXT NOT NULL REFERENCES score (item_id) ON UPDATE CASCADE ON DELETE CASCADE, "
     "server_id TEXT NOT NULL REFERENCES music_servers (server_id) ON DELETE CASCADE, "

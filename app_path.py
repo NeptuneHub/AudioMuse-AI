@@ -31,6 +31,7 @@ from tasks.path_manager import find_path_between_songs, get_distance
 from tasks.ivf_manager import get_vector_by_id, find_nearest_neighbors_by_vector
 from config import (
     PATH_DEFAULT_LENGTH,
+    PATH_MAX_LENGTH,
     PATH_FIX_SIZE,
     MOOD_CENTROIDS_FILE,
     DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS,
@@ -302,7 +303,7 @@ def find_path_endpoint():
     mood_pct = request.args.get('mood_pct', 100, type=int)
     # Use the default from config if max_steps is not provided in the request
     max_steps = request.args.get('max_steps', PATH_DEFAULT_LENGTH, type=int)
-    max_steps = max(1, max_steps)
+    max_steps = min(max(1, max_steps), PATH_MAX_LENGTH)
 
     # Cannot have more than one special endpoint among start/end (mood or anchor)
     if (start_mood or start_anchor) and (end_mood or end_anchor):

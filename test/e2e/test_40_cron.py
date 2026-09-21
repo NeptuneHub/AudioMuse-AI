@@ -25,6 +25,7 @@ Main Features:
 * POST /api/cron creates and updates rows, GET /api/cron lists them
 * an enabled row with a bad expression and a non-object options are 400
 * one cron tick runs the inline radio and the queued sonic fingerprint
+* one cron tick runs the queued album of the week into ONE fixed playlist
 * every row is disabled again at the end so no later tick fires
 """
 
@@ -36,13 +37,14 @@ from test.e2e.e2e_helpers import assert_no_fp_ids, rows, unique_name
 
 pytestmark = pytest.mark.e2e
 
-TASK_TYPES = ('analysis', 'clustering', 'sonic_fingerprint', 'alchemy_radio')
+TASK_TYPES = ('analysis', 'clustering', 'sonic_fingerprint', 'album_of_the_week', 'alchemy_radio')
 NIGHTLY = '0 3 * * *'
 EVERY_MINUTE = '* * * * *'
 TICK_TIMEOUT = 150
 PLAYLIST_TIMEOUT = 120
 TICK_TASK_TYPES = ('alchemy_radio', 'sonic_fingerprint')
 CRON_SONIC_PLAYLIST = 'Sonic Fingerprint by AudioMuse-AI'
+CRON_ALBUM_PLAYLIST = 'Album of the Week by AudioMuse-AI'
 
 
 @pytest.fixture
@@ -164,3 +166,43 @@ def test_one_tick_runs_the_radio_and_the_sonic_fingerprint(stack, api, db, libra
 
 def test_no_retry_rows_pending(stack, db):
     assert rows(db, 'SELECT count(*) FROM cron_retry')[0][0] == 0
+
+
+def test_one_tick_runs_the_album_of_the_week_and_the_next_refills_it(stack, api, db, navidrome, analyzed_library, disable_all_rows):
+    api.wait_idle(180)
+    navidrome.delete_playlists_named(lambda name: name == CRON_ALBUM_PLAYLIST)
+    before = (_by_type(api).get('album_of_the_week') or {}).get('last_run')
+    try:
+        _save(api, 'album_of_the_week', 'e2e album tick', EVERY_MINUTE, True)
+        deadline = time.monotonic() + TICK_TIMEOUT
+        while True:
+            entry = _by_type(api)['album_of_the_week']
+            if entry.get('last_run') not in (None, before):
+                break
+            assert time.monotonic() < deadline, f'the cron loop did not fire within {TICK_TIMEOUT}s: {entry}'
+            time.sleep(5)
+        playlist = _wait_for_playlist(navidrome, CRON_ALBUM_PLAYLIST)
+        assert playlist is not None, [p.get('name') for p in navidrome.playlists()]
+        api.wait_idle(300)
+        entries = navidrome.playlist_entry_ids(playlist['id'])
+        assert 4 <= len(entries) <= 12 and len(entries) == len(set(entries)), entries
+
+        fired_once = _by_type(api)['album_of_the_week'].get('last_run')
+        deadline = time.monotonic() + TICK_TIMEOUT
+        while True:
+            entry = _by_type(api)['album_of_the_week']
+            if entry.get('last_run') not in (None, fired_once):
+                break
+            assert time.monotonic() < deadline, f'the second tick never fired: {entry}'
+            time.sleep(5)
+        _save(api, 'album_of_the_week', 'e2e album tick', NIGHTLY, False, row_id=entry['id'])
+        api.wait_idle(300)
+        named = [p for p in navidrome.playlists() if p.get('name') == CRON_ALBUM_PLAYLIST]
+        assert len(named) == 1, [p.get('name') for p in navidrome.playlists()]
+        refilled = navidrome.playlist_entry_ids(named[0]['id'])
+        assert 4 <= len(refilled) <= 12 and len(refilled) == len(set(refilled)), refilled
+        album_rows = rows(db, "SELECT status FROM task_status WHERE task_type = 'album_of_the_week' ORDER BY timestamp DESC LIMIT 1")
+        assert all(row[0] == 'SUCCESS' for row in album_rows), album_rows
+        assert rows(db, 'SELECT count(*) FROM cron_retry')[0][0] == 0
+    finally:
+        navidrome.delete_playlists_named(lambda name: name == CRON_ALBUM_PLAYLIST)

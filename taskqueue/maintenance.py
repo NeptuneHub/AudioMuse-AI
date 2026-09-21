@@ -11,57 +11,39 @@
 Orphan detection needs no heartbeat or registry: a task is orphaned when its row
 says RUNNING and nobody holds its advisory lock, which died with the worker's
 connection. A task restarts ONLY because its worker died, at most
-QUEUE_MAX_ATTEMPTS times, then fails for good.
-
-Reclaim stands down while a control stop/restart is in flight:
-taskqueue.control requeues those tasks itself without charging an attempt.
-The stand-down is bounded by QUEUE_CONTROL_ACTION_WINDOW_SECONDS (how long the
-action may take), and only actions that STOP workers suspend it. One listener's
-FAIL does not end it, because SUCCESS is the only answer that means every
-listener finished.
-
-Runs in every worker container; a single pg_try_advisory_lock elects one
-winner per cycle. Reclaim runs every few seconds; the slow half (stale inline
-rows, migration handshakes, terminal shared payloads) only when due. After a
-Postgres restart the first cycle is skipped so live workers can retake their
-locks.
+QUEUE_MAX_ATTEMPTS times, then fails for good. Reclaim stands down while a
+control stop/restart is in flight (taskqueue.control requeues those itself
+without charging an attempt), bounded by QUEUE_CONTROL_ACTION_WINDOW_SECONDS and
+only for actions that STOP workers. Runs in every worker container, with one
+pg_try_advisory_lock electing a winner per cycle; after a Postgres restart the
+first cycle is skipped so live workers can retake their locks.
 
 Main Features:
-* reclaim_orphans requeues or fails RUNNING tasks whose advisory lock died
-  with their worker, deferring to an in-flight control-plane action instead
-* fail_stale_inline_rows finishes task rows left RUNNING by a web process
-  that stopped, skipping any protected migration handshake task
+* reclaim_orphans requeues or fails RUNNING tasks whose advisory lock died with
+  their worker, deferring to an in-flight control action
+* fail_stale_inline_rows finishes task rows left RUNNING by a web process that
+  stopped, skipping protected migration handshakes
 * nudge_wedged_main_tasks covers the one case reclaim cannot: a main task whose
-  worker is ALIVE but stopped making progress, which holds its advisory lock and
-  so blocks every other main task forever. Cancelling it ends that worker's tree;
-  reclaim then requeues the task and it resumes from its persisted progress - or,
-  on its last attempt, fails it, which still frees the queue. It stands down for
-  an in-flight control action for the same reason reclaim does. The cancel is a
-  NOTIFY, and reaching stop_hard needs the worker's listener thread to run Python:
-  native code holding the GIL never gets there, so a row still silent at
-  QUEUE_WEDGED_ESCALATE_FACTOR x the limit has ignored it (the notify kills a worker that can
-  hear it within seconds) and its worker's BACKENDS are terminated instead. That
-  drops the connection holding the advisory lock, which is what actually frees the
-  queue, and the worker dies on its next statement. The escalation is decided from
-  the ROW's silence, which the one wedged_main_tasks query already returns, not
-  from remembering last pass: any container may win the election, so per-process
-  memory would only escalate when the same one won twice.
-  Without it the same useless NOTIFY re-fired every cycle forever
-* Every retention step runs inside its own guard. They share one connection, so
-  before the guards a single failure in any of them skipped the rest of the
-  cycle, dropped the connection, and burnt one more cycle on the reconnect's
-  settling skip. A lost connection still propagates - that one IS the drop
-* run_cycle elects one maintenance winner per pass and runs reclaim plus the
-  slower retention sweeps only when they are due
-* reclaim_blob_space VACUUMs what autovacuum cannot reach, because its threshold
-  counts ROWS and a table of a few huge blobs never gets near it. Plain VACUUM
-  only, so readers and writers are never blocked; it stands down while a task is
-  live or another session holds an old transaction (a backup's pg_dump), and a
-  lock_timeout means it never queues behind anyone. run_cycle does NOT call it
-* start_blob_reclaim_thread runs that hourly sweep in the web process as a
-  daemon thread on its own connection; a restore stops Flask before psql
-  replaces the database, so the thread is already dead before the restore takes
-  its ACCESS EXCLUSIVE locks, and a failed pass reconnects for the next one
+  worker is ALIVE but stopped progressing, holding its advisory lock against
+  every other main task. Cancelling ends that worker's tree, reclaim requeues
+  the task and it resumes from its persisted progress. The cancel is a NOTIFY
+  and reaching stop_hard needs the listener thread to run Python, which native
+  code holding the GIL never lets happen, so a row still silent at
+  QUEUE_WEDGED_ESCALATE_FACTOR x the limit has its worker's BACKENDS terminated
+  instead, dropping the connection that holds the lock. The escalation is
+  decided from the ROW's silence, not from per-process memory, because any
+  container may win the election
+* Every retention step runs inside its own guard: they share one connection, so
+  without them a single failure skipped the rest of the cycle. A lost connection
+  still propagates - that one IS the drop
+* run_cycle elects one winner per pass and runs the slower retention sweeps
+  only when due
+* reclaim_blob_space VACUUMs what autovacuum cannot reach, since its threshold
+  counts ROWS and a table of a few huge blobs never nears it. Plain VACUUM only,
+  so nothing is blocked; it stands down while a task is live or another session
+  holds an old transaction (a backup's pg_dump), under a lock_timeout. run_cycle
+  does NOT call it: start_blob_reclaim_thread runs it hourly in the web process,
+  which a restore stops before psql takes its locks
 """
 
 import json

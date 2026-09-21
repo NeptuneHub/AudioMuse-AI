@@ -816,11 +816,8 @@ class TestClaimStealingAcrossChunks:
         second = index.match_chunk([strong], claimed)
 
         assert first['matches'] == {'fp_weak': 'p1'}
-        # The exact-path row wins it in the next chunk...
         assert second['matches'] == {'fp_strong': 'p1'}
         assert second['match_tiers']['fp_strong'] == 'path'
-        # ...and the weak owner is left for a later sweep (the upsert moves the
-        # provider id, so the database never holds both).
         assert claimed['p1'] == index._tier_rank['path']
 
     def test_weaker_later_tier_does_not_steal(self, matcher):

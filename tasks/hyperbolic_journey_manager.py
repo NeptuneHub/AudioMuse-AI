@@ -8,21 +8,16 @@
 
 """Geodesic Journey engine: walk the Poincare geodesic between two songs.
 
-Given a start and an end song this builds the exact hyperbolic geodesic
-between their Poincare projections, samples it at constant hyperbolic speed,
-and snaps every waypoint to a real song. Because a geodesic in negatively
-curved space bows toward the origin, the resulting playlist does not blend the
-two songs the way a straight line in raw space does (that is what the Sonic
-Path page already offers): it descends through the region general enough to
-contain both, then climbs back out to the destination. The deepest point of
-that bow is the continuous analogue of the lowest common ancestor of the two
-songs, which is what the page reports as the shared root.
-
-Scale: the snapping reads the top HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP
-nearest tracks per waypoint from the disk-paged Poincare index, then ranks the
-pooled candidates by exact Poincare distance. With no index built the request
-is rejected with a "run analysis to build it" error, matching the other
-indexes.
+Given two songs this builds the exact hyperbolic geodesic between their
+Poincare projections, samples it at constant hyperbolic speed and snaps every
+waypoint to a real song. Because a geodesic in negatively curved space bows
+toward the origin, the walk does not blend the two songs the way a straight
+line in raw space does (the Sonic Path page already offers that): it descends
+through the region general enough to contain both, then climbs back out. The
+deepest point of that bow is the continuous analogue of their lowest common
+ancestor, which the page reports as the shared root. Snapping reads the top
+HYPERBOLIC_JOURNEY_CANDIDATES_PER_STEP tracks per waypoint from the disk-paged
+Poincare index; with no index the request is rejected like every other.
 
 Main Features:
 * build_hyperbolic_journey resolves both endpoints, samples the geodesic,
@@ -30,20 +25,15 @@ Main Features:
   each interior waypoint to the nearest unused real song by exact Poincare
   distance, and returns the ordered walk with the endpoints pinned at both
   ends
-* Candidate generation pulls the exact top-k nearest tracks per waypoint from
-  tasks.hyperbolic_index and re-ranks the pooled candidates by exact Poincare
-  distance
 * Content de-duplication, the MAX_SONGS_PER_ARTIST cap and a Poincare-distance
-  near-duplicate check at DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC are enforced
-  while picking rather than afterwards, so enforcing them shortens the walk
-  instead of tearing holes in the middle of it. The threshold is in arccosh
-  units, an order of magnitude larger than the cosine thresholds elsewhere. The
-  lookback window follows WALK order - seeded with the start song, extended by
-  each pick, and the destination compared against the final pick - so a step is
-  always measured against the song that actually precedes it. A candidate
-  rejected as a near-duplicate at one step stays available at every later step,
-  where the window holds different songs. A track with no author is exempt from
-  the cap rather than rejected by it, the same rule apply_artist_cap follows
+  near-duplicate check at DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC (in arccosh
+  units, an order of magnitude above the cosine thresholds elsewhere) are
+  enforced while picking rather than afterwards, so they shorten the walk
+  instead of tearing holes in it. The lookback window follows WALK order -
+  seeded with the start song, extended by each pick, the destination compared
+  against the final pick - so a step is measured against the song that really
+  precedes it, and a candidate rejected at one step stays available later. A
+  track with no author is exempt from the cap, as in apply_artist_cap
 * The apex (lowest common ancestor) and every picked track are labelled with
   the nearest genre/subgenre centroid, so the journey narrates the regions it
   crosses instead of returning bare ids

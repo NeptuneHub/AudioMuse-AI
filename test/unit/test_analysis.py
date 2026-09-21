@@ -3685,9 +3685,7 @@ def test_index_builds_recycle_the_db_connection_between_steps(monkeypatch):
     builds = [entry for entry in order if entry.startswith("build:")]
     closes = [entry for entry in order if entry == "close_db"]
     assert builds, "no build step ran"
-    # one recycle per STEP (the hyperbolic step runs three builds itself)
     assert len(closes) == 10
-    # and every step is followed by a recycle, never two builds back to back
     assert order[-1] == "close_db"
 
 
@@ -3807,7 +3805,6 @@ def test_index_builds_end_with_a_database_checkpoint(monkeypatch):
     index._run_all_index_builds()
 
     assert order[-1] == "checkpoint"
-    # 9 single builds + the hyperbolic step's three internal builds
     assert sum(1 for e in order if e.startswith("build:")) == 12
     assert order.count("close_db") == 10
 

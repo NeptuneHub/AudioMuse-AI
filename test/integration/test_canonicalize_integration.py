@@ -226,8 +226,6 @@ class TestRealCanonicalization:
             "every legacy provider id must become a content id"
         )
 
-        # The provider's real ids survive on the map row, and the legacy path has
-        # moved off the shared score row onto the server that actually holds the file.
         assert [(p, path) for p, _item, path in _maps(db)] == [
             ('jf-1', '/music/A/01.flac'),
             ('jf-2', '/music/B/02.flac'),
@@ -244,10 +242,6 @@ class TestRealCanonicalization:
     def test_backslash_in_id_and_path_survives_the_copy_streams(self, db):
         from tasks import fingerprint_canonicalize as fc
 
-        # backslash is COPY's escape char, so a Windows path (or a provider id with
-        # a backslash) must be escaped or the relabel-map and track_server_map COPY
-        # streams corrupt the row. Exercises both _copy_pairs and
-        # _copy_track_server_map.
         tracks = [
             ('jf\\odd', 'C:\\Music\\Album\\01 Song.flac', _distinct_embedding(1)),
             ('jf-2', '/music/B/02.flac', _distinct_embedding(2)),
@@ -296,7 +290,6 @@ class TestRealCanonicalization:
     ):
         from tasks import fingerprint_canonicalize as fc
 
-        # jf-2 sits within the length tolerance of jf-1, whatever the tolerance is.
         tol = fc.config.DURATION_TOLERANCE_SECONDS
         monkeypatch.setattr(
             fc,
@@ -318,9 +311,6 @@ class TestRealCanonicalization:
         rows = _score(db)
         assert len(rows) == 2, "the same audio is ONE song in the catalogue"
 
-        # Both provider files still map, both to the SAME song, each keeping its own
-        # path. The merge re-inserts the loser's map rows under the winner's id, and
-        # it must carry file_path across: the map row is the only copy of the path.
         maps = _maps(db)
         assert [p for p, _i, _f in maps] == ['jf-1', 'jf-2', 'jf-3']
         by_provider = {p: (item, path) for p, item, path in maps}
@@ -342,10 +332,6 @@ class TestRealCanonicalization:
     def test_same_folder_files_never_share_an_id_during_canonicalize(self, db, monkeypatch):
         from tasks import fingerprint_canonicalize as fc
 
-        # jf-1 and jf-3 are DIFFERENT songs that happen to sit in the SAME folder;
-        # both are near-identical to jf-2 in another folder. Folding the folder rule
-        # into the id calculation must keep jf-1 and jf-3 on separate ids in this
-        # one pass - never form the merge and then unmap it (which would orphan a row).
         monkeypatch.setattr(
             fc, '_fetch_provider_durations',
             lambda source_id, conn: {'jf-1': 200.0, 'jf-2': 200.0, 'jf-3': 200.0},
@@ -712,9 +698,6 @@ class TestRealCanonicalization:
         _build(db, tracks)
         before = _score(db)
 
-        # A song quietly vanishes during the rewrite. This is the shape of the damage
-        # that used to commit and be trusted forever after: the rewrite "succeeds",
-        # the catalogue is short a row, and its analysis is gone.
         original = fc._repoint_indexes
 
         def losing_a_song(cur, renames):

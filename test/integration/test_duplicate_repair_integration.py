@@ -37,10 +37,6 @@ except Exception:  # pragma: no cover
 pytestmark = pytest.mark.integration
 
 
-# The repair now closes with the fp_2 -> fp_3 scheme relabel, which drops/re-adds
-# the embedding-table FKs, rewrites item_id across score/playlist/embedding tables
-# and repoints the similarity index maps - so the schema has to carry those tables
-# too, exactly as production does, or the relabel cannot run.
 _SCHEMA = [
     "CREATE TABLE score (item_id TEXT PRIMARY KEY, title TEXT, "
     "duration DOUBLE PRECISION)",
@@ -105,7 +101,6 @@ def _fp_id(suffix):
 
 
 def _current(item_id):
-    # The id a seeded fp_2 row carries AFTER the repair's scheme relabel bumps it.
     from tasks import simhash
 
     return simhash.to_current_scheme_id(item_id)
@@ -193,25 +188,17 @@ class TestRealDuplicateRepair:
         db.commit()
 
         assert (result['real'], result['false'], result['removed']) == (1, 1, 2)
-        # Real duplicate: length stamped, so its id is bumped to the current scheme;
-        # both files still map to it under that new id.
         assert _maps(db, _current(real)) == ['pr1', 'pr2']
         assert _duration(db, _current(real)) == pytest.approx(200.0)
-        # False duplicate: map rows gone and no length -> it's an ORPHAN. It is now
-        # bumped to the current scheme (kept, never deleted) so the version gate can
-        # go cold; a future server that has the track can re-map it under the new id.
         assert _maps(db, _current(false)) == []
-        assert _duration(db, false) == 'gone'  # old-scheme id no longer exists
-        assert _duration(db, _current(false)) is None  # bumped, still carries no length
+        assert _duration(db, false) == 'gone'
+        assert _duration(db, _current(false)) is None
         with db.cursor() as cur:
             cur.execute("SELECT count(*) FROM score")
             assert cur.fetchone()[0] == 2, "a false merge never deletes a score row"
             cur.execute("SELECT count(*) FROM embedding")
             assert cur.fetchone()[0] == 2
 
-        # Second run short-circuits on the version gate and NEVER calls the server:
-        # the real survivor carries a length and the false orphan is now current-scheme,
-        # so no older-scheme row is left to keep the migration alive.
         def explode(server):
             raise AssertionError("the second run must not contact the music server")
 
@@ -223,8 +210,6 @@ class TestRealDuplicateRepair:
         assert second == {'skipped': 'up_to_date'}
 
     def test_single_file_rows_are_backfilled_and_then_idempotent(self, db, monkeypatch):
-        # The 88% case: rows mapping ONE file get their length stamped (never
-        # unmapped), and the whole check no-ops on the next run.
         a = _fp_id('d')
         b = _fp_id('e')
         with db.cursor() as cur:
@@ -237,7 +222,6 @@ class TestRealDuplicateRepair:
 
         assert result['backfilled'] == 2
         assert result['removed'] == 0
-        # Both got a length, so both were bumped to the current scheme.
         assert _duration(db, _current(a)) == pytest.approx(200.0)
         assert _duration(db, _current(b)) == pytest.approx(314.0)
         assert _maps(db, _current(a)) == ['pa'] and _maps(db, _current(b)) == ['pb']
@@ -247,7 +231,6 @@ class TestRealDuplicateRepair:
 
         from tasks import duplicate_repair as dr
         monkeypatch.setattr(dr, '_server_durations', explode)
-        # No older-scheme row is left, so the version gate short-circuits instantly.
         second = _run(db, monkeypatch, {})
         assert second == {'skipped': 'up_to_date'}
 
@@ -256,9 +239,6 @@ class TestRealDuplicateRepair:
     ):
         from tasks import duplicate_repair as dr
 
-        # A RELIABLE listing (most lengths present, so the server is not skipped)
-        # that just misses one file: that file gets the 0 sentinel so it is
-        # one-time; the others get their real length.
         k1, k2, missing = _fp_id('f'), _fp_id('g'), _fp_id('h')
         with db.cursor() as cur:
             _seed_group(cur, k1, ['pk1'])
@@ -266,11 +246,10 @@ class TestRealDuplicateRepair:
             _seed_group(cur, missing, ['pmiss'])
         db.commit()
 
-        result = _run(db, monkeypatch, {'pk1': 200.0, 'pk2': 300.0})  # 2/3 known
+        result = _run(db, monkeypatch, {'pk1': 200.0, 'pk2': 300.0})
         db.commit()
 
         assert result['backfilled'] == 2 and result['no_length'] == 1
-        # The sentinel (0.0) is a non-NULL length, so the row is also relabelled.
         assert _duration(db, _current(missing)) == pytest.approx(dr._NO_SERVER_DURATION)
         assert _maps(db, _current(missing)) == ['pmiss'], "a single file is never unmapped"
 
@@ -278,13 +257,9 @@ class TestRealDuplicateRepair:
             raise AssertionError("a sentinel row must not be re-listed")
 
         monkeypatch.setattr(dr, '_server_durations', explode)
-        # Every row now carries a length and is on the current scheme: instant skip.
         assert _run(db, monkeypatch, {}) == {'skipped': 'up_to_date'}
 
     def test_single_file_survivor_with_duration_is_relabelled_not_re_fetched(self, db, monkeypatch):
-        # A single-file row that already has a duration cannot be a wrong merge, so
-        # the check must not look at it (no second duration fetch after a legacy
-        # upgrade), but the scheme relabel still bumps it up to the current id.
         already = _fp_id('c')
         with db.cursor() as cur:
             _seed_group(cur, already, ['p1'], duration=200.0)
@@ -303,9 +278,6 @@ class TestRealDuplicateRepair:
         assert _duration(db, _current(already)) == pytest.approx(200.0)
 
     def test_existing_stamped_merge_is_re_split_when_lengths_now_disagree(self, db, monkeypatch):
-        # A scheme bump (e.g. fp_3 -> fp_4 tightening 7s to 1s) re-verifies EXISTING
-        # merges: a stamped group whose files actually differ in length by more than
-        # the current tolerance is unmapped so each re-analyzes under its own id.
         merged = _fp_id('r')
         with db.cursor() as cur:
             _seed_group(cur, merged, ['p1', 'p2'], duration=200.0)
@@ -319,8 +291,6 @@ class TestRealDuplicateRepair:
         assert _maps(db, _current(merged)) == []
 
     def test_existing_stamped_merge_within_tolerance_survives_re_verify(self, db, monkeypatch):
-        # The same re-verify keeps a genuine merge whose files agree within tolerance,
-        # without dropping its stored length.
         merged = _fp_id('s')
         with db.cursor() as cur:
             _seed_group(cur, merged, ['p1', 'p2'], duration=200.0)
@@ -334,9 +304,6 @@ class TestRealDuplicateRepair:
         assert _duration(db, _current(merged)) == pytest.approx(200.0)
 
     def test_prefetched_durations_avoid_a_second_server_listing(self, db, monkeypatch):
-        # The legacy migration already listed this server earlier in the same boot
-        # and handed its durations to the repair; the repair must reuse them and
-        # never list the server a second time (the whole point of the fix).
         a = _fp_id('m')
         with db.cursor() as cur:
             _seed_group(cur, a, ['pa'])
@@ -403,7 +370,6 @@ class TestSameFolderCleanup:
         assert _maps(db, same_folder) == [], "same-folder files are unmapped"
         assert _maps(db, cross_folder) == ['p3', 'p4'], "cross-folder dup survives"
         assert _maps(db, same_file) == ['p5', 'p6'], "same physical file survives"
-        # A split never deletes the catalogue row itself.
         assert _duration(db, same_folder) == pytest.approx(200.0)
 
     def test_second_run_is_an_instant_noop(self, db):
@@ -444,7 +410,7 @@ class TestChromaprintCleanup:
         from tasks import duplicate_repair as dr
 
         base = list(range(1, 121))
-        flipped = [v ^ 0xFFFFFFFF for v in base]  # every bit inverted -> disagree
+        flipped = [v ^ 0xFFFFFFFF for v in base]
         disagree = _fp_id('cpd')
         agree = _fp_id('cpa')
         missing = _fp_id('cpm')
@@ -465,7 +431,6 @@ class TestChromaprintCleanup:
             _seed_chromaprint(cur, 'd2', _fp_blob(flipped))
             _seed_chromaprint(cur, 'a1', _fp_blob(base))
             _seed_chromaprint(cur, 'a2', _fp_blob(base))
-            # missing group: only one file has a fingerprint -> no definitive pair
             _seed_chromaprint(cur, 'm1', _fp_blob(base))
         db.commit()
 
@@ -476,7 +441,6 @@ class TestChromaprintCleanup:
         assert _maps(db, disagree) == [], "Chromaprint disagreement unmaps the false merge"
         assert _maps(db, agree) == ['a1', 'a2'], "matching fingerprints keep the merge"
         assert _maps(db, missing) == ['m1', 'm2'], "a group we cannot fully judge is left alone"
-        # A split never deletes the catalogue row itself.
         assert _duration(db, disagree) == pytest.approx(200.0)
         with db.cursor() as cur:
             cur.execute("SELECT count(*) FROM score")
@@ -499,7 +463,6 @@ class TestChromaprintCleanup:
 
         assert dr.split_chromaprint_false_merges(conn=db)['split'] == 1
         db.commit()
-        # The group is now unmapped, so it is no longer a duplicate group to check.
         assert dr.split_chromaprint_false_merges(conn=db) == {'split': 0, 'removed': 0}
 
 

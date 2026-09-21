@@ -28,6 +28,7 @@ from typing import Dict, List, Optional
 
 from psycopg2.extras import DictCursor
 
+from database import like_contains_pattern
 from tasks.ai.vocab import parse_tag_score_pairs
 from tasks.mcp_helper import get_db_connection
 
@@ -279,7 +280,8 @@ def _resolve_song_row(
                 ORDER BY LENGTH(title) + LENGTH(author)
                 LIMIT 1
             """,
-                (f"%{title_normalized}%", f"%{artist_normalized}%"),
+                (like_contains_pattern(title_normalized),
+                 like_contains_pattern(artist_normalized)),
             )
             seed = cur.fetchone()
 
@@ -342,7 +344,7 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                     ORDER BY len
                     LIMIT 1
                 """,
-                    (f"%{artist_normalized}%",),
+                    (like_contains_pattern(artist_normalized),),
                 )
                 result = cur.fetchone()
                 if result:
@@ -950,7 +952,7 @@ def _database_genre_query_sync(
 
             if album:
                 conditions.append("LOWER(album) LIKE LOWER(%s)")
-                params.append(f"%{album}%")
+                params.append(like_contains_pattern(album))
 
             if artist:
                 if fuzzy_match:
