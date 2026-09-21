@@ -19,11 +19,17 @@ Main Features:
   and never links a track below the pair floor while an alternative exists
 * The sequencer puts one opener, two singles, the middle and one closer in order,
   closes on the calmest long track and keeps calm tracks apart
+* The middle is built twice, once declining all the way and once lifted into a
+  second peak in the back half, both are finished and the better one wins on
+  fewer artist clashes first, fewer calm clashes next and only then the seams
+* Seams are the joins between neighbours: a bounded swap pass raises the weakest
+  one without ever moving a track more than SEAM_WINDOW slots from where the arc
+  put it and without ever adding an artist or a calm clash
 * create_album keeps a song seed, filters the pool and returns JSON-ready rows;
   the pool walks outward through the similar-song engine without its artist cap
   and widens itself when too few candidates survive
-* A description seed reads its genre from the analysis tags and its instrument from
-  the DCLAP concept dictionary, and ranks candidates by the product of the two
+* A description seed narrows its pool by DCLAP distance to the whole description
+  and issues exactly one index search; it names no words and scores no concepts
 * Tagged artists, the seed's era and album length are preferred while enough remain,
   and an untagged library is not held to the artist cap
 * Sung or instrumental is a vote of a track's nearest pool neighbours, so a missing
@@ -89,9 +95,30 @@ def _track(item_id, vector, title=None, author=None, **extra):
     return track
 
 
-def _attribute_ranking(tracks, tags, concepts):
-    columns = acm.attribute_columns(tracks, tags, concepts)
-    return acm._rank_product(columns, len(tracks)) if columns else None
+def _angled(degrees):
+    radians = np.deg2rad(degrees)
+    vector = np.zeros(DIM, dtype=np.float32)
+    vector[0], vector[1] = np.cos(radians), np.sin(radians)
+    return vector
+
+
+def _ranked_clap(rank):
+    vector = np.zeros(DIM, dtype=np.float32)
+    vector[0], vector[1] = 1.0, rank * 0.01
+    return vector
+
+
+_CLAP_QUERY = _ranked_clap(0)
+
+
+def _features(intensity, **columns):
+    count = len(intensity)
+    features = {name: np.zeros(count) for name in (
+        'log_duration', 'typicality', 'happy', 'sad', 'inward', 'no_lyrics')}
+    features['intensity'] = np.array(intensity, dtype=float)
+    for name, values in columns.items():
+        features[name] = np.array(values, dtype=float)
+    return features
 
 
 class TestDedupKeysAndHygiene:
@@ -346,13 +373,7 @@ class TestTheSelector:
 
 class TestTheSequencer:
     def _features(self, intensity, **columns):
-        count = len(intensity)
-        features = {name: np.zeros(count) for name in (
-            'log_duration', 'typicality', 'happy', 'sad', 'inward', 'no_lyrics')}
-        features['intensity'] = np.array(intensity, dtype=float)
-        for name, values in columns.items():
-            features[name] = np.array(values, dtype=float)
-        return features
+        return _features(intensity, **columns)
 
     def test_the_running_order_is_opener_two_singles_middle_closer(self):
         features = self._features([0.2, 1.5, 1.2, 0.4, 0.1, -0.2, -0.4, 0.0, 0.3, -0.6, -2.0, 0.6])
@@ -387,6 +408,39 @@ class TestTheSequencer:
         middle = [index for index, role in acm.sequence_album(features, acm.OPENER_BANG) if role == acm.ROLE_TRACK]
         assert middle.index(3) < middle.index(4)
         assert middle.index(5) < middle.index(9)
+
+    def test_one_artist_never_takes_the_opener_and_both_singles(self):
+        features = self._features(
+            [2.0, 1.9, 1.8, 1.7, 0.4, 0.1, -0.2, -0.4, 0.0, 0.3, -2.0, 0.6]
+        )
+        crowded = ['britney'] * 4 + ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+        head = [index for index, _role in acm.sequence_album(
+            features, acm.OPENER_BANG, crowded
+        )][:3]
+        names = [crowded[index] for index in head]
+        assert names[0] != names[1]
+        assert names[1] != names[2]
+
+    def test_the_head_still_takes_one_artist_when_nothing_else_can_take_the_place(self):
+        features = self._features(
+            [2.0, 1.9, 1.8, 1.7, 0.4, 0.1, -0.2, -0.4, 0.0, 0.3, -2.0, 0.6]
+        )
+        order = acm.sequence_album(features, acm.OPENER_BANG, ['one'] * 12)
+        assert sorted(index for index, _role in order) == list(range(12))
+        assert [role for _index, role in order][:3] == [
+            acm.ROLE_OPENER, acm.ROLE_SINGLE, acm.ROLE_SINGLE
+        ]
+
+    def test_the_singles_swap_when_that_alone_frees_the_opener(self):
+        features = self._features(
+            [0.2, 2.0, 1.9, 0.4, 0.1, -0.2, -0.4, 0.0, 0.3, -0.6, -2.0, 1.5]
+        )
+        authors = ['a'] * 12
+        authors[1], authors[2], authors[11] = 'lead', 'other', 'lead'
+        head = [index for index, _role in acm.sequence_album(
+            features, acm.OPENER_BANG, authors
+        )][:3]
+        assert authors[head[0]] != authors[head[1]]
 
     def test_two_calm_tracks_never_sit_together_and_none_touches_a_calm_closer(self):
         features = self._features([0.3, 1.5, 1.2, 0.4, 0.2, 0.1, -0.9, -1.0, -1.1, 0.0, -2.0, 0.6])
@@ -488,6 +542,26 @@ class TestCreateAlbum:
         assert stats['tracks'] == 12 and stats['minutes'] == 44 and stats['artists'] == 12
         assert stats['cohesion'] == pytest.approx(0.90, abs=0.04)
         assert stats['target_cohesion'] == 0.9
+
+    def test_the_running_order_is_sequenced_with_the_vectors_the_album_was_picked_in(self, library):
+        seen = {}
+        real = acm.sequence_album
+
+        def watched(features, style, authors=None, units=None):
+            seen.update(features=features, style=style, authors=authors, units=units)
+            return real(features, style, authors, units)
+
+        with patch.object(acm, 'sequence_album', watched):
+            album = self._create(item_id='fp_000')
+        assert seen['units'] is not None
+        assert seen['units'].shape[0] == len(album['tracks'])
+        assert np.linalg.norm(seen['units'], axis=1) == pytest.approx(1.0)
+        blind = real(seen['features'], seen['style'], seen['authors'])
+        sighted = real(seen['features'], seen['style'], seen['authors'], seen['units'])
+        assert blind != sighted
+        played = [track['item_id'] for track in album['tracks']]
+        named = {index: played[slot] for slot, (index, _role) in enumerate(sighted)}
+        assert [named[index] for index, _role in blind] != played
 
     def test_tracks_of_the_seeds_era_are_preferred_while_enough_remain(self, library):
         library[0]['year'] = 1972
@@ -991,56 +1065,6 @@ class TestAlbumOfTheWeek:
 
 
 class TestTheDescriptionSeed:
-    def test_a_genre_word_is_read_from_the_analysis_tags(self, monkeypatch):
-        monkeypatch.setattr(config, 'MOOD_LABELS', ['jazz', 'heavy metal', 'rock'])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: ['trumpet', 'piano'])
-        assert acm.named_attributes('jazz with trumpet') == (['jazz'], ['trumpet'])
-        assert acm.named_attributes('heavy metal with piano') == (['heavy metal'], ['piano'])
-        assert acm.named_attributes('something entirely else') == ([], [])
-
-    def test_a_longer_tag_wins_over_the_word_inside_it(self, monkeypatch):
-        monkeypatch.setattr(config, 'MOOD_LABELS', ['metal', 'heavy metal'])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        assert acm.named_attributes('heavy metal album') == (['heavy metal'], [])
-
-    def test_the_ranking_is_the_product_of_every_named_attribute(self, monkeypatch):
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        tracks = [
-            _track('a', np.ones(DIM), mood_vector='jazz:0.9,rock:0.1'),
-            _track('b', np.ones(DIM), mood_vector='jazz:0.2,rock:0.9'),
-            _track('c', np.ones(DIM), mood_vector='jazz:0.5,rock:0.5'),
-        ]
-        product = _attribute_ranking(tracks, ['jazz'], [])
-        assert list(np.argsort(-product)) == [0, 2, 1]
-        assert _attribute_ranking(tracks, [], []) is None
-
-    def test_an_instrument_is_scored_by_the_dclap_concepts(self):
-        tracks = [_track(name, np.ones(DIM)) for name in ('a', 'b', 'c')]
-        module = MagicMock()
-        module.concept_scores.return_value = {'trumpet': np.array([0.1, 0.9, 0.5])}
-        with patch.dict('sys.modules', {'tasks.clap_steering': module}):
-            product = _attribute_ranking(tracks, [], ['trumpet'])
-        assert list(np.argsort(-product)) == [1, 2, 0]
-        assert module.concept_scores.call_args[0][1] == ['trumpet']
-
-    def test_a_track_without_a_dclap_vector_turns_the_instrument_off(self):
-        tracks = [_track('a', np.ones(DIM)), _track('b', np.ones(DIM), clap=None)]
-        assert _attribute_ranking(tracks, [], ['trumpet']) is None
-
-    def test_only_the_best_ranked_candidates_stay(self, monkeypatch):
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        monkeypatch.setattr(acm, 'ATTRIBUTE_KEEP', 4)
-        tracks = [_track('id%02d' % n, np.ones(DIM), mood_vector='jazz:%.2f' % (n / 20.0))
-                  for n in range(20)]
-        kept = acm.keep_named_attributes(tracks, ['jazz'], [], 2)
-        assert [track['item_id'] for track in kept] == ['id16', 'id17', 'id18', 'id19']
-        assert acm.keep_named_attributes(tracks, [], [], 2) == tracks
-
-    def test_nothing_is_dropped_when_the_pool_is_already_short(self, monkeypatch):
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        tracks = [_track('id%d' % n, np.ones(DIM)) for n in range(5)]
-        assert acm.keep_named_attributes(tracks, ['jazz'], [], 12) == tracks
-
     @pytest.mark.parametrize('query, problem', [
         ('', 'a few words'), ('a b c d e f g h i j k l m', 'at most'),
     ])
@@ -1051,13 +1075,21 @@ class TestTheDescriptionSeed:
 
     def test_the_description_becomes_the_seed_label_and_the_album_name(self, monkeypatch):
         monkeypatch.setattr(acm, '_text_embedding', lambda query, steering=None: np.ones(4, dtype=np.float32))
-        monkeypatch.setattr(config, 'MOOD_LABELS', ['jazz'])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: ['trumpet'])
         seed = acm.resolve_seed(acm.SEED_TEXT, query='  jazz   with trumpet ')
         assert seed['label'] == 'jazz with trumpet'
         assert seed['name'] == 'Jazz with trumpet'
         assert seed['query'] is None and seed['required'] == []
-        assert seed['tags'] == ['jazz'] and seed['concepts'] == ['trumpet']
+
+    def test_the_seed_names_no_words_and_carries_no_per_word_queries(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(
+            acm, '_text_embedding',
+            lambda query, steering=None: asked.append(query) or np.ones(4, dtype=np.float32),
+        )
+        seed = acm.resolve_seed(acm.SEED_TEXT, query='jazz with trumpet')
+        assert asked == ['jazz with trumpet']
+        assert not {'tags', 'concepts', 'named_queries'} & set(seed)
+        assert list(seed['clap_query']) == [1.0] * 4
 
     def test_an_unloaded_dclap_index_is_a_seed_error_not_a_crash(self):
         module = MagicMock()
@@ -1106,7 +1138,6 @@ class TestTheAdaptivePool:
             return ['id%d' % n for n in range(count // 100)]
 
         monkeypatch.setattr(acm, 'text_pool_ids', ids)
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
         monkeypatch.setattr(
             acm, 'load_tracks',
             lambda item_ids, axis_index=None: [_track(i, np.ones(DIM)) for i in item_ids],
@@ -1115,32 +1146,63 @@ class TestTheAdaptivePool:
         assert asked[0] == acm.TEXT_POOL_QUERY and len(found) >= 36
 
 
-class TestConceptRefinement:
-    def test_the_chosen_concepts_steer_the_query_and_are_checked_on_the_candidates(self, monkeypatch):
-        monkeypatch.setattr(config, 'MOOD_LABELS', ['pop'])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: ['viola'])
+class TestTheOneTextSearch:
+    def _search(self, monkeypatch, rows):
         module = MagicMock()
-        module.apply_steering.return_value = (np.full(4, 2.0, dtype=np.float32), ['viola'])
-        monkeypatch.setattr(config, 'CLAP_ENABLED', True)
-        search = MagicMock()
-        search.get_text_embedding = None
-        with patch.dict('sys.modules', {'tasks.clap_steering': module}):
-            monkeypatch.setattr(acm, '_text_embedding', acm._text_embedding)
-            seed = acm._text_seed.__wrapped__ if hasattr(acm._text_seed, '__wrapped__') else acm._text_seed
-            monkeypatch.setattr(
-                acm, '_text_embedding',
-                lambda query, steering=None: np.full(4, 2.0 if steering else 1.0, dtype=np.float32),
-            )
-            built = seed('pop with viola', [{'term': 'harp', 'direction': 'more', 'weight': 3.0}])
-        assert built['concepts'] == ['viola', 'harp']
-        assert float(built['clap_query'][0]) == 2.0
+        module.is_clap_cache_loaded.return_value = True
+        module.search_by_embedding.return_value = [{'item_id': item_id} for item_id in rows]
+        monkeypatch.setattr(acm, 'available_ids', lambda ids: list(ids))
+        return module
 
-    def test_a_concept_pushed_away_is_not_required_of_the_candidates(self, monkeypatch):
-        monkeypatch.setattr(config, 'MOOD_LABELS', ['pop'])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        monkeypatch.setattr(acm, '_text_embedding', lambda query, steering=None: np.ones(4, dtype=np.float32))
-        built = acm._text_seed('pop album', [{'term': 'choir', 'direction': 'less', 'weight': 3.0}])
-        assert built['concepts'] == []
+    def test_a_description_pool_costs_exactly_one_index_search(self, monkeypatch):
+        module = self._search(monkeypatch, ['a', 'b', 'c'])
+        seed = {
+            'clap_query': np.ones(4, dtype=np.float32),
+            'named_queries': [np.ones(4, dtype=np.float32), np.full(4, 2.0, dtype=np.float32)],
+        }
+        with patch.dict('sys.modules', {'tasks.clap_text_search': module}):
+            assert acm.text_pool_ids_for(seed, 40) == ['a', 'b', 'c']
+        assert module.search_by_embedding.call_count == 1
+        assert module.search_by_embedding.call_args.kwargs == {'limit': 40}
+
+    def test_what_the_pool_already_holds_is_never_asked_for_twice(self, monkeypatch):
+        module = self._search(monkeypatch, ['a', 'b', 'c', 'd'])
+        with patch.dict('sys.modules', {'tasks.clap_text_search': module}):
+            wanted = acm.text_pool_ids_for(
+                {'clap_query': np.ones(4, dtype=np.float32)}, 40, {'b', 'd'}
+            )
+        assert wanted == ['a', 'c']
+
+
+class TestConceptRefinement:
+    def test_the_chosen_concepts_steer_the_one_query_the_seed_carries(self, monkeypatch):
+        asked = []
+        monkeypatch.setattr(
+            acm, '_text_embedding',
+            lambda query, steering=None: asked.append((query, steering))
+            or np.full(4, 2.0 if steering else 1.0, dtype=np.float32),
+        )
+        built = acm._text_seed('pop with viola', [{'term': 'harp', 'direction': 'more', 'weight': 3.0}])
+        assert asked == [('pop with viola', [{'term': 'harp', 'direction': 'more', 'weight': 3.0}])]
+        assert float(built['clap_query'][0]) == 2.0
+        assert 'concepts' not in built
+
+    def test_the_steering_reaches_the_embedding_and_nothing_else(self, monkeypatch):
+        monkeypatch.setattr(config, 'CLAP_ENABLED', True)
+        steer = MagicMock()
+        steer.apply_steering.return_value = (np.full(4, 3.0, dtype=np.float32), ['harp'])
+        search = MagicMock()
+        search.is_clap_cache_loaded.return_value = True
+        analyzer = MagicMock()
+        analyzer.get_text_embedding.return_value = np.ones(4, dtype=np.float32)
+        with patch.dict('sys.modules', {
+            'tasks.clap_steering': steer, 'tasks.clap_text_search': search,
+            'tasks.clap_analyzer': analyzer,
+        }):
+            embedding = acm._text_embedding('pop album', [{'term': 'harp', 'direction': 'more'}])
+        assert list(embedding) == [3.0] * 4
+        assert analyzer.get_text_embedding.call_count == 1
+        assert analyzer.get_text_embedding.call_args[0][0] == 'pop album'
 
 
 class TestADescriptionWithoutDclap:
@@ -1163,61 +1225,45 @@ class TestADescriptionWithoutDclap:
 
 
 class TestTheArtistHeadroom:
-    def _pool(self, artists):
+    def _pool(self, authors):
         return [
-            _track('id%02d' % n, np.ones(DIM), author=artists[n % len(artists)],
-                   mood_vector='jazz:%.3f' % (1.0 - n / 200.0))
-            for n in range(120)
+            _track('id%03d' % n, np.ones(DIM), author=author, clap=_ranked_clap(n))
+            for n, author in enumerate(authors)
         ]
 
-    def test_a_narrowing_that_leaves_too_few_artists_is_refused(self, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _cap(self, monkeypatch):
         monkeypatch.setattr(config, 'ALBUM_CREATION_TRACKS', 12)
         monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST', 3)
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        crowded = self._pool(['One Band', 'Other Band'])
-        assert not acm.enough_artists(crowded, list(range(len(crowded))))
-        kept = acm.keep_named_attributes(crowded, ['jazz'], [], 12)
-        assert len(kept) == acm.ATTRIBUTE_KEEP
-        assert {track['author'] for track in kept} == {'One Band', 'Other Band'}
 
-    def test_a_wide_enough_field_still_narrows(self, monkeypatch):
-        monkeypatch.setattr(config, 'ALBUM_CREATION_TRACKS', 12)
-        monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST', 3)
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        many = self._pool(['Artist %d' % n for n in range(30)])
-        kept = acm.keep_named_attributes(many, ['jazz'], [], 12)
-        assert len(kept) < len(many)
+    def test_a_narrowing_that_can_never_cover_the_artists_keeps_the_whole_pool(self):
+        crowded = self._pool(['One Band'] * 60 + ['Other Band'] * 60)
+        assert not acm.enough_artists(crowded, list(range(len(crowded))))
+        assert acm.keep_nearest_candidates(crowded, _CLAP_QUERY, 12) is crowded
+
+    def test_a_nearest_set_short_of_artists_widens_by_the_widen_factor(self):
+        thin = ['One Band'] * 60 + ['Band %d' % (n % 7) for n in range(60)] + ['Filler'] * 80
+        kept = acm.keep_nearest_candidates(self._pool(thin), _CLAP_QUERY, 12)
+        assert len(kept) == acm.ATTRIBUTE_KEEP * acm.ATTRIBUTE_WIDEN
+        assert [track['item_id'] for track in kept] == ['id%03d' % n for n in range(120)]
+        assert acm.enough_artists(kept, range(len(kept)))
+
+    def test_a_wide_enough_field_still_narrows(self):
+        many = self._pool(['Artist %d' % (n // 4) for n in range(120)])
+        kept = acm.keep_nearest_candidates(many, _CLAP_QUERY, 12)
+        assert len(kept) == acm.ATTRIBUTE_KEEP
         assert acm.enough_artists(kept, list(range(len(kept))))
 
     def test_the_cap_being_off_asks_nothing_of_the_artists(self, monkeypatch):
         monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST', 0)
-        assert acm.enough_artists(self._pool(['Only Band']), [0, 1, 2])
+        assert acm.enough_artists(self._pool(['Only Band'] * 3), [0, 1, 2])
 
 
 class TestTheReviewFindings:
-    def test_a_mixed_case_genre_tag_is_read_with_the_case_the_database_stores(self, monkeypatch):
-        monkeypatch.setattr(config, 'MOOD_LABELS', ['House', 'Hip-Hop', 'Progressive rock'])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
-        assert acm.named_attributes('house with piano') == (['House'], [])
-        assert acm.named_attributes('hip-hop album') == (['Hip-Hop'], [])
-        tracks = [
-            _track('a', np.ones(DIM), mood_vector='House:0.90,pop:0.10'),
-            _track('b', np.ones(DIM), mood_vector='House:0.10,pop:0.90'),
-            _track('c', np.ones(DIM), mood_vector='House:0.50,pop:0.50'),
-        ]
-        assert list(np.argsort(-_attribute_ranking(tracks, ['House'], []))) == [0, 2, 1]
-
-    def test_a_word_that_is_both_a_tag_and_a_concept_counts_once(self, monkeypatch):
-        monkeypatch.setattr(config, 'MOOD_LABELS', ['guitar', 'rock'])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: ['guitar', 'piano'])
-        tags, concepts = acm.named_attributes('rock with guitar')
-        assert tags == ['guitar', 'rock'] and concepts == []
-
     def test_a_text_seed_survives_a_pool_without_dclap_vectors(self, library, monkeypatch):
         monkeypatch.setattr(config, 'ALBUM_CREATION_MUSICNN_SHARE', 1.0)
-        monkeypatch.setattr(acm, '_text_embedding', lambda query, steering=None: np.ones(4, dtype=np.float32))
+        monkeypatch.setattr(acm, '_text_embedding', lambda query, steering=None: np.ones(DIM, dtype=np.float32))
         monkeypatch.setattr(acm, 'text_pool_ids', lambda embedding, count: [t['item_id'] for t in library])
-        monkeypatch.setattr(acm, 'concept_vocabulary', lambda: [])
         album = acm.create_album(acm.SEED_TEXT, query='anything at all',
                                  rng=np.random.default_rng(2), today=date(2026, 6, 1))
         assert len(album['tracks']) == 12
@@ -1289,3 +1335,321 @@ class TestTheWideningPool:
         assert len(wider) == 25
         assert loaded[-1] == ['id%03d' % i for i in range(10, 25)]
         assert [track['item_id'] for track in wider] == ['id%03d' % i for i in range(25)]
+
+
+class TestTheNearestNarrowing:
+    @pytest.fixture(autouse=True)
+    def _no_cap(self, monkeypatch):
+        monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST', 0)
+        monkeypatch.setattr(acm, 'ATTRIBUTE_KEEP', 4)
+
+    def _pool(self, ranks):
+        return [
+            _track('id%d' % slot, np.ones(DIM), clap=_ranked_clap(rank))
+            for slot, rank in enumerate(ranks)
+        ]
+
+    def test_the_candidates_nearest_the_description_are_the_ones_that_stay(self):
+        pool = self._pool([6, 2, 8, 1, 7, 3, 5, 4])
+        kept = acm.keep_nearest_candidates(pool, _CLAP_QUERY, 2)
+        assert [track['item_id'] for track in kept] == ['id1', 'id3', 'id5', 'id7']
+        assert not {'id0', 'id2', 'id4', 'id6'} & {track['item_id'] for track in kept}
+
+    def test_the_survivors_come_back_in_the_order_the_pool_held_them(self):
+        pool = self._pool([6, 2, 8, 1, 7, 3, 5, 4])
+        kept = [track['item_id'] for track in acm.keep_nearest_candidates(pool, _CLAP_QUERY, 2)]
+        assert kept != ['id3', 'id1', 'id5', 'id7']
+        assert kept == sorted(kept)
+
+    def test_a_pool_already_short_enough_is_handed_back_untouched(self):
+        short = self._pool([3, 1, 2, 4])
+        assert acm.keep_nearest_candidates(short, _CLAP_QUERY, 2) is short
+        wide = self._pool([6, 2, 8, 1, 7, 3, 5, 4])
+        assert acm.keep_nearest_candidates(wide, _CLAP_QUERY, len(wide)) is wide
+        assert acm.keep_nearest_candidates(wide, None, 2) is wide
+        one_over = self._pool([5, 1, 2, 3, 4])
+        assert len(acm.keep_nearest_candidates(one_over, _CLAP_QUERY, 2)) == acm.ATTRIBUTE_KEEP
+
+    def test_a_candidate_without_a_dclap_vector_ranks_last(self):
+        pool = self._pool([1, 2, 3, 4])
+        pool.insert(2, _track('silent', np.ones(DIM), clap=None))
+        scores = acm.clap_similarity(pool, _CLAP_QUERY)
+        assert scores[2] == -1.0
+        assert int(np.argmin(scores)) == 2
+        kept = acm.keep_nearest_candidates(pool, _CLAP_QUERY, 2)
+        assert [track['item_id'] for track in kept] == ['id0', 'id1', 'id2', 'id3']
+
+    def test_a_pool_without_one_dclap_vector_scores_instead_of_crashing(self):
+        silent = [_track('s%d' % n, np.ones(DIM), clap=None) for n in range(6)]
+        assert list(acm.clap_similarity(silent, _CLAP_QUERY)) == [-1.0] * 6
+        kept = acm.keep_nearest_candidates(silent, _CLAP_QUERY, 2)
+        assert [track['item_id'] for track in kept] == ['s0', 's1', 's2', 's3']
+
+    def test_the_score_is_a_cosine_so_a_louder_vector_is_not_a_nearer_one(self):
+        pool = [
+            _track('plain', np.ones(DIM), clap=_ranked_clap(3)),
+            _track('loud', np.ones(DIM), clap=_ranked_clap(3) * 9.0),
+            _track('far', np.ones(DIM), clap=_angled(60)),
+        ]
+        scores = acm.clap_similarity(pool, _CLAP_QUERY)
+        assert scores[0] == pytest.approx(scores[1])
+        assert scores[2] == pytest.approx(0.5, abs=1e-3)
+        assert acm.clap_similarity(pool, _CLAP_QUERY * 5.0)[0] == pytest.approx(scores[0])
+
+
+class TestTheAskedVoice:
+    @pytest.mark.parametrize('query', [
+        'belting jazz happy', 'falsetto jazz excited', 'deep voice r&b dark',
+        'harmonized vocals aggressive synth', 'POP viola with female vocalist',
+        'acoustic guitar country chant', 'autotuned pop mid-tempo',
+        'metal choir dreamy', 'raspy fast-paced blues',
+    ])
+    def test_a_description_naming_a_way_of_singing_asks_for_a_voice(self, query):
+        assert acm.asked_voice(query) is True
+
+    @pytest.mark.parametrize('query', [
+        'ambient drone no vocals', 'instrumental jazz', 'piano without vocals',
+        'karaoke backing', 'a record with no singer',
+    ])
+    def test_a_description_refusing_a_voice_asks_for_none(self, query):
+        assert acm.asked_voice(query) is False
+
+    @pytest.mark.parametrize('query', [
+        'classical relaxed piano', 'groovy sax blues', 'punk guitar angry',
+        'rock slow-paced cello',
+    ])
+    def test_a_description_that_says_nothing_about_singing_leaves_it_open(self, query):
+        assert acm.asked_voice(query) is None
+
+    def test_instrumental_wins_over_a_bare_mention_of_vocals(self):
+        assert acm.asked_voice('ambient drone no vocals') is False
+        assert acm.asked_voice('instrumental with no lyrics') is False
+
+    def _voiced(self, sung_count, silent_count):
+        tracks = []
+        for index in range(sung_count):
+            tracks.append(_track(f's{index}', [1.0, 0.02 * index], has_lyrics=True))
+        for index in range(silent_count):
+            tracks.append(_track(f'i{index}', [-1.0, 0.02 * index], has_lyrics=False))
+        return tracks
+
+    def test_the_candidates_that_carry_the_asked_voice_are_the_ones_that_stay(self):
+        tracks = self._voiced(20, 20)
+        kept = acm.keep_asked_voice(tracks, True, 12)
+        assert len(kept) == 20
+        assert all(track['has_lyrics'] for track in kept)
+
+    def test_asking_for_no_voice_keeps_the_instrumental_side(self):
+        tracks = self._voiced(20, 20)
+        kept = acm.keep_asked_voice(tracks, False, 12)
+        assert len(kept) == 20
+        assert not any(track['has_lyrics'] for track in kept)
+
+    def test_a_pool_too_thin_on_the_asked_voice_is_handed_back_whole(self):
+        tracks = self._voiced(3, 30)
+        assert acm.keep_asked_voice(tracks, True, 12) == tracks
+
+    def test_a_description_that_says_nothing_narrows_nothing(self):
+        tracks = self._voiced(20, 20)
+        assert acm.keep_asked_voice(tracks, None, 12) == tracks
+
+    def test_an_ask_the_candidates_cannot_fill_is_dropped_instead_of_starving(self):
+        units = acm.unit_rows([[1.0, 0.02 * i] for i in range(30)])
+        flags = [False] * 30
+        assert acm.reachable_voice(units, flags, True, 12) is None
+        assert acm.reachable_voice(units, flags, False, 12) is False
+        assert acm.reachable_voice(units, flags, None, 12) is None
+
+    def test_an_ask_the_candidates_can_fill_is_honoured(self):
+        units = acm.unit_rows(
+            [[1.0, 0.02 * i] for i in range(16)] + [[-1.0, 0.02 * i] for i in range(16)]
+        )
+        flags = [True] * 16 + [False] * 16
+        assert acm.reachable_voice(units, flags, True, 12) is True
+
+    def test_the_voice_cap_counts_against_what_the_words_asked_not_the_seed(self):
+        units = acm.unit_rows(
+            [[1.0, 0.02 * i] for i in range(14)] + [[-1.0, 0.02 * i] for i in range(14)]
+        )
+        flags = [True] * 14 + [False] * 14
+        query_unit = acm.unit_rows([[-1.0, 0.0]])[0]
+        inferred = acm.other_voices(units, query_unit, flags)
+        asked = acm.other_voices(units, query_unit, flags, True)
+        assert sum(inferred[:14]) == 14
+        assert sum(asked[:14]) == 0
+        assert sum(asked[14:]) == 14
+
+
+class TestTheSecondPeak:
+    DECLINE = np.array([3.0, 2.0, 1.5, 1.0, 0.8, 0.5, 0.2])
+
+    def _middle(self):
+        return [0, 1, 2, 3, 4, 5, 6]
+
+    def test_the_peak_moves_into_the_back_half(self):
+        lifted = acm.lift_second_peak(self._middle(), self.DECLINE, set())
+        assert lifted == [1, 2, 3, 0, 4, 5, 6]
+        slot = lifted.index(0)
+        assert slot >= (len(lifted) - 1) * acm.SECOND_PEAK_POSITION
+        assert self.DECLINE[lifted[slot]] > self.DECLINE[lifted[slot - 1]]
+        assert self.DECLINE[lifted[slot]] > self.DECLINE[lifted[slot + 1]]
+
+    def test_a_middle_too_short_to_hold_two_peaks_is_left_alone(self):
+        short = list(range(acm.SECOND_PEAK_MIN_MIDDLE - 1))
+        assert acm.lift_second_peak(short, self.DECLINE, set()) is short
+
+    def test_a_middle_with_too_few_steady_tracks_is_left_alone(self):
+        middle = self._middle()
+        assert acm.lift_second_peak(middle, self.DECLINE, set(middle)) is middle
+        assert acm.lift_second_peak(middle, self.DECLINE, {0, 1, 2, 3, 5}) is middle
+
+    @pytest.mark.parametrize('over, lifts', [(-0.01, False), (0.01, True)])
+    def test_a_lift_under_the_floor_is_not_worth_making(self, over, lifts):
+        gap = acm.SECOND_PEAK_MIN_LIFT + over
+        intensity = np.array([1.0 + gap, 1.0 + 0.6 * gap, 1.0 + 0.3 * gap, 1.0, 0.9, 0.8, 0.7])
+        middle = self._middle()
+        lifted = acm.lift_second_peak(middle, intensity, set())
+        assert (lifted != middle) is lifts
+        assert lifts or lifted is middle
+
+    def test_an_equal_peak_nearer_the_landing_is_the_one_that_travels(self):
+        intensity = np.array([2.0, 1.9, 2.0, 1.0, 0.9, 0.8, 0.7])
+        lifted = acm.lift_second_peak(self._middle(), intensity, set())
+        assert lifted == [0, 1, 3, 2, 4, 5, 6]
+        assert lifted.index(0) == 0
+        assert lifted.index(2) == 3
+
+    def test_the_lift_lands_on_a_steady_slot_never_on_a_calm_one(self):
+        lifted = acm.lift_second_peak(self._middle(), self.DECLINE, {3})
+        assert lifted == [1, 2, 3, 4, 0, 5, 6]
+        assert lifted.index(0) == 4 and lifted.index(3) == 2
+
+
+class TestTheSeams:
+    def _units(self, *degrees):
+        return acm.unit_rows([_angled(angle) for angle in degrees])
+
+    def _weave(self):
+        return [0, 1, 2, 3], self._units(0, 90, 10, 100)
+
+    def test_the_weakest_join_is_the_one_the_swap_pass_raises(self):
+        middle, units = self._weave()
+        assert acm.seam_profile(middle, units, None, None)[0] == pytest.approx(0.0, abs=1e-6)
+        stronger = acm.strengthen_seams(middle, units, None, set(), None, None, False)
+        assert stronger == [0, 2, 1, 3]
+        assert sorted(stronger) == middle
+        assert acm.seam_profile(stronger, units, None, None)[0] == pytest.approx(
+            float(np.cos(np.deg2rad(80))), abs=1e-6
+        )
+
+    def test_a_join_that_would_pair_one_artist_is_never_taken(self):
+        middle, units = self._weave()
+        authors = ['x', 'y', 'x', 'z']
+        guarded = acm.strengthen_seams(middle, units, authors, set(), None, None, False)
+        assert guarded != [0, 2, 1, 3]
+        assert guarded == [0, 1, 3, 2]
+        assert acm.artist_clashes(guarded, authors, None, None) == 0
+        assert abs(guarded.index(0) - guarded.index(2)) > 1
+
+    def test_a_join_that_would_pair_two_calm_tracks_is_never_taken(self):
+        middle, units = self._weave()
+        guarded = acm.strengthen_seams(middle, units, None, {0, 2}, None, None, False)
+        assert guarded != [0, 2, 1, 3]
+        assert acm.calm_clashes(guarded, {0, 2}, False) == 0
+
+    def test_no_track_ever_leaves_the_window_the_arc_put_it_in(self, monkeypatch):
+        window = acm.SEAM_WINDOW
+        middle = list(range(9))
+        units = self._units(0, 70, 140, 210, 5, 75, 145, 215, 10)
+        bounded = acm.strengthen_seams(middle, units, None, set(), None, None, False)
+        assert sorted(bounded) == middle
+        assert max(abs(bounded.index(track) - track) for track in middle) <= window
+        monkeypatch.setattr(acm, 'SEAM_WINDOW', 8)
+        loose = acm.strengthen_seams(middle, units, None, set(), None, None, False)
+        assert max(abs(loose.index(track) - track) for track in middle) > window
+        assert acm.seam_profile(loose, units, None, None) > acm.seam_profile(bounded, units, None, None)
+
+    def test_seams_are_read_across_the_singles_and_the_closer_too(self):
+        units = self._units(0, 90, 10, 100, 0, 100)
+        assert acm.seam_profile([0], units, None, None) == (1.0, 0.0)
+        joins = [float(units[4] @ units[0]), float(units[0] @ units[1]), float(units[1] @ units[5])]
+        weakest, total = acm.seam_profile([0, 1], units, 4, 5)
+        assert weakest == pytest.approx(min(joins))
+        assert total == pytest.approx(sum(joins))
+
+    def test_without_vectors_the_swap_pass_does_nothing(self):
+        middle = [0, 1, 2, 3]
+        assert acm.strengthen_seams(middle, None, ['a', 'b', 'c', 'd'], set(), None, None, False) is middle
+        pair = [0, 1]
+        assert acm.strengthen_seams(pair, self._units(0, 90), None, set(), None, None, False) is pair
+
+
+class TestTheShapeChooser:
+    AUTHORS = ['x', 'y', 'x', 'z', 'q', 'w']
+
+    def _units(self):
+        return acm.unit_rows([_angled(angle) for angle in (0, 90, 10, 100, 0, 100)])
+
+    def _rank(self, ordered, authors, calm, units):
+        return acm._middle_rank(ordered, authors, calm, 4, 5, False, units)
+
+    def test_fewer_artist_clashes_beat_a_stronger_weakest_join(self):
+        units = self._units()
+        clean, clashing = [0, 1, 2, 3], [0, 2, 1, 3]
+        assert acm.artist_clashes(clean, self.AUTHORS, 'q', 'w') == 0
+        assert acm.artist_clashes(clashing, self.AUTHORS, 'q', 'w') == 1
+        assert acm.seam_profile(clashing, units, 4, 5) > acm.seam_profile(clean, units, 4, 5)
+        assert self._rank(clean, self.AUTHORS, set(), units) > self._rank(clashing, self.AUTHORS, set(), units)
+        assert max(
+            [clashing, clean], key=lambda order: self._rank(order, self.AUTHORS, set(), units)
+        ) == clean
+
+    def test_fewer_calm_clashes_beat_a_stronger_weakest_join(self):
+        units = self._units()
+        clean, clashing = [0, 1, 2, 3], [0, 2, 1, 3]
+        assert acm.calm_clashes(clean, {0, 2}, False) == 0
+        assert acm.calm_clashes(clashing, {0, 2}, False) == 1
+        assert self._rank(clean, None, {0, 2}, units) > self._rank(clashing, None, {0, 2}, units)
+
+    def test_without_vectors_the_shapes_are_ranked_on_the_clashes_alone(self):
+        assert self._rank([0, 1, 2, 3], self.AUTHORS, set(), None) == (0, 0)
+        assert self._rank([0, 2, 1, 3], self.AUTHORS, set(), None) == (-1, 0)
+
+
+class TestTheSequencedShapes:
+    INTENSITY = [0.2, 1.5, 1.2, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, -2.0, 0.6]
+    ANGLES = [0, 0, 0, 0, 80, 5, 85, 10, 90, 15, 0, 0]
+
+    def _units(self):
+        return acm.unit_rows([_angled(angle) for angle in self.ANGLES])
+
+    def _middle(self, order):
+        return [index for index, role in order if role == acm.ROLE_TRACK]
+
+    def test_the_vectors_change_the_running_order_and_raise_the_weakest_join(self):
+        units = self._units()
+        blind = acm.sequence_album(_features(self.INTENSITY), acm.OPENER_BANG)
+        sighted = acm.sequence_album(_features(self.INTENSITY), acm.OPENER_BANG, None, units)
+        assert blind != sighted
+        assert [role for _index, role in blind] == [role for _index, role in sighted]
+        assert acm.seam_profile(self._middle(sighted), units, None, None)[0] > acm.seam_profile(
+            self._middle(blind), units, None, None
+        )[0]
+
+    @pytest.mark.parametrize('sighted', [False, True])
+    def test_every_track_is_played_once_between_one_opener_and_one_closer(self, sighted):
+        units = self._units() if sighted else None
+        order = acm.sequence_album(_features(self.INTENSITY), acm.OPENER_BANG, None, units)
+        roles = [role for _index, role in order]
+        assert sorted(index for index, _role in order) == list(range(12))
+        assert roles[0] == acm.ROLE_OPENER and roles[-1] == acm.ROLE_CLOSER
+        assert roles[1:3] == [acm.ROLE_SINGLE] * 2 and roles.count(acm.ROLE_SINGLE) == 2
+
+    @pytest.mark.parametrize('sighted', [False, True])
+    def test_the_vectors_never_buy_a_seam_with_an_artist_clash(self, sighted):
+        units = self._units() if sighted else None
+        authors = ['a', 'b', 'c', 'd', 'n', 'n', 'n', 'e', 'f', 'g', 'h', 'i']
+        order = acm.sequence_album(_features(self.INTENSITY), acm.OPENER_BANG, authors, units)
+        played = [authors[index] for index, _role in order]
+        assert sorted(index for index, _role in order) == list(range(12))
+        assert all(first != second for first, second in zip(played, played[1:])), played

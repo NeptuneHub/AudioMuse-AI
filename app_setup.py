@@ -144,6 +144,7 @@ HIDDEN_ADVANCED_FIELDS = {
     # every import, so editing them in the wizard changes nothing while making
     # the advanced list look like they are tunable.
     'QUEUE_BLOCKING_TASK_TYPES',
+    'CLAP_SAE_ALPHA_STEPS',
     'MEDIASERVER_CONFIG_KEYS',
     'APP_CONFIG_RUNTIME_KEYS',
     'QUEUE_CONTROL_ACTION_WINDOW_SECONDS',

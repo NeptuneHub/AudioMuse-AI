@@ -18,9 +18,10 @@ Main Features:
   seed reuses `/api/search_tracks` for its autocomplete; a description needs no
   lookup at all.
 * Two seeds: `song` (an item_id) and `text` (a few words, which DCLAP turns into
-  a point in the audio space and whose named genre and instrument are checked
-  against the candidates). A text seed also takes the same `steering` concepts as
-  the DCLAP search page.
+  a point in the audio space that the candidates are then ranked by). A text seed
+  also takes the same `steering` concepts as the DCLAP search page, and because
+  that steering moves the very point the ranking reads, it now shows in the
+  album instead of being washed out by a separate per-word score.
 * PER SERVER: the generated tracks are limited to the server picked in the
   sidebar (the default one when none is given), and every returned id is that
   server's own provider id, ready for `/api/create_playlist`.

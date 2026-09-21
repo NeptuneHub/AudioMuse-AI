@@ -264,6 +264,14 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # above it: a stale row from an older version would let a task type that has
     # since become blocking run in parallel with a catalogue job.
     'QUEUE_BLOCKING_TASK_TYPES',
+    # The steering strengths the refine control offers are a correctness constant
+    # too, not a preference: _snap_weight rounds every incoming weight to the
+    # NEAREST of them, so a stale row silently rewrites what an API caller asked
+    # for. An instance carrying an older row snapped a requested x10 back to x5,
+    # halving a strength the caller had asked for and making the refinement look
+    # ignored. Excluded so the shipped list always wins and any older row is
+    # pruned.
+    'CLAP_SAE_ALPHA_STEPS',
     # Import-time facts about THIS process, not settings. They are reassigned at
     # the end of _apply_db_overrides anyway, so a row only ever added junk.
     'DB_OVERRIDES_LOADED',
@@ -1287,7 +1295,7 @@ NEURAL_FINGERPRINT_MIN_LEAD = float(os.environ.get("NEURAL_FINGERPRINT_MIN_LEAD"
 # concept reorders the results it is given; past roughly 8 it stops refining the
 # query and substitutes its own, which is why the range stops at 5. The reference
 # implementation's own grid stops at 2.0.
-CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0]
+CLAP_SAE_ALPHA_STEPS = [1.0, 2.0, 3.0, 5.0, 10.0]
 CLAP_SAE_DEFAULT_ALPHA = float(os.environ.get("CLAP_SAE_DEFAULT_ALPHA", "3.0"))
 # Idle unload follows the CLAP/GTE pattern: warm on first use, free when unused.
 CLAP_SAE_IDLE_UNLOAD_SECONDS = int(os.environ.get("CLAP_SAE_IDLE_UNLOAD_SECONDS", "300"))

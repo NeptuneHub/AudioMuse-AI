@@ -100,7 +100,14 @@ class TestThePublishedSpecMatchesTheServer:
             'rejecting it, and those steps are not those five values'
         )
         assert f'default: {config.CLAP_SAE_DEFAULT_ALPHA}' in source
-        assert config.CLAP_SAE_ALPHA_STEPS == [1.0, 2.0, 3.0, 5.0]
+        spelled = ', '.join(
+            str(int(step)) if float(step).is_integer() else str(step)
+            for step in config.CLAP_SAE_ALPHA_STEPS
+        )
+        assert f'currently {spelled})' in source, (
+            'the published spec still names steps the server no longer snaps to'
+        )
+        assert config.CLAP_SAE_DEFAULT_ALPHA in config.CLAP_SAE_ALPHA_STEPS
 
     def test_the_weight_really_is_snapped_not_rejected(self):
         from tasks.clap_steering import _snap_weight

@@ -150,7 +150,27 @@ DEFAULT_TEXT_SEARCH_QUERIES = [
     "belting mid-tempo progressive rock",
     "autotuned pop mid-tempo",
     "pop energetic synthesizer",
+    "POP viola with female vocalist",
 ]
+
+DEFAULT_TEXT_SEARCH_STEERING = {
+    "female vocal sad hip-hop": [
+        {"term": "hip hop", "direction": "more", "weight": 3.0},
+        {"term": "sad", "direction": "more", "weight": 10.0},
+    ],
+    "autotuned pop mid-tempo": [
+        {"term": "pop", "direction": "more", "weight": 10.0},
+    ],
+    "whispered indie pop aggressive": [
+        {"term": "indie pop", "direction": "more", "weight": 5.0},
+    ],
+    "classical relaxed piano": [
+        {"term": "relaxed", "direction": "more", "weight": 10.0},
+    ],
+    "POP viola with female vocalist": [
+        {"term": "viola", "direction": "more", "weight": 10.0},
+    ],
+}
 
 MAIN_TASK_START_LOCK_KEY = 5512740318664902
 

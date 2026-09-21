@@ -25,6 +25,24 @@
             border: 1px solid var(--border-color);
             border-radius: 0.5rem;
         }
+        #refine-named { margin-top: 0.6rem; }
+        #refine-named-label {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 0.35rem;
+        }
+        #refine-named-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .refine-named-tag {
+            background: none;
+            border: 1px dashed var(--border-color);
+            border-radius: 1rem;
+            padding: 0.15rem 0.6rem;
+            font-size: 0.8rem;
+            color: var(--text-body);
+            cursor: pointer;
+        }
+        .refine-named-tag:hover { border-style: solid; color: var(--text-title); }
         .refine-heading {
             display: flex;
             align-items: center;
@@ -123,7 +141,7 @@
                         Start from:
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">A song stays in the album, in the slot that fits it. A text search builds the album from your words: name a genre and an instrument and both are checked against every track.</span>
+                            <span class="tooltip-text">A song stays in the album, in the slot that fits it. A text search builds the album from your words: every candidate is ranked by how close it sounds to the whole description, so a genre and an instrument together both count.</span>
                         </span>
                     </span>
                     <div class="seed-types" role="group" aria-labelledby="seed-type-label">
@@ -150,13 +168,17 @@
                     <button type="button" id="refine-add" class="btn btn-ghost btn-sm">+ Add concept</button>
                 </div>
                 <p id="refine-empty">No concept added. The description alone decides the album.</p>
+                <div id="refine-named" class="hidden">
+                    <span id="refine-named-label">Your words name these concepts. Add one to weigh it above the rest of the description:</span>
+                    <div id="refine-named-list"></div>
+                </div>
                 <div id="refine-list"></div>
                 <select id="refine-picker" class="hidden" aria-label="Pick a concept"></select>
             </div>
         </fieldset>
 
         <button type="submit" id="create-album-btn" class="btn btn-primary btn-block" disabled>
-            Create Album Proposal
+            Search
         </button>
     </form>
     {% endif %}
@@ -291,6 +313,7 @@
                     loadExamples();
                     loadRefinement();
                 }
+                renderNamed();
                 clearSelection();
                 hideSuggestions();
             };
@@ -397,6 +420,7 @@
                 clearSelection();
                 if (isText()) {
                     hideSuggestions();
+                    renderNamed();
                     return;
                 }
                 searchTimer = setTimeout(async () => {
@@ -459,8 +483,11 @@
             const refineEmpty = document.getElementById('refine-empty');
             const refineList = document.getElementById('refine-list');
             const refinePicker = document.getElementById('refine-picker');
+            const refineNamed = document.getElementById('refine-named');
+            const refineNamedList = document.getElementById('refine-named-list');
             let concepts = null;
-            let alphaSteps = [1, 2, 3, 5];
+            let alphaSteps = [1, 2, 3, 5, 10];
+            let defaultAlpha = 3;
             let maxTerms = 10;
             let chosen = [];
 
@@ -499,10 +526,53 @@
                     remove.type = 'button';
                     remove.className = 'btn btn-ghost btn-sm';
                     remove.textContent = 'Remove';
-                    remove.addEventListener('click', () => { chosen.splice(index, 1); renderChosen(); });
+                    remove.addEventListener('click', () => { chosen.splice(index, 1); renderChosen(); renderNamed(); });
                     row.appendChild(remove);
                     refineList.appendChild(row);
                 });
+            };
+
+            const allTerms = () => (concepts || [])
+                .flatMap(category => (category.terms || []).map(item => item.term))
+                .sort((left, right) => right.length - left.length);
+
+            const namedInQuery = () => {
+                let taken = ' ' + queryInput.value.toLowerCase().replace(/[^\w\s]/g, ' ')
+                    .replace(/\s+/g, ' ').trim() + ' ';
+                const found = [];
+                allTerms().forEach(term => {
+                    const spelled = ' ' + term.toLowerCase().replace(/[^\w\s]/g, ' ')
+                        .replace(/\s+/g, ' ').trim() + ' ';
+                    if (spelled.trim() && taken.includes(spelled)) {
+                        found.push(term);
+                        taken = taken.replace(spelled, ' ');
+                    }
+                });
+                return found;
+            };
+
+            const renderNamed = () => {
+                if (!concepts || !isText()) {
+                    refineNamed.classList.add('hidden');
+                    return;
+                }
+                const free = namedInQuery().filter(
+                    term => !chosen.some(entry => entry.term === term)
+                );
+                refineNamedList.innerHTML = '';
+                free.forEach(term => {
+                    const tag = document.createElement('button');
+                    tag.type = 'button';
+                    tag.className = 'refine-named-tag';
+                    tag.textContent = '+ ' + term;
+                    tag.addEventListener('click', () => {
+                        chosen.push({ term: term, direction: 'more', weight: defaultAlpha });
+                        renderChosen();
+                        renderNamed();
+                    });
+                    refineNamedList.appendChild(tag);
+                });
+                refineNamed.classList.toggle('hidden', free.length === 0);
             };
 
             const fillPicker = () => {
@@ -533,7 +603,7 @@
 
             refinePicker.addEventListener('change', () => {
                 if (!refinePicker.value) return;
-                chosen.push({ term: refinePicker.value, direction: 'more', weight: alphaSteps[alphaSteps.length - 2] || 3 });
+                chosen.push({ term: refinePicker.value, direction: 'more', weight: defaultAlpha });
                 refinePicker.classList.add('hidden');
                 renderChosen();
             });
@@ -546,9 +616,11 @@
                     if (!response.ok || !data || !data.available) return;
                     concepts = data.categories || [];
                     alphaSteps = data.alpha_steps || alphaSteps;
+                    defaultAlpha = data.default_alpha || defaultAlpha;
                     maxTerms = data.max_terms || maxTerms;
                     refineBox.classList.remove('hidden');
                     renderChosen();
+                    renderNamed();
                 } catch (error) {
                     concepts = [];
                     console.warn('Concept refinement is unavailable', error);
@@ -563,12 +635,20 @@
                     const data = await readJsonBody(response);
                     const queries = (data && data.queries) || [];
                     if (!queries.length) return;
+                    const preset = (data && data.steering) || {};
                     queries.forEach(text => {
                         const tag = document.createElement('span');
                         tag.className = 'seed-examples-tag';
                         tag.textContent = text;
                         tag.addEventListener('click', () => {
                             queryInput.value = text;
+                            const carried = preset[text];
+                            chosen = (Array.isArray(carried) ? carried : []).map(entry => ({
+                                term: entry.term,
+                                direction: entry.direction || 'more',
+                                weight: Number(entry.weight) || defaultAlpha,
+                            }));
+                            renderChosen();
                             queryInput.dispatchEvent(new Event('input'));
                         });
                         examplesList.appendChild(tag);

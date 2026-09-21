@@ -16,18 +16,14 @@ switched only from the Scheduled Tasks page.
 Main Features:
 * The seed is a SONG kept in the album, or a DESCRIPTION turned into a DCLAP
   point, refinable with the search page's concepts and refused without an index.
-* A description is also read for the attributes it NAMES, each judged by the
-  index that knows it (a genre by the analysis tags, an instrument by the DCLAP
-  concepts) and ranked by the PRODUCT of those ranks, because one text point for
-  a compound query satisfies neither half. Each also queries DCLAP alone and
-  narrows the pool by the same factor, taking turns over ATTRIBUTE_PASSES rounds
-  so whichever narrows first does not win outright.
+* A description narrows its pool by DCLAP DISTANCE to itself, steering included,
+  down to ATTRIBUTE_KEEP, widening while too few artists remain. Per-word SAE
+  latents were measured and REJECTED: 31 of 720 kept against 511.
 * TWO indexes feed the pool: the similar-song engine over MusiCNN (server-scoped,
   deduped) and DCLAP, which hears what merely measures alike. The pool steps one
-  hop out and widens to POOL_MAX_QUERY until three albums of
-  candidates survive from enough artists for the per-artist cap. Both embeddings
-  then mix into ONE vector (ALBUM_CREATION_MUSICNN_SHARE) so every later step
-  works in one space; without DCLAP the album is MusiCNN alone.
+  hop out and widens to POOL_MAX_QUERY until three albums of candidates survive
+  from enough artists for the per-artist cap. Both embeddings then mix into ONE
+  vector (ALBUM_CREATION_MUSICNN_SHARE); without DCLAP it is MusiCNN alone.
 * Selection is a guided greedy towards a CALIBRATED cohesion target (0.86 mixed:
   the 0.80 real albums show within ONE artist is, across artists, a change of
   genre), with no pair below PAIR_FLOOR.
@@ -43,7 +39,10 @@ Main Features:
 * Sequencing follows what real albums measure: the calmest, least typical track
   closes, the two most intense take slots two and three, the opener is an intro
   or a bang by genre, and neither two calm tracks nor two of one artist sit
-  together. Intensity is led by per-song centred mood scores.
+  together. Intensity is led by per-song centred mood scores. A middle LIFTING
+  once around SECOND_PEAK_POSITION and one declining all the way are both built;
+  the stronger SEAMS win (weakest join 0.793 -> 0.818), then a swap pass bounded
+  to SEAM_WINDOW slots. Clashes rank ABOVE seams; seams alone flatten the arc.
 """
 
 import logging
@@ -93,6 +92,11 @@ OPENER_WEIGHTS = {
 }
 MIDDLE_INWARD_WEIGHT = 0.30
 CALM_INTENSITY_Z = -0.8
+SECOND_PEAK_POSITION = 0.5
+SECOND_PEAK_MIN_MIDDLE = 5
+SECOND_PEAK_MIN_LIFT = 0.35
+SEAM_WINDOW = 2
+SEAM_PASSES = 6
 
 POOL_FIRST_QUERY = 150
 POOL_CLAP_QUERY = 150
@@ -101,7 +105,25 @@ POOL_GROWTH = 4
 TEXT_POOL_QUERY = 2000
 TEXT_POOL_MAX = 4000
 ATTRIBUTE_KEEP = 60
-ATTRIBUTE_PASSES = 2
+ATTRIBUTE_WIDEN = 2
+FACET_TEMPLATES = ('{}', '{} music', 'the sound of {}')
+FACET_PRF_TRACKS = 30
+FACET_TEXT_SHARE = 0.5
+FACET_GATE_MET = 0.55
+FACET_GATE_FLOOR = 0.35
+TAG_KEEP_QUANTILE = 0.75
+TAG_POOL_QUERY = 400
+TAG_POOL_SCAN = 8000
+TAG_MOOD_ALIASES = {
+    'angry': 'aggressive', 'aggressive': 'aggressive', 'furious': 'aggressive',
+    'happy': 'happy', 'joyful': 'happy', 'sad': 'sad', 'melancholic': 'sad',
+    'relaxed': 'relaxed', 'calm': 'relaxed', 'chill': 'relaxed',
+    'party': 'party', 'energetic': 'party', 'danceable': 'danceable',
+}
+FACET_STOP_WORDS = frozenset({
+    'with', 'and', 'the', 'a', 'an', 'of', 'to', 'in', 'for', 'on', 'by',
+    'music', 'song', 'songs', 'track', 'tracks', 'album', 'style', 'sound',
+})
 ARTIST_HEADROOM = 2
 TEXT_QUERY_MAX_WORDS = 12
 POOL_HOPS = 1
@@ -144,6 +166,17 @@ _ALTERNATE_SUFFIX = re.compile(
 _CANONICAL_SUFFIX = re.compile(
     r"\b(remaster\w*|mono|stereo|album|original|single|radio)\b", re.IGNORECASE
 )
+_NO_VOICE_TEXT = re.compile(
+    r"\b(?:instrumental|karaoke)\b|"
+    r"\b(?:no|without|zero|minus)\s+(?:vocal|vocals|voice|voices|singing|singer|lyrics)\b"
+)
+_VOICE_TEXT = re.compile(
+    r"\b(?:vocal|vocals|vocalist|vocalists|voice|voices|sung|sing|singer|singers|"
+    r"singing|belting|belted|falsetto|raspy|whispered|whispering|breathy|crooning|"
+    r"croon|harmonized|harmonised|harmony|harmonies|choir|choral|chant|chanting|"
+    r"autotuned|autotune|rapping|rapper|screaming|growled|soprano|alto|tenor|"
+    r"baritone|bass\s+voice|acapella|a\s+cappella|lyrics|lyrical)\b"
+)
 _HOLIDAY_TEXT = re.compile(
     r"christmas|xmas|x-mas|natale|\bnoel\b|santa claus|jingle bell|silent night|navidad|"
     r"weihnacht|let it snow|sleigh ride|holy night|winter wonderland|rudolph|silver bells|"
@@ -179,6 +212,13 @@ def song_key(title, author):
     if not base:
         return None
     return base, (author or '').strip().lower()
+
+
+def asked_voice(text):
+    spelled = str(text or '').lower()
+    if _NO_VOICE_TEXT.search(spelled):
+        return False
+    return True if _VOICE_TEXT.search(spelled) else None
 
 
 def is_holiday_text(*texts):
@@ -482,7 +522,117 @@ def separate_artists(middle, authors, calm, author_before, author_after=None, ca
     )
 
 
-def sequence_album(features, style, authors=None):
+def lift_second_peak(middle, intensity, calm):
+    if len(middle) < SECOND_PEAK_MIN_MIDDLE:
+        return middle
+    steady = [slot for slot, index in enumerate(middle) if index not in calm]
+    if len(steady) < 3:
+        return middle
+    target = int(round((len(middle) - 1) * SECOND_PEAK_POSITION))
+    source = max(steady, key=lambda slot: (intensity[middle[slot]], slot))
+    landing = next((slot for slot in steady if slot >= target), None)
+    if landing is None or source >= landing:
+        return middle
+    if intensity[middle[source]] - intensity[middle[landing]] < SECOND_PEAK_MIN_LIFT:
+        return middle
+    lifted = list(middle)
+    lifted.insert(landing, lifted.pop(source))
+    return lifted
+
+
+def seam_profile(ordered, units, before, after):
+    row = [index for index in [before] + list(ordered) + [after] if index is not None]
+    if len(row) < 2:
+        return (1.0, 0.0)
+    joins = [float(units[first] @ units[second]) for first, second in zip(row, row[1:])]
+    return (min(joins), sum(joins))
+
+
+def _seam_swap_allowed(best, home, first, second):
+    return (
+        abs(second - home[best[first]]) <= SEAM_WINDOW
+        and abs(first - home[best[second]]) <= SEAM_WINDOW
+    )
+
+
+def strengthen_seams(middle, units, authors, calm, before, after, calm_after):
+    if units is None or len(middle) < 3:
+        return middle
+    best = list(middle)
+    home = {index: slot for slot, index in enumerate(best)}
+    author_before = authors[before] if authors and before is not None else None
+    author_after = authors[after] if authors and after is not None else None
+    allowed_artist = artist_clashes(best, authors, author_before, author_after) if authors else 0
+    allowed_calm = calm_clashes(best, calm, calm_after)
+    score = seam_profile(best, units, before, after)
+    for _pass in range(SEAM_PASSES):
+        improved = False
+        for first in range(len(best)):
+            for second in range(first + 1, len(best)):
+                if not _seam_swap_allowed(best, home, first, second):
+                    continue
+                candidate = list(best)
+                candidate[first], candidate[second] = candidate[second], candidate[first]
+                if authors and artist_clashes(
+                    candidate, authors, author_before, author_after
+                ) > allowed_artist:
+                    continue
+                if calm_clashes(candidate, calm, calm_after) > allowed_calm:
+                    continue
+                reading = seam_profile(candidate, units, before, after)
+                if reading > score:
+                    best, score, improved = candidate, reading, True
+        if not improved:
+            break
+    return best
+
+
+def _finish_middle(middle, authors, calm, before, after, calm_after, units):
+    if authors:
+        middle = separate_artists(
+            middle, authors, calm, authors[before], authors[after], calm_after
+        )
+    return strengthen_seams(middle, units, authors, calm, before, after, calm_after)
+
+
+def _middle_rank(ordered, authors, calm, before, after, calm_after, units):
+    clashes = artist_clashes(
+        ordered, authors, authors[before], authors[after]
+    ) if authors else 0
+    rank = (-clashes, -calm_clashes(ordered, calm, calm_after))
+    if units is None:
+        return rank
+    return rank + seam_profile(ordered, units, before, after)
+
+
+def _best_apart(pool, scores, authors, barred):
+    if authors:
+        free = [index for index in pool if authors[index] and authors[index] not in barred]
+        pool = free or pool
+    return max(pool, key=lambda index: scores[index])
+
+
+def _head_slots(remaining, features, style, authors):
+    single_scores = _weighted(features, SINGLE_WEIGHTS)
+    lead = max(remaining, key=lambda index: single_scores[index])
+    remaining.remove(lead)
+    follow = _best_apart(
+        remaining, single_scores, authors, {authors[lead]} if authors else set()
+    )
+    remaining.remove(follow)
+    singles = [lead, follow]
+
+    opener_scores = _weighted(features, OPENER_WEIGHTS[style])
+    opener = _best_apart(
+        remaining, opener_scores, authors, {authors[lead]} if authors else set()
+    )
+    remaining.remove(opener)
+    if authors and authors[opener] and authors[opener] == authors[lead] != authors[follow]:
+        singles.reverse()
+    return opener, singles
+
+
+def sequence_album(features, style, authors=None, units=None):
     count = len(features['intensity'])
     remaining = list(range(count))
     if count < MIN_ALBUM_TRACKS:
@@ -492,14 +642,7 @@ def sequence_album(features, style, authors=None):
     closer = max(remaining, key=lambda index: closer_scores[index])
     remaining.remove(closer)
 
-    single_scores = _weighted(features, SINGLE_WEIGHTS)
-    singles = sorted(remaining, key=lambda index: -single_scores[index])[:2]
-    for index in singles:
-        remaining.remove(index)
-
-    opener_scores = _weighted(features, OPENER_WEIGHTS[style])
-    opener = max(remaining, key=lambda index: opener_scores[index])
-    remaining.remove(opener)
+    opener, singles = _head_slots(remaining, features, style, authors)
 
     intensity = features['intensity']
     decline = intensity - MIDDLE_INWARD_WEIGHT * features['inward']
@@ -507,11 +650,18 @@ def sequence_album(features, style, authors=None):
     calm = [index for index in remaining if intensity[index] < CALM_INTENSITY_Z]
     steady = [index for index in remaining if intensity[index] >= CALM_INTENSITY_Z]
     closer_is_calm = bool(intensity[closer] < CALM_INTENSITY_Z)
-    middle = spread_calm_tracks(steady, calm, closer_is_calm)
-    if authors:
-        middle = separate_artists(
-            middle, authors, set(calm), authors[singles[-1]], authors[closer], closer_is_calm
-        )
+    declining = spread_calm_tracks(steady, calm, closer_is_calm)
+    shapes = [lift_second_peak(declining, intensity, set(calm)), declining]
+    finished = [
+        _finish_middle(shape, authors, set(calm), singles[-1], closer, closer_is_calm, units)
+        for shape in shapes
+    ]
+    middle = max(
+        finished,
+        key=lambda ordered: _middle_rank(
+            ordered, authors, set(calm), singles[-1], closer, closer_is_calm, units
+        ),
+    )
 
     return (
         [(opener, ROLE_OPENER)]
@@ -638,6 +788,42 @@ def _ids_for(sql, params):
         cur.close()
 
 
+def _rollback_quietly():
+    from database import get_db
+
+    try:
+        get_db().rollback()
+    except Exception:
+        logger.exception("The album pool could not clear the failed transaction")
+
+
+def _rows_for(sql, params):
+    from database import get_db
+
+    cur = get_db().cursor()
+    try:
+        cur.execute(sql, params)
+        return cur.fetchall()
+    finally:
+        cur.close()
+
+
+def tag_pool_ids(label, count):
+    from database import like_contains_pattern
+
+    rows = _rows_for(
+        "SELECT s.item_id, s.mood_vector FROM score s "
+        "JOIN clap_embedding c ON c.item_id = s.item_id "
+        "WHERE s.mood_vector LIKE %s LIMIT %s",
+        (like_contains_pattern(label + ':'), TAG_POOL_SCAN),
+    )
+    scored = sorted(
+        ((parse_scores(packed).get(label, 0.0), item_id) for item_id, packed in rows),
+        key=lambda pair: -pair[0],
+    )
+    return available_ids([item_id for _score, item_id in scored[:count]])
+
+
 def _clean_author(author):
     return (author or '').strip().lower() if normalize_meta(author) else ''
 
@@ -651,12 +837,12 @@ def median_year(tracks):
     return float(np.median(years)) if years else None
 
 
-def other_voices(units, query_unit, has_lyrics):
+def voted_voices(units, has_lyrics):
     flags = np.asarray(has_lyrics, dtype=np.float32)
     total = len(units)
     wanted = min(VOICE_NEIGHBOURS, total - 1)
     if wanted < 1:
-        return [False] * total
+        return None
     sung = np.empty(total, dtype=bool)
     for start in range(0, total, VOICE_BLOCK):
         block = -(units[start:start + VOICE_BLOCK] @ units.T)
@@ -664,9 +850,54 @@ def other_voices(units, query_unit, has_lyrics):
         block[rows, start + rows] = np.inf
         nearest = np.argpartition(block, wanted - 1, axis=1)[:, :wanted]
         sung[start:start + len(block)] = flags[nearest].mean(axis=1) >= 0.5
-    around_seed = np.argsort(-(units @ query_unit))[:ANCHOR_NEAREST]
-    seed_is_sung = 2 * float(flags[around_seed].sum()) >= len(around_seed)
-    return [bool(differs) for differs in sung != seed_is_sung]
+    return sung
+
+
+def other_voices(units, query_unit, has_lyrics, wanted_sung=None):
+    sung = voted_voices(units, has_lyrics)
+    if sung is None:
+        return [False] * len(units)
+    if wanted_sung is None:
+        flags = np.asarray(has_lyrics, dtype=np.float32)
+        around_seed = np.argsort(-(units @ query_unit))[:ANCHOR_NEAREST]
+        wanted_sung = 2 * float(flags[around_seed].sum()) >= len(around_seed)
+    return [bool(differs) for differs in sung != bool(wanted_sung)]
+
+
+def reachable_voice(units, has_lyrics, wanted_sung, needed):
+    if wanted_sung is None:
+        return None
+    sung = voted_voices(units, has_lyrics)
+    if sung is None or int((sung == bool(wanted_sung)).sum()) < needed:
+        logger.info(
+            "The candidates cannot fill an album with the %s the description asked for; "
+            "letting the pool decide instead.",
+            "voice" if wanted_sung else "instrumental character",
+        )
+        return None
+    return bool(wanted_sung)
+
+
+def keep_asked_voice(tracks, wanted_sung, needed):
+    if wanted_sung is None or len(tracks) <= needed:
+        return tracks
+    present = [index for index, track in enumerate(tracks) if track['clap'] is not None]
+    if len(present) <= VOICE_NEIGHBOURS:
+        return tracks
+    sung = voted_voices(
+        unit_rows([tracks[index]['clap'] for index in present]),
+        [tracks[index]['has_lyrics'] for index in present],
+    )
+    if sung is None:
+        return tracks
+    kept = [tracks[index] for index, asked in zip(present, sung) if bool(asked) == wanted_sung]
+    if len(kept) >= needed:
+        return kept
+    logger.info(
+        "Only %d of %d candidates carry the %s the description asked for; keeping the pool.",
+        len(kept), len(tracks), "voice" if wanted_sung else "instrumental character",
+    )
+    return tracks
 
 
 def in_era(track, year):
@@ -721,77 +952,6 @@ def _song_seed(item_id, axis_index):
     }
 
 
-def _as_words(text):
-    return _SPACES.sub(' ', _NOT_WORD.sub(' ', str(text or '').lower())).strip()
-
-
-def tag_vocabulary():
-    labels = {}
-    for label in config.MOOD_LABELS:
-        spelled = _as_words(label)
-        if spelled:
-            labels.setdefault(spelled, str(label).strip())
-    return sorted(labels.items(), key=lambda pair: len(pair[0]), reverse=True)
-
-
-def concept_vocabulary():
-    try:
-        from .clap_steering import concept_terms
-
-        return sorted(concept_terms(), key=len, reverse=True)
-    except Exception:
-        logger.exception("The DCLAP concept catalogue could not be read")
-        return []
-
-
-def named_attributes(query):
-    taken = ' ' + _as_words(query) + ' '
-    tags, concepts = [], []
-    for spelled, label in tag_vocabulary():
-        if f' {spelled} ' in taken:
-            tags.append(label)
-            taken = taken.replace(f' {spelled} ', ' ')
-    for term in concept_vocabulary():
-        spelled = _as_words(term)
-        if spelled and f' {spelled} ' in taken:
-            concepts.append(term)
-            taken = taken.replace(f' {spelled} ', ' ')
-    return tags, concepts
-
-
-def _within_pool_rank(values):
-    values = np.asarray(values, dtype=np.float64)
-    if values.size < 2:
-        return np.ones(values.size)
-    order = np.argsort(np.argsort(values))
-    return order / float(values.size - 1)
-
-
-def attribute_columns(tracks, tags, concepts):
-    columns = []
-    present = [index for index, track in enumerate(tracks) if track['clap'] is not None]
-    if concepts and len(present) >= 2:
-        from .clap_steering import concept_scores
-
-        fired = concept_scores([tracks[index]['clap'] for index in present], concepts)
-        for values in fired.values():
-            column = np.zeros(len(tracks))
-            column[present] = _within_pool_rank(values)
-            columns.append(column)
-    for tag in tags:
-        columns.append(_within_pool_rank(
-            [parse_scores(track['mood_vector']).get(tag, 0.0) for track in tracks]
-        ))
-    return columns
-
-
-def _rank_product(columns, size):
-    product = np.ones(size)
-    for column in columns:
-        product = product * np.maximum(column, 1e-6)
-    return product
-
-
 def enough_artists(tracks, indexes):
     cap = config.MAX_SONGS_PER_ARTIST
     if not cap or cap <= 0:
@@ -801,23 +961,191 @@ def enough_artists(tracks, indexes):
     return len(names) * cap >= config.ALBUM_CREATION_TRACKS * ARTIST_HEADROOM
 
 
-def keep_named_attributes(tracks, tags, concepts, needed):
-    columns = attribute_columns(tracks, tags, concepts)
-    if not columns or len(tracks) <= needed:
+def clap_similarity(tracks, clap_query):
+    scores = np.full(len(tracks), -1.0)
+    query = np.asarray(clap_query, dtype=np.float32).reshape(-1)
+    present = [
+        index for index, track in enumerate(tracks)
+        if track['clap'] is not None and len(track['clap']) == query.size
+    ]
+    if present:
+        scores[present] = (
+            unit_rows([tracks[index]['clap'] for index in present]) @ unit_rows([query])[0]
+        )
+    return scores
+
+
+def _spelled(text):
+    return ' ' + _SPACES.sub(' ', _NOT_WORD.sub(' ', str(text or '').lower())).strip() + ' '
+
+
+def named_tags(query):
+    spelled = _spelled(query)
+    found = []
+    for label in sorted({str(x) for x in config.MOOD_LABELS}, key=len, reverse=True):
+        marked = _spelled(label)
+        if marked.strip() and marked in spelled:
+            found.append(label)
+            spelled = spelled.replace(marked, ' ')
+    return found
+
+
+def named_moods(query):
+    words = set(_spelled(query).split())
+    return list(dict.fromkeys(
+        mood for word, mood in TAG_MOOD_ALIASES.items() if word in words
+    ))
+
+
+def _tag_scorers(query):
+    scorers = []
+    for label in named_tags(query):
+        scorers.append((label, lambda track, key=label:
+                        parse_scores(track['mood_vector']).get(key, 0.0)))
+    for mood in named_moods(query):
+        scorers.append((mood, lambda track, key=mood: track['moods'].get(key, 0.0)))
+    return scorers
+
+
+def keep_named_tags(tracks, query, needed):
+    scorers = _tag_scorers(query)
+    if not scorers or len(tracks) <= needed:
         return tracks
-    kept = list(range(len(tracks)))
-    target = max(needed, ATTRIBUTE_KEEP)
-    step = (target / float(len(kept))) ** (1.0 / (len(columns) * ATTRIBUTE_PASSES))
-    for _pass in range(ATTRIBUTE_PASSES):
-        for column in columns:
-            wanted = max(target, int(round(len(kept) * step)))
-            narrowed = sorted(kept, key=lambda index, scores=column: -scores[index])[:wanted]
-            if len(narrowed) >= needed and enough_artists(tracks, narrowed):
-                kept = narrowed
-    product = _rank_product(columns, len(tracks))
+    held = []
+    for label, score in scorers:
+        values = [score(track) for track in tracks]
+        floor = float(np.quantile(values, TAG_KEEP_QUANTILE))
+        kept = [track for track, value in zip(tracks, values) if value >= floor]
+        if len(kept) >= needed:
+            tracks = kept
+            held.append(label)
+    if held:
+        logger.info(
+            "The analysis itself names %s; %d candidates carry them.", held, len(tracks)
+        )
+    return tracks
+
+
+def catalogue_terms():
+    try:
+        from .clap_steering import concept_terms
+
+        return sorted(concept_terms(), key=len, reverse=True)
+    except Exception:
+        logger.exception("The DCLAP concept catalogue could not be read")
+        return []
+
+
+def query_facets(query):
+    spelled = ' ' + _SPACES.sub(' ', _NOT_WORD.sub(' ', str(query or '').lower())).strip() + ' '
+    found = []
+    for term in catalogue_terms():
+        marked = ' ' + _SPACES.sub(' ', _NOT_WORD.sub(' ', term.lower())).strip() + ' '
+        if marked.strip() and marked in spelled:
+            found.append(term)
+            spelled = spelled.replace(marked, ' | ')
+    for piece in spelled.split('|'):
+        words = [word for word in piece.split()
+                 if word not in FACET_STOP_WORDS and len(word) > 2]
+        if words:
+            found.append(' '.join(words))
+    return list(dict.fromkeys(found))
+
+
+def facet_anchor(word, axis_index):
+    from .clap_analyzer import get_text_embedding
+
+    spoken = [get_text_embedding(shape.format(word)) for shape in FACET_TEMPLATES]
+    spoken = [vector for vector in spoken if vector is not None]
+    if not spoken:
+        return None
+    text = unit_rows([unit_rows(spoken).mean(axis=0)])[0]
+    try:
+        heard = load_tracks(text_pool_ids(text, FACET_PRF_TRACKS), axis_index)
+    except Exception:
+        logger.exception("The DCLAP index could not answer for the facet %r", word)
+        return text
+    sounds = [row['clap'] for row in heard if row['clap'] is not None]
+    if not sounds:
+        return text
+    audio = unit_rows([unit_rows(sounds).mean(axis=0)])[0]
+    return unit_rows([FACET_TEXT_SHARE * text + (1.0 - FACET_TEXT_SHARE) * audio])[0]
+
+
+def facet_scores(tracks, anchors):
+    present = [index for index, track in enumerate(tracks) if track['clap'] is not None]
+    if not present:
+        return present, None
+    units = unit_rows([tracks[index]['clap'] for index in present])
+    rows = []
+    for anchor in anchors:
+        raw = units @ anchor
+        low = float(np.quantile(raw, 0.10))
+        high = float(np.quantile(raw, 0.99))
+        rows.append(np.clip((raw - low) / max(high - low, 1e-6), 0.0, 1.0))
+    return present, np.vstack(rows)
+
+
+def _facet_survivors(scores, head, gates, fights, keep):
+    ranked = list(np.argsort(-scores[fights].min(axis=0)))
+    floors = {index: float(np.quantile(scores[index, head], FACET_GATE_FLOOR))
+              for index in gates}
+    while True:
+        allowed = np.ones(scores.shape[1], dtype=bool)
+        for index, floor in floors.items():
+            allowed &= scores[index] >= floor
+        picked = [int(pick) for pick in ranked if allowed[pick]][:keep]
+        if len(picked) >= keep or not floors:
+            break
+        floors.pop(min(floors, key=lambda index: floors[index]))
+    if len(picked) < keep:
+        picked = [int(pick) for pick in ranked[:keep]]
+    return picked
+
+
+def keep_by_facets(tracks, seed, needed, axis_index):
     keep = max(needed, ATTRIBUTE_KEEP)
-    best = sorted(kept, key=lambda index: -product[index])[:keep]
-    return [tracks[index] for index in sorted(best)]
+    facets = query_facets(seed['label'])
+    if len(facets) < 2 or len(tracks) <= keep:
+        return tracks
+    anchors = [facet_anchor(word, axis_index) for word in facets]
+    anchors = [anchor for anchor in anchors if anchor is not None]
+    if len(anchors) < 2:
+        return tracks
+    present, scores = facet_scores(tracks, anchors)
+    if scores is None or len(present) <= keep:
+        return tracks
+    plain = clap_similarity([tracks[index] for index in present], seed['clap_query'])
+    head = np.argsort(-plain)[:keep]
+    met = scores[:, head].mean(axis=1)
+    fights = [int(index) for index in np.argsort(met) if met[index] < FACET_GATE_MET]
+    if not fights:
+        fights = [int(np.argmin(met))]
+    gates = [index for index in range(len(anchors)) if index not in fights]
+    logger.info(
+        "Album facets %s: fighting for %s, holding %s.",
+        facets, [facets[index] for index in fights], [facets[index] for index in gates],
+    )
+    chosen = _facet_survivors(scores, head, gates, fights, keep)
+    return [tracks[present[index]] for index in sorted(chosen)]
+
+
+def keep_nearest_candidates(tracks, clap_query, needed):
+    keep = max(needed, ATTRIBUTE_KEEP)
+    if clap_query is None or len(tracks) <= keep:
+        return tracks
+    scores = clap_similarity(tracks, clap_query)
+    ranked = sorted(range(len(tracks)), key=lambda index: -scores[index])
+    while keep < len(ranked):
+        best = ranked[:keep]
+        if enough_artists(tracks, best):
+            return [tracks[index] for index in sorted(best)]
+        keep = min(len(ranked), keep * ATTRIBUTE_WIDEN)
+    logger.info(
+        "The %d nearest candidates never covered enough artists; keeping the whole pool.",
+        max(needed, ATTRIBUTE_KEEP),
+    )
+    return tracks
 
 
 def text_pool_ids(embedding, count):
@@ -859,24 +1187,19 @@ def _text_seed(query, steering=None):
     if len(words) > TEXT_QUERY_MAX_WORDS:
         raise AlbumSeedError(f"Use at most {TEXT_QUERY_MAX_WORDS} words to describe the album.")
     clean_query = ' '.join(words)
-    embedding = _text_embedding(clean_query, steering)
-    tags, concepts = named_attributes(clean_query)
-    named = [_text_embedding(word) for word in tags + concepts] if len(tags + concepts) > 1 else []
     return {
         'type': SEED_TEXT,
         'label': clean_query,
         'name': clean_query[:1].upper() + clean_query[1:],
         'query': None,
-        'clap_query': embedding,
+        'clap_query': _text_embedding(clean_query, steering),
         'lyric_query': None,
         'required': [],
         'excluded_ids': set(),
         'target': config.ALBUM_CREATION_COHESION,
         'holiday': is_holiday_text(clean_query),
         'year': None,
-        'tags': tags,
-        'concepts': concepts + [term['term'] for term in (steering or []) if term.get('direction') != 'less'],
-        'named_queries': named,
+        'voice': asked_voice(clean_query),
     }
 
 
@@ -981,13 +1304,16 @@ def _public_track(track, slot, role):
 
 
 def text_pool_ids_for(seed, first, seen=None):
-    named = seed.get('named_queries') or []
-    ids = list(text_pool_ids(seed['clap_query'], first))
-    share = max(first // 2, POOL_FIRST_QUERY)
-    for embedding in named:
-        ids.extend(text_pool_ids(embedding, share))
     known = seen if seen is not None else set()
-    return [item_id for item_id in dict.fromkeys(ids) if item_id not in known]
+    wanted = list(text_pool_ids(seed['clap_query'], first))
+    for label in named_tags(seed.get('label')):
+        try:
+            wanted.extend(tag_pool_ids(label, TAG_POOL_QUERY))
+        except Exception:
+            logger.exception("The analysis tag %r could not be read for the pool", label)
+            _rollback_quietly()
+            break
+    return [item_id for item_id in dict.fromkeys(wanted) if item_id not in known]
 
 
 def seed_unit(seed, units, clap_vectors):
@@ -1047,7 +1373,12 @@ def create_album(seed_type, item_id=None, query=None, steering=None, rng=None, t
     clean = gather_candidates(seed, axis_index, holiday_allowed, needed)
     if seed['type'] == SEED_TEXT:
         seed['year'] = median_year(clean[:ERA_SAMPLE])
-        clean = keep_named_attributes(clean, seed['tags'], seed['concepts'], needed)
+        clean = keep_asked_voice(clean, seed.get('voice'), needed)
+        clean = keep_named_tags(clean, seed['label'], needed)
+        narrowed = keep_by_facets(clean, seed, needed, axis_index)
+        clean = narrowed if narrowed is not clean else keep_nearest_candidates(
+            clean, seed['clap_query'], needed
+        )
     tracks = required + keep_lyric_neighbours(
         keep_preferred(
             clean,
@@ -1080,14 +1411,20 @@ def create_album(seed_type, item_id=None, query=None, steering=None, rng=None, t
         config.MAX_SONGS_PER_ARTIST,
         None,
         rng,
-        other_voices(voice_units, voice_query, [track['has_lyrics'] for track in tracks]),
+        other_voices(
+            voice_units, voice_query, [track['has_lyrics'] for track in tracks],
+            reachable_voice(
+                voice_units, [track['has_lyrics'] for track in tracks],
+                seed.get('voice'), config.ALBUM_CREATION_TRACKS,
+            ),
+        ),
     )
     picked = [tracks[index] for index in chosen]
     picked_units = units[chosen]
     style = opener_style([track['top_genre'] for track in picked])
     order = sequence_album(
         album_features(picked, picked_units), style,
-        [_clean_author(track['author']) for track in picked],
+        [_clean_author(track['author']) for track in picked], picked_units,
     )
     seconds = sum(track['duration'] or 0.0 for track in picked)
     return {

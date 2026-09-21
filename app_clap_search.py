@@ -118,8 +118,13 @@ def clap_search_api():
                       description: >
                         Any number. It is SNAPPED to the nearest of the steps
                         /api/clap/concepts publishes as alpha_steps
-                        (CLAP_SAE_ALPHA_STEPS, currently 1, 2, 3, 5), never
-                        rejected, so this is not an enum.
+                        (CLAP_SAE_ALPHA_STEPS, currently 1, 2, 3, 5, 10),
+                        never rejected, so this is not an enum. A concept
+                        re-ranks the neighbourhood the words already chose: the
+                        higher steps sharpen a description that points the right
+                        way, and 10 is the strongest offered because further up
+                        the concept starts overruling the words instead of
+                        refining them.
                     direction:
                       type: string
                       enum: [more, less]
@@ -506,8 +511,16 @@ def top_queries_api():
         return jsonify({'queries': [], 'ready': False, 'message': 'CLAP disabled'}), 200
 
     try:
+        from database import DEFAULT_TEXT_SEARCH_STEERING
+
         queries = get_cached_top_queries()
-        return jsonify({'queries': queries, 'ready': len(queries) > 0}), 200
+        steering = {
+            query: DEFAULT_TEXT_SEARCH_STEERING[query]
+            for query in queries if query in DEFAULT_TEXT_SEARCH_STEERING
+        }
+        return jsonify({
+            'queries': queries, 'ready': len(queries) > 0, 'steering': steering,
+        }), 200
     except Exception as exc:
         logger.exception("Failed to get top queries")
         return json_exception(
