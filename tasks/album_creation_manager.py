@@ -123,16 +123,18 @@ PREFERENCE_HEADROOM = 3
 WEEKLY_SEED_SAMPLE = 25
 
 _BRACKETED = re.compile(r"[\(\[][^\)\]]*[\)\]]")
-_DASH_SUFFIX = re.compile(r"\s+-\s+[^\n]*$")
+_DASH_SUFFIX = re.compile(r"(?<!\s)\s+-\s+[^\n]*$")
 _NOT_WORD = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACES = re.compile(r"\s+")
-_YEAR_TAG = re.compile(r"\s+(?:['\N{RIGHT SINGLE QUOTATION MARK}]\d{2}|(?:19|20)\d{2})\s*$")
+_YEAR_TAG = re.compile(
+    r"(?<!\s)\s+(?:['\N{RIGHT SINGLE QUOTATION MARK}]\d{2}|(?:19|20)\d{2})\s*$"
+)
 _VERSION_TITLE = re.compile(
     r"(?:\b(?:live|demo|remix|rmx|karaoke|rehearsal|skit|interlude|intro|outro|"
     r"reprise|alternate|dal vivo)\b|\btake \d)",
     re.IGNORECASE,
 )
-_TITLE_SUFFIX = re.compile(r"[\(\[]([^\)\]]*)[\)\]]|\s+-\s+([^\n]*)$")
+_TITLE_SUFFIX = re.compile(r"(?:[\(\[]([^\)\]]*)[\)\]])|(?:(?<!\s)\s+-\s+([^\n]*)$)")
 _ALTERNATE_SUFFIX = re.compile(
     r"\b(mix|mixed|edit|version|ver|instrumental|acoustic|a ?capp?ella|sessions?|outtake|"
     r"commentary|interview|show|concert|stripped|orchestral|symphonic|extended|dub|unplugged|"
@@ -309,12 +311,60 @@ def zscores(values):
     return (data - mean) / spread
 
 
+def _artist_has_room(author, artist_counts, max_per_artist, exempt_author):
+    if not author or author == exempt_author or not max_per_artist or max_per_artist <= 0:
+        return True
+    return artist_counts[author] < max_per_artist
+
+
+def _open_candidates(total, taken, keys, used_keys, authors, artist_counts,
+                     max_per_artist, exempt_author, other_voice, other_voices):
+    open_indices = []
+    for index in range(total):
+        if taken[index]:
+            continue
+        if keys[index] is not None and keys[index] in used_keys:
+            continue
+        if other_voice is not None and other_voice[index] and other_voices[0] >= OTHER_VOICE_CAP:
+            continue
+        if _artist_has_room(authors[index], artist_counts, max_per_artist, exempt_author):
+            open_indices.append(index)
+    return np.array(open_indices, dtype=np.int64)
+
+
+def _commit_pick(pick, chosen, taken, authors, artist_counts, keys, used_keys,
+                 other_voice, other_voices):
+    chosen.append(pick)
+    taken[pick] = True
+    if authors[pick]:
+        artist_counts[authors[pick]] += 1
+    if keys[pick] is not None:
+        used_keys.add(keys[pick])
+    if other_voice is not None and other_voice[pick]:
+        other_voices[0] += 1
+
+
+def _narrow_to_the_best_candidates(open_indices, weakest_link, similarity_sum,
+                                   count, target, rng):
+    linked = open_indices[weakest_link[open_indices] >= PAIR_FLOOR]
+    if linked.size:
+        open_indices = linked
+    near = open_indices[similarity_sum[open_indices] / count >= target - SELECTION_FLOOR]
+    if near.size:
+        open_indices = near
+    if open_indices.size > SELECTION_SAMPLE:
+        open_indices = rng.choice(open_indices, SELECTION_SAMPLE, replace=False)
+    return open_indices
+
+
+def _first_anchor(units, query_unit, rng):
+    nearest = np.argsort(-(units @ query_unit))[:ANCHOR_NEAREST]
+    return [int(rng.choice(nearest))]
+
+
 def select_album_tracks(units, query_unit, authors, keys, required, size, target,
                         max_per_artist, exempt_author, rng, other_voice=None):
-    chosen = list(required)
-    if not chosen:
-        nearest = np.argsort(-(units @ query_unit))[:ANCHOR_NEAREST]
-        chosen = [int(rng.choice(nearest))]
+    chosen = list(required) or _first_anchor(units, query_unit, rng)
     artist_counts = Counter(authors[index] for index in chosen if authors[index])
     used_keys = {keys[index] for index in chosen if keys[index] is not None}
     taken = np.zeros(len(units), dtype=bool)
@@ -325,43 +375,25 @@ def select_album_tracks(units, query_unit, authors, keys, required, size, target
 
     other_voices = [sum(1 for index in chosen if other_voice is not None and other_voice[index])]
 
-    def allowed(index):
-        if taken[index] or (keys[index] is not None and keys[index] in used_keys):
-            return False
-        if other_voice is not None and other_voice[index] and other_voices[0] >= OTHER_VOICE_CAP:
-            return False
-        author = authors[index]
-        if not author or author == exempt_author or not max_per_artist or max_per_artist <= 0:
-            return True
-        return artist_counts[author] < max_per_artist
-
     while len(chosen) < size:
         count = len(chosen)
-        open_indices = np.array([i for i in range(len(units)) if allowed(i)], dtype=np.int64)
+        open_indices = _open_candidates(
+            len(units), taken, keys, used_keys, authors, artist_counts,
+            max_per_artist, exempt_author, other_voice, other_voices,
+        )
         if open_indices.size == 0:
             break
-        linked = open_indices[weakest_link[open_indices] >= PAIR_FLOOR]
-        if linked.size:
-            open_indices = linked
-        near = open_indices[similarity_sum[open_indices] / count >= target - SELECTION_FLOOR]
-        if near.size:
-            open_indices = near
-        if open_indices.size > SELECTION_SAMPLE:
-            open_indices = rng.choice(open_indices, SELECTION_SAMPLE, replace=False)
+        open_indices = _narrow_to_the_best_candidates(
+            open_indices, weakest_link, similarity_sum, count, target, rng
+        )
         after = (pair_sum + similarity_sum[open_indices]) / ((count + 1) * count / 2.0)
         pick = int(open_indices[int(np.argmin(np.abs(after - target)))])
         pair_sum += float(similarity_sum[pick])
         to_pick = units @ units[pick]
         similarity_sum = similarity_sum + to_pick
         weakest_link = np.minimum(weakest_link, to_pick)
-        chosen.append(pick)
-        taken[pick] = True
-        if authors[pick]:
-            artist_counts[authors[pick]] += 1
-        if keys[pick] is not None:
-            used_keys.add(keys[pick])
-        if other_voice is not None and other_voice[pick]:
-            other_voices[0] += 1
+        _commit_pick(pick, chosen, taken, authors, artist_counts, keys, used_keys,
+                     other_voice, other_voices)
     return chosen
 
 
@@ -903,7 +935,7 @@ def candidate_pool(query_vector, axis_index=None, clap_query=None, first=POOL_FI
                    carried=None):
     if not ensure_ivf_index_loaded():
         raise RuntimeError("The similarity index is not loaded; run the analysis first.")
-    seen, tracks = (carried if carried is not None else (dict(), []))
+    seen, tracks = (carried if carried is not None else ({}, []))
     fresh = [item_id for item_id in similar_song_ids(query_vector, first) if item_id not in seen]
     fresh += [
         item_id for item_id in clap_song_ids(clap_query, min(first, POOL_CLAP_QUERY))
@@ -958,7 +990,7 @@ def text_pool_ids_for(seed, first, seen=None):
     return [item_id for item_id in dict.fromkeys(ids) if item_id not in known]
 
 
-def seed_unit(seed, tracks, units, clap_vectors):
+def seed_unit(seed, units, clap_vectors):
     if seed['query'] is not None:
         return mixed_rows(
             [seed['query']], None if clap_vectors is None else [seed['clap_query']]
@@ -1034,7 +1066,7 @@ def create_album(seed_type, item_id=None, query=None, steering=None, rng=None, t
 
     tracks, clap_vectors = with_clap(tracks, len(required), config.ALBUM_CREATION_TRACKS)
     units = mixed_rows([track['vector'] for track in tracks], clap_vectors)
-    query_unit = seed_unit(seed, tracks, units, clap_vectors)
+    query_unit = seed_unit(seed, units, clap_vectors)
     voice_units = units if clap_vectors is None else unit_rows(clap_vectors)
     voice_query = query_unit if clap_vectors is None else _voice_query(seed, clap_vectors)
     chosen = select_album_tracks(

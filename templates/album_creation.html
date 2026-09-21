@@ -48,6 +48,16 @@
             flex-wrap: wrap;
             gap: 0.4rem;
         }
+        /* This one names the button group through aria-labelledby, so it is a
+           span and not a label. style.css gives its typography to the label
+           element itself, so the span has to restate it or "Start from:" stops
+           matching the real labels beside it. */
+        #seed-type-label {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
         #seed-selected {
             margin-top: 0.5rem;
             font-size: 0.9rem;
@@ -109,13 +119,13 @@
             <legend>Seed</legend>
             <div class="param-group">
                 <div>
-                    <label id="seed-type-label" class="label-with-tooltip">
+                    <span id="seed-type-label" class="label-with-tooltip">
                         Start from:
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
                             <span class="tooltip-text">A song stays in the album, in the slot that fits it. A text search builds the album from your words: name a genre and an instrument and both are checked against every track.</span>
                         </span>
-                    </label>
+                    </span>
                     <div class="seed-types" role="group" aria-labelledby="seed-type-label">
                         <button type="button" class="btn btn-primary btn-sm" data-seed="song" aria-pressed="true">Song</button>
                         <button type="button" class="btn btn-ghost btn-sm" data-seed="text" aria-pressed="false">Text Search</button>
@@ -577,7 +587,7 @@
                 document.getElementById('stat-minutes').textContent = stats.minutes + ' min';
                 document.getElementById('stat-artists').textContent = stats.artists;
                 const cohesion = document.getElementById('stat-cohesion');
-                const known = typeof stats.cohesion === 'number' && isFinite(stats.cohesion);
+                const known = Number.isFinite(stats.cohesion);
                 cohesion.textContent = known ? Number(stats.cohesion).toFixed(2) : '';
                 cohesion.closest('.album-stat-card').classList.toggle('hidden', !known);
                 seedLine.textContent = 'Seed: ' + album.seed.label;

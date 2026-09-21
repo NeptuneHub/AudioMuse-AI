@@ -385,7 +385,8 @@ def test_album_creation(flow, lib):
     assert [seed.title, seed.artist] in shown, shown
     badges = page.locator('#results-table-wrapper .similarity-badge').all_inner_texts()
     assert len(badges) == len(tracks), badges
-    assert badges[:3] == ['Opener', 'Single', 'Single'] and badges[-1] == 'Closer', badges
+    assert badges[:3] == ['Opener', 'Single', 'Single'], badges
+    assert badges[-1] == 'Closer', badges
     assert set(badges[3:-1]) <= {'Track'}, badges
     assert page.locator('#stat-tracks').inner_text().strip() == str(len(tracks))
     page.locator('#playlist-creator').wait_for(state='visible', timeout=PICK_TIMEOUT_MS)
@@ -443,7 +444,8 @@ def test_album_of_the_week_is_scheduled_and_disabled_from_the_scheduled_tasks_pa
         page.check('#album-of-the-week-enabled')
         _save_schedules(page, saved)
         row = _cron_row(api, 'album_of_the_week')
-        assert row['enabled'] is True and row['cron_expr'] == '* * * * *', row
+        assert row['enabled'] is True, row
+        assert row['cron_expr'] == '* * * * *', row
         assert row['name'] == 'Album of the Week', row
 
         deadline = time.monotonic() + CRON_TICK_TIMEOUT_S
@@ -459,7 +461,8 @@ def test_album_of_the_week_is_scheduled_and_disabled_from_the_scheduled_tasks_pa
         page.fill('#album-of-the-week-cron', '30 0 * * 6')
         _save_schedules(page, saved)
         row = _cron_row(api, 'album_of_the_week')
-        assert row['enabled'] is False and row['cron_expr'] == '30 0 * * 6', row
+        assert row['enabled'] is False, row
+        assert row['cron_expr'] == '30 0 * * 6', row
 
         deadline = time.monotonic() + CRON_PLAYLIST_TIMEOUT_S
         playlist = navidrome.playlist_by_name(ALBUM_OF_THE_WEEK_PLAYLIST)
@@ -469,7 +472,8 @@ def test_album_of_the_week_is_scheduled_and_disabled_from_the_scheduled_tasks_pa
         assert playlist is not None, [p.get('name') for p in navidrome.playlists()]
         api.wait_idle(300)
         entries = navidrome.playlist_entry_ids(playlist['id'])
-        assert 4 <= len(entries) <= 12 and len(entries) == len(set(entries)), entries
+        assert 4 <= len(entries) <= 12, entries
+        assert len(entries) == len(set(entries)), entries
 
         stamped_after = _cron_row(api, 'album_of_the_week')['last_run']
         time.sleep(CRON_QUIET_S)
