@@ -2440,7 +2440,7 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    those weights in a 202-track index: 30 of 30 clean 20 s clips taken from
    random positions (scores 0.81 to 0.99), and all four real phone
    recordings at rank 1 with scores 0.48 to 0.68 and leads 0.33 to 0.51,
-   among them the clip from the end of "Back in Black" that no stored
+   among them a clip taken from the end of a track, which no stored
    chromaprint could ever match; a synthetic degradation harsher than the
    phone (ten random resonances, strong early reflections, noise) still gave
    17 of 30 with no wrong top candidate above 0.26. The thresholds sit
@@ -2470,7 +2470,7 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    200,453 on the reference phone clip and found the song first in 50 to 70
    percent of degraded library queries, but the stored fingerprints cover
    only the first 120 seconds of each track, a phone clip needed close to a
-   minute, and a clip from the end of "Back in Black" could never match. The
+   minute, and a clip from the end of a track could never match. The
    neural fingerprint identified all of those clips at 10 to 20 seconds, so
    the chromaprint path was retired rather than kept as a second tab.
 6. **The index in the web process.** Flask syncs and maps the stored build
@@ -2700,8 +2700,9 @@ only parses the request and scopes the answer to a server.
    When the DCLAP index is not loaded the pool is the MusiCNN one.
 5. **The target is calibrated, not copied.** A real album is one artist. The
    same 0.80 between DIFFERENT artists is a change of genre: at that target a
-   Nick Drake seed gave indie rock, a Battisti seed ambient piano and Billie
-   Jean 2020s hip-hop. The target is therefore calibrated against real albums on
+   folk seed gave indie rock, a singer-songwriter seed ambient piano and an
+   80s pop seed 2020s hip-hop. The target is therefore calibrated against real
+   albums on
    the DCLAP concept model, which names instruments and voices: at 0.86 in the
    mixed space a created album holds its instruments together as tightly as a
    real album (0.79 against 0.79) and its voices as tightly (0.82 against 0.81),
