@@ -1467,6 +1467,22 @@ class TestTheAskedVoice:
         flags = [True] * 16 + [False] * 16
         assert acm.reachable_voice(units, flags, True, 12) is True
 
+    def test_a_narrowing_that_leaves_one_artist_is_refused(self, monkeypatch):
+        monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST', 3)
+        monkeypatch.setattr(config, 'ALBUM_CREATION_TRACKS', 12)
+        crowded = [
+            _track(f'v{index}', [1.0, 0.01 * index], author='Various Artists',
+                   mood_vector='rock:0.9')
+            for index in range(60)
+        ]
+        varied = [
+            _track(f'a{index}', [0.2, 1.0], author=f'Artist {index}',
+                   mood_vector='rock:0.1')
+            for index in range(60)
+        ]
+        kept = acm.keep_named_tags(crowded + varied, 'rock album', 12)
+        assert len(kept) == 120
+
     def test_the_voice_cap_counts_against_what_the_words_asked_not_the_seed(self):
         units = acm.unit_rows(
             [[1.0, 0.02 * i] for i in range(14)] + [[-1.0, 0.02 * i] for i in range(14)]

@@ -112,8 +112,7 @@ FACET_TEXT_SHARE = 0.5
 FACET_GATE_MET = 0.55
 FACET_GATE_FLOOR = 0.35
 TAG_KEEP_QUANTILE = 0.75
-TAG_POOL_QUERY = 400
-TAG_POOL_SCAN = 8000
+TAG_POOL_DEPTH = 3
 TAG_MOOD_ALIASES = {
     'angry': 'aggressive', 'aggressive': 'aggressive', 'furious': 'aggressive',
     'happy': 'happy', 'joyful': 'happy', 'sad': 'sad', 'melancholic': 'sad',
@@ -788,42 +787,6 @@ def _ids_for(sql, params):
         cur.close()
 
 
-def _rollback_quietly():
-    from database import get_db
-
-    try:
-        get_db().rollback()
-    except Exception:
-        logger.exception("The album pool could not clear the failed transaction")
-
-
-def _rows_for(sql, params):
-    from database import get_db
-
-    cur = get_db().cursor()
-    try:
-        cur.execute(sql, params)
-        return cur.fetchall()
-    finally:
-        cur.close()
-
-
-def tag_pool_ids(label, count):
-    from database import like_contains_pattern
-
-    rows = _rows_for(
-        "SELECT s.item_id, s.mood_vector FROM score s "
-        "JOIN clap_embedding c ON c.item_id = s.item_id "
-        "WHERE s.mood_vector LIKE %s LIMIT %s",
-        (like_contains_pattern(label + ':'), TAG_POOL_SCAN),
-    )
-    scored = sorted(
-        ((parse_scores(packed).get(label, 0.0), item_id) for item_id, packed in rows),
-        key=lambda pair: -pair[0],
-    )
-    return available_ids([item_id for _score, item_id in scored[:count]])
-
-
 def _clean_author(author):
     return (author or '').strip().lower() if normalize_meta(author) else ''
 
@@ -1016,7 +979,7 @@ def keep_named_tags(tracks, query, needed):
         values = [score(track) for track in tracks]
         floor = float(np.quantile(values, TAG_KEEP_QUANTILE))
         kept = [track for track, value in zip(tracks, values) if value >= floor]
-        if len(kept) >= needed:
+        if len(kept) >= needed and enough_artists(kept, range(len(kept))):
             tracks = kept
             held.append(label)
     if held:
@@ -1127,7 +1090,14 @@ def keep_by_facets(tracks, seed, needed, axis_index):
         facets, [facets[index] for index in fights], [facets[index] for index in gates],
     )
     chosen = _facet_survivors(scores, head, gates, fights, keep)
-    return [tracks[present[index]] for index in sorted(chosen)]
+    narrowed = [tracks[present[index]] for index in sorted(chosen)]
+    if not enough_artists(narrowed, range(len(narrowed))):
+        logger.info(
+            "Weighing the facets left only %d artists; keeping the pool instead.",
+            len({_clean_author(track['author']) for track in narrowed}),
+        )
+        return tracks
+    return narrowed
 
 
 def keep_nearest_candidates(tracks, clap_query, needed):
@@ -1305,15 +1275,11 @@ def _public_track(track, slot, role):
 
 def text_pool_ids_for(seed, first, seen=None):
     known = seen if seen is not None else set()
-    wanted = list(text_pool_ids(seed['clap_query'], first))
-    for label in named_tags(seed.get('label')):
-        try:
-            wanted.extend(tag_pool_ids(label, TAG_POOL_QUERY))
-        except Exception:
-            logger.exception("The analysis tag %r could not be read for the pool", label)
-            _rollback_quietly()
-            break
-    return [item_id for item_id in dict.fromkeys(wanted) if item_id not in known]
+    deeper = first * TAG_POOL_DEPTH if named_tags(seed.get('label')) else first
+    return [
+        item_id for item_id in text_pool_ids(seed['clap_query'], deeper)
+        if item_id not in known
+    ]
 
 
 def seed_unit(seed, units, clap_vectors):
