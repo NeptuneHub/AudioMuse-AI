@@ -1449,7 +1449,7 @@ def create_album_of_the_week():
     return None
 
 
-def run_album_of_the_week_task(server_scope="all"):
+def run_album_of_the_week_task(server_scope="all", inline_task_id=None):
     from config import ALBUM_OF_THE_WEEK_PLAYLIST_NAME
     from .task_run import run_playlist_task_per_server
 
@@ -1463,5 +1463,5 @@ def run_album_of_the_week_task(server_scope="all"):
     return run_playlist_task_per_server(
         'album_of_the_week', 'album of the week',
         ALBUM_OF_THE_WEEK_PLAYLIST_NAME, 'Album of the Week',
-        build_ids, server_scope,
+        build_ids, server_scope, inline_task_id,
     )

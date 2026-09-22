@@ -30,10 +30,9 @@ Main Features:
   main-task start runs. It is SESSION scoped on purpose: the cleanup commits in
   the middle of that sequence, and a transaction lock would be released by that
   commit, reopening the very gap it closes.
-* The start filters come from task_types: sonic_fingerprint is deliberately not
-  blocking, so a fingerprint no longer refuses an analysis or a clustering over
-  the same catalogue, and the rows that may never refuse a batch start (restart
-  handshake, inline radio, migration PLANNER) are machinery, not catalogue work.
+* The start filters come from task_types: the inline online runs (radio, sonic
+  fingerprint, album of the week) are deliberately not blocking, and neither
+  are the restart handshake and the migration PLANNER: none is catalogue work.
   server_sweep and the plugin tasks DO block, since they write the mappings a
   cleaning or a migration rewrites; excluding nothing at all once made a restart
   handshake answer 409 to a cleaning the user had just asked for.

@@ -35,6 +35,8 @@ Main Features:
   parent, was cancelled; tasks.task_run builds the shared cancel check on it
 * TaskFailed / TaskCancelled are the two things a task may raise to steer the
   queue's verdict: never retry, and revoked. Everything else it raises is retried
+* failure_record is the structured error a failed run records, shared by the
+  worker and the inline Flask runs so both write the same classified record
 A root enqueue clears the FINISHED rows before inserting itself (the whole
 retention policy); it never touches NEW or RUNNING rows. A side job
 (task_types.SIDE_JOB_TASK_TYPES) skips that clear, so starting it never erases the
@@ -131,6 +133,89 @@ def resolve_func(dotted):
         raise UnknownTaskFunction(f"{dotted} is not an allowed task function")
     module_name, _, attribute = dotted.rpartition('.')
     return getattr(importlib.import_module(module_name), attribute)
+
+
+_SUMMARY_LIMIT = 500
+_VERDICT_SUMMARY_LIMIT = 4000
+
+
+def error_summary(exc):
+    text = str(exc).strip() or exc.__class__.__name__
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return text[:_VERDICT_SUMMARY_LIMIT]
+    return text[:_SUMMARY_LIMIT]
+
+
+def failure_record(exc, error_code):
+    from error import error_manager
+
+    if isinstance(exc, error_manager.AudioMuseError):
+        return exc.to_dict()
+    return error_manager.build(error_manager.classify(exc, error_code), error_summary(exc))
+
+
+ERROR_AT_CLAIM_UNREAD = object()
+
+
+def final_message(status, error, summary=None):
+    import config
+
+    supplied = None
+    if isinstance(summary, dict):
+        supplied = summary.get('status_message') or summary.get('message')
+    if isinstance(supplied, str) and supplied.strip():
+        return supplied
+    if status == config.TASK_STATUS_SUCCESS:
+        return "Task completed successfully."
+    if status == config.TASK_STATUS_REVOKED:
+        return error or "Task was cancelled."
+    return error or "Task failed. Check the container logs for details."
+
+
+def terminal_log(previous_log, status, message, keep_log=False):
+    import config
+    from database import MAX_LOG_ENTRIES_STORED
+
+    if status == config.TASK_STATUS_SUCCESS and not keep_log:
+        return [f"Task completed successfully. Final status: {message}"]
+    log = list(previous_log) if isinstance(previous_log, list) else []
+    if keep_log and log and str(log[-1]).endswith(f"] {message}"):
+        return log[-MAX_LOG_ENTRIES_STORED:]
+    log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+    if len(log) > MAX_LOG_ENTRIES_STORED:
+        del log[:-MAX_LOG_ENTRIES_STORED]
+    return log
+
+
+def terminal_details(status, error, result, previous=None,
+                     error_at_claim=ERROR_AT_CLAIM_UNREAD, keep_log=False):
+    import config
+
+    details = dict(previous) if isinstance(previous, dict) else {}
+    record = None
+    summary = None
+    if status == config.TASK_STATUS_SUCCESS:
+        details.pop('error', None)
+        summary = result if isinstance(result, dict) else None
+    elif isinstance(result, dict) and 'error_code' in result:
+        record = result
+    if summary:
+        details.update({key: value for key, value in summary.items() if key != 'status'})
+        details['final_summary_details'] = summary
+    message = final_message(status, error, summary)
+    details['message'] = message
+    details['status_message'] = message
+    written = details.get('error')
+    written_this_attempt = (
+        isinstance(written, dict) and error_at_claim is not ERROR_AT_CLAIM_UNREAD
+        and written != error_at_claim
+    )
+    if record is not None and not written_this_attempt:
+        details['error'] = record
+    elif error and not isinstance(written, dict):
+        details['error'] = error
+    details['log'] = terminal_log(details.get('log'), status, message, keep_log=keep_log)
+    return details
 
 
 def _connection(conn):

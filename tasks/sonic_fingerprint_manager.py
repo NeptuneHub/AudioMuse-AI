@@ -19,7 +19,8 @@ Main Features:
 * run_sonic_fingerprint_task hands the ids it finds to the scheduled-playlist
   scaffold in tasks.task_run.run_playlist_task_per_server, shared with the album
   of the week, which owns the per-server loop, the cancel check, the reporter,
-  the heartbeat and the summary; the queue writes the terminal row. It raises
+  the heartbeat and the summary. The cron runs it INLINE in Flask, where the
+  index lives, and app_cron writes the terminal row. It raises
   only when EVERY server failed, so one unreachable server never fails the
   playlists the others got.
 """
@@ -36,7 +37,7 @@ from .ivf_manager import find_nearest_neighbors_by_vector
 logger = logging.getLogger(__name__)
 
 
-def run_sonic_fingerprint_task(server_scope="all"):
+def run_sonic_fingerprint_task(server_scope="all", inline_task_id=None):
     from config import SONIC_FINGERPRINT_CRON_PLAYLIST_NAME
     from .task_run import run_playlist_task_per_server
 
@@ -47,7 +48,7 @@ def run_sonic_fingerprint_task(server_scope="all"):
     return run_playlist_task_per_server(
         'sonic_fingerprint', 'sonic fingerprint',
         SONIC_FINGERPRINT_CRON_PLAYLIST_NAME, 'Sonic Fingerprint',
-        build_ids, server_scope,
+        build_ids, server_scope, inline_task_id,
     )
 
 

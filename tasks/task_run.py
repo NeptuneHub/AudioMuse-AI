@@ -15,16 +15,15 @@ error no retry can fix, TaskCancelled from its cancel check, and anything else
 for a failure worth retrying; the recap line goes in the dict it returns.
 The one terminal row a task writes is its own child's, through
 taskqueue.end_child. Before this module every task carried its own copy of the
-three things below - seven reporters, four cancellation mechanisms - and they
-drifted.
+three things below, and they drifted.
 
 Main Features:
 * task_run_prologue resolves the claimed id and the id to report under; it
   reads no row
 * make_cancel_check / cancel_guard is the ONE cooperative cancellation: it reads
   the task's own row and its parent's on a dedicated autocommit connection,
-  throttled to QUEUE_CANCEL_CHECK_SECONDS, and raises TaskCancelled. A read
-  that fails never cancels: a database blip is not a cancel. Every task calls
+  throttled to QUEUE_CANCEL_CHECK_SECONDS, and raises TaskCancelled. A failed
+  read never cancels. Every task calls
   it once with force=True BEFORE its first report, so a row a cancel wiped is
   never written to again. A parent is passed only by a supervised child that has
   nothing to report to once its parent is over; a task that merely carries
@@ -39,11 +38,12 @@ Main Features:
   connection (OperationalError or InterfaceError): swallowing that would march
   the loop over every remaining server on a dead connection
 * run_playlist_task_per_server is the WHOLE body of a scheduled one-playlist-
-  per-server task. The caller passes its label, playlist name, the name to fall
-  back to on a backend without upsert and a callable returning the ids;
-  the prologue, forced cancel check, reporter, heartbeat, the empty result that
+  per-server task. The caller passes its label, playlist names and a callable
+  returning the ids; the prologue, forced cancel check, reporter, heartbeat, the empty result that
   PRESERVES the previous playlist, the dated-playlist fallback and the rule that
-  only a failure on EVERY server fails the task live here once
+  only a failure on EVERY server fails the task live here once. Inline in Flask
+  (inline_task_id) app_cron writes the terminal row and the heartbeat beats
+  inside QUEUE_INLINE_STALE_SECONDS
 """
 
 import logging
@@ -51,6 +51,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
+import config
 import taskqueue
 from taskqueue import TaskCancelled, TaskFailed
 from config import (
@@ -276,26 +277,44 @@ def for_each_server_in_scope(scope, step, *, on_server=None, cancel=None):
     return servers, results, failed
 
 
+_INLINE_BEAT_FLOOR_SECONDS = 120.0
+
+
+def _playlist_heartbeat_cadence(inline):
+    from .recovery import slow_step_budget_minutes
+
+    wedged_minutes = config.QUEUE_WEDGED_MAIN_TASK_MINUTES
+    if not inline:
+        return None, slow_step_budget_minutes(wedged_minutes)
+    stale_seconds = max(float(config.QUEUE_INLINE_STALE_SECONDS), _INLINE_BEAT_FLOOR_SECONDS)
+    stale_minutes = stale_seconds / 60.0
+    return stale_minutes, slow_step_budget_minutes(wedged_minutes or stale_minutes)
+
+
 def run_playlist_task_per_server(task_type, label, playlist_name, fallback_name,
-                                 build_ids, server_scope="all"):
+                                 build_ids, server_scope="all", inline_task_id=None):
     from flask_app import app
-    from config import QUEUE_WEDGED_MAIN_TASK_MINUTES
 
     from .mediaserver import create_or_replace_playlist
     from .ivf_manager import create_playlist_from_ids
 
     with app.app_context():
-        from .recovery import row_heartbeat, slow_step_budget_minutes
+        from .recovery import row_heartbeat
 
-        claimed_task_id, task_id = task_run_prologue()
+        claimed_task_id, task_id = task_run_prologue(inline_task_id)
+        watched_task_id = claimed_task_id or inline_task_id
+        every_minutes, stop_after_minutes = _playlist_heartbeat_cadence(
+            inline=claimed_task_id is None and bool(inline_task_id)
+        )
         created = [0]
         current = ['resolving the server scope']
 
         def build(_server, server_name):
             current[0] = f"the {label} for {server_name}"
             with row_heartbeat(
-                claimed_task_id, lambda: current[0],
-                stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
+                watched_task_id, lambda: current[0],
+                every_minutes=every_minutes,
+                stop_after_minutes=stop_after_minutes,
             ):
                 track_ids = build_ids()
                 if not track_ids:
@@ -326,7 +345,7 @@ def run_playlist_task_per_server(task_type, label, playlist_name, fallback_name,
                 int(100 * index / max(1, total)),
             )
 
-        with cancel_guard(claimed_task_id) as cancel:
+        with cancel_guard(watched_task_id) as cancel:
             cancel(force=True)
             report = make_task_reporter(
                 task_id, task_type, f"Building the {label} playlist...",

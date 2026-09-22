@@ -13,7 +13,7 @@ main task" with a partial unique index over an INCLUSION list, while the start
 endpoints pre-check with an EXCLUSION list. A type missing from the exclusion
 list still 409s a Start even though the index would admit it - and worse,
 clean_up_previous_main_tasks then REVOKES that live run when the next start goes
-through. Cron-triggered sonic-fingerprint and plugin roots are exactly that case.
+through. Cron-triggered inline playlist and plugin roots are exactly that case.
 
 Main Features:
 * Every self-managed type reaches the query as an exclusion, prefixes included
@@ -56,11 +56,14 @@ class TestASelfManagedRootNeverGatesAMainStart:
 
         assert task_type in excluded
 
-    def test_the_fingerprint_root_still_gates_a_main_start(self):
-        assert 'sonic_fingerprint' not in database.SELF_MANAGED_TASK_TYPES, (
-            'a running fingerprint blocked an analysis or clustering start on main; '
-            'excluding it here let the two run concurrently over the same catalogue'
+    @pytest.mark.parametrize('task_type', ('sonic_fingerprint', 'album_of_the_week'))
+    def test_an_online_playlist_root_never_gates_a_main_start(self, task_type):
+        assert task_type in database.SELF_MANAGED_TASK_TYPES, (
+            f'{task_type} is an online run in Flask like the radio; a live one '
+            'must never refuse an analysis or clustering start, nor be revoked '
+            'by the cleanup that start runs'
         )
+        assert task_type in database.NON_BLOCKING_TASK_TYPES
 
 
 class TestAPluginRootIsExcludedByPrefixBecauseItsTypeIsDynamic:
