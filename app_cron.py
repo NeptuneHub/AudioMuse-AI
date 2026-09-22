@@ -22,10 +22,10 @@ Main Features:
   task_types.CRON_INLINE_TASKS through taskqueue.resolve_func.
 * Each row is claimed atomically for its wall-clock minute, so a restart or a
   second web process cannot double-fire it. A tick delayed by an inline run
-  evaluates every minute it missed, up to CRON_RETRY_MAX_MINUTES (an older batch
-  schedule becomes a visible skip); a wall-clock jump, told apart on the
-  monotonic clock, evaluates only the current minute. A row fires at most once
-  per tick.
+  catches up every BATCH minute it missed, up to CRON_RETRY_MAX_MINUTES (an older
+  batch schedule becomes a visible skip); online schedules only ever count the
+  current minute. A wall-clock jump, told apart on the monotonic clock, evaluates
+  only the current minute. A row fires at most once per tick.
 * In one tick the batch rows are dispatched first (they only enqueue); then the
   online rows run one after another, each at least 10 seconds after the previous
   one actually started, so schedules sharing a minute never start together.
@@ -1150,12 +1150,18 @@ def _due_cron_rows(rows, minutes, dropped):
     for r in rows:
         try:
             row_minutes, row_dropped = minutes, dropped
+            if r['task_type'] in INLINE_FLASK_TASK_TYPES:
+                # Online schedules are never caught up: only the current minute
+                # counts, so one missed while the scheduler was busy just waits
+                # for its next occurrence (the owner allows skipping an online
+                # run) instead of firing late, all together, after a long run.
+                row_minutes, row_dropped = minutes[-1:], []
             saved_at = _cron_saved_at.get(r['task_type'])
             if saved_at is not None:
                 # The schedule starts when it was enabled or changed on the page:
                 # only the minutes after that save count, for a fire or a skip.
-                row_minutes = [minute for minute in minutes if minute > saved_at]
-                row_dropped = [minute for minute in dropped if minute > saved_at]
+                row_minutes = [minute for minute in row_minutes if minute > saved_at]
+                row_dropped = [minute for minute in row_dropped if minute > saved_at]
             # At most ONE fire per row per tick, for the most recent matching
             # minute in the window: an every-minute row behind a slow inline run
             # catches up once, not once per missed minute.

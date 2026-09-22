@@ -753,6 +753,31 @@ class TestTheTickCatchesUpEveryMinuteItMissed:
             'clustering due during it must still fire'
         )
 
+    def test_an_online_schedule_missed_while_busy_is_skipped_not_replayed(self):
+        clock = {'now': self.BASE + 5}
+        table = _FakeCronTable([
+            {'id': 1, 'task_type': 'album_of_the_week', 'cron_expr': _minute_expr(self.BASE)},
+            {'id': 2, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE + 300)},
+            {'id': 3, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 300)},
+        ])
+        fired = []
+
+        def dispatch(_db, row):
+            fired.append(row['task_type'])
+            if row['task_type'] == 'album_of_the_week':
+                clock['now'] = self.BASE + 600 + 5
+            return 'ran' if row['task_type'] in task_types.INLINE_FLASK_TASK_TYPES else 'enqueued'
+
+        for tick in _run_ticks(table, clock, dispatch):
+            tick()
+            tick()
+
+        assert fired == ['album_of_the_week', 'analysis'], (
+            'both were due at +300 s while the album held the scheduler: the batch '
+            'analysis is caught up, the online fingerprint just waits for its next '
+            'occurrence instead of firing late'
+        )
+
     def test_a_batch_schedule_older_than_the_window_is_a_visible_skip(self):
         import app_cron
 
