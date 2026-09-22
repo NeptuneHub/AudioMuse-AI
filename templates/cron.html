@@ -170,7 +170,7 @@
             }
         }
 
-        const CRON_OVERLAP_RISK_TEXT = 'You can save, at your own risk: online tasks due together run one after another, each starting at least {{ inline_stagger_seconds }} seconds after the previous one, and a batch task that finds another batch task running waits and starts automatically after it ends, or is skipped if it is still blocked after {{ cron_retry_max_minutes }} minutes.';
+        const CRON_OVERLAP_RISK_TEXT = 'You can save, at your own risk: of the online tasks due in the same minute only one runs and the others are skipped until their next occurrence, and a batch task that finds another batch task running waits and starts automatically after it ends, or is skipped if it is still blocked after {{ cron_retry_max_minutes }} minutes.';
         const CRON_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
         const CRON_BUILT_IN_ROWS = [
             ['Analysis', 'analysis'],

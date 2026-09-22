@@ -667,9 +667,17 @@ class TestTheDatabaseProbeHoldsOneSession:
 
 
 class _FakeProc:
-    def __init__(self, pid, name, cmdline):
+    def __init__(self, pid, name, cmdline, exe=None):
         self.info = {'pid': pid, 'name': name, 'cmdline': cmdline}
+        self._exe = exe
+        self.exe_calls = 0
         self.terminated = False
+
+    def exe(self):
+        self.exe_calls += 1
+        if self._exe is None:
+            raise RuntimeError('access denied')
+        return self._exe
 
     def terminate(self):
         self.terminated = True
@@ -687,7 +695,7 @@ class TestATornDownWindowsSupervisorLeavesNoOrphanBehind:
     def _windows(self, monkeypatch):
         mod = _load_supervisor('windows')
         sup = _bare_supervisor(mod)
-        monkeypatch.setattr(mod.paths, 'pgdata_dir', lambda: '/data/pgdata')
+        monkeypatch.setattr(mod.paths, 'pgdata_dir', lambda: 'C:\\Data\\pgdata')
         return mod, sup
 
     def test_startup_reaps_role_children_left_by_an_earlier_supervisor(self, monkeypatch):
@@ -701,18 +709,75 @@ class TestATornDownWindowsSupervisorLeavesNoOrphanBehind:
             _FakeProc(77, 'child', [exe, '--role=worker-high']),
             _FakeProc(501, 'orphan', [exe, '--role=worker-default']),
             _FakeProc(502, 'orphan', [exe, '--role=worker-high']),
-            _FakeProc(503, 'other', ['/opt/other/python', '--role=worker-high']),
-            _FakeProc(504, 'postgres', ['postgres', '-D', '/data/pgdata']),
+            _FakeProc(503, 'other', ['/opt/other/python', '--role=worker-high'], exe='/opt/other/python'),
+            _FakeProc(504, 'postgres', ['C:/pg/bin/postgres.exe', '-D', 'C:/Data/pgdata']),
             _FakeProc(505, 'shell', [exe, '-c', 'print(1)']),
+            _FakeProc(506, 'orphan', ['AudioMuse-AI.exe', '--role=maintenance'], exe=exe),
+            _FakeProc(507, 'postgres', ['C:/pg/bin/postgres.exe', '-D', 'C:/Other/pgdata']),
+            _FakeProc(508, 'postgres', ['C:/pg/bin/postgres.exe', '-D', 'C:/Data/pgdata_backup']),
+            _FakeProc(509, 'other install', ['AudioMuse-AI.exe', '--role=flask'],
+                      exe='C:/Program Files/AudioMuse-AI/AudioMuse-AI.exe'),
         ]
         monkeypatch.setitem(sys.modules, 'psutil', _fake_psutil(procs))
 
         sup._reap_orphans()
 
-        assert [p.info['pid'] for p in procs if p.terminated] == [501, 502, 504], (
+        assert [p.info['pid'] for p in procs if p.terminated] == [501, 502, 504, 506], (
             'the workers a dead supervisor restarted kept draining the queue in '
-            'silence; our own live child and unrelated processes must be spared'
+            'silence; our own live child and unrelated processes must be spared, '
+            'a child spawned from a relative launch path is still ours, the '
+            'postgres pgserver started names our data dir with forward slashes, '
+            'a sibling data dir is not ours, and another install launched by the '
+            'same file name is not ours either'
         )
+        assert procs[6].exe_calls == 0 and procs[2].exe_calls == 0, (
+            'the executable image is resolved only for a role child whose argv[0] '
+            'did not already settle it; never for every process on the machine'
+        )
+
+    def test_two_installs_launched_by_the_same_file_name_never_reap_each_other(self, monkeypatch):
+        mod, _sup = self._windows(monkeypatch)
+        monkeypatch.setattr(sys, 'frozen', True, raising=False)
+        monkeypatch.setattr(sys, 'argv', ['AudioMuse-AI.exe', 'start'])
+
+        own = mod.own_executables()
+
+        assert os.path.normcase('AudioMuse-AI.exe') not in own
+        assert os.path.normcase(os.path.abspath('AudioMuse-AI.exe')) not in own, (
+            'a bare or CWD-relative launch name is shared by every install of the '
+            'same file name; only the executable image identifies ours'
+        )
+        assert os.path.normcase(sys.executable) in own
+        roles = ['flask']
+        assert mod.stale_role_child(['AudioMuse-AI.exe', '--role=flask'], own, roles) is None
+        assert mod.stale_role_child(
+            ['AudioMuse-AI.exe', '--role=flask'], own, roles,
+            exe_of=lambda: 'C:/Program Files/Other/AudioMuse-AI.exe',
+        ) is None
+        assert mod.stale_role_child(
+            ['AudioMuse-AI.exe', '--role=flask'], own, roles, exe_of=lambda: sys.executable,
+        ) == 'flask'
+        assert mod.stale_role_child([sys.executable, '--role=nope'], own, roles) is None
+        assert mod.references_pgdata(['postgres', '-D', 'C:\\Data\\pgdata\\'], 'C:/Data/pgdata')
+        assert not mod.references_pgdata(['postgres', '-D', 'C:/Data/pgdata_backup'], 'C:/Data/pgdata')
+        assert mod.references_pgdata(['pg_ctl', '-DC:/Data/pgdata', 'start'], 'C:\\Data\\pgdata')
+
+    def test_a_child_killed_with_the_console_is_never_restarted(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        popen = MagicMock(stdout=iter(()), returncode=0xC000013A)
+        sup._children['queue-worker-high'] = popen
+        sup._desired.add('queue-worker-high')
+        sup._state = 'running'
+        sup.start_child = MagicMock()
+        started = time.monotonic()
+
+        sup._pump('queue-worker-high', popen)
+
+        assert not sup.start_child.called, (
+            'STATUS_CONTROL_C_EXIT says the child died with the console; a restart '
+            'would outlive the supervisor as an orphan'
+        )
+        assert time.monotonic() - started < 0.5, 'the exit code decides; no grace wait'
 
     def test_the_log_pump_never_restarts_a_child_while_a_stop_is_requested(self, monkeypatch):
         mod, sup = self._windows(monkeypatch)
@@ -733,11 +798,53 @@ class TestATornDownWindowsSupervisorLeavesNoOrphanBehind:
         sup._pump('queue-worker-high', popen)
         sup.start_child.assert_called_once_with('queue-worker-high')
 
+    def test_the_log_pump_waits_for_a_stop_that_arrives_just_after_the_child_died(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        popen = MagicMock(stdout=iter(()))
+        sup._children['queue-worker-high'] = popen
+        sup._desired.add('queue-worker-high')
+        sup._state = 'running'
+        sup.start_child = MagicMock()
+        threading.Timer(0.2, sup._stop_requested.set).start()
+
+        sup._pump('queue-worker-high', popen)
+
+        assert not sup.start_child.called, (
+            'a console close kills every attached child before it reaches the '
+            'supervisor handler; a restart decided in that gap outlived the '
+            'supervisor as an orphan (the 19:15 crash)'
+        )
+
+    def test_a_console_close_kills_the_children_and_stops_postgres_before_the_orderly_stop(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        sup._log = MagicMock(handlers=[])
+        order = []
+        child = MagicMock()
+        child.poll.return_value = None
+        child.kill.side_effect = lambda: order.append('kill')
+        sup._children['flask'] = child
+        sup._desired.add('flask')
+        monkeypatch.setattr(mod.db_backend, 'stop_embedded', lambda: order.append('stop_embedded'))
+        sup._clear_pidfile = lambda: order.append('pidfile')
+        sup.stop_all = MagicMock(side_effect=lambda: order.append('stop_all'))
+
+        assert sup._console_event(2) is True
+
+        assert order == ['kill', 'stop_embedded', 'pidfile', 'stop_all'] and child.wait.called, (
+            'Windows gives the handler five seconds and the console CTRL_BREAK '
+            'would travel through is already gone: the children must die outright '
+            'and postgres must stop before the orderly stop and its thread joins, '
+            'or the supervisor is killed mid-way with postgres left behind'
+        )
+        assert not sup._desired
+
     def test_a_console_close_stops_everything_and_flushes_the_log(self, monkeypatch):
         mod, sup = self._windows(monkeypatch)
         handler = MagicMock()
         sup._log = MagicMock(handlers=[handler])
         sup.stop_all = MagicMock()
+        monkeypatch.setattr(mod.db_backend, 'stop_embedded', lambda: None)
+        sup._clear_pidfile = lambda: None
 
         assert sup._console_event(0) is False
         assert not sup.stop_all.called and not sup._stop_requested.is_set()
@@ -746,9 +853,10 @@ class TestATornDownWindowsSupervisorLeavesNoOrphanBehind:
         assert sup._stop_requested.is_set()
         sup.stop_all.assert_called_once_with()
         assert sup._log.warning.call_args.args[1] == 'console closed'
-        assert handler.flush.call_count == 2, (
+        assert handler.flush.call_count == 3, (
             'the newest-first log flushes on a timer; a dying process must flush '
-            'by hand or the reason it stopped is lost'
+            'by hand (after the reason, after the fast teardown, at the end) or '
+            'the reason it stopped is lost'
         )
 
     def test_installing_the_console_handler_is_a_no_op_off_windows(self, monkeypatch):
@@ -773,8 +881,10 @@ class TestEveryPlatformReapsTheOrphansADeadSupervisorLeft:
             _FakeProc(os.getpid(), 'me', [exe, '--role=flask']),
             _FakeProc(77, 'child', [exe, '--role=worker-high']),
             _FakeProc(601, 'orphan', [exe, '--role=worker-default']),
-            _FakeProc(602, 'other', ['/opt/other/python', '--role=worker-high']),
+            _FakeProc(602, 'other', ['/opt/other/python', '--role=worker-high'], exe='/opt/other/python'),
             _FakeProc(603, 'postgres', ['postgres', '-D', '/data/pgdata']),
+            _FakeProc(604, 'orphan', ['/usr/bin/audiomuse-ai', '--role=maintenance'], exe=exe),
+            _FakeProc(605, 'postgres', ['postgres', '-D', '/data/pgdata_old']),
         ]
         fake = _fake_psutil(procs)
         fake.wait_procs = lambda procs, timeout=None: (list(procs), [])
@@ -782,9 +892,11 @@ class TestEveryPlatformReapsTheOrphansADeadSupervisorLeft:
 
         sup._reap_stale_infra()
 
-        assert [p.info['pid'] for p in procs if p.terminated] == [601, 603], (
+        assert [p.info['pid'] for p in procs if p.terminated] == [601, 603, 604], (
             'the pid file only knows the children of the last boot; a child the '
-            'health loop restarted later outlived a dead supervisor unseen'
+            'health loop restarted later outlived a dead supervisor unseen, the '
+            'deb launches through a /usr/bin symlink the argv never shows, and a '
+            'sibling data directory is not ours'
         )
 
     def test_a_closed_terminal_stops_the_linux_stack_like_ctrl_c(self):

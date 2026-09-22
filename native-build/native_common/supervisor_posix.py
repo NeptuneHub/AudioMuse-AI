@@ -40,7 +40,8 @@ import service_roles
 from native_common.control_ipc import ControlServer
 from native_common.supervisor_common import (
     SupervisorCommonMixin,
-    own_executable,
+    own_executables,
+    references_pgdata,
     stale_role_child,
 )
 from native_common.supervisor_health import HealthLoopMixin
@@ -311,7 +312,7 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
             return
         me = os.getpid()
         pg_marker = self.paths.pgdata_dir()
-        own_exe = own_executable()
+        own_exes = own_executables()
         with self._lock:
             live_children = {
                 proc.pid for proc in self._children.values() if proc.poll() is None
@@ -326,7 +327,7 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
                 cmd = " ".join(argv)
                 if not cmd:
                     continue
-                if ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd:
+                if ("postgres" in cmd or "pg_ctl" in cmd) and references_pgdata(argv, pg_marker):
                     proc.terminate()
                     terminated.append(proc)
                     self._log.info(
@@ -334,14 +335,16 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
                         proc.info.get("name"),
                         pid,
                     )
-                elif stale_role_child(argv, own_exe, ROLE_OF.values()):
-                    proc.terminate()
-                    terminated.append(proc)
-                    self._log.warning(
-                        "Reaped orphan %s (pid %s) left behind by an earlier supervisor",
-                        argv[1],
-                        pid,
-                    )
+                else:
+                    role = stale_role_child(argv, own_exes, ROLE_OF.values(), proc.exe)
+                    if role:
+                        proc.terminate()
+                        terminated.append(proc)
+                        self._log.warning(
+                            "Reaped orphan --role=%s (pid %s) left behind by an earlier supervisor",
+                            role,
+                            pid,
+                        )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
             except Exception:

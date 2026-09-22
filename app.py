@@ -1475,8 +1475,12 @@ if not _is_worker:
                 # so the second-of-minute it lands on drifts forward and eventually
                 # skips a whole wall-clock minute - and a cron scheduled in a skipped
                 # minute simply never ran, silently. run_due_cron_jobs claims each
-                # row on its minute bucket, so an early tick cannot double-fire.
-                _time.sleep(max(1.0, 60.0 - (_time.time() % 60.0)))
+                # row on its minute bucket, so an early tick cannot double-fire;
+                # but a sleep that returns a few milliseconds BEFORE the boundary
+                # evaluates the previous minute again (already claimed, so nothing
+                # fires) and the new minute is then never evaluated at all. The
+                # margin lands the tick just after the boundary instead.
+                _time.sleep(max(1.0, 60.0 - (_time.time() % 60.0) + 0.2))
         except Exception:
             app.logger.exception('cron manager main loop error')
 

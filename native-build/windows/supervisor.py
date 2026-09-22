@@ -22,9 +22,16 @@ instead of a URL.
 Main Features:
 * Ordered boot, health polling and automatic restart of Flask + queue children.
 * Runs the TCP control server and writes newest-first rotating logs.
-* A console close, logoff or shutdown stops every service in order and flushes
-  the log, instead of letting the auto-restart resurrect children that then
-  outlive the supervisor as silent orphans.
+* A console close, logoff or shutdown stops every service and flushes the log,
+  instead of letting the auto-restart resurrect children that then outlive the
+  supervisor as silent orphans. Windows kills every child attached to the
+  console at once and only then reaches this handler, so the log pump never
+  restarts a child that exited with STATUS_CONTROL_C_EXIT (killed with the
+  console) and otherwise waits one second for a stop request first; the
+  handler kills the children outright, stops the embedded PostgreSQL and
+  clears the pid file BEFORE the orderly stop and its thread joins, because
+  Windows allows it five seconds and CTRL_BREAK has no console left to travel
+  through.
 * Startup reaps role children left behind by an earlier supervisor, so a torn
   down instance never leaves orphan workers draining the queue unseen.
 """
@@ -41,7 +48,8 @@ from windows import env as env_builder
 from windows import paths
 from native_common.supervisor_common import (
     SupervisorCommonMixin,
-    own_executable,
+    own_executables,
+    references_pgdata,
     stale_role_child,
 )
 from native_common.supervisor_health import HealthLoopMixin
@@ -53,6 +61,8 @@ BOOT_ORDER = service_roles.BOOT_ORDER
 
 _CONSOLE_STOP_EVENTS = {2: "console closed", 5: "user logged off", 6: "system shutting down"}
 _console_handlers = []
+_RESTART_GRACE_SECONDS = 1.0
+_CONSOLE_KILL_EXIT_CODES = {0xC000013A, 0xC000013A - (1 << 32)}
 
 
 class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
@@ -151,12 +161,31 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
         self._stop_requested.set()
         self._log.warning("=== AudioMuse-AI %s: stopping every service ===", reason)
         self._flush_log()
+        self._kill_children()
+        try:
+            db_backend.stop_embedded()
+        except Exception:
+            self._log.exception("Stopping the embedded PostgreSQL after the %s event failed", reason)
+        self._clear_pidfile()
+        self._flush_log()
         try:
             self.stop_all()
         except Exception:
             self._log.exception("Stopping after the %s event failed", reason)
         self._flush_log()
         return True
+
+    def _kill_children(self):
+        with self._lock:
+            self._desired.clear()
+            children = list(self._children.items())
+        for name, popen in children:
+            try:
+                if popen.poll() is None:
+                    popen.kill()
+                    popen.wait(timeout=2)
+            except Exception:
+                self._log.exception("Could not kill %s", name)
 
     def _flush_log(self):
         for handler in list(getattr(self._log, "handlers", None) or []):
@@ -276,6 +305,11 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
         for line in popen.stdout:
             self._log.info("[%s] %s", name, line.rstrip())
         popen.wait()
+        if popen.returncode in _CONSOLE_KILL_EXIT_CODES:
+            self._log.warning("%s was killed with the console; not restarting it", name)
+            return
+        if self._stop_requested.wait(_RESTART_GRACE_SECONDS):
+            return
         with self._lock:
             if self._children.get(name) is not popen:
                 return
@@ -320,8 +354,8 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
         except Exception:
             return
         me = os.getpid()
-        pg_marker = paths.pgdata_dir().lower()
-        own_exe = own_executable()
+        pgdata = paths.pgdata_dir()
+        own_exes = own_executables()
         with self._lock:
             live_children = {
                 popen.pid for popen in self._children.values() if popen.poll() is None
@@ -335,20 +369,22 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
                 cmd = " ".join(argv).lower()
                 if not cmd:
                     continue
-                if ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd:
+                if ("postgres" in cmd or "pg_ctl" in cmd) and references_pgdata(argv, pgdata):
                     self._log.info(
                         "Reaping orphan %s (pid=%d) referencing our data dir",
                         proc.info.get("name"),
                         pid,
                     )
                     proc.terminate()
-                elif stale_role_child(argv, own_exe, ROLE_OF.values()):
-                    self._log.warning(
-                        "Reaping orphan %s (pid=%d) left behind by an earlier supervisor",
-                        argv[1],
-                        pid,
-                    )
-                    proc.terminate()
+                else:
+                    role = stale_role_child(argv, own_exes, ROLE_OF.values(), proc.exe)
+                    if role:
+                        self._log.warning(
+                            "Reaping orphan --role=%s (pid=%d) left behind by an earlier supervisor",
+                            role,
+                            pid,
+                        )
+                        proc.terminate()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
             except Exception:

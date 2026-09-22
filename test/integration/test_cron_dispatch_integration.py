@@ -130,15 +130,6 @@ def cron_db(shared_pg_dsn):
             conn.close()
 
 
-@pytest.fixture(autouse=True)
-def _fresh_cron_clock():
-    import app_cron
-
-    app_cron._cron_clock['last_minute'] = None
-    yield
-    app_cron._cron_clock['last_minute'] = None
-
-
 def _add_row(conn, task_type, cron_expr='* * * * *', enabled=True, last_run=None):
     with conn.cursor() as cur:
         cur.execute(
@@ -207,7 +198,6 @@ def _drive(conn, action, radio_summary=None):
         fingerprint_patch as fingerprint,
         album_patch as album,
         patch('app_cron.save_task_status', side_effect=save_and_record) as saved,
-        patch('app_cron._INLINE_STAGGER_SECONDS', 0),
     ):
         action()
     return SimpleNamespace(
@@ -309,58 +299,61 @@ class TestEveryScheduledTypeReachesTheRightPlace:
             'carries no func, so no worker reclaim can ever touch it'
         )
 
-    def test_two_playlist_rows_due_together_run_one_after_the_other(self, cron_db):
+    def test_of_two_playlist_rows_due_together_only_one_runs(self, cron_db):
         for cron_type in sorted(task_types.CRON_INLINE_TASKS):
             _add_row(cron_db, cron_type)
+        first = sorted(task_types.CRON_INLINE_TASKS)[0]
 
         inline = _tick(cron_db)
 
-        started = sum(
-            getattr(inline, cron_type).call_count
+        started = {
+            cron_type: getattr(inline, cron_type).call_count
             for cron_type in task_types.CRON_INLINE_TASKS
+        }
+        assert started == {
+            cron_type: int(cron_type == first) for cron_type in task_types.CRON_INLINE_TASKS
+        }, (
+            'one online run at a time: the row due in the same minute is skipped, '
+            'never queued and never started together with the first'
         )
-        assert started == len(task_types.CRON_INLINE_TASKS), (
-            'an inline run finishes before the next row is dispatched, so both '
-            'get their turn in the same tick instead of one deferring to a retry'
+        assert _rows(
+            cron_db, "SELECT task_type FROM cron WHERE last_run IS NULL ORDER BY task_type"
+        ) == [(cron_type,) for cron_type in sorted(task_types.CRON_INLINE_TASKS) if cron_type != first], (
+            'a skipped row is not claimed, so the page keeps showing it did not run'
         )
         assert _jobs(cron_db) == [], 'neither may reach the queue any more'
         assert _rows(cron_db, "SELECT task_type FROM cron_retry") == [], (
-            'nothing was blocked: they ran one after the other on this thread'
+            'nothing was blocked: an online row is skipped, never retried'
         )
         statuses = _rows(
             cron_db,
             "SELECT task_type, status FROM task_status WHERE task_type = ANY(%s)",
             (sorted(task_types.CRON_INLINE_TASKS),),
         )
-        assert len(statuses) == 1, (
-            'each finish collapses every other terminal root row, so the table '
-            'keeps ONE recap however many ran; asserting a row per type asserts '
-            'the opposite of what collapse_finished_task guarantees'
-        )
-        task_type, status = statuses[0]
-        assert status == 'SUCCESS'
-        assert task_type in task_types.CRON_INLINE_TASKS
+        assert statuses == [(first, 'SUCCESS')]
 
     def test_every_online_row_runs_beside_a_live_analysis(self, cron_db):
-        online = sorted(task_types.INLINE_FLASK_TASK_TYPES)
-        for cron_type in online:
-            _add_row(cron_db, cron_type)
         _insert_root(cron_db, 'live-analysis', 'main_analysis', 'RUNNING')
 
-        inline = _tick(cron_db)
+        for cron_type in sorted(task_types.INLINE_FLASK_TASK_TYPES):
+            with cron_db.cursor() as cur:
+                cur.execute("DELETE FROM cron")
+            cron_db.commit()
+            _add_row(cron_db, cron_type)
 
-        for cron_type in online:
+            inline = _tick(cron_db)
+
             assert getattr(inline, cron_type).call_count == 1, (
                 f'{cron_type} is an online run: a live batch task must never hold '
                 'it back'
             )
-        terminal = [
-            (task_type, status, written) for task_type, status, written in inline.writes
-            if status in config.TASK_STATUS_TERMINAL
-        ]
-        assert sorted(terminal) == [(cron_type, 'SUCCESS', True) for cron_type in online], (
-            'every online row must actually STORE its SUCCESS, not only ask for it'
-        )
+            terminal = [
+                (task_type, status, written) for task_type, status, written in inline.writes
+                if status in config.TASK_STATUS_TERMINAL
+            ]
+            assert terminal == [(cron_type, 'SUCCESS', True)], (
+                'every online row must actually STORE its SUCCESS, not only ask for it'
+            )
         assert _rows(cron_db, "SELECT task_type FROM cron_retry") == [], (
             'nothing was blocked, so nothing may wait in the batch retry'
         )
@@ -494,7 +487,6 @@ class TestTheRetryTickStartsWhatWasBlocked:
         deadline, first_blocked_at = first['retry_until'], first['first_blocked_at']
 
         later = time.time() + 30 * 60
-        app_cron._cron_clock.update(last_minute=None, last_monotonic=None)
         with patch.object(app_cron.time, 'time', return_value=later):
             _tick(cron_db)
             _retry(cron_db)

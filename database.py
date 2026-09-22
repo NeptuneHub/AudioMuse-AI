@@ -26,32 +26,35 @@ Main Features:
 * stage_pending_task_row is the one way to stage a placeholder row a later
   taskqueue.enqueue on the same transaction adopts (True only for a row this
   call created).
-* MAIN_TASK_START_LOCK_KEY serializes the whole check-cleanup-claim sequence a
-  main-task start runs. It is SESSION scoped on purpose: the cleanup commits in
-  the middle of that sequence, and a transaction lock would be released by that
-  commit, reopening the very gap it closes.
-* The start filters come from task_types: the inline online runs (radio, sonic
-  fingerprint, album of the week) are deliberately not blocking, and neither
-  are the restart handshake and the migration PLANNER: none is catalogue work.
-  server_sweep and the plugin tasks DO block, since they write the mappings a
-  cleaning or a migration rewrites; excluding nothing at all once made a restart
-  handshake answer 409 to a cleaning the user had just asked for.
+* MAIN_TASK_START_LOCK_KEY serializes the check-cleanup-claim sequence of a
+  main-task start; SESSION scoped on purpose, since the cleanup commits in the
+  middle of it and a transaction lock would be released by that commit.
+* The start filters come from task_types: the inline online runs, the restart
+  handshake and the migration PLANNER are deliberately not blocking (none is
+  catalogue work); server_sweep and the plugin tasks DO block, since they write
+  the mappings a cleaning or a migration rewrites. Excluding nothing once made
+  a restart handshake answer 409 to a cleaning the user had just asked for.
 * _CONNECT_OPTIONS goes on every app connection: statement_timeout caps a
-  runaway query at 10 minutes, and max_parallel_workers_per_gather=0 forces
-  SERIAL plans - a parallel plan allocates a dynamic shared-memory segment in
-  /dev/shm, small by default in containers, so a big scan such as the analysis
-  work map died with DiskFull; a serial plan spills to ordinary temp files.
+  runaway query at 10 minutes and max_parallel_workers_per_gather=0 forces
+  SERIAL plans, because a parallel plan's shared-memory segment in /dev/shm
+  (small in containers) made the analysis work map scan die with DiskFull.
 * Embedding, projection, and alchemy CRUD shared by workers and the web app.
+* pgserver skips the embedded PostgreSQL shutdown while its handle list names
+  another pid (a supervisor killed hard leaves one), so on start and before a
+  stop the list is pruned, under pgserver's lock, to live supervisors of this
+  executable.
 """
 
 import json
 import logging
+import os
 import sys
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import numpy as np
+import psutil
 import psycopg2
 from flask import g
 from psycopg2 import sql
@@ -232,11 +235,42 @@ def close_db(e=None):
         db.close()
 
 
+def _holds_embedded_handle(pid):
+    try:
+        if int(pid) == os.getpid():
+            return True
+        proc = psutil.Process(int(pid))
+        argv = proc.cmdline() or []
+        exe = proc.exe() or ''
+    except Exception:
+        return False
+    if any(str(arg).startswith('--role=') for arg in argv[1:]):
+        return False
+    return bool(exe) and (
+        os.path.normcase(os.path.realpath(exe))
+        == os.path.normcase(os.path.realpath(sys.executable))
+    )
+
+
+def _drop_dead_handles(server):
+    handles = server.global_process_id_list
+    lock = getattr(server, '_lock', None)
+    try:
+        with (lock if lock is not None else nullcontext()):
+            pids = handles.get()
+            alive = [pid for pid in pids if _holds_embedded_handle(pid)]
+            if alive != pids:
+                handles.put(alive)
+    except Exception:
+        logger.exception("Could not prune the embedded PostgreSQL handle list")
+
+
 def start_embedded(data_dir):
     global _embedded_server
     import pgserver
 
     _embedded_server = pgserver.get_server(data_dir)
+    _drop_dead_handles(_embedded_server)
     return _embedded_server.get_uri()
 
 
@@ -252,12 +286,14 @@ def ensure_embedded_running(data_dir):
     except Exception:
         pass
     _embedded_server = pgserver.get_server(data_dir)
+    _drop_dead_handles(_embedded_server)
     return _embedded_server.get_uri()
 
 
 def stop_embedded():
     global _embedded_server
     if _embedded_server is not None:
+        _drop_dead_handles(_embedded_server)
         _embedded_server.cleanup()
         _embedded_server = None
 
