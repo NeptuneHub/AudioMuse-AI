@@ -10,10 +10,11 @@
 
 Rows for every schedulable task type are created, listed, renamed, upserted
 by type and validated. Then two rows are enabled every minute and the web
-process's cron loop is left to fire once: the alchemy radio and the sonic
-fingerprint both run inline in the web process during that tick, one after
-the other, and each writes its playlist on Navidrome; both rows show a
-last_run newer than the one they had (a kept state carries the stamp of the
+process's cron loop is left to fire: only ONE online row runs per tick (the
+alchemy radio, first in the fixed order), the sonic fingerprint due in the
+same minute is skipped unclaimed, and it runs on a later tick once the radio
+is disabled; each writes its playlist on Navidrome and each row then shows a
+last_run newer than the one it had (a kept state carries the stamp of the
 run before). The stamp is written when the tick claims the row, before the
 task runs, so each playlist is then awaited on Navidrome for a bounded time.
 The run that finishes second trims the first one's recap row from
@@ -23,7 +24,8 @@ row that is still there must say SUCCESS.
 Main Features:
 * POST /api/cron creates and updates rows, GET /api/cron lists them
 * an enabled row with a bad expression and a non-object options are 400
-* one cron tick runs the radio and the sonic fingerprint inline in Flask
+* one cron tick runs ONE online row inline in Flask; the other due in the
+  same minute is skipped unclaimed and runs on a later tick
 * one cron tick runs the album of the week inline into ONE fixed playlist
 * every row is disabled again at the end so no later tick fires
 """
@@ -124,7 +126,17 @@ def test_validation(stack, api, disable_all_rows):
     assert api.json('GET', '/api/cron/plugin_tasks') == []
 
 
-def test_one_tick_runs_the_radio_and_the_sonic_fingerprint(stack, api, db, library, navidrome, analyzed_library, disable_all_rows):
+def _wait_for_fire(api, stamped_before, task_type):
+    deadline = time.monotonic() + TICK_TIMEOUT
+    while True:
+        entries = _by_type(api)
+        if entries[task_type].get('last_run') not in (None, stamped_before[task_type]):
+            return entries
+        assert time.monotonic() < deadline, f'the cron loop did not fire {task_type} within {TICK_TIMEOUT}s: {entries}'
+        time.sleep(5)
+
+
+def test_one_tick_runs_one_online_row_and_the_other_runs_once_it_is_alone(stack, api, db, library, navidrome, analyzed_library, disable_all_rows):
     api.wait_idle(180)
     centroid = api.json('GET', f'/external/get_embedding?id={library.pid("A03")}')['embedding']
     anchor_name = unique_name('cron-anchor')
@@ -137,15 +149,13 @@ def test_one_tick_runs_the_radio_and_the_sonic_fingerprint(stack, api, db, libra
     try:
         _save(api, 'alchemy_radio', 'e2e radio tick', EVERY_MINUTE, True)
         _save(api, 'sonic_fingerprint', 'e2e sonic tick', EVERY_MINUTE, True)
-        deadline = time.monotonic() + TICK_TIMEOUT
-        while True:
-            entries = _by_type(api)
-            fired = all(entries[task_type].get('last_run') not in (None, stamped_before[task_type]) for task_type in TICK_TASK_TYPES)
-            if fired:
-                break
-            assert time.monotonic() < deadline, f'the cron loop did not fire within {TICK_TIMEOUT}s: {entries}'
-            time.sleep(5)
+        entries = _wait_for_fire(api, stamped_before, 'alchemy_radio')
+        assert entries['sonic_fingerprint'].get('last_run') == stamped_before['sonic_fingerprint'], (
+            'one online run per minute: the fingerprint due in the same minute as the '
+            'radio is skipped unclaimed, so its last_run must not move'
+        )
         _save(api, 'alchemy_radio', 'e2e radio tick', NIGHTLY, False, row_id=entries['alchemy_radio']['id'])
+        entries = _wait_for_fire(api, stamped_before, 'sonic_fingerprint')
         _save(api, 'sonic_fingerprint', 'e2e sonic tick', NIGHTLY, False, row_id=entries['sonic_fingerprint']['id'])
         radio_playlist = _wait_for_playlist(navidrome, anchor_name)
         assert radio_playlist is not None, [p.get('name') for p in navidrome.playlists()]

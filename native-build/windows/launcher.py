@@ -16,6 +16,8 @@ in the queue needs them any more. The Linux/macOS launchers are the
 platform-specific siblings.
 
 Main Features:
+* Console close, logoff and shutdown stop the stack in order; the supervisor's own
+  fatal errors go to logs/supervisor-crash.log instead of a hidden console
 * Runs Flask via waitress or launches a named queue role in-process.
 * Patches multiprocessing so loky's spawn payloads work in the frozen bundle.
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
@@ -47,7 +49,7 @@ import time
 import webbrowser
 
 import service_roles
-from native_common import frozen_children
+from native_common import crash_log, frozen_children
 
 WEB_URL = "http://127.0.0.1:8000"
 
@@ -132,6 +134,10 @@ def main():
         sys.exit(1)
 
 
+def _capture_fatal_errors(paths):
+    return crash_log.capture_fatal_errors(paths.logs_dir())
+
+
 def _start_supervisor():
     from windows import paths
     from windows.supervisor import ProcessSupervisor
@@ -141,9 +147,11 @@ def _start_supervisor():
         _open_browser(WEB_URL)
         return
 
+    _capture_fatal_errors(paths)
     supervisor = ProcessSupervisor()
+    supervisor.install_console_handler()
 
-    def _on_ctrl(sig):
+    def _on_ctrl(sig, _frame):
         print("\nShutting down...")
         supervisor.stop_all()
 
@@ -199,7 +207,9 @@ def _run_tray():
         _open_browser(WEB_URL)
         return
 
+    _capture_fatal_errors(paths)
     supervisor = ProcessSupervisor()
+    supervisor.install_console_handler()
     _labels = {
         "running": "Running",
         "starting": "Starting...",

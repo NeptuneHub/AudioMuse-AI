@@ -21,14 +21,13 @@ Main Features:
   this process holds. The playlist builders resolve their function from
   task_types.CRON_INLINE_TASKS through taskqueue.resolve_func.
 * Each row is claimed atomically for its wall-clock minute, so a restart or a
-  second web process cannot double-fire it. A tick delayed by an inline run
-  catches up every BATCH minute it missed, up to CRON_RETRY_MAX_MINUTES (an older
-  batch schedule becomes a visible skip); online schedules only ever count the
-  current minute. A wall-clock jump, told apart on the monotonic clock, evaluates
-  only the current minute. A row fires at most once per tick.
-* In one tick the batch rows are dispatched first (they only enqueue); then the
-  online rows run one after another, each at least 10 seconds after the previous
-  one actually started, so schedules sharing a minute never start together.
+  second web process cannot double-fire it. A tick evaluates the current minute
+  only: a minute that passed while an inline run held the thread is simply
+  skipped, never replayed.
+* In one tick the batch rows are dispatched first (they only enqueue); then at
+  most ONE online row runs. Any other online row due in the same minute is
+  skipped with a warning and waits for its next occurrence: one online run at a
+  time, never several together (the page warns when schedules share a minute).
 * A central queue guard makes analysis, clustering, plugin tasks (and the
   manual cleaning / provider migration starts) mutually exclusive; a scheduled
   run blocked by a live queue-guard task is recorded in `cron_retry` and
@@ -74,7 +73,6 @@ from config import (
     CRON_RETRY_INTERVAL_MINUTES,
 )
 import json
-import sys
 import uuid
 import time
 import logging
@@ -135,30 +133,6 @@ _STARTED_BY_CRON = "Started by cron."
 # must never start it again.
 _DISPATCH_DONE = ('enqueued', 'ran')
 
-# Process-local: the last wall-clock minute run_due_cron_jobs evaluated, and the
-# monotonic time of that tick. A gap the monotonic clock also measured is this
-# thread having been busy (an inline run), so its minutes are caught up, for at
-# most CRON_RETRY_MAX_MINUTES like any other wait. A wall-clock gap the monotonic
-# clock did NOT measure is a clock jump (NTP step, a host waking from sleep);
-# replaying it would fire every schedule of those hours at once, so such a tick
-# evaluates only the current minute, as a first tick does.
-_cron_clock = {'last_minute': None, 'last_monotonic': None}
-_CLOCK_JUMP_TOLERANCE_SECONDS = 120
-
-# task_type -> wall-clock time its schedule was last enabled or changed on the
-# Scheduled Tasks page (see save_cron_entry).
-_cron_saved_at = {}
-
-# The catch-up tells a busy thread from a clock jump with time.monotonic, which
-# stops while a Linux or macOS host sleeps but keeps counting through sleep on
-# Windows. There a wake would look like a busy thread and replay the missed
-# schedules, so on Windows a tick evaluates only the current minute, exactly as
-# the scheduler did before the catch-up existed.
-_CATCH_UP_SUPPORTED = sys.platform != 'win32'
-
-# Online rows due in the same tick start this many seconds apart (owner rule).
-_INLINE_STAGGER_SECONDS = 10
-
 
 @cron_bp.route('/cron')
 def cron_page():
@@ -172,11 +146,10 @@ def cron_page():
       200:
         description: HTML page rendered.
     """
-    # The page's same-minute warning quotes these, so it can never promise a
-    # stagger or a retry window the scheduler does not actually apply.
+    # The page's same-minute warning quotes this, so it can never promise a
+    # retry window the scheduler does not actually apply.
     return render_template(
         'cron.html', title='AudioMuse-AI - Scheduled Tasks', active='cron',
-        inline_stagger_seconds=_INLINE_STAGGER_SECONDS,
         cron_retry_max_minutes=CRON_RETRY_MAX_MINUTES,
     )
 
@@ -320,9 +293,7 @@ def save_cron_entry():
 
     db = get_db()
     cur = db.cursor()
-    enabled = bool(data.get('enabled'))
     if data.get('id'):
-        changed = _schedule_changed(cur, data.get('id'), cron_expr, enabled)
         cur.execute(
             "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
             (
@@ -343,7 +314,6 @@ def save_cron_entry():
         )
         existing = cur.fetchone()
         if existing:
-            changed = _schedule_changed(cur, existing[0], cron_expr, enabled)
             cur.execute(
                 "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
                 (
@@ -356,7 +326,6 @@ def save_cron_entry():
                 ),
             )
         else:
-            changed = enabled
             cur.execute(
                 "INSERT INTO cron (name, task_type, cron_expr, enabled, options) VALUES (%s,%s,%s,%s,%s)",
                 (
@@ -369,22 +338,7 @@ def save_cron_entry():
             )
     db.commit()
     cur.close()
-    if changed:
-        # The schedule starts from this save: a catch-up behind a long online run
-        # must not fire it for a minute that passed before it (nor, after an
-        # off-and-on, for one that passed while it was off), and must still fire
-        # an occurrence due after it. Same process as the cron thread (one
-        # gunicorn worker), so process memory is enough and no column is added.
-        _cron_saved_at[data.get('task_type')] = time.time()
     return jsonify({'message': 'saved'}), 200
-
-
-def _schedule_changed(cur, row_id, cron_expr, enabled):
-    if not enabled:
-        return False
-    cur.execute("SELECT cron_expr, enabled FROM cron WHERE id = %s", (row_id,))
-    before = cur.fetchone()
-    return before is None or not before[1] or before[0] != cron_expr
 
 
 @cron_bp.route('/api/cron/plugin_tasks', methods=['GET'])
@@ -976,16 +930,14 @@ def _cron_row_for_retry(db, task_type):
         cur.close()
 
 
-def _record_retry_expired(task_type, entry, message=None, status_message=None):
+def _record_retry_expired(task_type, entry):
     job_id = str(uuid.uuid4())
     details = {
-        "message": message or (
+        "message": (
             f"Scheduled {task_type} did not run: it was blocked for over "
             f"{CRON_RETRY_MAX_MINUTES} minutes and never became free."
         ),
-        "status_message": status_message or (
-            f"Blocked for over {CRON_RETRY_MAX_MINUTES} minutes; not run."
-        ),
+        "status_message": f"Blocked for over {CRON_RETRY_MAX_MINUTES} minutes; not run.",
         "blocked_by": entry.get('blocker_task_type'),
         "attempts": entry.get('attempts', 0),
     }
@@ -1070,49 +1022,6 @@ def retry_due_cron_jobs():
     return len(pending)
 
 
-def _minutes_to_evaluate(now_ts, now_monotonic=None):
-    # Returns (minutes to evaluate, minutes dropped), oldest first. An inline run
-    # blocks this thread, so a tick can land minutes late; evaluating only "now"
-    # silently lost every schedule due in between. The first tick after a start
-    # evaluates only the current minute. Both clocks are read at the SAME moment
-    # (the tick start), or a slow connect would look like a clock jump.
-    current = now_ts - (now_ts % 60)
-    if now_monotonic is None:
-        now_monotonic = time.monotonic()
-    previous = _cron_clock['last_minute']
-    previous_monotonic = _cron_clock['last_monotonic']
-    _cron_clock['last_minute'] = current
-    _cron_clock['last_monotonic'] = now_monotonic
-    if previous is None or previous >= current or not _CATCH_UP_SUPPORTED:
-        return [current], []
-    wall_gap = current - previous
-    if previous_monotonic is not None and (
-        wall_gap > now_monotonic - previous_monotonic + _CLOCK_JUMP_TOLERANCE_SECONDS
-    ):
-        logger.warning(
-            "Cron: the wall clock moved %s minutes further than this thread ran; "
-            "treating it as a clock jump and evaluating only the current minute, "
-            "so schedules in that span are skipped.",
-            int(round(wall_gap / 60)),
-        )
-        return [current], []
-    count = int(round(wall_gap / 60))
-    missed = [current - 60 * step for step in range(count - 1, -1, -1)]
-    # At least the current minute: a window of 0 must mean "no catch-up", never
-    # "missed[-0:]", which is the whole list.
-    window = max(1, CRON_RETRY_MAX_MINUTES)
-    if count <= window:
-        return missed, []
-    return missed[-window:], missed[:-window]
-
-
-def _latest_due_minute(expr, minutes):
-    for minute_start in reversed(minutes):
-        if cron_matches_now(expr, minute_start):
-            return minute_start
-    return None
-
-
 def _fire_cron_row(db, r, minute_start):
     try:
         # A long inline run earlier in this tick may have outlived the tick's
@@ -1129,7 +1038,7 @@ def _fire_cron_row(db, r, minute_start):
         # still enabled with the same expression: the SELECT is from the tick
         # start, and a schedule disabled on the page meanwhile must not run.
         if not _claim_cron_minute(db, r['id'], minute_start, r['cron_expr']):
-            return False
+            return None
         result = _dispatch_cron_row(db, r)
         db = _usable_db(db)
         if result == 'blocked':
@@ -1138,68 +1047,34 @@ def _fire_cron_row(db, r, minute_start):
             # A later occurrence of the same task type ran: drop any stale
             # retry so it cannot duplicate this fresh run.
             clear_cron_retry(r['task_type'], conn=db)
-        return True
+        # The dispatch result, so the caller can tell a run that happened
+        # (_DISPATCH_DONE) from one that never started; None when the row was
+        # not claimed (another web process took it, or it was disabled).
+        return result
     except Exception:
         _rollback_quietly(db)
         logger.exception(f"Error processing cron row {r}")
-        return True
+        return 'failed'
 
 
-def _due_cron_rows(rows, minutes, dropped):
+def _due_cron_rows(rows, now_ts):
     due = []
     for r in rows:
         try:
-            row_minutes, row_dropped = minutes, dropped
-            if r['task_type'] in INLINE_FLASK_TASK_TYPES:
-                # Online schedules are never caught up: only the current minute
-                # counts, so one missed while the scheduler was busy just waits
-                # for its next occurrence (the owner allows skipping an online
-                # run) instead of firing late, all together, after a long run.
-                row_minutes, row_dropped = minutes[-1:], []
-            saved_at = _cron_saved_at.get(r['task_type'])
-            if saved_at is not None:
-                # The schedule starts when it was enabled or changed on the page:
-                # only the minutes after that save count, for a fire or a skip.
-                row_minutes = [minute for minute in row_minutes if minute > saved_at]
-                row_dropped = [minute for minute in row_dropped if minute > saved_at]
-            # At most ONE fire per row per tick, for the most recent matching
-            # minute in the window: an every-minute row behind a slow inline run
-            # catches up once, not once per missed minute.
-            minute_start = _latest_due_minute(r['cron_expr'], row_minutes)
-            if (
-                minute_start is None and row_dropped
-                and r['task_type'] not in INLINE_FLASK_TASK_TYPES
-                and _cron_retry_eligible(r['task_type'])
-                and _latest_due_minute(r['cron_expr'], row_dropped) is not None
-            ):
-                # A batch schedule due longer than CRON_RETRY_MAX_MINUTES ago,
-                # while this thread was busy, is past the window any wait gets:
-                # it becomes a visible skip, never a silent loss. An online
-                # schedule missed that way is simply skipped, as the owner allows.
-                _record_retry_expired(
-                    r['task_type'], {'attempts': 0},
-                    message=(
-                        f"Scheduled {r['task_type']} did not run: the scheduler was "
-                        f"busy for over {CRON_RETRY_MAX_MINUTES} minutes (a long "
-                        "online run, or the database was unreachable), so its start "
-                        "time fell outside the window."
-                    ),
-                    status_message=(
-                        f"Missed while the scheduler was busy for over "
-                        f"{CRON_RETRY_MAX_MINUTES} minutes; not run."
-                    ),
-                )
+            if cron_matches_now(r['cron_expr'], now_ts):
+                due.append(r)
         except Exception:
             logger.exception(f"Error processing cron row {r}")
-            continue
-        if minute_start is not None:
-            due.append((r, minute_start))
     return due
 
 
 def run_due_cron_jobs():
-    tick_start = time.time()
-    tick_monotonic = time.monotonic()
+    # The current minute only. A minute that passed while an inline run held
+    # this thread is skipped, never replayed: replaying missed minutes needs a
+    # clock the platforms do not agree on, and firing late is worse than not
+    # firing.
+    now_ts = time.time()
+    minute_start = now_ts - (now_ts % 60)
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute(
@@ -1208,32 +1083,35 @@ def run_due_cron_jobs():
     )
     rows = cur.fetchall()
     cur.close()
-    minutes, dropped = _minutes_to_evaluate(tick_start, tick_monotonic)
-    due = _due_cron_rows(rows, minutes, dropped)
+    due = _due_cron_rows(rows, now_ts)
     # Batch rows only enqueue, so they go first (in row order, so which of two
     # batch schedules sharing a minute is queued and which waits is not left to
-    # the table scan) and never wait behind an online run. The online rows run
-    # here one after another, each starting at least _INLINE_STAGGER_SECONDS
-    # after the previous one actually started, so schedules that share a minute
-    # never hit the media server and the index all together; a run that already
-    # took longer than the gap lets the next start at once. The gap is measured
-    # on the monotonic clock: a wall-clock step must never stretch the sleep.
-    online = sorted(
-        (pair for pair in due if pair[0]['task_type'] in INLINE_FLASK_TASK_TYPES),
-        key=lambda pair: (pair[0]['task_type'], pair[0]['id']),
-    )
-    for r, minute_start in due:
+    # the table scan) and never wait behind an online run.
+    for r in due:
         if r['task_type'] not in INLINE_FLASK_TASK_TYPES:
             _fire_cron_row(db, r, minute_start)
-    previous_start = None
-    for r, minute_start in online:
-        if previous_start is not None:
-            wait = previous_start + _INLINE_STAGGER_SECONDS - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
-        started = time.monotonic()
-        if _fire_cron_row(db, r, minute_start):
-            previous_start = started
+    # Of the online rows due together at most ONE runs, in a fixed order. The
+    # others are not claimed (the page keeps showing they did not run) and wait
+    # for their next occurrence: one online run at a time, never several
+    # together. The Scheduled Tasks page warns when schedules share a minute.
+    # Only a run that actually happened takes the turn: a row another process
+    # claimed, or one whose STARTED row could not be written, ran nothing, so
+    # the next row is not skipped for it.
+    online = sorted(
+        (r for r in due if r['task_type'] in INLINE_FLASK_TASK_TYPES),
+        key=lambda r: (r['task_type'], r['id']),
+    )
+    ran = None
+    for r in online:
+        if ran is not None:
+            logger.warning(
+                "Cron: %s not started: %s already ran this minute and only one "
+                "online task runs at a time; it waits for its next occurrence.",
+                r['task_type'], ran,
+            )
+            continue
+        if _fire_cron_row(db, r, minute_start) in _DISPATCH_DONE:
+            ran = r['task_type']
 
 
 def cron_retry_interval_seconds():

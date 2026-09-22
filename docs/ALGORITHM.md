@@ -2194,29 +2194,12 @@ same as when they are started from the page.
    (0 = Sunday).
 3. **Atomic claim.** A row that matches is claimed atomically for its wall-clock
    minute. This is what makes a restart, or a second web process, unable to
-   double-fire the same schedule. Each tick evaluates every minute since the
-   previous tick, so a tick that lands late (an inline run below holds the poll
-   thread) loses no schedule; a row still fires at most once per tick, for the
-   latest minute it matched. Only BATCH schedules are caught up: an online
-   schedule (radio, sonic fingerprint, album of the week) only ever counts the
-   current minute, so one missed while the thread was busy waits for its next
-   occurrence instead of firing late with others. The monotonic clock tells a
-   busy thread from a wall-clock jump. A gap it also measured (the thread was
-   busy) is caught up
-   for at most `CRON_RETRY_MAX_MINUTES`, the same bound as any other wait: a
-   batch schedule due before that becomes a visible skip, and a late fire that
-   is refused counts its retry window from the minute it was due, so the total
-   wait never passes that bound. A gap it did not measure is a wall-clock jump
-   (an NTP step, a host waking from sleep), so that tick evaluates only the
-   current minute and logs the skipped span instead of firing every schedule
-   of that span at once. On Windows the monotonic clock keeps counting while
-   the host sleeps, so a wake would look like a busy thread: there the
-   catch-up is off and a tick evaluates only the current minute, as before. A
-   schedule enabled or changed on the page counts only the minutes after that
-   save (so a catch-up neither fires it for a minute that passed before, nor
-   loses one due after), and the claim re-checks that the row is still enabled
-   with the same expression, so a change saved during a long online run is
-   honoured.
+   double-fire the same schedule. A tick evaluates the current minute only: a
+   minute that passed while an inline run held the poll thread is skipped,
+   never replayed (replaying needs a clock the platforms do not agree on, and
+   firing late is worse than not firing). The claim re-checks that the row is
+   still enabled with the same expression, so a change saved on the page
+   during a long online run is honoured.
 4. **Batch work is enqueued, online work runs inline.** Analysis, clustering and
    plugin tasks are **enqueued** as queue jobs, so a slow media server cannot
    swallow a scheduling window or block the other schedules. The **alchemy
@@ -2228,10 +2211,11 @@ same as when they are started from the page.
    task panel; the cost is that the poll thread waits for the run, which is the
    accepted trade for a schedule that fires once a day or once a week. Within
    one tick the batch rows are dispatched first, since they only enqueue; then
-   the online rows due together run one after another in a fixed order, each
-   starting at least 10 seconds after the previous one actually started (a run
-   that already took longer lets the next start at once; the gap is measured on
-   the monotonic clock), so they never hit the media server all together.
+   at most ONE online row runs, in a fixed order: any other online row due in
+   the same minute is skipped with a warning and is not claimed, so the page
+   keeps showing it did not run, and it waits for its next occurrence. One
+   online run at a time, never several together; the Scheduled Tasks page
+   warns on save when schedules share a minute.
    They are self-managed: they run beside a live batch task and no batch start waits for
    them. The sonic fingerprint and the album of the week take nothing but a
    server scope, so both the dispatch entry and the task body they run are

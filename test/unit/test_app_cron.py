@@ -20,12 +20,12 @@ Main Features:
 * The terminal row MERGES into the details the run reported, a failure carries
   the classified error record the worker path writes, and an executed inline
   run answers 'ran', which clears a retry and is never retried
-* A tick evaluates every minute since the previous tick: an inline run that
-  spans a minute cannot swallow a batch schedule due in it, and an every-minute
-  row fires once per tick, not once per missed minute; a gap past the catch-up
-  is a clock jump that evaluates only the current minute
-* Online rows due in one tick start 10 seconds apart, after every batch row of
-  that tick was dispatched; a slow run lets the next start at once
+* A tick evaluates the current minute only: a minute that passed while an
+  inline run held the thread is skipped, never replayed, and the tick keeps no
+  clock state and never sleeps
+* Of the online rows due in one tick only the first runs, after every batch row
+  of that tick was dispatched; the others are skipped unclaimed and wait for
+  their next occurrence
 * Empty fingerprint results skip both playlist upsert and the legacy fallback
 * Non-empty results upsert under the constant cron playlist name via item_ids
 * NotImplementedError from the backend falls back to a timestamped legacy playlist
@@ -62,15 +62,9 @@ from taskqueue import TaskCancelled
 
 
 @pytest.fixture(autouse=True)
-def _fresh_cron_clock_and_no_row_read():
-    import app_cron
-
-    app_cron._cron_clock.update(last_minute=None, last_monotonic=None)
-    app_cron._cron_saved_at.clear()
+def _no_row_read():
     with patch('app_cron.get_task_info_from_db', return_value=None):
         yield
-    app_cron._cron_clock.update(last_minute=None, last_monotonic=None)
-    app_cron._cron_saved_at.clear()
 
 
 def _open_db():
@@ -610,13 +604,8 @@ class _FakeCronTable:
         return True
 
 
-def _run_ticks(table, clock, dispatch, sleeps=None, on_connect=None):
+def _run_ticks(table, clock, dispatch, on_connect=None):
     import app_cron
-
-    def sleep(seconds):
-        if sleeps is not None:
-            sleeps.append(seconds)
-        clock['now'] += seconds
 
     cur = MagicMock()
     cur.fetchall.return_value = table.rows
@@ -631,8 +620,6 @@ def _run_ticks(table, clock, dispatch, sleeps=None, on_connect=None):
     with (
         patch('app_cron.get_db', side_effect=connect),
         patch.object(app_cron.time, 'time', lambda: clock['now']),
-        patch.object(app_cron.time, 'monotonic', lambda: clock['now'] - clock.get('jump', 0)),
-        patch.object(app_cron.time, 'sleep', sleep),
         patch('app_cron._claim_cron_minute', side_effect=table.claim),
         patch('app_cron._dispatch_cron_row', side_effect=dispatch),
         patch('app_cron.clear_cron_retry'),
@@ -641,10 +628,10 @@ def _run_ticks(table, clock, dispatch, sleeps=None, on_connect=None):
         yield app_cron.run_due_cron_jobs
 
 
-class TestTheTickCatchesUpEveryMinuteItMissed:
+class TestTheTickEvaluatesTheCurrentMinuteOnly:
     BASE = 1_900_000_020 - (1_900_000_020 % 60)
 
-    def test_a_slow_inline_run_spanning_a_minute_does_not_swallow_a_batch_schedule(self):
+    def test_a_minute_that_passed_while_an_inline_run_held_the_thread_is_skipped(self):
         clock = {'now': self.BASE + 5}
         table = _FakeCronTable([
             {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': '* * * * *'},
@@ -654,190 +641,33 @@ class TestTheTickCatchesUpEveryMinuteItMissed:
 
         def dispatch(_db, row):
             fired.append((row['task_type'], clock['now']))
-            if row['task_type'] == 'sonic_fingerprint' and len(fired) == 1:
-                clock['now'] = self.BASE + 75
-                return 'ran'
-            return 'enqueued' if row['task_type'] == 'analysis' else 'ran'
-
-        for tick in _run_ticks(table, clock, dispatch):
-            tick()
-            assert [name for name, _ in fired] == ['sonic_fingerprint']
-            clock['now'] = self.BASE + 125
-            tick()
-
-        assert [name for name, _ in fired] == [
-            'sonic_fingerprint', 'analysis', 'sonic_fingerprint',
-        ], (
-            'the inline run held the poll thread through the minute the analysis '
-            'was due; evaluating only "now" on the next tick lost that schedule'
-        )
-        assert (2, self.BASE + 60) in table.claims, (
-            'the late fire is claimed for ITS minute, so a second web process '
-            'evaluating the same minute cannot fire it again'
-        )
-
-    def test_an_every_minute_row_fires_once_per_tick_not_once_per_missed_minute(self):
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': '* * * * *'},
-        ])
-        fired = []
-
-        def dispatch(_db, row):
-            fired.append(clock['now'])
-            return 'ran'
-
-        for tick in _run_ticks(table, clock, dispatch):
-            tick()
-            clock['now'] = self.BASE + 600 + 5
-            tick()
-
-        assert len(fired) == 2
-        assert table.claims == [(1, self.BASE), (1, self.BASE + 600)], (
-            'one fire for the most recent matching minute of the window'
-        )
-
-    def test_the_first_tick_after_a_start_evaluates_only_the_current_minute(self):
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE - 60)},
-        ])
-        dispatch = MagicMock(return_value='enqueued')
-
-        for tick in _run_ticks(table, clock, dispatch):
-            tick()
-
-        dispatch.assert_not_called()
-
-    def test_a_busy_thread_is_caught_up_for_the_whole_retry_window(self):
-        import app_cron
-
-        window = app_cron.CRON_RETRY_MAX_MINUTES
-        clock = {'now': self.BASE + 5}
-        with patch.object(app_cron.time, 'monotonic', lambda: clock['now']):
-            app_cron._minutes_to_evaluate(clock['now'])
-            clock['now'] = self.BASE + window * 60 + 5
-            minutes, dropped = app_cron._minutes_to_evaluate(clock['now'])
-            clock['now'] += (window + 10) * 60
-            later, too_old = app_cron._minutes_to_evaluate(clock['now'])
-
-        assert len(minutes) == window and dropped == [], (
-            'a gap the monotonic clock also measured is a busy thread, caught up in full'
-        )
-        assert minutes[0] == self.BASE + 60 and minutes[-1] == self.BASE + window * 60
-        assert len(later) == window and len(too_old) == 10, (
-            'nothing is caught up past CRON_RETRY_MAX_MINUTES, the bound of every wait'
-        )
-
-    def test_an_hour_long_inline_run_loses_no_batch_schedule(self):
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE)},
-            {'id': 2, 'task_type': 'clustering', 'cron_expr': _minute_expr(self.BASE + 60 * 60)},
-        ])
-        fired = []
-
-        def dispatch(_db, row):
-            fired.append(row['task_type'])
             if row['task_type'] == 'sonic_fingerprint':
-                clock['now'] = self.BASE + 65 * 60 + 5
-                return 'ran'
-            return 'enqueued'
+                clock['now'] += 130
+            return 'ran' if row['task_type'] == 'sonic_fingerprint' else 'enqueued'
 
         for tick in _run_ticks(table, clock, dispatch):
             tick()
             tick()
 
-        assert fired == ['sonic_fingerprint', 'clustering'], (
-            'a 65-minute online run is a busy thread, not a clock jump: the '
-            'clustering due during it must still fire'
+        assert fired == [
+            ('sonic_fingerprint', self.BASE + 5), ('sonic_fingerprint', self.BASE + 135),
+        ], (
+            'the analysis minute passed while the first fingerprint ran: it is '
+            'skipped, never replayed late, and the next tick evaluates only its '
+            'own minute'
         )
+        assert table.claims == [(1, self.BASE), (1, self.BASE + 120)]
 
-    def test_an_online_schedule_missed_while_busy_is_skipped_not_replayed(self):
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 1, 'task_type': 'album_of_the_week', 'cron_expr': _minute_expr(self.BASE)},
-            {'id': 2, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE + 300)},
-            {'id': 3, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 300)},
-        ])
-        fired = []
-
-        def dispatch(_db, row):
-            fired.append(row['task_type'])
-            if row['task_type'] == 'album_of_the_week':
-                clock['now'] = self.BASE + 600 + 5
-            return 'ran' if row['task_type'] in task_types.INLINE_FLASK_TASK_TYPES else 'enqueued'
-
-        for tick in _run_ticks(table, clock, dispatch):
-            tick()
-            tick()
-
-        assert fired == ['album_of_the_week', 'analysis'], (
-            'both were due at +300 s while the album held the scheduler: the batch '
-            'analysis is caught up, the online fingerprint just waits for its next '
-            'occurrence instead of firing late'
-        )
-
-    def test_a_batch_schedule_older_than_the_window_is_a_visible_skip(self):
+    def test_the_tick_keeps_no_clock_state_and_never_sleeps(self):
         import app_cron
 
-        window = app_cron.CRON_RETRY_MAX_MINUTES
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 1, 'task_type': 'album_of_the_week', 'cron_expr': _minute_expr(self.BASE)},
-            {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 60)},
-            {'id': 3, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE + 120)},
-        ])
-        fired = []
-
-        def dispatch(_db, row):
-            fired.append(row['task_type'])
-            if row['task_type'] == 'album_of_the_week':
-                clock['now'] = self.BASE + (window + 10) * 60 + 5
-            return 'ran' if row['task_type'] in task_types.INLINE_FLASK_TASK_TYPES else 'enqueued'
-
-        with patch('app_cron._record_retry_expired') as expired:
-            for tick in _run_ticks(table, clock, dispatch):
-                tick()
-                tick()
-
-        assert fired == ['album_of_the_week']
-        assert [call.args[0] for call in expired.call_args_list] == ['analysis'], (
-            'the analysis was due before the window: a visible skip, never a silent '
-            'loss; the online row missed the same way is simply skipped'
+        source = inspect.getsource(app_cron.run_due_cron_jobs)
+        assert 'monotonic' not in source and 'sleep' not in source, (
+            'no catch-up, no stagger: the tick reads the wall clock once and '
+            'runs what is due now'
         )
-        texts = expired.call_args.kwargs
-        assert 'scheduler was busy' in texts['message'], (
-            'nothing blocked this run: the skip must not claim a blocker kept it waiting'
-        )
-        assert 'busy' in texts['status_message']
-
-    def test_a_gap_past_the_catch_up_is_a_clock_jump_not_a_replay(self, caplog):
-        clock = {'now': self.BASE + 5}
-        jump = 61 * 60
-        table = _FakeCronTable([
-            {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 120)},
-            {'id': 3, 'task_type': 'clustering', 'cron_expr': _minute_expr(self.BASE + jump)},
-        ])
-        fired = []
-
-        def dispatch(_db, row):
-            fired.append(row['task_type'])
-            return 'enqueued'
-
-        with caplog.at_level(logging.WARNING, logger='app_cron'):
-            for tick in _run_ticks(table, clock, dispatch):
-                tick()
-                clock['now'] = self.BASE + jump + 5
-                clock['jump'] = jump
-                tick()
-
-        assert fired == ['clustering'], (
-            'a wall-clock jump (NTP step, a host waking from sleep) that the '
-            'monotonic clock did not see must not fire every schedule of the '
-            'skipped span at once'
-        )
-        assert any('clock jump' in record.getMessage() for record in caplog.records)
+        assert not hasattr(app_cron, '_cron_clock')
+        assert not hasattr(app_cron, '_cron_saved_at')
 
 
 class TestTheTickSurvivesWhatALongOnlineRunChanges:
@@ -863,120 +693,6 @@ class TestTheTickSurvivesWhatALongOnlineRunChanges:
             'the fingerprint was disabled on the page while the album ran: the '
             'stale SELECT of the tick start must not run it anyway'
         )
-
-    def test_a_slow_database_connect_is_not_taken_for_a_clock_jump(self):
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE)},
-            {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 300)},
-        ])
-        slow = {'first': True}
-        fired = []
-
-        def on_connect():
-            if slow['first']:
-                slow['first'] = False
-                clock['now'] += 180
-
-        def dispatch(_db, row):
-            fired.append(row['task_type'])
-            if row['task_type'] == 'sonic_fingerprint':
-                clock['now'] = self.BASE + 600 + 5
-                return 'ran'
-            return 'enqueued'
-
-        for tick in _run_ticks(table, clock, dispatch, on_connect=on_connect):
-            tick()
-            tick()
-
-        assert fired == ['sonic_fingerprint', 'analysis'], (
-            'both clocks are read at the tick start: a 3-minute connect must not '
-            'make the next tick see a clock jump and skip the analysis'
-        )
-
-    def test_a_schedule_saved_during_a_busy_run_starts_from_its_save(self):
-        import app_cron
-
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE)},
-            {'id': 3, 'task_type': 'clustering', 'cron_expr': '0 4 1 1 *'},
-        ])
-        fired = []
-
-        def dispatch(_db, row):
-            fired.append(row['task_type'])
-            if row['task_type'] == 'sonic_fingerprint':
-                table.rows.append(
-                    {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 120)}
-                )
-                table.rows[1]['cron_expr'] = _minute_expr(self.BASE + 300)
-                app_cron._cron_saved_at['analysis'] = self.BASE + 200
-                app_cron._cron_saved_at['clustering'] = self.BASE + 200
-                clock['now'] = self.BASE + 600 + 5
-                return 'ran'
-            return 'enqueued'
-
-        for tick in _run_ticks(table, clock, dispatch):
-            tick()
-            tick()
-
-        assert fired == ['sonic_fingerprint', 'clustering'], (
-            'saved at +200 s during the busy run: the analysis minute (+120 s) had '
-            'already passed, so it must not fire retroactively, while the edited '
-            'clustering minute (+300 s) came after the save and must still fire'
-        )
-
-    def test_a_schedule_turned_off_and_on_never_fires_for_the_minutes_it_was_off(self):
-        import app_cron
-
-        clock = {'now': self.BASE + 5}
-        table = _FakeCronTable([
-            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE)},
-            {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 120)},
-        ])
-        fired = []
-
-        def dispatch(_db, row):
-            fired.append(row['task_type'])
-            if row['task_type'] == 'sonic_fingerprint':
-                app_cron._cron_saved_at['analysis'] = self.BASE + 400
-                clock['now'] = self.BASE + 600 + 5
-                return 'ran'
-            return 'enqueued'
-
-        for tick in _run_ticks(table, clock, dispatch):
-            tick()
-            tick()
-
-        assert fired == ['sonic_fingerprint'], (
-            'switched off, then back on at +400 s with the same expression: its '
-            '+120 s minute passed while it was off and must not fire on the catch-up'
-        )
-
-    def test_a_zero_retry_window_catches_up_nothing(self):
-        import app_cron
-
-        with patch('app_cron.CRON_RETRY_MAX_MINUTES', 0):
-            app_cron._minutes_to_evaluate(self.BASE + 5, 1000.0)
-            minutes, dropped = app_cron._minutes_to_evaluate(self.BASE + 600 + 5, 1600.0)
-
-        assert minutes == [self.BASE + 600], 'the current minute is always evaluated'
-        assert len(dropped) == 9, 'a zero window must never mean "the whole gap"'
-
-    def test_windows_evaluates_only_the_current_minute_as_before(self):
-        import app_cron
-
-        with patch('app_cron._CATCH_UP_SUPPORTED', False):
-            app_cron._minutes_to_evaluate(self.BASE + 5, 1000.0)
-            minutes, dropped = app_cron._minutes_to_evaluate(self.BASE + 600 + 5, 1600.0)
-
-        assert (minutes, dropped) == ([self.BASE + 600], []), (
-            'the Windows monotonic clock counts through sleep, so a laptop wake '
-            'would look like a busy thread and replay its schedules: there the '
-            'scheduler keeps its old current-minute-only behaviour'
-        )
-
 
 
 class TestTheInlineRunSurvivesADatabaseDrop:
@@ -1070,7 +786,7 @@ class TestTheInlineTerminalRowIsTheWorkersOwnBuilder:
         assert worker._UNREAD is taskqueue.ERROR_AT_CLAIM_UNREAD
 
 
-class TestOnlineRowsDueTogetherStartTenSecondsApart:
+class TestOnlineRowsDueTogetherRunOneAndSkipTheRest:
     BASE = 1_900_000_020 - (1_900_000_020 % 60)
 
     def _every_minute(self, *rows):
@@ -1079,26 +795,32 @@ class TestOnlineRowsDueTogetherStartTenSecondsApart:
             for row_id, task_type in rows
         ])
 
-    def test_three_online_rows_due_together_start_at_0_10_and_20_seconds(self):
+    def test_of_three_online_rows_due_together_only_the_first_runs(self, caplog):
         clock = {'now': self.BASE + 5}
         table = self._every_minute(
             (3, 'sonic_fingerprint'), (1, 'alchemy_radio'), (2, 'album_of_the_week'),
         )
-        fired, sleeps = [], []
+        fired = []
 
         def dispatch(_db, row):
-            fired.append((row['task_type'], clock['now'] - (self.BASE + 5)))
+            fired.append(row['task_type'])
             return 'ran'
 
-        for tick in _run_ticks(table, clock, dispatch, sleeps):
-            tick()
+        with caplog.at_level(logging.WARNING, logger='app_cron'):
+            for tick in _run_ticks(table, clock, dispatch):
+                tick()
 
-        assert fired == [
-            ('album_of_the_week', 0), ('alchemy_radio', 10), ('sonic_fingerprint', 20),
-        ], 'online rows sharing a tick start 10 seconds apart in a fixed order'
-        assert sleeps == [10, 10]
+        assert fired == ['album_of_the_week'], (
+            'one online run at a time: the others due in the same minute are '
+            'skipped, never queued and never started together'
+        )
+        assert table.last_run[1] is None and table.last_run[3] is None, (
+            'a skipped row is not claimed, so the page keeps showing it did not run'
+        )
+        skipped = [r.getMessage() for r in caplog.records if 'not started' in r.getMessage()]
+        assert len(skipped) == 2 and all('album_of_the_week' in m for m in skipped)
 
-    def test_a_batch_row_of_the_same_tick_is_dispatched_before_any_online_run(self):
+    def test_a_batch_row_of_the_same_tick_is_dispatched_before_the_online_run(self):
         clock = {'now': self.BASE + 5}
         table = self._every_minute(
             (1, 'sonic_fingerprint'), (2, 'analysis'), (3, 'alchemy_radio'), (4, 'clustering'),
@@ -1106,79 +828,70 @@ class TestOnlineRowsDueTogetherStartTenSecondsApart:
         fired = []
 
         def dispatch(_db, row):
-            fired.append((row['task_type'], clock['now'] - (self.BASE + 5)))
+            fired.append(row['task_type'])
             return 'ran' if row['task_type'] in task_types.INLINE_FLASK_TASK_TYPES else 'enqueued'
 
         for tick in _run_ticks(table, clock, dispatch):
             tick()
 
-        assert fired == [
-            ('analysis', 0), ('clustering', 0), ('alchemy_radio', 0), ('sonic_fingerprint', 10),
-        ], 'a batch row only enqueues, so it never waits behind an online run'
+        assert fired == ['analysis', 'clustering', 'alchemy_radio'], (
+            'batch rows only enqueue, so they never wait behind the one online run'
+        )
 
-    def test_a_slow_online_run_lets_the_next_start_at_once(self):
+    def test_online_rows_on_different_minutes_all_run(self):
         clock = {'now': self.BASE + 5}
-        table = self._every_minute((1, 'alchemy_radio'), (2, 'sonic_fingerprint'))
-        fired, sleeps = [], []
+        table = _FakeCronTable([
+            {'id': 1, 'task_type': 'alchemy_radio', 'cron_expr': _minute_expr(self.BASE)},
+            {'id': 2, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE + 60)},
+        ])
+        fired = []
 
         def dispatch(_db, row):
-            fired.append((row['task_type'], clock['now'] - (self.BASE + 5)))
-            clock['now'] += 15 if row['task_type'] == 'alchemy_radio' else 1
+            fired.append(row['task_type'])
             return 'ran'
 
-        for tick in _run_ticks(table, clock, dispatch, sleeps):
+        for tick in _run_ticks(table, clock, dispatch):
+            tick()
+            clock['now'] = self.BASE + 65
             tick()
 
-        assert fired == [('alchemy_radio', 0), ('sonic_fingerprint', 15)]
-        assert sleeps == [], 'the gap already passed during the slow run; no extra wait'
+        assert fired == ['alchemy_radio', 'sonic_fingerprint']
 
-    def test_the_gap_counts_from_the_previous_start_so_it_is_never_shorter(self):
+    def test_a_row_another_web_process_claimed_leaves_the_turn_to_the_next(self):
+        clock = {'now': self.BASE + 5}
+        table = self._every_minute((1, 'album_of_the_week'), (2, 'alchemy_radio'))
+        table.last_run[1] = self.BASE
+        fired = []
+
+        def dispatch(_db, row):
+            fired.append(row['task_type'])
+            return 'ran'
+
+        for tick in _run_ticks(table, clock, dispatch):
+            tick()
+
+        assert fired == ['alchemy_radio'], (
+            'nothing ran here for the album (another process claimed it), so '
+            'the radio is the one online run of this tick'
+        )
+
+    def test_an_online_row_whose_run_could_not_start_leaves_the_turn_to_the_next(self):
         clock = {'now': self.BASE + 5}
         table = self._every_minute(
             (1, 'album_of_the_week'), (2, 'alchemy_radio'), (3, 'sonic_fingerprint'),
         )
-        fired, sleeps = [], []
+        fired = []
 
         def dispatch(_db, row):
-            fired.append((row['task_type'], clock['now'] - (self.BASE + 5)))
-            clock['now'] += 12 if row['task_type'] == 'album_of_the_week' else 3
-            return 'ran'
+            fired.append(row['task_type'])
+            return 'failed' if row['task_type'] == 'album_of_the_week' else 'ran'
 
-        for tick in _run_ticks(table, clock, dispatch, sleeps):
+        for tick in _run_ticks(table, clock, dispatch):
             tick()
 
-        assert fired == [
-            ('album_of_the_week', 0), ('alchemy_radio', 12), ('sonic_fingerprint', 22),
-        ], (
-            'slots fixed to the tick start would start the third run at +20, only '
-            '8 seconds after the second one'
-        )
-        assert sleeps == [7]
-
-    def test_a_row_another_web_process_claimed_uses_no_slot(self):
-        clock = {'now': self.BASE + 5}
-        table = self._every_minute((1, 'album_of_the_week'), (2, 'alchemy_radio'))
-        table.last_run[1] = self.BASE
-        fired, sleeps = [], []
-
-        def dispatch(_db, row):
-            fired.append((row['task_type'], clock['now'] - (self.BASE + 5)))
-            return 'ran'
-
-        for tick in _run_ticks(table, clock, dispatch, sleeps):
-            tick()
-
-        assert fired == [('alchemy_radio', 0)]
-        assert sleeps == [], 'nothing started before it, so nothing to wait for'
-
-    def test_the_gap_is_measured_on_the_monotonic_clock(self):
-        import app_cron
-
-        source = inspect.getsource(app_cron.run_due_cron_jobs)
-        assert 'time.monotonic()' in source
-        stagger = source.split('previous_start = None', 1)[1]
-        assert 'time.time()' not in stagger, (
-            'a wall-clock step must never stretch the sleep of the cron thread'
+        assert fired == ['album_of_the_week', 'alchemy_radio'], (
+            'the album could not even write its STARTED row, so nothing ran: the '
+            'radio takes the turn and only the fingerprint is skipped'
         )
 
     @patch('app_cron.get_db')
@@ -1471,33 +1184,24 @@ def test_get_cron_entries_marks_entries_without_a_retry_as_not_pending():
     assert response.get_json()[0]['retry_pending'] is False
 
 
-@pytest.mark.parametrize('before, enabled, recorded', [
-    (('0 2 * * 6', False), True, True),
-    (('0 3 * * 6', True), True, True),
-    (('0 2 * * 6', True), True, False),
-    (('0 2 * * 6', True), False, False),
-], ids=['enabled-now', 'expression-changed', 'unchanged-resave', 'disabled'])
-def test_a_save_records_when_a_schedule_starts_only_if_it_changed(before, enabled, recorded):
+def test_a_save_keeps_no_process_memory_of_the_schedule():
     import app_cron
 
     client = _cron_api_client()
     cur = MagicMock()
-    cur.fetchone.return_value = before
+    cur.fetchone.return_value = ('0 2 * * 6', False)
     db = MagicMock()
     db.cursor.return_value = cur
-    with (
-        patch('app_cron.get_db', return_value=db),
-        patch('app_cron.time.time', return_value=5000.0),
-    ):
+    with patch('app_cron.get_db', return_value=db):
         response = client.post('/api/cron', json={
             'id': 7, 'name': 'Clustering', 'task_type': 'clustering',
-            'cron_expr': '0 2 * * 6', 'enabled': enabled,
+            'cron_expr': '0 2 * * 6', 'enabled': True,
         })
 
     assert response.status_code == 200
-    assert (app_cron._cron_saved_at.get('clustering') == 5000.0) is recorded, (
-        'the page re-saves every row on each Save: only a schedule that was '
-        'enabled or changed may restart its catch-up window'
+    assert not hasattr(app_cron, '_cron_saved_at'), (
+        'the table is the whole schedule state: the tick reads it every minute '
+        'and the claim re-checks the row, so a save records nothing in memory'
     )
 
 
@@ -1548,9 +1252,9 @@ def test_the_overlap_warning_states_the_real_scheduling_behaviour():
     _, script = _cron_page_script()
     risk = script.split('const CRON_OVERLAP_RISK_TEXT = ', 1)[1].split(';\n', 1)[0]
     assert 'at your own risk' in risk
-    assert 'run one after another, each starting at least {{ inline_stagger_seconds }} seconds after the previous one' in risk, (
-        'online rows due together run back to back, never less than the stagger '
-        'apart, and the page must not promise they overlap'
+    assert 'only one runs and the others are skipped until their next occurrence' in risk, (
+        'of the online rows due together only one runs; the page must not '
+        'promise a stagger, a queue or a catch-up that the scheduler does not apply'
     )
     assert 'skipped if it is still blocked after {{ cron_retry_max_minutes }} minutes' in risk, (
         'a blocked batch schedule expires after CRON_RETRY_MAX_MINUTES; the page '
@@ -1558,5 +1262,5 @@ def test_the_overlap_warning_states_the_real_scheduling_behaviour():
     )
     with patch('app_cron.render_template', return_value='') as render:
         app_cron.cron_page()
-    assert render.call_args.kwargs['inline_stagger_seconds'] == app_cron._INLINE_STAGGER_SECONDS
     assert render.call_args.kwargs['cron_retry_max_minutes'] == config.CRON_RETRY_MAX_MINUTES
+    assert 'inline_stagger_seconds' not in render.call_args.kwargs

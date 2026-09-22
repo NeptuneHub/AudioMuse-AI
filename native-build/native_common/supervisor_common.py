@@ -20,11 +20,17 @@ Main Features:
 * One readiness wait that honours a stop request and reports the last error
 * Control dispatch that runs every service and reports the aggregate result
 * Pid file writes and removal that tolerate a read-only or missing state dir
+* references_pgdata tells a postgres/pg_ctl command line that runs OUR data
+  directory (its -D argument) from one that runs a sibling such as a backup
+  copy, which a substring match would have killed too.
+* stale_role_child names a --role= child of this executable that no live
+  supervisor owns, so every platform reaps the same orphans at startup
 """
 
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -35,6 +41,56 @@ from native_common.reverse_log import NewestFirstFileHandler
 logger = logging.getLogger("audiomuse.supervisor")
 
 FLASK_URL = "http://127.0.0.1:8000/"
+
+
+def own_executables():
+    names = [sys.executable, os.path.realpath(sys.executable)]
+    return {os.path.normcase(name) for name in names if name}
+
+
+def stale_role_child(argv, own_exes, roles, exe_of=None):
+    if len(argv) < 2:
+        return None
+    role = None
+    for arg in argv[1:]:
+        if arg.startswith("--role="):
+            role = arg[len("--role="):]
+            break
+    if role not in roles:
+        return None
+    if os.path.isabs(argv[0]) and os.path.normcase(argv[0]) in own_exes:
+        return role
+    if exe_of is None:
+        return None
+    try:
+        exe = exe_of() or ""
+    except Exception:
+        return None
+    if not exe:
+        return None
+    images = {os.path.normcase(exe), os.path.normcase(os.path.realpath(exe))}
+    return role if not images.isdisjoint(own_exes) else None
+
+
+def _pgdata_key(path):
+    text = str(path).strip().strip('"').replace("\\", "/")
+    return os.path.normcase(os.path.normpath(text)).rstrip("/\\")
+
+
+def references_pgdata(argv, pgdata_dir):
+    wanted = _pgdata_key(pgdata_dir)
+    for index, arg in enumerate(argv):
+        if arg == "-D" and index + 1 < len(argv):
+            candidate = argv[index + 1]
+        elif arg.startswith("-D") and len(arg) > 2:
+            candidate = arg[2:]
+        elif arg.startswith("--pgdata="):
+            candidate = arg[len("--pgdata="):]
+        else:
+            continue
+        if _pgdata_key(candidate) == wanted:
+            return True
+    return False
 
 
 class SupervisorCommonMixin:

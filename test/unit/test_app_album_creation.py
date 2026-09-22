@@ -292,13 +292,9 @@ class TestOffWithoutBothAnalyses:
 
 class TestTheCronRow:
     @pytest.fixture(autouse=True)
-    def _fresh_cron_clock(self):
-        import app_cron
-
-        app_cron._cron_clock['last_minute'] = None
+    def _no_row_details(self):
         with patch('app_cron.get_task_info_from_db', return_value=None):
             yield
-        app_cron._cron_clock['last_minute'] = None
 
     def _due_row_db(self):
         cur = MagicMock()
