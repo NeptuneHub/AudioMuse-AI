@@ -49,7 +49,7 @@ import time
 import webbrowser
 
 import service_roles
-from native_common import frozen_children
+from native_common import crash_log, frozen_children
 
 WEB_URL = "http://127.0.0.1:8000"
 
@@ -134,34 +134,8 @@ def main():
         sys.exit(1)
 
 
-_CRASH_LOG = None
-
-
 def _capture_fatal_errors(paths):
-    global _CRASH_LOG
-    import faulthandler
-    import traceback
-
-    path = os.path.join(paths.logs_dir(), "supervisor-crash.log")
-    _CRASH_LOG = open(path, "a", encoding="utf-8", buffering=1)
-    faulthandler.enable(file=_CRASH_LOG, all_threads=True)
-
-    def _write(kind, exc_type, exc, tb):
-        _CRASH_LOG.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {kind}\n")
-        traceback.print_exception(exc_type, exc, tb, file=_CRASH_LOG)
-        _CRASH_LOG.flush()
-
-    def _excepthook(exc_type, exc, tb):
-        _write("unhandled exception in the supervisor", exc_type, exc, tb)
-        sys.__excepthook__(exc_type, exc, tb)
-
-    def _thread_hook(args):
-        name = args.thread.name if args.thread is not None else "?"
-        _write(f"unhandled exception in thread {name}", args.exc_type, args.exc_value, args.exc_traceback)
-
-    sys.excepthook = _excepthook
-    threading.excepthook = _thread_hook
-    return path
+    return crash_log.capture_fatal_errors(paths.logs_dir())
 
 
 def _start_supervisor():

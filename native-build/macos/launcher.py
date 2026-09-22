@@ -15,6 +15,8 @@ warmup before the first analysis job to avoid the macOS newlocale crash. The
 Linux/Windows launchers are the platform-specific siblings.
 
 Main Features:
+* The supervisor's own fatal errors go to logs/supervisor-crash.log, the only
+  place a menu-bar app without a console can be read back from
 * Runs Flask via waitress or launches a named queue role in-process.
 * Pins the numeric locale early and warms up scipy longdouble for every role
   except maintenance and restart-listener (macOS newlocale crash fix).
@@ -28,7 +30,7 @@ import sys
 import threading
 
 import service_roles
-from native_common import frozen_children
+from native_common import crash_log, frozen_children
 
 
 _NO_LONGDOUBLE_WARMUP_ROLES = {
@@ -87,6 +89,7 @@ def _run_menubar():
         subprocess.Popen(["open", "http://127.0.0.1:8000"])
         return
 
+    crash_log.capture_fatal_errors(os.path.dirname(paths.log_file()))
     supervisor = ProcessSupervisor()
 
     class AudioMuseApp(rumps.App):

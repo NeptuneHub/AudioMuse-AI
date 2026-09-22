@@ -22,6 +22,8 @@ hands back a connection mapping instead of a URL.
 Main Features:
 * Ordered boot behind a stop flag that is re-checked before every step
 * Child termination that escalates SIGTERM to SIGKILL and closes the log pipe
+* Startup reaps --role= children of this executable that a dead supervisor left
+  behind, restarted ones included, not only the pids of the last pid file
 * Orphan reaping from the pid file left by a previous run, plus any server still
   holding our data directory
 """
@@ -36,7 +38,11 @@ import threading
 
 import service_roles
 from native_common.control_ipc import ControlServer
-from native_common.supervisor_common import SupervisorCommonMixin
+from native_common.supervisor_common import (
+    SupervisorCommonMixin,
+    own_executable,
+    stale_role_child,
+)
 from native_common.supervisor_health import HealthLoopMixin
 
 logger = logging.getLogger("audiomuse.supervisor")
@@ -305,12 +311,19 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
             return
         me = os.getpid()
         pg_marker = self.paths.pgdata_dir()
+        own_exe = own_executable()
+        with self._lock:
+            live_children = {
+                proc.pid for proc in self._children.values() if proc.poll() is None
+            }
         terminated = []
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
-                if proc.info["pid"] == me:
+                pid = proc.info["pid"]
+                if pid == me or pid in live_children:
                     continue
-                cmd = " ".join(proc.info.get("cmdline") or [])
+                argv = proc.info.get("cmdline") or []
+                cmd = " ".join(argv)
                 if not cmd:
                     continue
                 if ("postgres" in cmd or "pg_ctl" in cmd) and pg_marker in cmd:
@@ -319,7 +332,15 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
                     self._log.info(
                         "Reaped stale %s (pid %s) referencing our data dir",
                         proc.info.get("name"),
-                        proc.info["pid"],
+                        pid,
+                    )
+                elif stale_role_child(argv, own_exe, ROLE_OF.values()):
+                    proc.terminate()
+                    terminated.append(proc)
+                    self._log.warning(
+                        "Reaped orphan %s (pid %s) left behind by an earlier supervisor",
+                        argv[1],
+                        pid,
                     )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue

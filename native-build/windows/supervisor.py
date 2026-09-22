@@ -39,7 +39,11 @@ import service_roles
 from windows import db_backend
 from windows import env as env_builder
 from windows import paths
-from native_common.supervisor_common import SupervisorCommonMixin
+from native_common.supervisor_common import (
+    SupervisorCommonMixin,
+    own_executable,
+    stale_role_child,
+)
 from native_common.supervisor_health import HealthLoopMixin
 from windows.control_server import ControlServer
 
@@ -49,14 +53,6 @@ BOOT_ORDER = service_roles.BOOT_ORDER
 
 _CONSOLE_STOP_EVENTS = {2: "console closed", 5: "user logged off", 6: "system shutting down"}
 _console_handlers = []
-
-
-def _is_stale_role_child(argv, own_exe):
-    if len(argv) < 2 or os.path.normcase(argv[0]) != own_exe:
-        return False
-    if not argv[1].startswith("--role="):
-        return False
-    return argv[1][len("--role="):] in ROLE_OF.values()
 
 
 class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
@@ -325,9 +321,7 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
             return
         me = os.getpid()
         pg_marker = paths.pgdata_dir().lower()
-        own_exe = os.path.normcase(
-            sys.argv[0] if getattr(sys, "frozen", False) else sys.executable
-        )
+        own_exe = own_executable()
         with self._lock:
             live_children = {
                 popen.pid for popen in self._children.values() if popen.poll() is None
@@ -348,7 +342,7 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
                         pid,
                     )
                     proc.terminate()
-                elif _is_stale_role_child(argv, own_exe):
+                elif stale_role_child(argv, own_exe, ROLE_OF.values()):
                     self._log.warning(
                         "Reaping orphan %s (pid=%d) left behind by an earlier supervisor",
                         argv[1],

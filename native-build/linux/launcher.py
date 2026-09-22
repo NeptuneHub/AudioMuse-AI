@@ -16,6 +16,9 @@ Flask/waitress server or a queue worker/maintenance/control-listener.
 Main Features:
 * Runs Flask via waitress or launches a named queue role in-process.
 * Enforces single-instance startup with an flock-based supervisor lock.
+* A closed terminal (SIGHUP) stops the stack in order like Ctrl+C does, so the
+  children spawned in their own sessions never outlive the supervisor; the
+  supervisor's own fatal errors go to logs/supervisor-crash.log.
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
   instead of re-entering the supervisor as a stray copy of the app.
 """
@@ -29,7 +32,7 @@ import time
 import webbrowser
 
 import service_roles
-from native_common import frozen_children
+from native_common import crash_log, frozen_children
 
 WEB_URL = "http://127.0.0.1:8000"
 
@@ -107,6 +110,7 @@ def _run_supervisor(open_browser=True):
             _open_browser()
         return 0
 
+    crash_log.capture_fatal_errors(os.path.dirname(paths.log_file()))
     supervisor = ProcessSupervisor()
     stop_event = threading.Event()
 
@@ -115,6 +119,7 @@ def _run_supervisor(open_browser=True):
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGHUP, _handle_signal)
 
     def _on_ready():
         print("AudioMuse-AI is running at %s" % WEB_URL)

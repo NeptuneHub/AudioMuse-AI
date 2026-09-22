@@ -20,11 +20,14 @@ Main Features:
 * One readiness wait that honours a stop request and reports the last error
 * Control dispatch that runs every service and reports the aggregate result
 * Pid file writes and removal that tolerate a read-only or missing state dir
+* stale_role_child names a --role= child of this executable that no live
+  supervisor owns, so every platform reaps the same orphans at startup
 """
 
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -35,6 +38,18 @@ from native_common.reverse_log import NewestFirstFileHandler
 logger = logging.getLogger("audiomuse.supervisor")
 
 FLASK_URL = "http://127.0.0.1:8000/"
+
+
+def own_executable():
+    return os.path.normcase(sys.argv[0] if getattr(sys, "frozen", False) else sys.executable)
+
+
+def stale_role_child(argv, own_exe, roles):
+    if len(argv) < 2 or os.path.normcase(argv[0]) != own_exe:
+        return False
+    if not argv[1].startswith("--role="):
+        return False
+    return argv[1][len("--role="):] in roles
 
 
 class SupervisorCommonMixin:

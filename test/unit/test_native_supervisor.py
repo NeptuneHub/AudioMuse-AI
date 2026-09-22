@@ -14,6 +14,8 @@ children, focusing on its threading guards and start/stop state machine.
 Main Features:
 * A Windows console close stops everything instead of resurrecting children
 * Startup reaps role children a dead supervisor left behind, and nothing else
+* Linux and macOS reap restarted role children too, a closed terminal stops the
+  Linux stack in order, and supervisor tracebacks land in a crash file
 * join_workers returns promptly from the boot thread and skips the main thread on Windows
 * The health loop clears a preset stop flag and spawns a live watcher thread
 * All three platforms share one health loop, and none keeps a private copy
@@ -28,6 +30,7 @@ Main Features:
 
 import importlib.util
 import os
+import pathlib
 import subprocess
 import sys
 import threading
@@ -753,3 +756,76 @@ class TestATornDownWindowsSupervisorLeavesNoOrphanBehind:
         monkeypatch.setattr(sys, 'platform', 'linux')
 
         assert sup.install_console_handler() is False
+
+
+class TestEveryPlatformReapsTheOrphansADeadSupervisorLeft:
+    @pytest.mark.parametrize('platform_name', ['linux', 'macos'])
+    def test_posix_startup_reaps_restarted_role_children_too(self, platform_name, monkeypatch):
+        mod = _load_supervisor(platform_name)
+        sup = _bare_supervisor(mod)
+        sup._clear_pidfile = lambda: None
+        monkeypatch.setattr(sup.paths, 'pgdata_dir', lambda: '/data/pgdata')
+        exe = sys.executable
+        mine = MagicMock(pid=77)
+        mine.poll.return_value = None
+        sup._children['queue-worker-high'] = mine
+        procs = [
+            _FakeProc(os.getpid(), 'me', [exe, '--role=flask']),
+            _FakeProc(77, 'child', [exe, '--role=worker-high']),
+            _FakeProc(601, 'orphan', [exe, '--role=worker-default']),
+            _FakeProc(602, 'other', ['/opt/other/python', '--role=worker-high']),
+            _FakeProc(603, 'postgres', ['postgres', '-D', '/data/pgdata']),
+        ]
+        fake = _fake_psutil(procs)
+        fake.wait_procs = lambda procs, timeout=None: (list(procs), [])
+        monkeypatch.setitem(sys.modules, 'psutil', fake)
+
+        sup._reap_stale_infra()
+
+        assert [p.info['pid'] for p in procs if p.terminated] == [601, 603], (
+            'the pid file only knows the children of the last boot; a child the '
+            'health loop restarted later outlived a dead supervisor unseen'
+        )
+
+    def test_a_closed_terminal_stops_the_linux_stack_like_ctrl_c(self):
+        source = (pathlib.Path(NATIVE_BUILD) / 'linux' / 'launcher.py').read_text(encoding='utf-8')
+        handler = source.split('def _run_supervisor', 1)[1].split('def _cmd_stop', 1)[0]
+
+        assert 'signal.signal(signal.SIGHUP, _handle_signal)' in handler, (
+            'children run in their own sessions, so a SIGHUP that kills only the '
+            'supervisor leaves the whole stack running with nobody supervising it'
+        )
+
+
+class TestSupervisorFatalErrorsAreWrittenToAFile:
+    def test_unhandled_exceptions_land_in_the_crash_log(self, tmp_path, monkeypatch):
+        import faulthandler
+        import importlib.util as util
+
+        spec = util.spec_from_file_location(
+            'crash_log_under_test', os.path.join(NATIVE_BUILD, 'native_common', 'crash_log.py')
+        )
+        crash_log = util.module_from_spec(spec)
+        spec.loader.exec_module(crash_log)
+        monkeypatch.setattr(sys, 'excepthook', sys.excepthook)
+        monkeypatch.setattr(threading, 'excepthook', threading.excepthook)
+        monkeypatch.setattr(sys, '__excepthook__', lambda *a: None)
+
+        path = crash_log.capture_fatal_errors(str(tmp_path))
+        try:
+            assert faulthandler.is_enabled()
+            try:
+                raise RuntimeError('the supervisor blew up')
+            except RuntimeError:
+                sys.excepthook(*sys.exc_info())
+        finally:
+            faulthandler.disable()
+            crash_log._crash_log.close()
+
+        text = pathlib.Path(path).read_text(encoding='utf-8')
+        assert path.endswith('supervisor-crash.log')
+        assert 'unhandled exception in the supervisor' in text
+        assert 'RuntimeError: the supervisor blew up' in text, (
+            'a hidden console swallowed every supervisor traceback; the file is '
+            'the only place a crash can be read back from'
+        )
