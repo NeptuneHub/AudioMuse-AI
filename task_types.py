@@ -27,15 +27,14 @@ Main Features:
   gets ONE, since the next run re-queues what it missed; the migration planner
   gets none, because a re-run dry run holds its session claimed for another
   attempt. None means QUEUE_MAX_ATTEMPTS
-* cron is the name a Scheduled Tasks row carries for a schedule that ENQUEUES
+* cron is the name a Scheduled Tasks row carries for a schedule that starts
   this type, where the names differ (the analysis row queues main_analysis).
   CRON_TASK_TYPE_TO_QUEUE_TYPE and CRON_RETRY_TASK_TYPES derive from it, so a
   blocked start and the retry that looks for its SUCCESS cannot name different
-  types. A row that never reaches the queue declares none: alchemy_radio runs
-  inline in Flask under its own name
-* dotted is the function a cron row enqueues verbatim, for the scheduled
-  builders that take nothing but a server scope; CRON_QUEUED_TASKS derives from
-  it and IS app_cron's dispatch for them
+  types. alchemy_radio declares none: it runs inline under its own name
+* dotted is the function a cron row runs INLINE in Flask for the playlist
+  builders; CRON_INLINE_TASKS derives from it. Like the radio they are online,
+  self-managed types that never hold nor wait for the one-live-main slot
 * side_job marks a short read-only batch a page starts, such as the wizard's
   naming preview. SIDE_JOB_TASK_TYPES derives every rule: it shows as the
   running task so the dashboard can stop it, but never becomes the last recap,
@@ -83,14 +82,14 @@ ALL = (
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
     TaskType('provider_migration', ROLE_MAIN, queue='high',
              holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
-    TaskType('sonic_fingerprint', ROLE_MAIN, queue='default',
+    TaskType('sonic_fingerprint', ROLE_INLINE,
              cron='sonic_fingerprint',
              dotted='tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
-             holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
-    TaskType('album_of_the_week', ROLE_MAIN, queue='default',
+             self_managed=True),
+    TaskType('album_of_the_week', ROLE_INLINE,
              cron='album_of_the_week',
              dotted='tasks.album_creation_manager.run_album_of_the_week_task',
-             holds_main_index=True, watched_by_nudge=True, blocks_starts=True),
+             self_managed=True),
     TaskType('server_sweep', ROLE_MAIN, queue='high',
              watched_by_nudge=True, blocks_starts=True, self_managed=True),
     TaskType('alchemy_radio', ROLE_INLINE, self_managed=True),
@@ -160,7 +159,10 @@ CRON_TASK_TYPE_TO_QUEUE_TYPE = {
 
 CRON_RETRY_TASK_TYPES = tuple(CRON_TASK_TYPE_TO_QUEUE_TYPE)
 
-CRON_QUEUED_TASKS = {entry.cron: entry.dotted for entry in ALL if entry.dotted}
+CRON_INLINE_TASKS = {
+    entry.cron: entry.dotted for entry in ALL
+    if entry.dotted and entry.role == ROLE_INLINE
+}
 
 
 def matches(task_type, names=(), prefixes=()):

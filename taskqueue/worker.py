@@ -117,6 +117,7 @@ service_roles.declare_worker_role(force=True)
 THREAD_CAP = _apply_thread_caps(QUEUE)
 
 import config  # noqa: E402
+from . import error_summary as _error_summary, failure_record  # noqa: E402
 from . import retry  # noqa: E402
 from . import sql  # noqa: E402
 from .errors import TaskCancelled, TaskFailed  # noqa: E402
@@ -963,10 +964,7 @@ def _terminal_details(status, error, result, previous=None, error_at_claim=_UNRE
 def _error_record(job, exc):
     from . import TASK_FUNC_ERROR_CODES
 
-    if isinstance(exc, error_manager.AudioMuseError):
-        return exc.to_dict()
-    default = TASK_FUNC_ERROR_CODES.get(job.get('func'), UNKNOWN_ERROR_CODE)
-    return error_manager.build(error_manager.classify(exc, default), _error_summary(exc))
+    return failure_record(exc, TASK_FUNC_ERROR_CODES.get(job.get('func'), UNKNOWN_ERROR_CODE))
 
 
 _LOST_CONNECTION_SUMMARY = (
@@ -1032,17 +1030,6 @@ def _is_connectivity_error(exc):
         str(sqlstate).startswith(_LOST_CONNECTION_SQLSTATE_CLASS)
         or sqlstate in _LOST_CONNECTION_SQLSTATES
     )
-
-
-_SUMMARY_LIMIT = 500
-_VERDICT_SUMMARY_LIMIT = 4000
-
-
-def _error_summary(exc):
-    text = str(exc).strip() or exc.__class__.__name__
-    if isinstance(exc, (TaskFailed, TaskCancelled)):
-        return text[:_VERDICT_SUMMARY_LIMIT]
-    return text[:_SUMMARY_LIMIT]
 
 
 def _close_inherited_sockets(worker):

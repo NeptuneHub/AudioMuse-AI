@@ -19,7 +19,8 @@ Main Features:
 * The album search is paged, capped, scoped to the selected server and needs 2 letters
 * The page, its API and its menu entry are off while lyrics are off. The schedule is
   not: its row is always on the Scheduled Tasks page, which alone enables or disables it
-* A due album_of_the_week cron row is enqueued on the default queue for all servers
+* A due album_of_the_week cron row runs inline in Flask for all servers, beside
+  any live batch task, which neither refuses it nor parks it in the cron retry
 """
 
 import os
@@ -290,10 +291,16 @@ class TestOffWithoutBothAnalyses:
 
 
 class TestTheCronRow:
-    def test_a_due_row_is_enqueued_for_all_servers_on_the_default_queue(self):
-        import taskqueue
-        from app_cron import run_due_cron_jobs
+    @pytest.fixture(autouse=True)
+    def _fresh_cron_clock(self):
+        import app_cron
 
+        app_cron._cron_clock['last_minute'] = None
+        with patch('app_cron.get_task_info_from_db', return_value=None):
+            yield
+        app_cron._cron_clock['last_minute'] = None
+
+    def _due_row_db(self):
         cur = MagicMock()
         cur.fetchall.return_value = [{
             'id': 1, 'name': 'Album of the Week', 'task_type': 'album_of_the_week',
@@ -304,23 +311,53 @@ class TestTheCronRow:
         cur.rowcount = 1
         db = MagicMock()
         db.cursor.return_value = cur
+        return db
+
+    def test_a_due_row_runs_inline_in_flask_and_never_reaches_the_queue(self):
+        from app_cron import run_due_cron_jobs
+
         with (
             patch('app_cron.cron_matches_now', return_value=True),
-            patch('app_cron.get_db', return_value=db),
+            patch('app_cron.get_db', return_value=self._due_row_db()),
             patch('app_cron.save_task_status'),
-            patch('app_cron.get_queue_blocking_task', return_value=None),
+            patch('app_cron.main_task_start_lock') as lock,
+            patch('app_cron.get_queue_blocking_task', return_value=None) as blocking,
             patch('app_cron.clean_up_previous_main_tasks') as clean,
             patch('app_cron.taskqueue.enqueue') as enqueue,
-            patch.object(acm, 'create_album_of_the_week') as build,
+            patch.object(
+                acm, 'run_album_of_the_week_task', return_value={'albums': 1}
+            ) as run,
         ):
             run_due_cron_jobs()
-        build.assert_not_called()
+        enqueue.assert_not_called()
         clean.assert_not_called()
-        enqueue.assert_called_once()
-        assert enqueue.call_args[0][0] == 'tasks.album_creation_manager.run_album_of_the_week_task'
-        assert enqueue.call_args[1]['kwargs'] == {'server_scope': 'all'}
-        assert enqueue.call_args[1]['task_type'] == 'album_of_the_week'
-        assert enqueue.call_args[1]['queue'] == taskqueue.QUEUE_DEFAULT
+        blocking.assert_not_called()
+        lock.assert_not_called()
+        run.assert_called_once()
+        assert run.call_args[1]['server_scope'] == 'all'
+
+    def test_a_due_row_runs_beside_a_live_catalogue_task(self):
+        from app_cron import run_due_cron_jobs
+
+        live = {'task_id': 'live-1', 'status': 'RUNNING', 'task_type': 'main_analysis'}
+        with (
+            patch('app_cron.cron_matches_now', return_value=True),
+            patch('app_cron.get_db', return_value=self._due_row_db()),
+            patch('app_cron.save_task_status') as saved,
+            patch('app_cron.main_task_start_lock'),
+            patch('app_cron.get_queue_blocking_task', return_value=live),
+            patch('app_cron.record_cron_retry') as retry,
+            patch('app_cron.taskqueue.enqueue'),
+            patch.object(acm, 'run_album_of_the_week_task', return_value={'albums': 1}) as run,
+        ):
+            run_due_cron_jobs()
+        run.assert_called_once()
+        retry.assert_not_called()
+        statuses = [call.args[2] for call in saved.call_args_list]
+        assert statuses == [config.TASK_STATUS_STARTED, config.TASK_STATUS_SUCCESS], (
+            'an online row never waits for batch work: a live analysis neither '
+            'refuses it nor parks it in the cron retry'
+        )
 
     def test_the_task_function_is_allowed_on_the_queue_with_its_own_error_code(self):
         import taskqueue
@@ -330,8 +367,10 @@ class TestTheCronRow:
         assert func in taskqueue.ALLOWED_FUNCS
         assert taskqueue.TASK_FUNC_ERROR_CODES[func] == ERR_ALBUM_CREATION_FAILED == 6011
 
-    def test_a_blocked_run_is_retried_like_the_sonic_fingerprint(self):
-        import app_cron
+    def test_the_row_is_an_online_type_that_never_gates_batch_work(self):
+        import database
+        import task_types
 
-        assert app_cron._cron_retry_eligible('album_of_the_week')
-        assert app_cron._queue_type_for_cron_task_type('album_of_the_week') == 'album_of_the_week'
+        assert 'album_of_the_week' in database.NON_BLOCKING_TASK_TYPES
+        assert 'album_of_the_week' not in task_types.BATCH_GATE_TASK_TYPES
+        assert 'album_of_the_week' not in task_types.MAIN_TASK_TYPES

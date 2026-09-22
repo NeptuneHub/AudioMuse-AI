@@ -1449,7 +1449,8 @@ if not _is_worker:
                 cron_retry_interval_seconds,
             )
 
-            # Inline cron runs (the alchemy radio) live in THIS process and nothing
+            # Inline cron runs (alchemy radio, sonic fingerprint, album of the
+            # week) live in THIS process and nothing
             # else writes their final status, so a restart mid-run leaves a row that
             # no later code path resolves. This process is starting, so no inline run
             # can be live: whatever is still non-terminal died with the old process.

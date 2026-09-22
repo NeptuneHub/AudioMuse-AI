@@ -9,6 +9,25 @@
         font-weight: inherit;
         color: inherit;
     }
+    .cron-overlap-warning {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        margin-top: 1rem;
+        padding: 0.5rem 0.75rem;
+        border-radius: 0.375rem;
+        border-left: 4px solid var(--status-pending-text);
+        font-size: 0.9rem;
+        line-height: 1.4;
+        overflow-wrap: anywhere;
+    }
+    .cron-overlap-warning[hidden] {
+        display: none;
+    }
+    .cron-overlap-warning svg {
+        flex: 0 0 auto;
+        margin-top: 0.1rem;
+    }
     @media (max-width: 768px) {
         .cron-enable {
             display: inline-flex;
@@ -114,6 +133,11 @@
 
             <p style="margin-top:.5rem;font-size:0.9rem;color:var(--text-muted);">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00. Album of the Week default: Saturday at 0:30. Radio Playlists default: Saturday at 3:00.</p>
 
+            <div id="cron-overlap-warning" class="status-warning cron-overlap-warning" role="status" aria-live="polite" hidden>
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+                <span id="cron-overlap-text"></span>
+            </div>
+
             <div style="margin-top:1rem;">
                 <button id="save-btn" class="btn btn-primary" style="width:100%;">Save Schedules</button>
             </div>
@@ -145,6 +169,144 @@
                 el.style.display = 'none';
             }
         }
+
+        const CRON_OVERLAP_RISK_TEXT = 'You can save, at your own risk: online tasks due together run one after another, each starting at least {{ inline_stagger_seconds }} seconds after the previous one, and a batch task that finds another batch task running waits and starts automatically after it ends, or is skipped if it is still blocked after {{ cron_retry_max_minutes }} minutes.';
+        const CRON_MONTH_DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        const CRON_BUILT_IN_ROWS = [
+            ['Analysis', 'analysis'],
+            ['Clustering', 'clustering'],
+            ['Sonic Fingerprint', 'sonic-fingerprint'],
+            ['Album of the Week', 'album-of-the-week'],
+            ['Radio Playlists', 'alchemy-radio'],
+        ];
+
+        function cronInt(text){
+            return /^[+-]?\d+(?:_\d+)*$/.test(text) ? parseInt(text.replace(/_/g, ''), 10) : NaN;
+        }
+
+        function cronFieldMatches(fieldExpr, value, fieldMin){
+            if(fieldExpr.trim() === '*'){ return true; }
+            for(const raw of fieldExpr.split(',')){
+                const p = raw.trim();
+                const slash = p.indexOf('/');
+                if(slash !== -1){
+                    const base = p.slice(0, slash);
+                    const step = cronInt(p.slice(slash + 1));
+                    if(isNaN(step) || step <= 0){ continue; }
+                    if(base.trim() === '*'){
+                        if(value >= fieldMin && (value - fieldMin) % step === 0){ return true; }
+                    } else if(base.includes('-')){
+                        const dash = base.indexOf('-');
+                        const lo = cronInt(base.slice(0, dash));
+                        const hi = cronInt(base.slice(dash + 1));
+                        if(isNaN(lo) || isNaN(hi)){ continue; }
+                        if(lo <= value && value <= hi && (value - lo) % step === 0){ return true; }
+                    } else {
+                        const start = cronInt(base);
+                        if(isNaN(start)){ continue; }
+                        if(value >= start && (value - start) % step === 0){ return true; }
+                    }
+                } else if(p.includes('-')){
+                    const dash = p.indexOf('-');
+                    const lo = cronInt(p.slice(0, dash));
+                    const hi = cronInt(p.slice(dash + 1));
+                    if(isNaN(lo) || isNaN(hi)){ continue; }
+                    if(lo <= value && value <= hi){ return true; }
+                } else if(cronInt(p) === value){
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function cronFieldValues(fieldExpr, low, high, fieldMin){
+            const out = [];
+            for(let v = low; v <= high; v++){ out[v] = cronFieldMatches(fieldExpr, v, fieldMin); }
+            return out;
+        }
+
+        function cronSchedule(expr){
+            const parts = String(expr || '').trim().split(/\s+/).filter(Boolean);
+            if(parts.length !== 5){ return null; }
+            const [minute, hour, dom, month, dow] = parts;
+            const doms = cronFieldValues(dom, 1, 31, 1);
+            const months = cronFieldValues(month, 1, 12, 1);
+            const weekdays = cronFieldValues(dow, 0, 7, 0);
+            const eitherDay = dom.trim() !== '*' && dow.trim() !== '*';
+            const days = [];
+            for(let m = 1; m <= 12; m++){
+                for(let d = 1; d <= CRON_MONTH_DAYS[m - 1]; d++){
+                    for(let w = 0; w < 7; w++){
+                        const dowOk = weekdays[w] || (w === 0 && weekdays[7]);
+                        days.push(months[m] && (eitherDay ? (doms[d] || dowOk) : (doms[d] && dowOk)));
+                    }
+                }
+            }
+            return {
+                minutes: cronFieldValues(minute, 0, 59, 0),
+                hours: cronFieldValues(hour, 0, 23, 0),
+                days: days,
+            };
+        }
+
+        function cronFirstSharedTime(a, b){
+            if(!a.days.some((ok, i) => ok && b.days[i])){ return null; }
+            const hour = a.hours.findIndex((ok, h) => ok && b.hours[h]);
+            const minute = a.minutes.findIndex((ok, m) => ok && b.minutes[m]);
+            if(hour < 0 || minute < 0){ return null; }
+            return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
+        }
+
+        function cronScheduleRows(){
+            const rows = CRON_BUILT_IN_ROWS.map(([name, id]) => ({
+                name: name,
+                expr: document.getElementById(id + '-cron').value,
+                enabled: document.getElementById(id + '-enabled').checked,
+            }));
+            const fieldsByType = window.pluginCronFields || new Map();
+            for(const t of (window.pluginCronTasks || [])){
+                const fields = fieldsByType.get(t.task_type);
+                if(fields){ rows.push({name: t.plugin + ' - ' + t.task, expr: fields.input.value, enabled: fields.enable.checked}); }
+            }
+            return rows;
+        }
+
+        function cronOverlaps(){
+            const active = cronScheduleRows()
+                .filter(r => r.enabled)
+                .map(r => ({name: r.name, schedule: cronSchedule(r.expr)}))
+                .filter(r => r.schedule);
+            const pairs = [];
+            for(let i = 0; i < active.length; i++){
+                for(let j = i + 1; j < active.length; j++){
+                    const at = cronFirstSharedTime(active[i].schedule, active[j].schedule);
+                    if(at){ pairs.push({first: active[i].name, second: active[j].name, at: at}); }
+                }
+            }
+            return pairs;
+        }
+
+        function cronOverlapMessage(pairs){
+            if(!pairs.length){ return ''; }
+            const describe = p => p.first + ' and ' + p.second;
+            const lead = pairs.length === 1
+                ? 'Heads up: ' + describe(pairs[0]) + ' are both scheduled to start in the same minute (for example at ' + pairs[0].at + ').'
+                : 'Heads up: some schedules start in the same minute: ' + pairs.map(p => describe(p) + ' (for example at ' + p.at + ')').join('; ') + '.';
+            return lead + ' ' + CRON_OVERLAP_RISK_TEXT;
+        }
+
+        function updateOverlapWarning(){
+            const box = document.getElementById('cron-overlap-warning');
+            const text = document.getElementById('cron-overlap-text');
+            if(!box || !text){ return; }
+            let message = '';
+            try{ message = cronOverlapMessage(cronOverlaps()); }catch(e){ console.error('Could not check the schedules for overlaps', e); }
+            if(text.textContent !== message){ text.textContent = message; }
+            box.hidden = !message;
+        }
+
+        document.getElementById('main-content-inner').addEventListener('input', updateOverlapWarning);
+        document.getElementById('main-content-inner').addEventListener('change', updateOverlapWarning);
 
         document.addEventListener('DOMContentLoaded', load);
         async function load(){
@@ -180,6 +342,7 @@
                 if(radio){ document.getElementById('alchemy-radio-cron').value = radio.cron_expr; document.getElementById('alchemy-radio-enabled').checked = radio.enabled }
                 else { document.getElementById('alchemy-radio-cron').value = '0 3 * * 6'; document.getElementById('alchemy-radio-enabled').checked = false }
                 await loadPluginTasks(rows);
+                updateOverlapWarning();
                 saveBtn.disabled = false;
             }catch(e){
                 console.error(e);
@@ -234,6 +397,7 @@
             const saveBtn = document.getElementById('save-btn');
             if (saveBtn.disabled) return; // prevent double-click
             saveBtn.disabled = true;
+            updateOverlapWarning();
             const aexpr = document.getElementById('analysis-cron').value;
             const aen = document.getElementById('analysis-enabled').checked;
             const cexpr = document.getElementById('clustering-cron').value;

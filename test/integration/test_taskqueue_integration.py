@@ -359,7 +359,7 @@ class TestAdmissionIsAUniqueIndexNotALock:
 
         for task_id, task_type in (
             ('analysis-live', 'main_analysis'),
-            ('fingerprint-live', 'sonic_fingerprint'),
+            ('cleaning-live', 'cleaning'),
         ):
             with queue_db.cursor() as cur:
                 cur.execute(
@@ -387,6 +387,33 @@ class TestAdmissionIsAUniqueIndexNotALock:
         with pytest.raises(psycopg2.errors.UniqueViolation):
             _enqueue(queue_db, 'main-3', task_type='main_clustering')
         queue_db.rollback()
+
+    def test_boot_drops_the_index_an_older_main_type_list_named(self, queue_db):
+        old_name = sql.MAIN_INDEX_PREFIX + '_632c3608'
+        with queue_db.cursor() as cur:
+            cur.execute(f"DROP INDEX IF EXISTS {sql.MAIN_INDEX_NAME}")
+            cur.execute(
+                f"CREATE UNIQUE INDEX {old_name} ON task_status ((parent_task_id IS NULL)) "
+                "WHERE parent_task_id IS NULL AND status IN ('NEW', 'RUNNING') "
+                "AND task_type IN ('main_analysis', 'sonic_fingerprint')"
+            )
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            sql.ensure_schema(cur)
+        queue_db.commit()
+
+        with queue_db.cursor() as cur:
+            cur.execute(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'task_status' "
+                "AND indexname LIKE %s",
+                (sql.MAIN_INDEX_PREFIX + '%',),
+            )
+            names = sorted(row[0] for row in cur.fetchall())
+        assert names == [sql.MAIN_INDEX_NAME], (
+            'an old index still listing an online type would keep refusing a '
+            'batch start beside a live inline row after the upgrade'
+        )
 
     def test_a_sweep_and_a_main_task_coexist(self, queue_db):
         assert _enqueue(queue_db, 'main-1', task_type='main_analysis')

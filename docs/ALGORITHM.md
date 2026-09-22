@@ -2194,33 +2194,54 @@ same as when they are started from the page.
    (0 = Sunday).
 3. **Atomic claim.** A row that matches is claimed atomically for its wall-clock
    minute. This is what makes a restart, or a second web process, unable to
-   double-fire the same schedule.
-4. **Enqueue the batch work.** Analysis, clustering, sonic fingerprint, album of
-   the week and plugin tasks are **enqueued** as queue jobs, so a slow media server cannot swallow a
-   scheduling window or block the other schedules. The **alchemy radio** is the
-   exception: it is an online feature that queries the in-memory similarity index,
-   which only the Flask process loads, so the tick runs it inline right there. It
-   still gets a task row (STARTED, then SUCCESS or FAILURE) and so stays visible
-   in the task panel; the cost is that the poll thread waits for the run, which is
-   the accepted trade for a schedule that fires once a day. The sonic fingerprint
-   and the album of the week take nothing but a server scope, so both the dispatch
-   entry and the task body they run are declared once: the registry holds the
-   function each row enqueues, and `tasks.task_run.run_playlist_task_per_server`
-   holds the per-server loop, cancel check, heartbeat, reporter and playlist
-   upsert they share. A schedule of that shape is one line in each.
-5. **Queue guard.** Analysis, clustering, sonic fingerprint, album of the week,
-   plugin tasks (and,
-   when started manually, cleaning and provider migration) are mutually
-   exclusive: a scheduled run is skipped while any other queue-guard task is
-   still queued or running, so a schedule cannot pile heavy runs on top of each
-   other.
-6. **Retry on conflict.** A skipped scheduled run (analysis, clustering, sonic
-   fingerprint, album of the week or a plugin task) is recorded in a `cron_retry` list instead of
-   being dropped silently. The cron thread re-attempts it every
+   double-fire the same schedule. Each tick evaluates every minute since the
+   previous tick, so a tick that lands late (an inline run below holds the poll
+   thread) loses no schedule; a row still fires at most once per tick, for the
+   latest minute it matched. The monotonic clock tells a busy thread from a
+   wall-clock jump. A gap it also measured (the thread was busy) is caught up
+   for at most `CRON_RETRY_MAX_MINUTES`, the same bound as any other wait: a
+   batch schedule due before that becomes a visible skip, and a late fire that
+   is refused counts its retry window from the minute it was due, so the total
+   wait never passes that bound. A gap it did not measure is a wall-clock jump
+   (an NTP step, a host waking from sleep), so that tick evaluates only the
+   current minute and logs the skipped span instead of firing every schedule
+   of that span at once.
+4. **Batch work is enqueued, online work runs inline.** Analysis, clustering and
+   plugin tasks are **enqueued** as queue jobs, so a slow media server cannot
+   swallow a scheduling window or block the other schedules. The **alchemy
+   radio**, the **sonic fingerprint** and the **album of the week** are online
+   features that query the in-memory similarity index, which only the Flask
+   process loads, so the tick runs them inline right there through one shared
+   scaffold. Each still gets a task row (STARTED, then SUCCESS or FAILURE, with
+   the same classified error a queue job records) and so stays visible in the
+   task panel; the cost is that the poll thread waits for the run, which is the
+   accepted trade for a schedule that fires once a day or once a week. Within
+   one tick the batch rows are dispatched first, since they only enqueue; then
+   the online rows due together run one after another in a fixed order, each
+   starting at least 10 seconds after the previous one actually started (a run
+   that already took longer lets the next start at once; the gap is measured on
+   the monotonic clock), so they never hit the media server all together.
+   They are self-managed: they run beside a live batch task and no batch start waits for
+   them. The sonic fingerprint and the album of the week take nothing but a
+   server scope, so both the dispatch entry and the task body they run are
+   declared once: the registry holds the function each row runs, and
+   `tasks.task_run.run_playlist_task_per_server` holds the per-server loop,
+   cancel check, heartbeat, reporter and playlist upsert they share.
+5. **Queue guard.** Analysis, clustering, plugin tasks (and, when started
+   manually, cleaning and provider migration) are mutually exclusive: a
+   scheduled batch run is skipped while any other queue-guard task is still
+   queued or running, so a schedule cannot pile heavy runs on top of each
+   other. The online inline runs are outside the guard.
+6. **Retry on conflict.** A skipped scheduled batch run (analysis, clustering or
+   a plugin task) is recorded in a `cron_retry` list instead of being dropped
+   silently. The cron thread re-attempts it every
    `CRON_RETRY_INTERVAL_MINUTES` (clamped below `CRON_RETRY_MAX_MINUTES`), up to
    `CRON_RETRY_MAX_MINUTES` after the first block; once the guard clears it
-   starts, and if the window expires it is recorded as a visible failed run
-   rather than running (fail-safe). `GET /api/cron` exposes the pending state
+   starts. Past the window it is recorded as a visible failed run and is not
+   started, not even once more (fail-safe). The window is never extended: a
+   scheduled run waits at most `CRON_RETRY_MAX_MINUTES`, never forever. A SUCCESS of the same task type
+   that started after the first block counts as the scheduled run having
+   happened and drops the retry. `GET /api/cron` exposes the pending state
    (`retry_pending`, `retry_attempts`, `retry_blocker_task_type`) so the
    Scheduled Tasks page can show that a schedule is waiting instead of looking
    like it fired normally.

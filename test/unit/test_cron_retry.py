@@ -18,7 +18,10 @@ Main Features:
 * A blocked cron run records a retry entry with a bounded deadline
 * retry_due_cron_jobs enqueues when the guard clears and drops the entry
 * A still-blocked retry bumps its attempt count instead of re-enqueueing
-* An expired retry is cleared and recorded as a visible skip
+* An expired retry is cleared and recorded as a visible skip WITHOUT being
+  dispatched again, a missing deadline falls back to the first refusal plus the
+  window, and no bump ever moves the deadline: nothing waits forever
+* An inline run that executed ('ran') is done for the retry, never re-run
 * A retry whose task already completed since it was recorded is dropped
 * A retry that succeeds moves the cron row's last_run forward
 * Plugin cron rows get retry coverage too; alchemy_radio does not
@@ -30,7 +33,10 @@ Main Features:
 * queue_busy_response carries the centralized error code and message
 """
 
+import inspect
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import config
 import task_types
@@ -101,8 +107,11 @@ def test_retry_keeps_a_still_blocked_entry_and_bumps_its_attempts(mock_get_db):
     )
 
 
+@pytest.mark.parametrize(
+    'would_be', ['blocked', 'failed', 'unknown', None, 'enqueued', 'ran', 'no_handler'],
+)
 @patch('app_cron.get_db')
-def test_an_expired_retry_is_cleared_and_recorded_as_a_visible_skip(mock_get_db):
+def test_an_expired_retry_is_a_visible_skip_and_is_never_dispatched(mock_get_db, would_be):
     from app_cron import retry_due_cron_jobs
 
     db = MagicMock()
@@ -110,15 +119,88 @@ def test_an_expired_retry_is_cleared_and_recorded_as_a_visible_skip(mock_get_db)
     entry = _pending_entry(retry_until=1000)
     with (
         patch('app_cron.list_pending_cron_retries', return_value=[entry]),
+        patch('app_cron._cron_row_for_retry', return_value={'id': 7, 'task_type': 'clustering'}),
+        patch('app_cron.cron_retry_task_already_done', return_value=False),
         patch('app_cron.clear_cron_retry') as clear,
+        patch('app_cron.bump_cron_retry') as bump,
         patch('app_cron._record_retry_expired') as expired,
-        patch('app_cron._dispatch_cron_row') as dispatch,
+        patch('app_cron._touch_cron_last_run') as touch,
+        patch('app_cron._dispatch_cron_row', return_value=would_be) as dispatch,
     ):
         assert retry_due_cron_jobs() == 1
 
+    assert not dispatch.called, (
+        'past CRON_RETRY_MAX_MINUTES a schedule EXPIRES: it must not be started '
+        'even once more, whatever the queue would have answered'
+    )
     clear.assert_called_once_with('clustering', conn=db)
     expired.assert_called_once_with('clustering', entry)
-    dispatch.assert_not_called()
+    assert not bump.called and not touch.called
+
+
+@pytest.mark.parametrize('entry_fields, expires', [
+    ({'retry_until': None, 'first_blocked_at': 1000.0}, True),
+    ({'retry_until': None, 'first_blocked_at': None}, True),
+    ({'retry_until': None, 'first_blocked_at': 10**12}, False),
+], ids=['no-deadline-old-block', 'no-deadline-no-block', 'no-deadline-recent-block'])
+@patch('app_cron.get_db')
+def test_a_retry_without_a_deadline_still_expires(mock_get_db, entry_fields, expires):
+    from app_cron import retry_due_cron_jobs
+
+    mock_get_db.return_value = MagicMock()
+    entry = {**_pending_entry(), **entry_fields}
+    with (
+        patch('app_cron.list_pending_cron_retries', return_value=[entry]),
+        patch('app_cron._cron_row_for_retry', return_value={'id': 7, 'task_type': 'clustering'}),
+        patch('app_cron.cron_retry_task_already_done', return_value=False),
+        patch('app_cron.clear_cron_retry'),
+        patch('app_cron.bump_cron_retry'),
+        patch('app_cron._touch_cron_last_run'),
+        patch('app_cron._record_retry_expired') as expired,
+        patch('app_cron._dispatch_cron_row', return_value='blocked') as dispatch,
+    ):
+        retry_due_cron_jobs()
+
+    assert expired.called is expires, (
+        'a NULL retry_until falls back to the first refusal plus the window; it '
+        'must never mean "wait forever"'
+    )
+    assert dispatch.called is not expires
+
+
+def test_a_retry_bump_never_moves_its_deadline():
+    assert 'retry_until' not in inspect.getsource(database.bump_cron_retry), (
+        'a bump must never extend the CRON_RETRY_MAX_MINUTES window: a blocked '
+        'schedule expires as a visible skip, it never waits forever'
+    )
+
+
+@patch('app_cron.get_db')
+def test_an_inline_run_that_executed_is_done_for_the_retry(mock_get_db):
+    from app_cron import retry_due_cron_jobs
+
+    db = MagicMock()
+    mock_get_db.return_value = db
+    with (
+        patch(
+            'app_cron.list_pending_cron_retries',
+            return_value=[_pending_entry(task_type='sonic_fingerprint')],
+        ),
+        patch(
+            'app_cron._cron_row_for_retry',
+            return_value={'id': 4, 'task_type': 'sonic_fingerprint'},
+        ),
+        patch('app_cron.cron_retry_task_already_done', return_value=False),
+        patch('app_cron._dispatch_cron_row', return_value='ran'),
+        patch('app_cron.clear_cron_retry') as clear,
+        patch('app_cron.bump_cron_retry') as bump,
+        patch('app_cron._touch_cron_last_run') as touch,
+    ):
+        retry_due_cron_jobs()
+
+    clear.assert_called_once_with('sonic_fingerprint', conn=db)
+    assert not bump.called, 'an executed inline run, even a failed one, is never re-run'
+    touch.assert_called_once_with(db, 4)
 
 
 @patch('app_cron.get_db')
@@ -199,6 +281,23 @@ def test_record_cron_retry_skips_types_outside_the_retry_set(mock_get_db):
     record.assert_not_called()
 
 
+def test_a_late_refused_fire_counts_its_window_from_the_minute_it_was_due():
+    from app_cron import _record_cron_retry
+
+    with (
+        patch('app_cron.record_cron_retry') as record,
+        patch('app_cron.get_queue_blocking_task', return_value=None),
+        patch('app_cron.time.time', return_value=10_000.0),
+    ):
+        _record_cron_retry(MagicMock(), 'clustering', 4_000.0)
+
+    assert record.call_args.kwargs['first_blocked_at'] == 4_000.0
+    assert record.call_args.args[1] == 4_000.0 + config.CRON_RETRY_MAX_MINUTES * 60, (
+        'a fire that was already late behind a busy cron thread must not stretch '
+        'the total wait past CRON_RETRY_MAX_MINUTES'
+    )
+
+
 @patch('app_cron.get_db')
 def test_record_cron_retry_covers_plugin_cron_rows_too(mock_get_db):
     from app_cron import _record_cron_retry
@@ -233,6 +332,7 @@ def test_record_retry_expired_saves_under_the_queue_type_not_the_cron_name():
         _record_retry_expired('analysis', entry)
 
     assert save.call_args[0][1] == 'main_analysis'
+    assert 'never became free' in save.call_args[1]['details']['message']
 
 
 def test_get_queue_blocking_task_queries_only_the_guard_task_types():

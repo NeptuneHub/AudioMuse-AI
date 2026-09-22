@@ -35,6 +35,8 @@ Main Features:
   parent, was cancelled; tasks.task_run builds the shared cancel check on it
 * TaskFailed / TaskCancelled are the two things a task may raise to steer the
   queue's verdict: never retry, and revoked. Everything else it raises is retried
+* failure_record is the structured error a failed run records, shared by the
+  worker and the inline Flask runs so both write the same classified record
 A root enqueue clears the FINISHED rows before inserting itself (the whole
 retention policy); it never touches NEW or RUNNING rows. A side job
 (task_types.SIDE_JOB_TASK_TYPES) skips that clear, so starting it never erases the
@@ -131,6 +133,25 @@ def resolve_func(dotted):
         raise UnknownTaskFunction(f"{dotted} is not an allowed task function")
     module_name, _, attribute = dotted.rpartition('.')
     return getattr(importlib.import_module(module_name), attribute)
+
+
+_SUMMARY_LIMIT = 500
+_VERDICT_SUMMARY_LIMIT = 4000
+
+
+def error_summary(exc):
+    text = str(exc).strip() or exc.__class__.__name__
+    if isinstance(exc, (TaskFailed, TaskCancelled)):
+        return text[:_VERDICT_SUMMARY_LIMIT]
+    return text[:_SUMMARY_LIMIT]
+
+
+def failure_record(exc, error_code):
+    from error import error_manager
+
+    if isinstance(exc, error_manager.AudioMuseError):
+        return exc.to_dict()
+    return error_manager.build(error_manager.classify(exc, error_code), error_summary(exc))
 
 
 def _connection(conn):

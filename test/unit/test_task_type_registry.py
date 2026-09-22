@@ -48,10 +48,9 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 
 HISTORICAL_MAIN_TASK_TYPES = (
     'main_analysis', 'main_clustering', 'cleaning', 'provider_migration',
-    'sonic_fingerprint', 'album_of_the_week',
 )
 
-HISTORICAL_MAIN_INDEX_NAME = 'idx_task_status_one_live_main_632c3608'
+HISTORICAL_MAIN_INDEX_NAME = 'idx_task_status_one_live_main_88c6fe'
 
 
 class TestTheOneLiveMainIndexDoesNotMove:
@@ -71,12 +70,17 @@ class TestEveryDerivedTupleMatchesWhatShipped:
         (sql.MAIN_TASK_TYPES, HISTORICAL_MAIN_TASK_TYPES),
         (sql.NUDGE_TASK_TYPES, HISTORICAL_MAIN_TASK_TYPES + ('server_sweep', 'naming_preview')),
         (database.SELF_MANAGED_TASK_TYPES,
-         ('server_sweep', 'alchemy_radio', 'worker_control',
-          'provider_migration_planner', 'naming_preview')),
+         ('sonic_fingerprint', 'album_of_the_week', 'server_sweep',
+          'alchemy_radio', 'worker_control', 'provider_migration_planner',
+          'naming_preview')),
         (database.SELF_MANAGED_TASK_TYPE_PREFIXES, ('plugin.',)),
-        (database.INLINE_FLASK_TASK_TYPES, ('alchemy_radio',)),
-        (task_types.NON_WORKER_TASK_TYPES, ('alchemy_radio', 'worker_control')),
+        (database.INLINE_FLASK_TASK_TYPES,
+         ('sonic_fingerprint', 'album_of_the_week', 'alchemy_radio')),
+        (task_types.NON_WORKER_TASK_TYPES,
+         ('sonic_fingerprint', 'album_of_the_week', 'alchemy_radio', 'worker_control')),
         (task_types.SIDE_JOB_TASK_TYPES, ('naming_preview',)),
+        (task_types.BATCH_GATE_TASK_TYPES,
+         HISTORICAL_MAIN_TASK_TYPES + ('naming_preview',)),
     ])
     def test_the_derived_tuple_is_identical(self, derived, literal):
         assert derived == literal
@@ -84,6 +88,7 @@ class TestEveryDerivedTupleMatchesWhatShipped:
     def test_the_non_blocking_set_is_identical_though_its_order_is_not_load_bearing(self):
         assert set(database.NON_BLOCKING_TASK_TYPES) == {
             'worker_control', 'alchemy_radio', 'provider_migration_planner',
+            'sonic_fingerprint', 'album_of_the_week',
         }, (
             'this tuple only ever reaches SQL as a NOT IN list and a set issubset '
             'check, so its ORDER is free, but its membership decides which rows '
@@ -109,20 +114,40 @@ class TestTheCronTablesAreDerivedFromTheRegistry:
             'analysis', 'clustering', 'sonic_fingerprint', 'album_of_the_week',
         )
 
-    def test_every_queued_playlist_task_is_allowed_on_the_queue(self):
-        import taskqueue
-
-        assert task_types.CRON_QUEUED_TASKS == {
+    def test_the_playlist_tasks_run_inline_because_only_flask_holds_the_index(self):
+        assert not hasattr(task_types, 'CRON_QUEUED_TASKS'), (
+            'every scheduled playlist builder runs inline in Flask; a queued '
+            'dispatch table would only be dead code that could route one to a '
+            'worker that never loads the index'
+        )
+        assert task_types.CRON_INLINE_TASKS == {
             'sonic_fingerprint':
                 'tasks.sonic_fingerprint_manager.run_sonic_fingerprint_task',
             'album_of_the_week':
                 'tasks.album_creation_manager.run_album_of_the_week_task',
         }
-        for cron_type, dotted in task_types.CRON_QUEUED_TASKS.items():
-            assert dotted in taskqueue.ALLOWED_FUNCS, (
-                f'the cron branch enqueues {dotted} straight from the registry, so '
-                'a path the queue refuses would fail every run of that schedule'
+        for cron_type in task_types.CRON_INLINE_TASKS:
+            assert cron_type in task_types.NON_WORKER_TASK_TYPES, (
+                f'{cron_type} queries the in-memory index, which a worker never '
+                'loads, so it must never be enqueued'
             )
+            assert cron_type in database.NON_BLOCKING_TASK_TYPES, (
+                f'{cron_type} is an online run like the radio: it must never hold '
+                'the one-live-main slot nor refuse, or wait for, a batch start'
+            )
+            assert cron_type not in task_types.MAIN_TASK_TYPES
+            assert cron_type not in task_types.BATCH_GATE_TASK_TYPES
+            assert cron_type not in task_types.NUDGE_TASK_TYPES
+
+    def test_every_inline_playlist_task_resolves_through_the_queue_allow_list(self):
+        import taskqueue
+
+        for cron_type, dotted in task_types.CRON_INLINE_TASKS.items():
+            assert dotted in taskqueue.ALLOWED_FUNCS, (
+                f'app_cron resolves {dotted} through taskqueue.resolve_func, which '
+                'refuses a path outside the allow list, so every run would fail'
+            )
+            assert dotted in taskqueue.TASK_FUNC_ERROR_CODES
             assert task_types.CRON_TASK_TYPE_TO_QUEUE_TYPE[cron_type] == cron_type
 
     def test_an_inline_cron_row_declares_no_queue_type(self):
@@ -149,6 +174,13 @@ class TestTheNudgeWatchesWhatBlocksAStart:
             'execute, and reclaim needs the worker to DIE, so a wedged sweep '
             'that nothing nudges locks the catalogue out until a restart'
         )
+
+    def test_no_inline_type_holds_the_main_index(self):
+        assert not [
+            entry.name for entry in task_types.ALL
+            if entry.role == task_types.ROLE_INLINE
+            and (entry.holds_main_index or entry.blocks_starts or entry.watched_by_nudge)
+        ]
 
     def test_every_main_index_holder_is_watched(self):
         unwatched = [

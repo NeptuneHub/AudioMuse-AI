@@ -10,22 +10,21 @@
 
 Rows for every schedulable task type are created, listed, renamed, upserted
 by type and validated. Then two rows are enabled every minute and the web
-process's cron loop is left to fire once: the alchemy radio runs inline and
-writes its playlist on Navidrome, the sonic fingerprint is enqueued on the
-queue, runs on a real worker and writes its playlist too, and both rows show
-a last_run newer than the one they had (a kept state carries the stamp of the
+process's cron loop is left to fire once: the alchemy radio and the sonic
+fingerprint both run inline in the web process during that tick, one after
+the other, and each writes its playlist on Navidrome; both rows show a
+last_run newer than the one they had (a kept state carries the stamp of the
 run before). The stamp is written when the tick claims the row, before the
 task runs, so each playlist is then awaited on Navidrome for a bounded time.
-The two tasks of one tick finish in either order and the one that
-finishes last trims the other's recap row from task_status, so the
-fingerprint is judged by the playlist it wrote; a recap row that is still
-there must say SUCCESS.
+The run that finishes second trims the first one's recap row from
+task_status, so the fingerprint is judged by the playlist it wrote; a recap
+row that is still there must say SUCCESS.
 
 Main Features:
 * POST /api/cron creates and updates rows, GET /api/cron lists them
 * an enabled row with a bad expression and a non-object options are 400
-* one cron tick runs the inline radio and the queued sonic fingerprint
-* one cron tick runs the queued album of the week into ONE fixed playlist
+* one cron tick runs the radio and the sonic fingerprint inline in Flask
+* one cron tick runs the album of the week inline into ONE fixed playlist
 * every row is disabled again at the end so no later tick fires
 """
 

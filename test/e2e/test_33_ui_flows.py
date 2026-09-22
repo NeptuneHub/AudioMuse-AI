@@ -28,6 +28,9 @@ Main Features:
 * the songs shown equal the recorded expectation (re-record with
   AUDIOMUSE_E2E_RECORD_GOLDEN=1 bash test/e2e/run_local.sh -k ui_flows)
 * a playlist created from the similarity page exists on Navidrome
+* the Scheduled Tasks page warns, without blocking the save, when two enabled
+  schedules share a minute (cron's either-day rule included), then every
+  schedule is restored
 """
 
 import json
@@ -60,6 +63,9 @@ ALBUM_OF_THE_WEEK_PLAYLIST = 'Album of the Week by AudioMuse-AI'
 CRON_TICK_TIMEOUT_S = 150
 CRON_PLAYLIST_TIMEOUT_S = 120
 CRON_QUIET_S = 75
+CRON_ROW_PREFIXES = ('analysis', 'clustering', 'sonic-fingerprint', 'album-of-the-week', 'alchemy-radio')
+CRON_ROW_KEYS = ('id', 'name', 'task_type', 'cron_expr', 'enabled', 'options')
+CRON_OVERLAP_RISK = 'at your own risk'
 
 
 @pytest.fixture(scope='module')
@@ -483,6 +489,89 @@ def test_album_of_the_week_is_scheduled_and_disabled_from_the_scheduled_tasks_pa
         if row and row['enabled']:
             api.json('POST', '/api/cron', json={'id': row['id'], 'name': row['name'], 'task_type': row['task_type'], 'cron_expr': '30 0 * * 6', 'enabled': False})
         navidrome.delete_playlists_named(lambda name: name == ALBUM_OF_THE_WEEK_PLAYLIST)
+    _clean(problems, '/cron')
+
+
+def _cron_rows(api):
+    return {row['task_type']: row for row in api.json('GET', '/api/cron')}
+
+
+def _row_state(row):
+    return {key: row[key] for key in CRON_ROW_KEYS}
+
+
+def _far_away_month():
+    return (time.localtime().tm_mon + 5) % 12 + 1
+
+
+def _schedule(page, prefix, cron_expr, enabled=True):
+    page.fill(f'#{prefix}-cron', cron_expr)
+    page.set_checked(f'#{prefix}-enabled', enabled)
+
+
+def _overlap_warning(page, visible):
+    page.locator('#cron-overlap-warning').wait_for(state='visible' if visible else 'hidden', timeout=RENDER_TIMEOUT_S * 1000)
+
+
+def _warns_about(page, *names):
+    _overlap_warning(page, True)
+    text = page.locator('#cron-overlap-text').inner_text()
+    assert all(name in text for name in names), (names, text)
+    assert CRON_OVERLAP_RISK in text, text
+
+
+def _restore_schedules(api, before, opened):
+    for task_type, row in _cron_rows(api).items():
+        previous = before.get(task_type) or dict(row, cron_expr=opened.get(task_type, row['cron_expr']), enabled=False)
+        api.json('POST', '/api/cron', json=_row_state(previous))
+
+
+@pytest.mark.skipif(bool(os.environ.get(ATTACH_ENV, '').strip()), reason='needs the harness API client, absent when attached to a held stack')
+def test_the_scheduled_tasks_page_warns_when_two_schedules_share_a_minute_and_still_saves(flow, api):
+    page, problems = flow
+    saved = []
+    page.on('dialog', lambda dialog: (saved.append(dialog.message), dialog.accept()))
+    before = _cron_rows(api)
+    opened = {}
+    month = _far_away_month()
+    try:
+        _open(page, '/cron', '#cron-overlap-warning')
+        page.wait_for_function("!document.getElementById('save-btn').disabled", timeout=PICK_TIMEOUT_MS)
+        opened = {prefix.replace('-', '_'): page.input_value(f'#{prefix}-cron') for prefix in CRON_ROW_PREFIXES}
+        boxes = page.locator('#main-content-inner input[type=checkbox]')
+        for index in range(boxes.count()):
+            boxes.nth(index).uncheck()
+        _overlap_warning(page, False)
+
+        _schedule(page, 'analysis', '0 2 * * *')
+        _schedule(page, 'clustering', '0 2 * * 6')
+        _warns_about(page, 'Analysis', 'Clustering')
+        _schedule(page, 'clustering', '5 2 * * *')
+        _overlap_warning(page, False)
+        _schedule(page, 'analysis', '0 2 * * 1')
+        _schedule(page, 'clustering', '0 2 * * 2')
+        _overlap_warning(page, False)
+        _schedule(page, 'analysis', '0 2 1 * 1')
+        _warns_about(page, 'Analysis', 'Clustering')
+        page.uncheck('#clustering-enabled')
+        _overlap_warning(page, False)
+
+        _schedule(page, 'analysis', f'0 2 * {month} *')
+        _schedule(page, 'clustering', f'0 2 * {month} 6')
+        _warns_about(page, 'Analysis', 'Clustering')
+        _save_schedules(page, saved)
+        stored = _cron_rows(api)
+        assert (stored['analysis']['cron_expr'], stored['analysis']['enabled']) == (f'0 2 * {month} *', True), stored
+        assert (stored['clustering']['cron_expr'], stored['clustering']['enabled']) == (f'0 2 * {month} 6', True), stored
+        assert not [task_type for task_type, row in stored.items() if row['enabled'] and task_type not in ('analysis', 'clustering')], stored
+        _warns_about(page, 'Analysis', 'Clustering')
+    finally:
+        _restore_schedules(api, before, opened)
+    restored = _cron_rows(api)
+    assert {task_type: _row_state(restored[task_type]) for task_type in before} == {task_type: _row_state(row) for task_type, row in before.items()}
+    assert not [task_type for task_type, row in restored.items() if row['enabled'] and task_type not in before], restored
+    fired = [task_type for task_type, row in restored.items() if not (before.get(task_type) or {}).get('enabled') and row['last_run'] != (before.get(task_type) or {}).get('last_run')]
+    assert not fired, (fired, restored)
     _clean(problems, '/cron')
 
 

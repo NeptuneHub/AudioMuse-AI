@@ -337,6 +337,24 @@ _NUDGE = (
     'taskqueue.maintenance.nudge_wedged_main_tasks cancels, then terminates the '
     'worker backends at twice the limit'
 )
+_INLINE_NEVER_ON_A_WORKER = (
+    'it never runs on a worker: it is an inline Flask run '
+    '(INLINE_FLASK_TASK_TYPES) and its row carries no func, which is '
+    'exactly what reclaim filters on'
+)
+_INLINE_SILENT = (
+    'taskqueue.maintenance.fail_stale_inline_rows fails it once its row '
+    'has sat untouched for QUEUE_INLINE_STALE_SECONDS, and '
+    'app_cron.reap_interrupted_inline_runs fails whatever a restart left '
+    'behind at boot'
+)
+_INLINE_PLAYLIST_HEARTBEAT = (
+    '; it is self-managed and holds no one-live-main slot, so a silent row blocks '
+    'no other task. The shared scheduled-playlist scaffold in tasks.task_run '
+    'wraps {builder} in row_heartbeat on the inline row, beating well inside '
+    'QUEUE_INLINE_STALE_SECONDS, because it writes no row between the start and '
+    'the end of a server'
+)
 _NO_CHILDREN = 'this task fans out to nothing, so it never waits on a child'
 _NEVER_GIVES_UP = 'this task never gives up on a child, because it has none'
 
@@ -347,8 +365,9 @@ OUTSIDE_THE_QUEUE = {
         'START that the queue guard refused because another catalogue task was '
         'live. Nothing failed: the run never began. It is re-attempted every '
         'CRON_RETRY_INTERVAL_MINUTES up to CRON_RETRY_MAX_MINUTES and then recorded '
-        'as a visible skip. A failure retry would be the wrong tool: there is no '
-        'row, no attempt and no worker to charge'
+        'as a visible skip, never started after that. It never re-runs an inline '
+        'online row that executed. A failure retry would be the wrong tool: there '
+        'is no row, no attempt and no worker to charge'
     ),
     'provider_migration_restart_handshake': (
         'tasks.provider_migration_tasks._await_worker_restart waits up to '
@@ -434,22 +453,20 @@ RECOVERY = {
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
     },
     'sonic_fingerprint': {
-        MAIN_WORKER_DIED: handled(_RECLAIM),
+        MAIN_WORKER_DIED: not_applicable(_INLINE_NEVER_ON_A_WORKER),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; the shared scheduled-playlist scaffold in tasks.task_run '
-            'wraps generate_sonic_fingerprint in row_heartbeat, because it '
-            'writes no row between the start and the end of a server'
+            _INLINE_SILENT
+            + _INLINE_PLAYLIST_HEARTBEAT.format(builder='generate_sonic_fingerprint')
         ),
         CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
     },
     'album_of_the_week': {
-        MAIN_WORKER_DIED: handled(_RECLAIM),
+        MAIN_WORKER_DIED: not_applicable(_INLINE_NEVER_ON_A_WORKER),
         MAIN_ROW_SILENT: handled(
-            _NUDGE + '; the shared scheduled-playlist scaffold in tasks.task_run '
-            'wraps create_album_of_the_week in row_heartbeat, because it '
-            'writes no row between the start and the end of a server'
+            _INLINE_SILENT
+            + _INLINE_PLAYLIST_HEARTBEAT.format(builder='create_album_of_the_week')
         ),
         CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
@@ -550,17 +567,8 @@ RECOVERY = {
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
     },
     'alchemy_radio': {
-        MAIN_WORKER_DIED: not_applicable(
-            'it never runs on a worker: it is an inline Flask run '
-            '(INLINE_FLASK_TASK_TYPES) and its row carries no func, which is '
-            'exactly what reclaim filters on'
-        ),
-        MAIN_ROW_SILENT: handled(
-            'taskqueue.maintenance.fail_stale_inline_rows fails it once its row '
-            'has sat untouched for QUEUE_INLINE_STALE_SECONDS, and '
-            'app_cron.reap_interrupted_inline_runs fails whatever a restart left '
-            'behind at boot'
-        ),
+        MAIN_WORKER_DIED: not_applicable(_INLINE_NEVER_ON_A_WORKER),
+        MAIN_ROW_SILENT: handled(_INLINE_SILENT),
         CHILD_WORKER_DIED: not_applicable(_NO_CHILDREN),
         CHILD_NEVER_RETURNS: not_applicable(_NO_CHILDREN),
         GIVE_UP_RUNS_FOREVER: not_applicable(_NEVER_GIVES_UP),
