@@ -49,7 +49,9 @@ import time
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+import psycopg2
 import pytest
+from psycopg2.extensions import TRANSACTION_STATUS_INERROR
 
 import config
 import task_types
@@ -64,9 +66,17 @@ def _fresh_cron_clock_and_no_row_read():
     import app_cron
 
     app_cron._cron_clock.update(last_minute=None, last_monotonic=None)
+    app_cron._cron_saved_at.clear()
     with patch('app_cron.get_task_info_from_db', return_value=None):
         yield
     app_cron._cron_clock.update(last_minute=None, last_monotonic=None)
+    app_cron._cron_saved_at.clear()
+
+
+def _open_db():
+    db = MagicMock()
+    db.closed = 0
+    return db
 
 
 def _make_cron_row(task_type='sonic_fingerprint'):
@@ -175,8 +185,13 @@ def test_the_minute_claim_writes_last_run_only_when_it_is_older_than_this_minute
     assert len(updates) == 1
     sql, params = updates[0][0]
     assert 'last_run IS NULL OR last_run < %s' in sql
-    minute_start, row_id, guard = params
+    assert 'enabled = true AND cron_expr = %s' in sql, (
+        'the SELECT is from the tick start: a row disabled or edited on the page '
+        'while an earlier online run held the tick must not be claimed'
+    )
+    minute_start, row_id, cron_expr, guard = params
     assert row_id == 1
+    assert cron_expr == '* * * * *'
     assert guard == minute_start
     assert minute_start % 60 == 0
 
@@ -503,7 +518,7 @@ def _task_types_the_page_can_schedule():
 def test_every_row_the_page_can_save_reaches_a_real_branch(task_type):
     from app_cron import _dispatch_cron_row
 
-    db = MagicMock()
+    db = _open_db()
     summary = {'playlists_created': 0, 'failed': []}
     with (
         patch('app_cron.main_task_start_lock'),
@@ -584,17 +599,18 @@ class _FakeCronTable:
         self.rows = rows
         self.last_run = {row['id']: None for row in rows}
         self.claims = []
+        self.disabled = set()
 
-    def claim(self, _db, row_id, minute_start):
+    def claim(self, _db, row_id, minute_start, cron_expr):
         self.claims.append((row_id, minute_start))
-        last = self.last_run[row_id]
-        if last is not None and last >= minute_start:
+        last = self.last_run.get(row_id)
+        if row_id in self.disabled or (last is not None and last >= minute_start):
             return False
         self.last_run[row_id] = minute_start
         return True
 
 
-def _run_ticks(table, clock, dispatch, sleeps=None):
+def _run_ticks(table, clock, dispatch, sleeps=None, on_connect=None):
     import app_cron
 
     def sleep(seconds):
@@ -606,8 +622,14 @@ def _run_ticks(table, clock, dispatch, sleeps=None):
     cur.fetchall.return_value = table.rows
     db = MagicMock()
     db.cursor.return_value = cur
+
+    def connect():
+        if on_connect is not None:
+            on_connect()
+        return db
+
     with (
-        patch('app_cron.get_db', return_value=db),
+        patch('app_cron.get_db', side_effect=connect),
         patch.object(app_cron.time, 'time', lambda: clock['now']),
         patch.object(app_cron.time, 'monotonic', lambda: clock['now'] - clock.get('jump', 0)),
         patch.object(app_cron.time, 'sleep', sleep),
@@ -759,6 +781,11 @@ class TestTheTickCatchesUpEveryMinuteItMissed:
             'the analysis was due before the window: a visible skip, never a silent '
             'loss; the online row missed the same way is simply skipped'
         )
+        texts = expired.call_args.kwargs
+        assert 'scheduler was busy' in texts['message'], (
+            'nothing blocked this run: the skip must not claim a blocker kept it waiting'
+        )
+        assert 'busy' in texts['status_message']
 
     def test_a_gap_past_the_catch_up_is_a_clock_jump_not_a_replay(self, caplog):
         clock = {'now': self.BASE + 5}
@@ -786,6 +813,236 @@ class TestTheTickCatchesUpEveryMinuteItMissed:
             'skipped span at once'
         )
         assert any('clock jump' in record.getMessage() for record in caplog.records)
+
+
+class TestTheTickSurvivesWhatALongOnlineRunChanges:
+    BASE = 1_900_000_020 - (1_900_000_020 % 60)
+
+    def test_a_row_disabled_during_an_earlier_online_run_does_not_fire(self):
+        clock = {'now': self.BASE + 5}
+        table = _FakeCronTable([
+            {'id': 1, 'task_type': 'album_of_the_week', 'cron_expr': '* * * * *'},
+            {'id': 2, 'task_type': 'sonic_fingerprint', 'cron_expr': '* * * * *'},
+        ])
+        fired = []
+
+        def dispatch(_db, row):
+            fired.append(row['task_type'])
+            table.disabled.add(2)
+            return 'ran'
+
+        for tick in _run_ticks(table, clock, dispatch):
+            tick()
+
+        assert fired == ['album_of_the_week'], (
+            'the fingerprint was disabled on the page while the album ran: the '
+            'stale SELECT of the tick start must not run it anyway'
+        )
+
+    def test_a_slow_database_connect_is_not_taken_for_a_clock_jump(self):
+        clock = {'now': self.BASE + 5}
+        table = _FakeCronTable([
+            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE)},
+            {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 300)},
+        ])
+        slow = {'first': True}
+        fired = []
+
+        def on_connect():
+            if slow['first']:
+                slow['first'] = False
+                clock['now'] += 180
+
+        def dispatch(_db, row):
+            fired.append(row['task_type'])
+            if row['task_type'] == 'sonic_fingerprint':
+                clock['now'] = self.BASE + 600 + 5
+                return 'ran'
+            return 'enqueued'
+
+        for tick in _run_ticks(table, clock, dispatch, on_connect=on_connect):
+            tick()
+            tick()
+
+        assert fired == ['sonic_fingerprint', 'analysis'], (
+            'both clocks are read at the tick start: a 3-minute connect must not '
+            'make the next tick see a clock jump and skip the analysis'
+        )
+
+    def test_a_schedule_saved_during_a_busy_run_starts_from_its_save(self):
+        import app_cron
+
+        clock = {'now': self.BASE + 5}
+        table = _FakeCronTable([
+            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE)},
+            {'id': 3, 'task_type': 'clustering', 'cron_expr': '0 4 1 1 *'},
+        ])
+        fired = []
+
+        def dispatch(_db, row):
+            fired.append(row['task_type'])
+            if row['task_type'] == 'sonic_fingerprint':
+                table.rows.append(
+                    {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 120)}
+                )
+                table.rows[1]['cron_expr'] = _minute_expr(self.BASE + 300)
+                app_cron._cron_saved_at['analysis'] = self.BASE + 200
+                app_cron._cron_saved_at['clustering'] = self.BASE + 200
+                clock['now'] = self.BASE + 600 + 5
+                return 'ran'
+            return 'enqueued'
+
+        for tick in _run_ticks(table, clock, dispatch):
+            tick()
+            tick()
+
+        assert fired == ['sonic_fingerprint', 'clustering'], (
+            'saved at +200 s during the busy run: the analysis minute (+120 s) had '
+            'already passed, so it must not fire retroactively, while the edited '
+            'clustering minute (+300 s) came after the save and must still fire'
+        )
+
+    def test_a_schedule_turned_off_and_on_never_fires_for_the_minutes_it_was_off(self):
+        import app_cron
+
+        clock = {'now': self.BASE + 5}
+        table = _FakeCronTable([
+            {'id': 1, 'task_type': 'sonic_fingerprint', 'cron_expr': _minute_expr(self.BASE)},
+            {'id': 2, 'task_type': 'analysis', 'cron_expr': _minute_expr(self.BASE + 120)},
+        ])
+        fired = []
+
+        def dispatch(_db, row):
+            fired.append(row['task_type'])
+            if row['task_type'] == 'sonic_fingerprint':
+                app_cron._cron_saved_at['analysis'] = self.BASE + 400
+                clock['now'] = self.BASE + 600 + 5
+                return 'ran'
+            return 'enqueued'
+
+        for tick in _run_ticks(table, clock, dispatch):
+            tick()
+            tick()
+
+        assert fired == ['sonic_fingerprint'], (
+            'switched off, then back on at +400 s with the same expression: its '
+            '+120 s minute passed while it was off and must not fire on the catch-up'
+        )
+
+    def test_a_zero_retry_window_catches_up_nothing(self):
+        import app_cron
+
+        with patch('app_cron.CRON_RETRY_MAX_MINUTES', 0):
+            app_cron._minutes_to_evaluate(self.BASE + 5, 1000.0)
+            minutes, dropped = app_cron._minutes_to_evaluate(self.BASE + 600 + 5, 1600.0)
+
+        assert minutes == [self.BASE + 600], 'the current minute is always evaluated'
+        assert len(dropped) == 9, 'a zero window must never mean "the whole gap"'
+
+    def test_windows_evaluates_only_the_current_minute_as_before(self):
+        import app_cron
+
+        with patch('app_cron._CATCH_UP_SUPPORTED', False):
+            app_cron._minutes_to_evaluate(self.BASE + 5, 1000.0)
+            minutes, dropped = app_cron._minutes_to_evaluate(self.BASE + 600 + 5, 1600.0)
+
+        assert (minutes, dropped) == ([self.BASE + 600], []), (
+            'the Windows monotonic clock counts through sleep, so a laptop wake '
+            'would look like a busy thread and replay its schedules: there the '
+            'scheduler keeps its old current-minute-only behaviour'
+        )
+
+
+
+class TestTheInlineRunSurvivesADatabaseDrop:
+    def test_a_dead_connection_still_writes_the_failure_row(self):
+        import app_cron
+
+        db = _open_db()
+        db.rollback.side_effect = psycopg2.InterfaceError('connection already closed')
+
+        def run():
+            raise RuntimeError('the database restarted mid-run')
+
+        with patch('app_cron.save_task_status', return_value=True) as save:
+            outcome = app_cron._run_inline(db, 'job-1', 'alchemy_radio', run, ERR_SEARCH_FAILED)
+
+        assert outcome == 'ran'
+        assert save.call_args_list[-1].args[2] == config.TASK_STATUS_FAILURE, (
+            'a rollback on a dead connection must not skip the FAIL row'
+        )
+
+    def test_a_row_after_a_database_drop_uses_the_reconnected_connection(self):
+        import app_cron
+
+        dead = MagicMock()
+        dead.closed = 2
+        fresh = MagicMock()
+        fresh.closed = 0
+        claimed_on = []
+
+        def claim(db, *_args):
+            claimed_on.append(db)
+            return True
+
+        with (
+            patch('app_cron.get_db', return_value=fresh),
+            patch('app_cron._claim_cron_minute', side_effect=claim),
+            patch('app_cron._dispatch_cron_row', return_value='enqueued'),
+            patch('app_cron.clear_cron_retry') as clear,
+        ):
+            app_cron._fire_cron_row(
+                dead, {'id': 1, 'task_type': 'analysis', 'cron_expr': '* * * * *'}, 0,
+            )
+
+        assert claimed_on == [fresh]
+        assert clear.call_args.kwargs['conn'] is fresh
+
+    def test_an_aborted_transaction_is_cleared_before_the_success_row(self):
+        import app_cron
+
+        order = MagicMock()
+        db = order.db
+        db.closed = 0
+        db.get_transaction_status.return_value = TRANSACTION_STATUS_INERROR
+        order.save.return_value = True
+
+        with patch('app_cron.save_task_status', order.save):
+            outcome = app_cron._run_inline(
+                db, 'job-1', 'alchemy_radio', lambda: {'message': 'done'}, ERR_SEARCH_FAILED,
+            )
+
+        assert outcome == 'ran'
+        names = [name for name, _args, _kwargs in order.mock_calls if name in ('db.rollback', 'save')]
+        assert names[-2:] == ['db.rollback', 'save'], (
+            'a failure the run caught internally left the transaction aborted; it '
+            'must be cleared or the SUCCESS row is refused'
+        )
+        assert order.save.call_args.args[2] == config.TASK_STATUS_SUCCESS
+
+
+class TestTheInlineTerminalRowIsTheWorkersOwnBuilder:
+    def test_the_worker_keeps_collapsing_its_success_log(self):
+        log = taskqueue.terminal_log(['[t] step'], config.TASK_STATUS_SUCCESS, 'done')
+
+        assert log == ['Task completed successfully. Final status: done'], (
+            'the worker output must stay byte-identical after the move'
+        )
+
+    def test_an_inline_success_keeps_the_steps_and_never_repeats_the_last_line(self):
+        kept = taskqueue.terminal_log(
+            ['[t] step'], config.TASK_STATUS_SUCCESS, 'done', keep_log=True,
+        )
+        again = taskqueue.terminal_log(kept, config.TASK_STATUS_SUCCESS, 'done', keep_log=True)
+
+        assert kept[0] == '[t] step' and kept[-1].endswith('] done')
+        assert again == kept
+
+    def test_the_worker_uses_the_shared_builder(self):
+        from taskqueue import worker
+
+        assert worker._terminal_details is taskqueue.terminal_details
+        assert worker._UNREAD is taskqueue.ERROR_AT_CLAIM_UNREAD
 
 
 class TestOnlineRowsDueTogetherStartTenSecondsApart:
@@ -943,7 +1200,7 @@ class TestTheOneInlineScaffold:
             patch('app_cron.get_task_info_from_db', return_value=self._details_row(reported)),
         ):
             outcome = app_cron._run_inline(
-                MagicMock(), 'job-1', 'sonic_fingerprint', lambda: summary, 6005,
+                _open_db(), 'job-1', 'sonic_fingerprint', lambda: summary, 6005,
             )
 
         assert outcome == 'ran'
@@ -969,7 +1226,7 @@ class TestTheOneInlineScaffold:
                 side_effect=RuntimeError('every server failed'),
             ),
         ):
-            outcome = app_cron._run_playlist_inline(MagicMock(), 'job-2', 'album_of_the_week', 'all')
+            outcome = app_cron._run_playlist_inline(_open_db(), 'job-2', 'album_of_the_week', 'all')
 
         assert outcome == 'ran', 'a run that executed and failed is never retried'
         assert save.call_args[0][2] == config.TASK_STATUS_FAILURE
@@ -985,7 +1242,7 @@ class TestTheOneInlineScaffold:
             raise TaskCancelled('revoked')
 
         with patch('app_cron.save_task_status', return_value=True) as save:
-            outcome = app_cron._run_inline(MagicMock(), 'job-3', 'sonic_fingerprint', cancelled, 6005)
+            outcome = app_cron._run_inline(_open_db(), 'job-3', 'sonic_fingerprint', cancelled, 6005)
 
         assert outcome == 'ran'
         assert len(save.call_args_list) == 1, 'only the STARTED row; REVOKED is the verdict'
@@ -995,7 +1252,7 @@ class TestTheOneInlineScaffold:
 
         run = MagicMock()
         with patch('app_cron.save_task_status', side_effect=RuntimeError('db down')):
-            outcome = app_cron._run_inline(MagicMock(), 'job-4', 'sonic_fingerprint', run, 6005)
+            outcome = app_cron._run_inline(_open_db(), 'job-4', 'sonic_fingerprint', run, 6005)
 
         assert outcome == 'failed'
         run.assert_not_called()
@@ -1015,7 +1272,7 @@ class TestTheOneInlineScaffold:
             patch('app_cron.save_task_status', side_effect=save),
             caplog.at_level(logging.ERROR, logger='app_cron'),
         ):
-            app_cron._run_inline(MagicMock(), 'job-5', 'sonic_fingerprint', lambda: {}, 6005)
+            app_cron._run_inline(_open_db(), 'job-5', 'sonic_fingerprint', lambda: {}, 6005)
 
         assert any('could not write' in record.getMessage() for record in caplog.records)
 
@@ -1026,7 +1283,7 @@ class TestTheOneInlineScaffold:
             patch('app_cron.save_task_status', side_effect=[True, False]),
             caplog.at_level(logging.WARNING, logger='app_cron'),
         ):
-            app_cron._run_inline(MagicMock(), 'job-6', 'sonic_fingerprint', lambda: {}, 6005)
+            app_cron._run_inline(_open_db(), 'job-6', 'sonic_fingerprint', lambda: {}, 6005)
 
         assert any('already terminal' in record.getMessage() for record in caplog.records)
 
@@ -1187,6 +1444,36 @@ def test_get_cron_entries_marks_entries_without_a_retry_as_not_pending():
 
     assert response.status_code == 200
     assert response.get_json()[0]['retry_pending'] is False
+
+
+@pytest.mark.parametrize('before, enabled, recorded', [
+    (('0 2 * * 6', False), True, True),
+    (('0 3 * * 6', True), True, True),
+    (('0 2 * * 6', True), True, False),
+    (('0 2 * * 6', True), False, False),
+], ids=['enabled-now', 'expression-changed', 'unchanged-resave', 'disabled'])
+def test_a_save_records_when_a_schedule_starts_only_if_it_changed(before, enabled, recorded):
+    import app_cron
+
+    client = _cron_api_client()
+    cur = MagicMock()
+    cur.fetchone.return_value = before
+    db = MagicMock()
+    db.cursor.return_value = cur
+    with (
+        patch('app_cron.get_db', return_value=db),
+        patch('app_cron.time.time', return_value=5000.0),
+    ):
+        response = client.post('/api/cron', json={
+            'id': 7, 'name': 'Clustering', 'task_type': 'clustering',
+            'cron_expr': '0 2 * * 6', 'enabled': enabled,
+        })
+
+    assert response.status_code == 200
+    assert (app_cron._cron_saved_at.get('clustering') == 5000.0) is recorded, (
+        'the page re-saves every row on each Save: only a schedule that was '
+        'enabled or changed may restart its catch-up window'
+    )
 
 
 def _cron_page_script():

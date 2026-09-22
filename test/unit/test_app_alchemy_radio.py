@@ -25,6 +25,8 @@ from flask import Flask
 
 import config
 from app_alchemy import alchemy_bp
+from error import error_manager
+from error.error_dictionary import ERR_INDEX_EMPTY
 
 
 @pytest.fixture
@@ -522,9 +524,13 @@ class TestRunRadioPlaylists:
         loaded_index.return_value = False
         mock_get_radios.return_value = [self._radio(1, 10, 'Chill')]
 
-        with pytest.raises(RuntimeError, match='similarity index is not available'):
+        with pytest.raises(error_manager.AudioMuseError, match='similarity index is not available') as raised:
             run_radio_playlists()
 
+        assert raised.value.code == ERR_INDEX_EMPTY, (
+            'a missing index is an index error, not the generic search error the '
+            'scheduled radio falls back to'
+        )
         mock_alchemy.assert_not_called()
 
     @patch('database.get_alchemy_radios')

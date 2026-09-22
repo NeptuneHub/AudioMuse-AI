@@ -45,9 +45,10 @@ Main Features:
 """
 
 from flask import Blueprint, render_template, jsonify, request
+from psycopg2.extensions import TRANSACTION_STATUS_INERROR
 from psycopg2.extras import DictCursor, Json
 from database import (
-    MAX_LOG_ENTRIES_STORED,
+    ConnectionLostError,
     get_db,
     get_task_info_from_db,
     save_task_status,
@@ -73,6 +74,7 @@ from config import (
     CRON_RETRY_INTERVAL_MINUTES,
 )
 import json
+import sys
 import uuid
 import time
 import logging
@@ -142,6 +144,17 @@ _DISPATCH_DONE = ('enqueued', 'ran')
 # evaluates only the current minute, as a first tick does.
 _cron_clock = {'last_minute': None, 'last_monotonic': None}
 _CLOCK_JUMP_TOLERANCE_SECONDS = 120
+
+# task_type -> wall-clock time its schedule was last enabled or changed on the
+# Scheduled Tasks page (see save_cron_entry).
+_cron_saved_at = {}
+
+# The catch-up tells a busy thread from a clock jump with time.monotonic, which
+# stops while a Linux or macOS host sleeps but keeps counting through sleep on
+# Windows. There a wake would look like a busy thread and replay the missed
+# schedules, so on Windows a tick evaluates only the current minute, exactly as
+# the scheduler did before the catch-up existed.
+_CATCH_UP_SUPPORTED = sys.platform != 'win32'
 
 # Online rows due in the same tick start this many seconds apart (owner rule).
 _INLINE_STAGGER_SECONDS = 10
@@ -307,7 +320,9 @@ def save_cron_entry():
 
     db = get_db()
     cur = db.cursor()
+    enabled = bool(data.get('enabled'))
     if data.get('id'):
+        changed = _schedule_changed(cur, data.get('id'), cron_expr, enabled)
         cur.execute(
             "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
             (
@@ -328,6 +343,7 @@ def save_cron_entry():
         )
         existing = cur.fetchone()
         if existing:
+            changed = _schedule_changed(cur, existing[0], cron_expr, enabled)
             cur.execute(
                 "UPDATE cron SET name=%s, task_type=%s, cron_expr=%s, enabled=%s, options=%s WHERE id=%s",
                 (
@@ -340,6 +356,7 @@ def save_cron_entry():
                 ),
             )
         else:
+            changed = enabled
             cur.execute(
                 "INSERT INTO cron (name, task_type, cron_expr, enabled, options) VALUES (%s,%s,%s,%s,%s)",
                 (
@@ -352,7 +369,22 @@ def save_cron_entry():
             )
     db.commit()
     cur.close()
+    if changed:
+        # The schedule starts from this save: a catch-up behind a long online run
+        # must not fire it for a minute that passed before it (nor, after an
+        # off-and-on, for one that passed while it was off), and must still fire
+        # an occurrence due after it. Same process as the cron thread (one
+        # gunicorn worker), so process memory is enough and no column is added.
+        _cron_saved_at[data.get('task_type')] = time.time()
     return jsonify({'message': 'saved'}), 200
+
+
+def _schedule_changed(cur, row_id, cron_expr, enabled):
+    if not enabled:
+        return False
+    cur.execute("SELECT cron_expr, enabled FROM cron WHERE id = %s", (row_id,))
+    before = cur.fetchone()
+    return before is None or not before[1] or before[0] != cron_expr
 
 
 @cron_bp.route('/api/cron/plugin_tasks', methods=['GET'])
@@ -494,19 +526,47 @@ def cron_matches_now(expr, ts=None):
     return True
 
 
-def _claim_cron_minute(db, row_id, minute_start):
+def _claim_cron_minute(db, row_id, minute_start, cron_expr):
     cur = db.cursor()
     try:
         cur.execute(
             "UPDATE cron SET last_run = %s "
-            "WHERE id = %s AND (last_run IS NULL OR last_run < %s)",
-            (minute_start, row_id, minute_start),
+            "WHERE id = %s AND enabled = true AND cron_expr = %s "
+            "AND (last_run IS NULL OR last_run < %s)",
+            (minute_start, row_id, cron_expr, minute_start),
         )
         claimed = cur.rowcount == 1
         db.commit()
         return claimed
     finally:
         cur.close()
+
+
+def _rollback_quietly(db):
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception("Cron: rollback failed; the database connection is gone")
+
+
+def _usable_db(db):
+    if not db.closed:
+        return db
+    try:
+        return get_db()
+    except ConnectionLostError:
+        return get_db()
+
+
+def _clear_failed_transaction(db):
+    # A failure the run caught internally can leave the shared connection in an
+    # aborted transaction; clear it, or the terminal row is refused and the run
+    # stays RUNNING until the stale-row sweep fails it.
+    try:
+        if db.get_transaction_status() == TRANSACTION_STATUS_INERROR:
+            db.rollback()
+    except Exception:
+        logger.exception("Cron: could not clear an aborted transaction")
 
 
 def _row_details(job_id):
@@ -528,43 +588,25 @@ def _row_details(job_id):
     return dict(details) if isinstance(details, dict) else {}
 
 
-def _append_log(details, message):
-    log = details.get('log')
-    log = list(log) if isinstance(log, list) else []
-    if log and str(log[-1]).endswith(f"] {message}"):
-        return
-    log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
-    details['log'] = log[-MAX_LOG_ENTRIES_STORED:]
-
-
 def _inline_success_details(job_id, summary):
-    details = _row_details(job_id)
-    details.pop('error', None)
-    if isinstance(summary, dict):
-        details.update({key: value for key, value in summary.items() if key != 'status'})
-        details['final_summary_details'] = summary
-        message = summary.get('status_message') or summary.get('message')
-    else:
-        message = str(summary) if summary is not None else None
-    message = message or "Task completed successfully."
-    details['message'] = message
-    details['status_message'] = message
-    _append_log(details, message)
-    return details
+    # The worker's own terminal-row builder, keeping the steps the run reported
+    # in its log instead of collapsing them, as a queued SUCCESS does.
+    return taskqueue.terminal_details(
+        TASK_STATUS_SUCCESS, None, summary, previous=_row_details(job_id), keep_log=True,
+    )
 
 
 def _inline_failure_details(job_id, task_type, exc, error_code):
-    details = _row_details(job_id)
-    record = taskqueue.failure_record(exc, error_code)
-    message = f"The {task_type} run failed; check the container logs."
-    details['message'] = message
-    details['status_message'] = message
-    details['error'] = record
-    _append_log(details, message)
-    return details
+    return taskqueue.terminal_details(
+        TASK_STATUS_FAILURE, f"The {task_type} run failed; check the container logs.",
+        taskqueue.failure_record(exc, error_code),
+        previous=_row_details(job_id), keep_log=True,
+    )
 
 
-def _write_inline_terminal(job_id, task_type, status, details):
+def _write_inline_terminal(job_id, task_type, status, details, db=None):
+    if db is not None:
+        _clear_failed_transaction(db)
     try:
         written = save_task_status(
             job_id, task_type, status, progress=100, details=details,
@@ -595,25 +637,30 @@ def _run_inline(db, job_id, task_type, run, error_code):
         )
     except Exception:
         logger.exception("Cron: could not write the row of inline run %s", task_type)
-        db.rollback()
+        _rollback_quietly(db)
         return 'failed'
     try:
         summary = run()
     except taskqueue.TaskCancelled:
         # The row was revoked (Cancel), so it already carries its verdict.
         logger.info("Cron: inline run %s (%s) was cancelled.", job_id, task_type)
-        db.rollback()
+        _rollback_quietly(_usable_db(db))
         return 'ran'
     except Exception as exc:
         logger.exception("Cron: inline run of %s failed", task_type)
-        db.rollback()
+        # A database drop during the run moves get_db() to a new connection, so
+        # every later step must act on that one, not the tick's dead one.
+        db = _usable_db(db)
+        _rollback_quietly(db)
         _write_inline_terminal(
             job_id, task_type, TASK_STATUS_FAILURE,
-            _inline_failure_details(job_id, task_type, exc, error_code),
+            _inline_failure_details(job_id, task_type, exc, error_code), db,
         )
         return 'ran'
+    db = _usable_db(db)
+    _clear_failed_transaction(db)
     _write_inline_terminal(
-        job_id, task_type, TASK_STATUS_SUCCESS, _inline_success_details(job_id, summary)
+        job_id, task_type, TASK_STATUS_SUCCESS, _inline_success_details(job_id, summary), db,
     )
     logger.info("Cron: ran %s inline (job_id=%s, summary=%s)", task_type, job_id, summary)
     return 'ran'
@@ -929,12 +976,16 @@ def _cron_row_for_retry(db, task_type):
         cur.close()
 
 
-def _record_retry_expired(task_type, entry):
+def _record_retry_expired(task_type, entry, message=None, status_message=None):
     job_id = str(uuid.uuid4())
     details = {
-        "message": f"Scheduled {task_type} did not run: it was blocked for over "
-                   f"{CRON_RETRY_MAX_MINUTES} minutes and never became free.",
-        "status_message": f"Blocked for over {CRON_RETRY_MAX_MINUTES} minutes; not run.",
+        "message": message or (
+            f"Scheduled {task_type} did not run: it was blocked for over "
+            f"{CRON_RETRY_MAX_MINUTES} minutes and never became free."
+        ),
+        "status_message": status_message or (
+            f"Blocked for over {CRON_RETRY_MAX_MINUTES} minutes; not run."
+        ),
         "blocked_by": entry.get('blocker_task_type'),
         "attempts": entry.get('attempts', 0),
     }
@@ -948,10 +999,7 @@ def _record_retry_expired(task_type, entry):
         )
     except Exception:
         logger.exception("Cron: could not record expired retry for %s", task_type)
-    logger.warning(
-        "Cron: %s expired in the retry list after %s minutes without running.",
-        task_type, CRON_RETRY_MAX_MINUTES,
-    )
+    logger.warning("Cron: %s not run: %s", task_type, details['status_message'])
 
 
 def _touch_cron_last_run(db, row_id):
@@ -1022,18 +1070,20 @@ def retry_due_cron_jobs():
     return len(pending)
 
 
-def _minutes_to_evaluate(now_ts):
+def _minutes_to_evaluate(now_ts, now_monotonic=None):
     # Returns (minutes to evaluate, minutes dropped), oldest first. An inline run
     # blocks this thread, so a tick can land minutes late; evaluating only "now"
     # silently lost every schedule due in between. The first tick after a start
-    # evaluates only the current minute.
+    # evaluates only the current minute. Both clocks are read at the SAME moment
+    # (the tick start), or a slow connect would look like a clock jump.
     current = now_ts - (now_ts % 60)
-    now_monotonic = time.monotonic()
+    if now_monotonic is None:
+        now_monotonic = time.monotonic()
     previous = _cron_clock['last_minute']
     previous_monotonic = _cron_clock['last_monotonic']
     _cron_clock['last_minute'] = current
     _cron_clock['last_monotonic'] = now_monotonic
-    if previous is None or previous >= current:
+    if previous is None or previous >= current or not _CATCH_UP_SUPPORTED:
         return [current], []
     wall_gap = current - previous
     if previous_monotonic is not None and (
@@ -1048,9 +1098,12 @@ def _minutes_to_evaluate(now_ts):
         return [current], []
     count = int(round(wall_gap / 60))
     missed = [current - 60 * step for step in range(count - 1, -1, -1)]
-    if count <= CRON_RETRY_MAX_MINUTES:
+    # At least the current minute: a window of 0 must mean "no catch-up", never
+    # "missed[-0:]", which is the whole list.
+    window = max(1, CRON_RETRY_MAX_MINUTES)
+    if count <= window:
         return missed, []
-    return missed[-CRON_RETRY_MAX_MINUTES:], missed[:-CRON_RETRY_MAX_MINUTES]
+    return missed[-window:], missed[:-window]
 
 
 def _latest_due_minute(expr, minutes):
@@ -1062,16 +1115,23 @@ def _latest_due_minute(expr, minutes):
 
 def _fire_cron_row(db, r, minute_start):
     try:
+        # A long inline run earlier in this tick may have outlived the tick's
+        # connection (a database restart); save_task_status reconnects on its
+        # own, so pick up the live connection instead of the dead one.
+        db = _usable_db(db)
         # Claim the row for THAT wall-clock minute before doing anything. The
         # old guard read last_run and wrote it after enqueuing, with no
         # predicate and a 55s window narrower than the 60s minute it was
         # protecting, so a restart inside a matching minute could double-fire.
         # Claiming must come AFTER the match: claiming every enabled row on
         # every tick would stamp last_run continuously and corrupt the
-        # dashboard's Last-run display.
-        if not _claim_cron_minute(db, r['id'], minute_start):
+        # dashboard's Last-run display. The claim also re-checks that the row is
+        # still enabled with the same expression: the SELECT is from the tick
+        # start, and a schedule disabled on the page meanwhile must not run.
+        if not _claim_cron_minute(db, r['id'], minute_start, r['cron_expr']):
             return False
         result = _dispatch_cron_row(db, r)
+        db = _usable_db(db)
         if result == 'blocked':
             _record_cron_retry(db, r['task_type'], minute_start)
         elif result in _DISPATCH_DONE:
@@ -1080,7 +1140,7 @@ def _fire_cron_row(db, r, minute_start):
             clear_cron_retry(r['task_type'], conn=db)
         return True
     except Exception:
-        db.rollback()
+        _rollback_quietly(db)
         logger.exception(f"Error processing cron row {r}")
         return True
 
@@ -1089,21 +1149,40 @@ def _due_cron_rows(rows, minutes, dropped):
     due = []
     for r in rows:
         try:
+            row_minutes, row_dropped = minutes, dropped
+            saved_at = _cron_saved_at.get(r['task_type'])
+            if saved_at is not None:
+                # The schedule starts when it was enabled or changed on the page:
+                # only the minutes after that save count, for a fire or a skip.
+                row_minutes = [minute for minute in minutes if minute > saved_at]
+                row_dropped = [minute for minute in dropped if minute > saved_at]
             # At most ONE fire per row per tick, for the most recent matching
             # minute in the window: an every-minute row behind a slow inline run
             # catches up once, not once per missed minute.
-            minute_start = _latest_due_minute(r['cron_expr'], minutes)
+            minute_start = _latest_due_minute(r['cron_expr'], row_minutes)
             if (
-                minute_start is None and dropped
+                minute_start is None and row_dropped
                 and r['task_type'] not in INLINE_FLASK_TASK_TYPES
                 and _cron_retry_eligible(r['task_type'])
-                and _latest_due_minute(r['cron_expr'], dropped) is not None
+                and _latest_due_minute(r['cron_expr'], row_dropped) is not None
             ):
                 # A batch schedule due longer than CRON_RETRY_MAX_MINUTES ago,
                 # while this thread was busy, is past the window any wait gets:
                 # it becomes a visible skip, never a silent loss. An online
                 # schedule missed that way is simply skipped, as the owner allows.
-                _record_retry_expired(r['task_type'], {'attempts': 0})
+                _record_retry_expired(
+                    r['task_type'], {'attempts': 0},
+                    message=(
+                        f"Scheduled {r['task_type']} did not run: the scheduler was "
+                        f"busy for over {CRON_RETRY_MAX_MINUTES} minutes (a long "
+                        "online run, or the database was unreachable), so its start "
+                        "time fell outside the window."
+                    ),
+                    status_message=(
+                        f"Missed while the scheduler was busy for over "
+                        f"{CRON_RETRY_MAX_MINUTES} minutes; not run."
+                    ),
+                )
         except Exception:
             logger.exception(f"Error processing cron row {r}")
             continue
@@ -1114,6 +1193,7 @@ def _due_cron_rows(rows, minutes, dropped):
 
 def run_due_cron_jobs():
     tick_start = time.time()
+    tick_monotonic = time.monotonic()
     db = get_db()
     cur = db.cursor(cursor_factory=DictCursor)
     cur.execute(
@@ -1122,7 +1202,7 @@ def run_due_cron_jobs():
     )
     rows = cur.fetchall()
     cur.close()
-    minutes, dropped = _minutes_to_evaluate(tick_start)
+    minutes, dropped = _minutes_to_evaluate(tick_start, tick_monotonic)
     due = _due_cron_rows(rows, minutes, dropped)
     # Batch rows only enqueue, so they go first (in row order, so which of two
     # batch schedules sharing a minute is queued and which waits is not left to

@@ -34,6 +34,7 @@ Main Features:
 * Every taskqueue module with a ``__main__`` block declares its role first
 * The worker entrypoint declares it through the shared shim, not a local copy
 * The worker entrypoint passes force=True, above the config import
+* The taskqueue package itself, run before every entrypoint, never imports config
 * ``force=True`` declares the worker role with no SERVICE_TYPE in the environment
 * Without force, that same bare-metal worker would keep the Flask role
 * force outranks a SERVICE_TYPE that says otherwise
@@ -207,6 +208,25 @@ class TestQueueEntrypointsDeclareTheirRoleBeforeConfigIsImported:
         assert not local_copies, (
             f"taskqueue/worker.py spells {service_roles.ROLE_ENV} itself at line(s) "
             f"{local_copies}; it must call service_roles.declare_worker_role instead"
+        )
+
+    def test_the_package_every_entrypoint_imports_first_never_imports_config(self):
+        body, _lines = _statements(os.path.join(QUEUE_DIR, '__init__.py'))
+        eager = [
+            stmt.lineno for stmt in body
+            if isinstance(stmt, ast.Import) and any(
+                alias.name.split('.')[0] in ('config', 'database') for alias in stmt.names
+            )
+            or isinstance(stmt, ast.ImportFrom) and (stmt.module or '').split('.')[0] in (
+                'config', 'database'
+            )
+        ]
+
+        assert not eager, (
+            f"taskqueue/__init__.py imports config at module level (line(s) {eager}). "
+            "`python -m taskqueue.worker` runs the package before the worker body, so "
+            "config would load before the worker declares its role and caps its "
+            "threads: BLAS pools start uncapped and config takes the Flask branch"
         )
 
 

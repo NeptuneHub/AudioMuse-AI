@@ -2205,7 +2205,14 @@ same as when they are started from the page.
    wait never passes that bound. A gap it did not measure is a wall-clock jump
    (an NTP step, a host waking from sleep), so that tick evaluates only the
    current minute and logs the skipped span instead of firing every schedule
-   of that span at once.
+   of that span at once. On Windows the monotonic clock keeps counting while
+   the host sleeps, so a wake would look like a busy thread: there the
+   catch-up is off and a tick evaluates only the current minute, as before. A
+   schedule enabled or changed on the page counts only the minutes after that
+   save (so a catch-up neither fires it for a minute that passed before, nor
+   loses one due after), and the claim re-checks that the row is still enabled
+   with the same expression, so a change saved during a long online run is
+   honoured.
 4. **Batch work is enqueued, online work runs inline.** Analysis, clustering and
    plugin tasks are **enqueued** as queue jobs, so a slow media server cannot
    swallow a scheduling window or block the other schedules. The **alchemy

@@ -32,6 +32,8 @@ Main Features:
 import logging
 
 from app_logging import sanitize_log_value
+from error import error_manager
+from error.error_dictionary import ERR_INDEX_EMPTY
 
 from .song_alchemy import song_alchemy
 from .mediaserver import create_or_replace_playlist, create_playlist
@@ -54,9 +56,10 @@ def run_radio_playlists(server_scope="all", report=None):
 
     beat("Loading the audio similarity index...", 1)
     if not ensure_ivf_index_loaded():
-        raise RuntimeError(
+        raise error_manager.AudioMuseError(
+            ERR_INDEX_EMPTY,
             "The audio similarity index is not available, so no radio can pick tracks. "
-            "Run an analysis to build it."
+            "Run an analysis to build it.",
         )
 
     radios = [r for r in get_alchemy_radios() if r.get('enabled')]

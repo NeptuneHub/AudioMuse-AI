@@ -118,6 +118,8 @@ THREAD_CAP = _apply_thread_caps(QUEUE)
 
 import config  # noqa: E402
 from . import error_summary as _error_summary, failure_record  # noqa: E402
+from . import ERROR_AT_CLAIM_UNREAD as _UNREAD  # noqa: E402
+from . import terminal_details as _terminal_details  # noqa: E402
 from . import retry  # noqa: E402
 from . import sql  # noqa: E402
 from .errors import TaskCancelled, TaskFailed  # noqa: E402
@@ -130,8 +132,6 @@ logger = logging.getLogger(__name__)
 APPLICATION_NAME_LIMIT = 63
 
 UNCHARGED_REQUEUE_LIMIT = 3
-
-_UNREAD = object()
 
 _OPTIONAL_JOB_MODELS = (
     ('tasks.clap_analyzer', 'is_clap_model_loaded', 'unload_clap_model'),
@@ -907,58 +907,6 @@ def _report_foreign_terminal(task_id, status, row):
         "retry it; the task must return or raise instead.",
         task_id, status, row['status'],
     )
-
-
-def _final_message(status, error, summary=None):
-    supplied = None
-    if isinstance(summary, dict):
-        supplied = summary.get('status_message') or summary.get('message')
-    if isinstance(supplied, str) and supplied.strip():
-        return supplied
-    if status == config.TASK_STATUS_SUCCESS:
-        return "Task completed successfully."
-    if status == config.TASK_STATUS_REVOKED:
-        return error or "Task was cancelled."
-    return error or "Task failed. Check the container logs for details."
-
-
-def _terminal_log(previous_log, status, message):
-    if status == config.TASK_STATUS_SUCCESS:
-        return [f"Task completed successfully. Final status: {message}"]
-    from database import MAX_LOG_ENTRIES_STORED
-
-    log = list(previous_log) if isinstance(previous_log, list) else []
-    log.append(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
-    if len(log) > MAX_LOG_ENTRIES_STORED:
-        del log[:-MAX_LOG_ENTRIES_STORED]
-    return log
-
-
-def _terminal_details(status, error, result, previous=None, error_at_claim=_UNREAD):
-    details = dict(previous) if isinstance(previous, dict) else {}
-    record = None
-    summary = None
-    if status == config.TASK_STATUS_SUCCESS:
-        details.pop('error', None)
-        summary = result if isinstance(result, dict) else None
-    elif isinstance(result, dict) and 'error_code' in result:
-        record = result
-    if summary:
-        details.update({key: value for key, value in summary.items() if key != 'status'})
-        details['final_summary_details'] = summary
-    message = _final_message(status, error, summary)
-    details['message'] = message
-    details['status_message'] = message
-    written = details.get('error')
-    written_this_attempt = (
-        isinstance(written, dict) and error_at_claim is not _UNREAD and written != error_at_claim
-    )
-    if record is not None and not written_this_attempt:
-        details['error'] = record
-    elif error and not isinstance(written, dict):
-        details['error'] = error
-    details['log'] = _terminal_log(details.get('log'), status, message)
-    return details
 
 
 def _error_record(job, exc):

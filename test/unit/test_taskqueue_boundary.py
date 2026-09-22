@@ -52,7 +52,7 @@ _QUEUE_PRIMITIVES = (
 _PUBLIC_API = frozenset((
     'enqueue', 'cancel', 'request_cancel', 'request_cancel_all', 'publish_event',
     'current_task_id', 'set_current_task_id', 'resolve_func',
-    'TASK_FUNC_ERROR_CODES', 'error_summary', 'failure_record',
+    'TASK_FUNC_ERROR_CODES', 'error_summary', 'failure_record', 'terminal_details',
     'reap_finished_children', 'live_children', 'task_statuses', 'worker_snapshot',
     'queue_backlog',
     'end_child',
