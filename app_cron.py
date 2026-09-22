@@ -1085,17 +1085,7 @@ def _fire_cron_row(db, r, minute_start):
         return True
 
 
-def run_due_cron_jobs():
-    tick_start = time.time()
-    db = get_db()
-    cur = db.cursor(cursor_factory=DictCursor)
-    cur.execute(
-        "SELECT id, name, task_type, cron_expr, enabled, last_run, options "
-        "FROM cron WHERE enabled = true ORDER BY id"
-    )
-    rows = cur.fetchall()
-    cur.close()
-    minutes, dropped = _minutes_to_evaluate(tick_start)
+def _due_cron_rows(rows, minutes, dropped):
     due = []
     for r in rows:
         try:
@@ -1119,6 +1109,21 @@ def run_due_cron_jobs():
             continue
         if minute_start is not None:
             due.append((r, minute_start))
+    return due
+
+
+def run_due_cron_jobs():
+    tick_start = time.time()
+    db = get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    cur.execute(
+        "SELECT id, name, task_type, cron_expr, enabled, last_run, options "
+        "FROM cron WHERE enabled = true ORDER BY id"
+    )
+    rows = cur.fetchall()
+    cur.close()
+    minutes, dropped = _minutes_to_evaluate(tick_start)
+    due = _due_cron_rows(rows, minutes, dropped)
     # Batch rows only enqueue, so they go first (in row order, so which of two
     # batch schedules sharing a minute is queued and which waits is not left to
     # the table scan) and never wait behind an online run. The online rows run

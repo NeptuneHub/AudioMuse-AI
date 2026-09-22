@@ -133,10 +133,10 @@
 
             <p style="margin-top:.5rem;font-size:0.9rem;color:var(--text-muted);">Defaults are disabled. Analysis default: each night (2:00) except Saturday. Clustering default: Saturday at 2:00. Sonic Fingerprint default: Saturday at 1:00. Album of the Week default: Saturday at 0:30. Radio Playlists default: Saturday at 3:00.</p>
 
-            <div id="cron-overlap-warning" class="status-warning cron-overlap-warning" role="status" aria-live="polite" hidden>
+            <output id="cron-overlap-warning" class="status-warning cron-overlap-warning" aria-live="polite" hidden>
                 <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
                 <span id="cron-overlap-text"></span>
-            </div>
+            </output>
 
             <div style="margin-top:1rem;">
                 <button id="save-btn" class="btn btn-primary" style="width:100%;">Save Schedules</button>
@@ -181,42 +181,39 @@
         ];
 
         function cronInt(text){
-            return /^[+-]?\d+(?:_\d+)*$/.test(text) ? parseInt(text.replace(/_/g, ''), 10) : NaN;
+            return /^[+-]?\d+(?:_\d+)*$/.test(text) ? Number.parseInt(text.replaceAll('_', ''), 10) : Number.NaN;
+        }
+
+        function cronRange(text){
+            const dash = text.indexOf('-');
+            return [cronInt(text.slice(0, dash)), cronInt(text.slice(dash + 1))];
+        }
+
+        function cronStepMatches(base, step, value, fieldMin){
+            if(base.trim() === '*'){ return value >= fieldMin && (value - fieldMin) % step === 0; }
+            if(base.includes('-')){
+                const [lo, hi] = cronRange(base);
+                return lo <= value && value <= hi && (value - lo) % step === 0;
+            }
+            const start = cronInt(base);
+            return value >= start && (value - start) % step === 0;
+        }
+
+        function cronPartMatches(p, value, fieldMin){
+            const slash = p.indexOf('/');
+            if(slash !== -1){
+                const step = cronInt(p.slice(slash + 1));
+                return step > 0 && cronStepMatches(p.slice(0, slash), step, value, fieldMin);
+            }
+            if(p.includes('-')){
+                const [lo, hi] = cronRange(p);
+                return lo <= value && value <= hi;
+            }
+            return cronInt(p) === value;
         }
 
         function cronFieldMatches(fieldExpr, value, fieldMin){
-            if(fieldExpr.trim() === '*'){ return true; }
-            for(const raw of fieldExpr.split(',')){
-                const p = raw.trim();
-                const slash = p.indexOf('/');
-                if(slash !== -1){
-                    const base = p.slice(0, slash);
-                    const step = cronInt(p.slice(slash + 1));
-                    if(isNaN(step) || step <= 0){ continue; }
-                    if(base.trim() === '*'){
-                        if(value >= fieldMin && (value - fieldMin) % step === 0){ return true; }
-                    } else if(base.includes('-')){
-                        const dash = base.indexOf('-');
-                        const lo = cronInt(base.slice(0, dash));
-                        const hi = cronInt(base.slice(dash + 1));
-                        if(isNaN(lo) || isNaN(hi)){ continue; }
-                        if(lo <= value && value <= hi && (value - lo) % step === 0){ return true; }
-                    } else {
-                        const start = cronInt(base);
-                        if(isNaN(start)){ continue; }
-                        if(value >= start && (value - start) % step === 0){ return true; }
-                    }
-                } else if(p.includes('-')){
-                    const dash = p.indexOf('-');
-                    const lo = cronInt(p.slice(0, dash));
-                    const hi = cronInt(p.slice(dash + 1));
-                    if(isNaN(lo) || isNaN(hi)){ continue; }
-                    if(lo <= value && value <= hi){ return true; }
-                } else if(cronInt(p) === value){
-                    return true;
-                }
-            }
-            return false;
+            return fieldExpr.trim() === '*' || fieldExpr.split(',').some(raw => cronPartMatches(raw.trim(), value, fieldMin));
         }
 
         function cronFieldValues(fieldExpr, low, high, fieldMin){
