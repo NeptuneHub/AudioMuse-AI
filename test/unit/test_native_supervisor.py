@@ -12,6 +12,8 @@ Covers the process supervisor that boots and health-checks Flask and worker
 children, focusing on its threading guards and start/stop state machine.
 
 Main Features:
+* A Windows console close stops everything instead of resurrecting children
+* Startup reaps role children a dead supervisor left behind, and nothing else
 * join_workers returns promptly from the boot thread and skips the main thread on Windows
 * The health loop clears a preset stop flag and spawns a live watcher thread
 * All three platforms share one health loop, and none keeps a private copy
@@ -659,3 +661,95 @@ class TestTheDatabaseProbeHoldsOneSession:
 
         assert held.closed == 1
         assert sup._probe_connection is None
+
+
+class _FakeProc:
+    def __init__(self, pid, name, cmdline):
+        self.info = {'pid': pid, 'name': name, 'cmdline': cmdline}
+        self.terminated = False
+
+    def terminate(self):
+        self.terminated = True
+
+
+def _fake_psutil(procs):
+    mod = types.ModuleType('psutil')
+    mod.NoSuchProcess = type('NoSuchProcess', (Exception,), {})
+    mod.AccessDenied = type('AccessDenied', (Exception,), {})
+    mod.process_iter = lambda attrs=None: list(procs)
+    return mod
+
+
+class TestATornDownWindowsSupervisorLeavesNoOrphanBehind:
+    def _windows(self, monkeypatch):
+        mod = _load_supervisor('windows')
+        sup = _bare_supervisor(mod)
+        monkeypatch.setattr(mod.paths, 'pgdata_dir', lambda: '/data/pgdata')
+        return mod, sup
+
+    def test_startup_reaps_role_children_left_by_an_earlier_supervisor(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        exe = sys.executable
+        mine = MagicMock(pid=77)
+        mine.poll.return_value = None
+        sup._children['queue-worker-high'] = mine
+        procs = [
+            _FakeProc(os.getpid(), 'me', [exe, '--role=flask']),
+            _FakeProc(77, 'child', [exe, '--role=worker-high']),
+            _FakeProc(501, 'orphan', [exe, '--role=worker-default']),
+            _FakeProc(502, 'orphan', [exe, '--role=worker-high']),
+            _FakeProc(503, 'other', ['/opt/other/python', '--role=worker-high']),
+            _FakeProc(504, 'postgres', ['postgres', '-D', '/data/pgdata']),
+            _FakeProc(505, 'shell', [exe, '-c', 'print(1)']),
+        ]
+        monkeypatch.setitem(sys.modules, 'psutil', _fake_psutil(procs))
+
+        sup._reap_orphans()
+
+        assert [p.info['pid'] for p in procs if p.terminated] == [501, 502, 504], (
+            'the workers a dead supervisor restarted kept draining the queue in '
+            'silence; our own live child and unrelated processes must be spared'
+        )
+
+    def test_the_log_pump_never_restarts_a_child_while_a_stop_is_requested(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        popen = MagicMock(stdout=iter(()))
+        sup._children['queue-worker-high'] = popen
+        sup._desired.add('queue-worker-high')
+        sup._state = 'running'
+        sup.start_child = MagicMock()
+
+        sup._stop_requested.set()
+        sup._pump('queue-worker-high', popen)
+        assert not sup.start_child.called, (
+            'a console close kills every child at once; resurrecting one here '
+            'left it running with no supervisor after the tray died'
+        )
+
+        sup._stop_requested.clear()
+        sup._pump('queue-worker-high', popen)
+        sup.start_child.assert_called_once_with('queue-worker-high')
+
+    def test_a_console_close_stops_everything_and_flushes_the_log(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        handler = MagicMock()
+        sup._log = MagicMock(handlers=[handler])
+        sup.stop_all = MagicMock()
+
+        assert sup._console_event(0) is False
+        assert not sup.stop_all.called and not sup._stop_requested.is_set()
+
+        assert sup._console_event(2) is True
+        assert sup._stop_requested.is_set()
+        sup.stop_all.assert_called_once_with()
+        assert sup._log.warning.call_args.args[1] == 'console closed'
+        assert handler.flush.call_count == 2, (
+            'the newest-first log flushes on a timer; a dying process must flush '
+            'by hand or the reason it stopped is lost'
+        )
+
+    def test_installing_the_console_handler_is_a_no_op_off_windows(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        monkeypatch.setattr(sys, 'platform', 'linux')
+
+        assert sup.install_console_handler() is False

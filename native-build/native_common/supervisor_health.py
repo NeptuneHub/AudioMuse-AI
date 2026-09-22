@@ -155,7 +155,7 @@ class HealthLoopMixin:
     def _health_loop(self):
         try:
             while not self._health_stop.wait(HEALTH_INTERVAL_SECONDS):
-                if self._state != "running":
+                if self._state != "running" or self._stop_requested.is_set():
                     continue
                 self._ensure_postgres_healthy()
                 if self._health_stop.is_set():

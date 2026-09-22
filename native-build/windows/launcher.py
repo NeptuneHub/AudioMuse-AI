@@ -16,6 +16,8 @@ in the queue needs them any more. The Linux/macOS launchers are the
 platform-specific siblings.
 
 Main Features:
+* Console close, logoff and shutdown stop the stack in order; the supervisor's own
+  fatal errors go to logs/supervisor-crash.log instead of a hidden console
 * Runs Flask via waitress or launches a named queue role in-process.
 * Patches multiprocessing so loky's spawn payloads work in the frozen bundle.
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
@@ -132,6 +134,36 @@ def main():
         sys.exit(1)
 
 
+_CRASH_LOG = None
+
+
+def _capture_fatal_errors(paths):
+    global _CRASH_LOG
+    import faulthandler
+    import traceback
+
+    path = os.path.join(paths.logs_dir(), "supervisor-crash.log")
+    _CRASH_LOG = open(path, "a", encoding="utf-8", buffering=1)
+    faulthandler.enable(file=_CRASH_LOG, all_threads=True)
+
+    def _write(kind, exc_type, exc, tb):
+        _CRASH_LOG.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {kind}\n")
+        traceback.print_exception(exc_type, exc, tb, file=_CRASH_LOG)
+        _CRASH_LOG.flush()
+
+    def _excepthook(exc_type, exc, tb):
+        _write("unhandled exception in the supervisor", exc_type, exc, tb)
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def _thread_hook(args):
+        name = args.thread.name if args.thread is not None else "?"
+        _write(f"unhandled exception in thread {name}", args.exc_type, args.exc_value, args.exc_traceback)
+
+    sys.excepthook = _excepthook
+    threading.excepthook = _thread_hook
+    return path
+
+
 def _start_supervisor():
     from windows import paths
     from windows.supervisor import ProcessSupervisor
@@ -141,9 +173,11 @@ def _start_supervisor():
         _open_browser(WEB_URL)
         return
 
+    _capture_fatal_errors(paths)
     supervisor = ProcessSupervisor()
+    supervisor.install_console_handler()
 
-    def _on_ctrl(sig):
+    def _on_ctrl(sig, _frame):
         print("\nShutting down...")
         supervisor.stop_all()
 
@@ -199,7 +233,9 @@ def _run_tray():
         _open_browser(WEB_URL)
         return
 
+    _capture_fatal_errors(paths)
     supervisor = ProcessSupervisor()
+    supervisor.install_console_handler()
     _labels = {
         "running": "Running",
         "starting": "Starting...",
