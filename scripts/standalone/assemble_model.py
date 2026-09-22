@@ -15,6 +15,8 @@ required model file is present before the build proceeds.
 
 Main Features:
 * Fetches and extracts DCLAP/SAE/model release assets by tag.
+* Retries each release download with a backoff: a single connection reset from
+  the release CDN (seen on the Windows runner) used to fail the whole build.
 * Trims the HuggingFace cache and materializes symlinks into real files, since
   PyInstaller and zip archives drop symlinks on Windows.
 """
@@ -25,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 MODEL = Path("model")
@@ -35,6 +38,7 @@ SAE_ASSETS = [
     "dclap_sae_k20_d1024_best_decoder.onnx",
 ]
 _TEN_MB = 10 * 1024 * 1024
+_DOWNLOAD_RETRY_DELAYS = (15, 45, 90)
 
 REQUIRED = [
     "model/musicnn_embedding.onnx",
@@ -65,6 +69,14 @@ def _gh_download(tag, repo, dest, patterns):
     cmd = ["gh", "release", "download", tag, "-R", repo, "-D", str(dest), "--clobber"]
     for p in patterns:
         cmd += ["-p", p]
+    for delay in _DOWNLOAD_RETRY_DELAYS:
+        if subprocess.run(cmd).returncode == 0:
+            return
+        print(
+            f"::warning::gh release download {tag} from {repo} failed; "
+            f"retrying in {delay} s"
+        )
+        time.sleep(delay)
     subprocess.run(cmd, check=True)
 
 
