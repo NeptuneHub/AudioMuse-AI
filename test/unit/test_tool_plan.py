@@ -804,11 +804,11 @@ class TestStripUnrequestedArgs:
 
     def test_artist_exclusion_kept_on_negation_cue_alone(self):
         p = _plan()
-        plan = p.ToolPlan(filter={'genres': ['Hip-Hop'], 'exclude_artists': ['40 Dimes']})
+        plan = p.ToolPlan(filter={'genres': ['Hip-Hop'], 'exclude_artists': ['Artist P']})
         p._strip_unrequested_filter_args(
-            plan, {}, "Hip hop songs but absolutely no 40 Dimes", []
+            plan, {}, "Hip hop songs but absolutely no Artist P", []
         )
-        assert plan.filter['exclude_artists'] == ['40 Dimes']
+        assert plan.filter['exclude_artists'] == ['Artist P']
 
 
 class TestArtistWordRegex:
@@ -999,18 +999,18 @@ class TestExclusionsHardCut:
     def test_exclude_artist_and_genre(self):
         p = _plan()
         songs = [
-            {'item_id': '1', 'title': 'S1', 'artist': '40 Dimes'},
+            {'item_id': '1', 'title': 'S1', 'artist': 'Artist P'},
             {'item_id': '2', 'title': 'S2', 'artist': 'Artist E'},
             {'item_id': '3', 'title': 'S3', 'artist': 'Band M'},
         ]
         feats = {
-            '1': {'author': '40 Dimes', 'mood_vector': ''},
+            '1': {'author': 'Artist P', 'mood_vector': ''},
             '2': {'author': 'Artist E', 'mood_vector': 'pop:0.1'},
             '3': {'author': 'Band M', 'mood_vector': 'Hip-Hop:0.8'},
         }
         kept = p._apply_exclusions(
             songs,
-            {'exclude_artists': ['40 dimes'], 'exclude_genres': ['Hip-Hop']},
+            {'exclude_artists': ['artist p'], 'exclude_genres': ['Hip-Hop']},
             feats,
             [],
         )
@@ -1031,13 +1031,13 @@ class TestPlanNormalizationExclusions:
                     'name': 'search_database',
                     'arguments': {
                         'exclude_genres': ['rap'],
-                        'exclude_artists': ['40 Dimes', '40 Dimes', ''],
+                        'exclude_artists': ['Artist P', 'Artist P', ''],
                     },
                 }
             ]
         )
         assert plan.filter['exclude_genres'] == ['Hip-Hop']
-        assert plan.filter['exclude_artists'] == ['40 Dimes']
+        assert plan.filter['exclude_artists'] == ['Artist P']
 
     def test_exclusion_only_filter_counts_as_content(self):
         p = _plan()
@@ -1260,11 +1260,11 @@ class TestContradictoryExclusionStrip:
 
     def test_misspelled_artist_exclusion_survives_via_fuzzy_message_match(self):
         p = _plan()
-        plan = p.ToolPlan(filter={'exclude_artists': ['Band Bees']})
+        plan = p.ToolPlan(filter={'exclude_artists': ['Band Vees']})
         p._strip_contradictory_exclusions(
-            plan, {}, 'disco hits but absolutely nothing by the Bandbees', [],
+            plan, {}, 'disco hits but absolutely nothing by the Bandvees', [],
         )
-        assert plan.filter['exclude_artists'] == ['Band Bees']
+        assert plan.filter['exclude_artists'] == ['Band Vees']
 
     def test_exclude_artist_named_nowhere_in_the_request_is_dropped(self):
         p = _plan()
@@ -1391,15 +1391,15 @@ class TestKnowledgeLookupGrounding:
         p = _plan()
         _result, seen, _logs = _run_plan(
             p, monkeypatch,
-            'greatest disco hits of the 70s, but absolutely nothing by the Band Bees',
+            'greatest disco hits of the 70s, but absolutely nothing by the Band Vees',
             [
                 {'name': 'knowledge_lookup',
                  'arguments': {'user_request': 'greatest disco hits of the 70s'}},
                 {'name': 'search_database',
-                 'arguments': {'exclude_artists': ['Band Bees']}},
+                 'arguments': {'exclude_artists': ['Band Vees']}},
             ])
         kl = [a for n, a in seen if n == 'knowledge_lookup']
-        assert kl and kl[0]['gate_filter']['exclude_artists'] == ['Band Bees']
+        assert kl and kl[0]['gate_filter']['exclude_artists'] == ['Band Vees']
 
     def test_plan_filter_cleared_so_the_rerank_never_touches_brainstorm_output(self, monkeypatch):
         p = _plan()

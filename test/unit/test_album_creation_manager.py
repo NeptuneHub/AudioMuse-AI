@@ -133,7 +133,7 @@ class TestDedupKeysAndHygiene:
         assert acm.song_key('(Live)', 'Someone') is None
 
     @pytest.mark.parametrize('title', [
-        'Song (Live at Wembley)', 'Song - Demo', 'Song (Club Remix)', 'Skit', 'Interlude II',
+        'Song (Live at the Arena)', 'Song - Demo', 'Song (Club Remix)', 'Skit', 'Interlude II',
         'Intro', 'Song (Alternate Take 3)', 'Song (take 2)', 'Canzone (dal vivo)',
     ])
     def test_versions_and_non_songs_are_not_album_material(self, title):
@@ -414,7 +414,7 @@ class TestTheSequencer:
         features = self._features(
             [2.0, 1.9, 1.8, 1.7, 0.4, 0.1, -0.2, -0.4, 0.0, 0.3, -2.0, 0.6]
         )
-        crowded = ['britney'] * 4 + ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+        crowded = ['artist a'] * 4 + ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
         head = [index for index, _role in acm.sequence_album(
             features, acm.OPENER_BANG, crowded
         )][:3]
