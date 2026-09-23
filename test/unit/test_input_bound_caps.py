@@ -243,7 +243,7 @@ class TestResultCountsAreFloored:
             ) as scoped,
         ):
             resp = client.get(
-                '/api/similar_artists', query_string={'artist': 'Nas', 'n': n}
+                '/api/similar_artists', query_string={'artist': 'Artist A', 'n': n}
             )
         assert resp.status_code != 500
         return scoped.call_args.args[1]

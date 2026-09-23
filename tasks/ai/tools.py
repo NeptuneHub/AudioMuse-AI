@@ -373,15 +373,15 @@ def get_mcp_tools() -> List[Dict]:
                                 "type": {"type": "string", "enum": ["song", "artist"]},
                                 "title": {
                                     "type": "string",
-                                    "description": "Song title (when type='song'), e.g. 'Hotel California'",
+                                    "description": "Song title (when type='song'), e.g. 'Song 1'",
                                 },
                                 "artist": {
                                     "type": "string",
-                                    "description": "Artist of that song (when type='song'), e.g. 'Eagles'",
+                                    "description": "Artist of that song (when type='song'), e.g. 'Band A'",
                                 },
                                 "name": {
                                     "type": "string",
-                                    "description": "Artist name (when type='artist'), e.g. 'Nina Simone'",
+                                    "description": "Artist name (when type='artist'), e.g. 'Artist B'",
                                 },
                             },
                             "required": ["type"],
@@ -551,11 +551,11 @@ def get_mcp_tools() -> List[Dict]:
                         "description": "Latest release year, e.g. 1999 for '90s'",
                     },
                     "min_rating": {"type": "integer", "description": "Minimum user rating 1-5"},
-                    "album": {"type": "string", "description": "Album name, e.g. 'Abbey Road'"},
+                    "album": {"type": "string", "description": "Album name, e.g. 'Album X'"},
                     "artist": {
                         "type": "string",
                         "description": (
-                            "Exact artist name for that artist's OWN songs, e.g. 'Eric Clapton'"
+                            "Exact artist name for that artist's OWN songs, e.g. 'Artist C'"
                         ),
                     },
                     "instrumental": {
@@ -567,7 +567,7 @@ def get_mcp_tools() -> List[Dict]:
                         "items": {"type": "string"},
                         "maxItems": 10,
                         "description": (
-                            "Artists the user does NOT want ('no 50 Cent' -> ['50 Cent']). "
+                            "Artists the user does NOT want ('no Artist D' -> ['Artist D']). "
                             "Hard-removed from the results; never put these in artist or seeds."
                         ),
                     },

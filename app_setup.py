@@ -122,9 +122,9 @@ AI_PROMPT_CONFIG_FIELDS = [
 ]
 AI_TITLE_PROMPT_MAX_CHARS = 20000
 AI_PROMPT_EXAMPLE_SONGS = (
-    ('', 'Do I Wanna Know?', 'Arctic Monkeys'),
-    ('', 'Skinny Love', 'Bon Iver'),
-    ('', 'Vienna', 'Billy Joel'),
+    ('', 'Song 1', 'Artist A'),
+    ('', 'Song 2', 'Artist B'),
+    ('', 'Song 3', 'Artist C'),
 )
 
 # Advanced fields whose value must be one of a fixed set. The wizard renders
@@ -1290,7 +1290,7 @@ def setup_lyrics_api_analyze():
             properties:
               example_url:
                 type: string
-                example: "https://api.example.com/lyrics?artist=RHCP&track=By+the+Way"
+                example: "https://api.example.com/lyrics?artist=Artist+A&track=Song+1"
     responses:
       200:
         description: Parsed sample response and detected parameter roles.

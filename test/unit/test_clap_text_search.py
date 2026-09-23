@@ -325,8 +325,8 @@ class TestSearchResultStructure:
             _CLAP_CACHE['embeddings'][i] /= np.linalg.norm(_CLAP_CACHE['embeddings'][i])
 
         _CLAP_CACHE['metadata'] = [
-            {'item_id': 'abc123', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
-            {'item_id': 'xyz789', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
+            {'item_id': 'abc123', 'title': 'Song 1', 'author': 'Artist A'},
+            {'item_id': 'xyz789', 'title': 'Song 2', 'author': 'Artist B'},
         ]
         _CLAP_CACHE['item_ids'] = ['abc123', 'xyz789']
         setup_dummy_clap_index_cache(
@@ -339,8 +339,8 @@ class TestSearchResultStructure:
 
         with patch('database.get_score_data_by_ids') as mock_get_score_data:
             mock_get_score_data.return_value = [
-                {'item_id': 'abc123', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
-                {'item_id': 'xyz789', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
+                {'item_id': 'abc123', 'title': 'Song 1', 'author': 'Artist A'},
+                {'item_id': 'xyz789', 'title': 'Song 2', 'author': 'Artist B'},
             ]
             results = search_by_text("rock classics", limit=2)
 
@@ -348,12 +348,12 @@ class TestSearchResultStructure:
         song2 = next((r for r in results if r['item_id'] == 'xyz789'), None)
 
         assert song1 is not None
-        assert song1['title'] == 'Bohemian Rhapsody'
-        assert song1['author'] == 'Queen'
+        assert song1['title'] == 'Song 1'
+        assert song1['author'] == 'Artist A'
 
         assert song2 is not None
-        assert song2['title'] == 'Stairway to Heaven'
-        assert song2['author'] == 'Led Zeppelin'
+        assert song2['title'] == 'Song 2'
+        assert song2['author'] == 'Artist B'
 
         teardown_dummy_clap_index_cache(_CLAP_INDEX_CACHE)
         _CLAP_CACHE['loaded'] = False

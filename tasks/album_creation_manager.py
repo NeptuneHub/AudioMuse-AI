@@ -177,10 +177,8 @@ _VOICE_TEXT = re.compile(
     r"baritone|bass\s+voice|acapella|a\s+cappella|lyrics|lyrical)\b"
 )
 _HOLIDAY_TEXT = re.compile(
-    r"christmas|xmas|x-mas|natale|\bnoel\b|santa claus|jingle bell|silent night|navidad|"
-    r"weihnacht|let it snow|sleigh ride|holy night|winter wonderland|rudolph|silver bells|"
-    r"deck the hall|little drummer boy|ye faithful|merry gentlemen|what child is this|"
-    r"herald angels|away in a manger",
+    r"christmas|xmas|x-mas|natale|\bnoel\b|santa claus|navidad|weihnacht|yuletide|"
+    r"\bnativity\b|reindeer|mistletoe|\bsleigh\b|\bjingle\b",
     re.IGNORECASE,
 )
 

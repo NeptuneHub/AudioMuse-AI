@@ -254,14 +254,14 @@ class TestRelaxTrackServerMapPk:
         registry.upsert_track_maps(
             'srv',
             {
-                'jf-1': ('X', 'fingerprint', '/music/Duran Duran/Rio/03 Rio.flac'),
-                'jf-2': ('X', 'fingerprint', '/music/Compilations/80s Hits/07 Rio.flac'),
+                'jf-1': ('X', 'fingerprint', '/music/Duo A/Album X/03 Song 1.flac'),
+                'jf-2': ('X', 'fingerprint', '/music/Compilations/80s Hits/07 Song 1.flac'),
             },
             conn=old_schema_db,
         )
         registry.upsert_track_maps(
             'plex',
-            {'plex-9': ('X', 'fingerprint', '/data/media/Duran Duran/Rio/03 Rio.flac')},
+            {'plex-9': ('X', 'fingerprint', '/data/media/Duo A/Album X/03 Song 1.flac')},
             conn=old_schema_db,
         )
         old_schema_db.commit()
@@ -277,9 +277,9 @@ class TestRelaxTrackServerMapPk:
             rows = cur.fetchall()
 
         assert rows == [
-            ('plex', 'plex-9', '/data/media/Duran Duran/Rio/03 Rio.flac'),
-            ('srv', 'jf-1', '/music/Duran Duran/Rio/03 Rio.flac'),
-            ('srv', 'jf-2', '/music/Compilations/80s Hits/07 Rio.flac'),
+            ('plex', 'plex-9', '/data/media/Duo A/Album X/03 Song 1.flac'),
+            ('srv', 'jf-1', '/music/Duo A/Album X/03 Song 1.flac'),
+            ('srv', 'jf-2', '/music/Compilations/80s Hits/07 Song 1.flac'),
         ]
 
         with old_schema_db.cursor() as cur:
@@ -290,9 +290,9 @@ class TestRelaxTrackServerMapPk:
             )
             known_paths = cur.fetchone()[0]
         assert sorted(known_paths) == [
-            '/data/media/Duran Duran/Rio/03 Rio.flac',
-            '/music/Compilations/80s Hits/07 Rio.flac',
-            '/music/Duran Duran/Rio/03 Rio.flac',
+            '/data/media/Duo A/Album X/03 Song 1.flac',
+            '/music/Compilations/80s Hits/07 Song 1.flac',
+            '/music/Duo A/Album X/03 Song 1.flac',
         ]
 
     def test_a_path_less_writer_never_erases_a_path_a_sweep_recorded(self, old_schema_db):
@@ -481,10 +481,10 @@ class TestRelaxTrackServerMapPk:
                 "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
                 "PRIMARY KEY (server_id, provider_track_id))"
             )
-            cur.execute("UPDATE track_server_map SET file_path = '/music/Queen/II/a.flac' WHERE provider_track_id = 'provA'")
+            cur.execute("UPDATE track_server_map SET file_path = '/music/Band Q/Album Y/a.flac' WHERE provider_track_id = 'provA'")
             cur.execute(
                 "INSERT INTO track_server_map (item_id, server_id, provider_track_id, match_tier, file_path) "
-                "VALUES ('X', 'srv', 'provB', 'default', '/music/Queen/II/b.flac')"
+                "VALUES ('X', 'srv', 'provB', 'default', '/music/Band Q/Album Y/b.flac')"
             )
             cur.execute(
                 "INSERT INTO chromaprint (server_id, provider_track_id, fingerprint) "
@@ -496,7 +496,7 @@ class TestRelaxTrackServerMapPk:
         with old_schema_db.cursor() as cur:
             mig._run_migration_transaction(
                 cur, {'X': 'new-b'},
-                {'new-b': {'path': '/lib/Queen/II/b.flac'}, 'new-a': {'path': '/lib/Queen/II/a.flac'}},
+                {'new-b': {'path': '/lib/Band Q/Album Y/b.flac'}, 'new-a': {'path': '/lib/Band Q/Album Y/a.flac'}},
                 'navidrome', {}, session_id,
                 duplicates={'new-a': 'X'},
             )

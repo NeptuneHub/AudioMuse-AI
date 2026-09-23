@@ -39,12 +39,12 @@ TRUTHY_SEARCH_FILTERS = {
     'year_min': 1990,
     'year_max': 1999,
     'min_rating': 4,
-    'album': 'Dark Side of the Moon',
+    'album': 'Album X',
     'other_features': ['party'],
     'candidate_item_ids': ['abc123'],
     'voices': ['female vocalists'],
     'instrumental': True,
-    'exclude_artists': ['Nickelback'],
+    'exclude_artists': ['Artist B'],
     'exclude_genres': ['Hip-Hop'],
 }
 
@@ -202,7 +202,7 @@ class TestSearchDatabaseFilterDetection:
         'tool_args',
         [
             {},
-            {'artist': 'Nas'},
+            {'artist': 'Artist A'},
             {'get_songs': 200},
             {'genres': [], 'moods': None, 'album': ''},
         ],
@@ -227,7 +227,7 @@ class TestSearchDatabaseFilterDetection:
     @pytest.mark.parametrize(
         'extra_filter,expected_fuzzy_calls',
         [
-            ({}, ['Nas']),
+            ({}, ['Artist A']),
             ({'genres': ['rock']}, []),
             ({'voices': ['female vocalists']}, []),
             ({'exclude_genres': ['Hip-Hop']}, []),
@@ -256,7 +256,7 @@ class TestSearchDatabaseFilterDetection:
             lambda conn, name: fuzzy_calls.append(name) or None,
         )
 
-        tool_args = {'artist': 'Nas'}
+        tool_args = {'artist': 'Artist A'}
         tool_args.update(extra_filter)
         tools._dispatch_search_database(tool_args)
 
@@ -270,14 +270,14 @@ class TestArtistDiversityEnforcement:
         self, monkeypatch, cap
     ):
         monkeypatch.setattr(config, 'MAX_SONGS_PER_ARTIST_PLAYLIST', cap)
-        songs = [_song(f'b{i}', 'Beatles') for i in range(20)]
+        songs = [_song(f'b{i}', 'Band C') for i in range(20)]
         songs += [_song(f'u{i}', f'Solo{i}') for i in range(180)]
 
         response = _run_pipeline_with_pool(monkeypatch, songs, {'n': 100})
 
         results = response['query_results']
         assert len(results) == 100
-        assert [s['item_id'] for s in results if s['artist'] == 'Beatles'] == [
+        assert [s['item_id'] for s in results if s['artist'] == 'Band C'] == [
             f'b{i}' for i in range(cap)
         ]
         assert f'removed {20 - cap} excess songs from pool (max {cap}/artist)' in response['message']

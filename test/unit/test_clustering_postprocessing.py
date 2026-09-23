@@ -115,8 +115,8 @@ class TestTitleArtistDeduplication:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
-            {'item_id': 's2', 'title': 'Bohemian Rhapsody', 'author': 'Queen'},
+            {'item_id': 's1', 'title': 'Song One', 'author': 'Artist A'},
+            {'item_id': 's2', 'title': 'Song One', 'author': 'Artist A'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
 
@@ -131,11 +131,11 @@ class TestTitleArtistDeduplication:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Stairway to Heaven', 'author': 'Led Zeppelin'},
+            {'item_id': 's1', 'title': 'Song Two', 'author': 'Artist B'},
             {
                 'item_id': 's2',
-                'title': 'Stairway to Heaven (Remastered 2014)',
-                'author': 'Led Zeppelin',
+                'title': 'Song Two (Remastered 2014)',
+                'author': 'Artist B',
             },
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
@@ -165,8 +165,8 @@ class TestTitleArtistDeduplication:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Hello', 'author': 'Adele'},
-            {'item_id': 's2', 'title': 'Hello', 'author': 'Lionel Richie'},
+            {'item_id': 's1', 'title': 'Song Three', 'author': 'Artist A'},
+            {'item_id': 's2', 'title': 'Song Three', 'author': 'Artist B'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
 
@@ -345,8 +345,8 @@ class TestEdgeCases:
         mock_db = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [
-            {'item_id': 's1', 'title': 'Café del Mar', 'author': 'Artist'},
-            {'item_id': 's2', 'title': 'Café del Mar (Remastered)', 'author': 'Artist'},
+            {'item_id': 's1', 'title': 'Café Song', 'author': 'Artist'},
+            {'item_id': 's2', 'title': 'Café Song (Remastered)', 'author': 'Artist'},
         ]
         mock_db.cursor.return_value.__enter__.return_value = mock_cursor
 

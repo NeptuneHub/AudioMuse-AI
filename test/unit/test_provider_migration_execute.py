@@ -1426,8 +1426,8 @@ class TestDuplicateFileMappings:
     def test_files_pair_with_their_own_old_file_by_the_longest_shared_path(self):
         from tasks import provider_migration_tasks as mig
 
-        old_files = [('old-a', '/music/Queen/II/a.flac'), ('old-b', '/music/Queen/II/b.flac'), ('old-c', None)]
-        new_meta = {'new-b': {'path': '/lib/Queen/II/b.flac'}, 'new-a': {'path': '/lib/Queen/II/a.flac'},
+        old_files = [('old-a', '/music/Band F/II/a.flac'), ('old-b', '/music/Band F/II/b.flac'), ('old-c', None)]
+        new_meta = {'new-b': {'path': '/lib/Band F/II/b.flac'}, 'new-a': {'path': '/lib/Band F/II/a.flac'},
                     'new-x': {'path': '/lib/Other/x.flac'}}
         pairs = mig._pair_files_by_path(old_files, ['new-b', 'new-a', 'new-x'], new_meta)
         assert sorted(pairs) == [('old-a', 'new-a'), ('old-b', 'new-b')]

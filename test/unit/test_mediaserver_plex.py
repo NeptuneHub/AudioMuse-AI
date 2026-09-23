@@ -98,9 +98,9 @@ def _min_track(rating_key):
 
 def _track(
     rating_key='101',
-    title='One More Time',
-    grandparent='Daft Punk',
-    parent='Discovery',
+    title='Song One',
+    grandparent='Duo P',
+    parent='Album X',
     original=None,
     index=1,
     parent_index=1,
@@ -109,7 +109,7 @@ def _track(
     view_count=5,
     last_viewed=1600000000,
     container='flac',
-    file='/music/Daft Punk/Discovery/1-01 One More Time.flac',
+    file='/music/Duo P/Album X/1-01 Song One.flac',
     part_key=None,
 ):
     item = {
@@ -157,7 +157,7 @@ def _track_with_lyrics(rating_key='101', stream_key='/library/streams/999'):
     return {
         'ratingKey': str(rating_key),
         'type': 'track',
-        'title': 'One More Time',
+        'title': 'Song One',
         'Media': [
             {
                 'id': 1,
@@ -176,7 +176,7 @@ def _track_with_lyrics(rating_key='101', stream_key='/library/streams/999'):
     }
 
 
-def _album(rating_key='700', title='Discovery', artist='Daft Punk', year=2001, added=1600000000, leaf=14):
+def _album(rating_key='700', title='Album X', artist='Duo P', year=2001, added=1600000000, leaf=14):
     return {
         'ratingKey': str(rating_key),
         'key': f'/library/metadata/{rating_key}/children',
@@ -363,7 +363,7 @@ class TestPlexGetAllSongsPagination:
         _set_config(mock_config)
         mock_get.side_effect = [
             _resp(_sections_payload()),
-            _resp_mc(size=1, Metadata=[_track(original='Daft Punk feat. Romanthony')]),
+            _resp_mc(size=1, Metadata=[_track(original='Duo P feat. Artist G')]),
         ]
 
         songs = get_all_songs()
@@ -371,15 +371,15 @@ class TestPlexGetAllSongsPagination:
         assert len(songs) == 1
         song = songs[0]
         assert song['Id'] == '101'
-        assert song['Name'] == 'One More Time'
-        assert song['AlbumArtist'] == 'Daft Punk feat. Romanthony'
-        assert song['OriginalAlbumArtist'] == 'Daft Punk'
+        assert song['Name'] == 'Song One'
+        assert song['AlbumArtist'] == 'Duo P feat. Artist G'
+        assert song['OriginalAlbumArtist'] == 'Duo P'
         assert song['ArtistId'] == '9'
-        assert song['Album'] == 'Discovery'
+        assert song['Album'] == 'Album X'
         assert song['Year'] == 2001
         assert song['IndexNumber'] == 1
         assert song['ParentIndexNumber'] == 1
-        assert song['Path'] == '/music/Daft Punk/Discovery/1-01 One More Time.flac'
+        assert song['Path'] == '/music/Duo P/Album X/1-01 Song One.flac'
         assert song['FilePath'] == song['Path']
         assert song['Container'] == 'flac'
         assert song['PartKey'] == '/library/parts/101/1600000000/file.flac'
@@ -395,7 +395,7 @@ class TestPlexGetAllSongsPagination:
             _resp_mc(size=1, Metadata=[_track(original=None)]),
         ]
 
-        assert get_all_songs()[0]['AlbumArtist'] == 'Daft Punk'
+        assert get_all_songs()[0]['AlbumArtist'] == 'Duo P'
 
     @patch('tasks.mediaserver.plex.requests.get')
     @patch('tasks.mediaserver.plex.config')
@@ -434,15 +434,15 @@ class TestPlexGetTracksFromAlbum:
 
         _set_config(mock_config)
         mock_get.return_value = _resp_mc(
-            size=1, parentTitle='Discovery', Metadata=[_track(original='Feat Guest')]
+            size=1, parentTitle='Album X', Metadata=[_track(original='Feat Guest')]
         )
 
         tracks = get_tracks_from_album('55')
 
         assert mock_get.call_args[0][0] == f'{PLEX_URL}/library/metadata/55/children'
         assert tracks[0]['AlbumArtist'] == 'Feat Guest'
-        assert tracks[0]['OriginalAlbumArtist'] == 'Daft Punk'
-        assert tracks[0]['Path'] == '/music/Daft Punk/Discovery/1-01 One More Time.flac'
+        assert tracks[0]['OriginalAlbumArtist'] == 'Duo P'
+        assert tracks[0]['Path'] == '/music/Duo P/Album X/1-01 Song One.flac'
         assert tracks[0]['Year'] == 2001
 
     @patch('tasks.mediaserver.plex.requests.get')
@@ -475,8 +475,8 @@ class TestPlexGetRecentAlbums:
 
         _set_config(mock_config)
         albums = [
-            _album(rating_key='700', title='Discovery', added=1600000000),
-            _album(rating_key='701', title='Homework', artist='Daft Punk', added=1500000000),
+            _album(rating_key='700', title='Album X', added=1600000000),
+            _album(rating_key='701', title='Album Y', artist='Duo P', added=1500000000),
         ]
         mock_get.side_effect = [
             _resp(_sections_payload()),
@@ -492,8 +492,8 @@ class TestPlexGetRecentAlbums:
         assert [a['Id'] for a in result] == ['700', '701']
         assert result[0] == {
             'Id': '700',
-            'Name': 'Discovery',
-            'AlbumArtist': 'Daft Punk',
+            'Name': 'Album X',
+            'AlbumArtist': 'Duo P',
             'Year': 2001,
             'DateCreated': 1600000000,
         }
@@ -537,13 +537,13 @@ class TestPlexSearchAlbums:
             _resp_mc(size=1, Metadata=[_album()]),
         ]
 
-        results = search_albums('discovery')
+        results = search_albums('album x')
 
         search_call = mock_get.call_args_list[1]
         assert search_call[0][0] == f'{PLEX_URL}/library/sections/5/all'
-        assert search_call.kwargs['params'] == {'type': 9, 'title': 'discovery'}
+        assert search_call.kwargs['params'] == {'type': 9, 'title': 'album x'}
         assert results == [
-            {'id': '700', 'name': 'Discovery', 'artist': 'Daft Punk', 'year': 2001, 'track_count': 14}
+            {'id': '700', 'name': 'Album X', 'artist': 'Duo P', 'year': 2001, 'track_count': 14}
         ]
 
     @patch('tasks.mediaserver.plex.requests.get')
@@ -571,7 +571,7 @@ class TestPlexDownloadTrack:
 
         item = {
             'Id': '101',
-            'Name': 'One More Time',
+            'Name': 'Song One',
             'PartKey': '/library/parts/101/1600000000/file.flac',
             'Container': 'flac',
             'Path': '/music/x.flac',
@@ -595,7 +595,7 @@ class TestPlexDownloadTrack:
             _stream_resp((b'zzz',)),
         ]
 
-        item = {'Id': '101', 'id': '101', 'Name': 'One More Time', 'Path': ''}
+        item = {'Id': '101', 'id': '101', 'Name': 'Song One', 'Path': ''}
         path = download_track(str(tmp_path), item)
 
         assert path == str(tmp_path / '101.flac')

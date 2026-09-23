@@ -117,15 +117,15 @@ class TestArtistMappingMigration:
             )
             cur.executemany(
                 "INSERT INTO artist_mapping (artist_name, artist_id) VALUES (%s, %s)",
-                [('Daft Punk', 'a1'), ('Air', 'a2'), ('NoId', None)],
+                [('Band B', 'a1'), ('Artist A', 'a2'), ('NoId', None)],
             )
         db.commit()
 
         _run(db)
 
         assert _server_map(db) == [
-            ('Air', 'srv', 'a2'),
-            ('Daft Punk', 'srv', 'a1'),
+            ('Artist A', 'srv', 'a2'),
+            ('Band B', 'srv', 'a1'),
         ]
         assert not _table_exists(db, 'artist_mapping')
         _run(db)
@@ -139,16 +139,16 @@ class TestArtistMappingMigration:
             )
             cur.execute(
                 "INSERT INTO artist_server_map (artist_name, server_id, provider_artist_id) "
-                "VALUES ('Daft Punk', 'srv', 'current')"
+                "VALUES ('Band B', 'srv', 'current')"
             )
             cur.execute(
-                "INSERT INTO artist_mapping (artist_name, artist_id) VALUES ('Daft Punk', 'stale')"
+                "INSERT INTO artist_mapping (artist_name, artist_id) VALUES ('Band B', 'stale')"
             )
         db.commit()
 
         _run(db)
 
-        assert _server_map(db) == [('Daft Punk', 'srv', 'current')]
+        assert _server_map(db) == [('Band B', 'srv', 'current')]
         assert not _table_exists(db, 'artist_mapping')
 
     def test_no_default_server_drops_empty_but_keeps_non_empty(self, db):
@@ -158,7 +158,7 @@ class TestArtistMappingMigration:
     def test_no_default_server_keeps_non_empty_for_next_boot(self, db):
         with db.cursor() as cur:
             cur.execute(
-                "INSERT INTO artist_mapping (artist_name, artist_id) VALUES ('Air', 'a2')"
+                "INSERT INTO artist_mapping (artist_name, artist_id) VALUES ('Artist A', 'a2')"
             )
         db.commit()
 

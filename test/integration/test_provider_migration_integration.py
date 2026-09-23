@@ -86,28 +86,28 @@ _TARGET_CREDS = {
 
 SHARED_TRACKS = [
     {
-        'artist': 'Daft Punk',
-        'album': 'Discovery',
-        'album_artist': 'Daft Punk',
-        'title': 'One More Time',
+        'artist': 'Artist A',
+        'album': 'Album X',
+        'album_artist': 'Artist A',
+        'title': 'Song 1',
         'disc': 1,
         'track': 1,
         'ext': 'flac',
     },
     {
-        'artist': 'Green Day',
-        'album': 'American Idiot',
-        'album_artist': 'Green Day',
-        'title': 'Boulevard of Broken Dreams',
+        'artist': 'Band B',
+        'album': 'Album Y',
+        'album_artist': 'Band B',
+        'title': 'Song 2',
         'disc': 1,
         'track': 4,
         'ext': 'flac',
     },
     {
-        'artist': 'Eagles',
+        'artist': 'Band C',
         'album': 'Ultimate Rock Hits',
         'album_artist': 'Various Artists',
-        'title': 'Hotel California',
+        'title': 'Song 3',
         'disc': 1,
         'track': 3,
         'ext': 'mp3',
@@ -391,7 +391,7 @@ def _seed_library(conn, source_rendered, segmented=False, source_type='jellyfin'
         cur.execute(
             "INSERT INTO artist_server_map (artist_name, server_id, provider_artist_id) "
             "VALUES (%s, %s, %s)",
-            ('Daft Punk', _DEFAULT_SERVER_ID, 'old-artist-id'),
+            ('Artist A', _DEFAULT_SERVER_ID, 'old-artist-id'),
         )
     conn.commit()
 

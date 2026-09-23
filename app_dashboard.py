@@ -557,7 +557,7 @@ def _collect_fast_metrics(cur):
             "WHERE author IS NOT NULL AND author <> ''",
         ),
         # Album identity is (album_artist, album), matching the migration wizard
-        # and idx_score_album_artist_album; a bare title collapses "Greatest Hits"
+        # and idx_score_album_artist_album; a bare title collapses "Album X"
         # across artists into one. Fall back to author when album_artist is unset
         # (rows written before the column existed).
         'distinct_albums': _counted_or_none(

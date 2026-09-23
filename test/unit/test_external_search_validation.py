@@ -87,11 +87,11 @@ class TestSearchQueryValidation:
 
     def test_legacy_title_artist_params_build_query(self, ext, client):
         with patch.object(ext, 'search_tracks_unified', return_value=[]) as backend:
-            resp = client.get('/search', query_string={'title': 'Hello', 'artist': 'Adele'})
+            resp = client.get('/search', query_string={'title': 'Song 1', 'artist': 'Artist A'})
         assert resp.status_code == 200
         assert resp.get_json() == []
         assert backend.call_count == 1
-        assert backend.call_args.args[0] == 'Adele Hello'
+        assert backend.call_args.args[0] == 'Artist A Song 1'
 
 
 class TestGetEmbeddingDecodesBothVectors:

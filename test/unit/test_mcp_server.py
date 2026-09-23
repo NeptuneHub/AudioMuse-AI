@@ -19,6 +19,8 @@ Main Features:
 * Song, artist, and alchemy similarity lookups with fuzzy and reverse-map fallbacks
 * AI brainstorm fuses per-channel results, dedups, caps, and applies the year gate;
   text search gates on CLAP being enabled and surfaces errors safely
+* With a server selected, the database search and the artist-seed songs keep only
+  that server's songs before the LIMIT; one server alone needs no filter
 """
 
 import json
@@ -578,7 +580,7 @@ class TestClampRecipe:
         import config as cfg
 
         with patch.object(cfg, "AI_BRAINSTORM_USE_ARTIST_SEEDS", False):
-            out = mod._clamp_recipe({"seed_artists": ["Nas", "Jay-Z"]})
+            out = mod._clamp_recipe({"seed_artists": ["Artist A", "Artist-Z"]})
         assert out["seed_artists"] == []
 
 
@@ -674,7 +676,7 @@ class TestToolSurface:
             return {"songs": [], "message": ""}
 
         with patch.object(ai_mod, '_database_genre_query_sync', side_effect=fake_query):
-            result = ai_mod.execute_mcp_tool("search_database", {"artist": "clapton eric"}, {})
+            result = ai_mod.execute_mcp_tool("search_database", {"artist": "delta band"}, {})
         assert calls == [False, True]
         assert result['songs']
         assert 'whole-word' in result['message']
@@ -689,7 +691,7 @@ class TestSongSimilarityLookup:
         cur.__exit__ = Mock(return_value=False)
         cur.fetchone = Mock(
             return_value=_make_dict_row(
-                {"item_id": "123", "title": "Bohemian Rhapsody", "author": "Queen"}
+                {"item_id": "123", "title": "Song E", "author": "Band Q"}
             )
         )
         conn = _make_connection(cur)
@@ -707,7 +709,7 @@ class TestSongSimilarityLookup:
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.ivf_manager': mock_ivf}),
         ):
-            mod._song_similarity_api_sync("bohemian rhapsody", "queen", 10)
+            mod._song_similarity_api_sync("song e", "band q", 10)
 
         assert cur.execute.called
 
@@ -753,23 +755,23 @@ class TestArtistSimilarityApiSync:
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
-        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Radiohead"}))
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Band A"}))
         cur.fetchall = Mock(
             return_value=[
-                _make_dict_row({"item_id": "1", "title": "Creep", "author": "Radiohead"}),
-                _make_dict_row({"item_id": "2", "title": "Paranoid Android", "author": "Muse"}),
+                _make_dict_row({"item_id": "1", "title": "Song C", "author": "Band A"}),
+                _make_dict_row({"item_id": "2", "title": "Song D", "author": "Band B"}),
             ]
         )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Muse", "distance": 0.1}])
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Band B", "distance": 0.1}])
 
         with (
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            result = mod._artist_similarity_api_sync("Radiohead", count=5, get_songs=10)
+            result = mod._artist_similarity_api_sync("Band A", count=5, get_songs=10)
 
         assert "songs" in result
         assert len(result["songs"]) > 0
@@ -781,24 +783,24 @@ class TestArtistSimilarityApiSync:
         cur.fetchone = Mock(
             side_effect=[
                 None,
-                _make_dict_row({"author": "AC/DC", "len": 5}),
+                _make_dict_row({"author": "A/B Band", "len": 5}),
             ]
         )
         cur.fetchall = Mock(
             return_value=[
-                _make_dict_row({"item_id": "10", "title": "Back in Black", "author": "AC/DC"}),
+                _make_dict_row({"item_id": "10", "title": "Song F", "author": "A/B Band"}),
             ]
         )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Guns N' Roses", "distance": 0.2}])
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Band N' C", "distance": 0.2}])
 
         with (
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            result = mod._artist_similarity_api_sync("AC DC", count=5, get_songs=10)
+            result = mod._artist_similarity_api_sync("A B Band", count=5, get_songs=10)
 
         assert "songs" in result
         assert cur.fetchone.call_count == 2
@@ -826,10 +828,10 @@ class TestArtistSimilarityApiSync:
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
-        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Queen"}))
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Band Q"}))
         cur.fetchall = Mock(
             return_value=[
-                _make_dict_row({"item_id": "5", "title": "We Will Rock You", "author": "Queen"}),
+                _make_dict_row({"item_id": "5", "title": "Song G", "author": "Band Q"}),
             ]
         )
         conn = _make_connection(cur)
@@ -839,16 +841,16 @@ class TestArtistSimilarityApiSync:
         gmm_mod.find_similar_artists = Mock(
             side_effect=[
                 [],
-                [{"artist": "David Bowie", "distance": 0.3}],
+                [{"artist": "Artist E", "distance": 0.3}],
             ]
         )
-        gmm_mod.reverse_artist_map = {"queen": 0, "david bowie": 1}
+        gmm_mod.reverse_artist_map = {"band q": 0, "artist e": 1}
 
         with (
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            result = mod._artist_similarity_api_sync("Queen", count=5, get_songs=10)
+            result = mod._artist_similarity_api_sync("Band Q", count=5, get_songs=10)
 
         assert gmm_mod.find_similar_artists.call_count >= 2
         assert "songs" in result
@@ -857,10 +859,10 @@ class TestArtistSimilarityApiSync:
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
-        cur.fetchone = Mock(return_value=_make_dict_row({"author": "P!nk"}))
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": "B!rd"}))
         cur.fetchall = Mock(
             return_value=[
-                _make_dict_row({"item_id": "20", "title": "So What", "author": "P!nk"}),
+                _make_dict_row({"item_id": "20", "title": "Song H", "author": "B!rd"}),
             ]
         )
         conn = _make_connection(cur)
@@ -870,7 +872,7 @@ class TestArtistSimilarityApiSync:
         gmm_mod.find_similar_artists = Mock(
             side_effect=[
                 [],
-                [{"artist": "Kelly Clarkson", "distance": 0.4}],
+                [{"artist": "Artist F", "distance": 0.4}],
             ]
         )
         gmm_mod.reverse_artist_map = {}
@@ -879,7 +881,7 @@ class TestArtistSimilarityApiSync:
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            result = mod._artist_similarity_api_sync("P!nk", count=5, get_songs=10)
+            result = mod._artist_similarity_api_sync("B!rd", count=5, get_songs=10)
 
         assert gmm_mod.find_similar_artists.call_count >= 2
         assert "songs" in result
@@ -888,25 +890,25 @@ class TestArtistSimilarityApiSync:
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
-        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Nirvana"}))
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Band G"}))
         cur.fetchall = Mock(
             return_value=[
                 _make_dict_row(
-                    {"item_id": "30", "title": "Smells Like Teen Spirit", "author": "Nirvana"}
+                    {"item_id": "30", "title": "Song I", "author": "Band G"}
                 ),
-                _make_dict_row({"item_id": "31", "title": "Everlong", "author": "Foo Fighters"}),
+                _make_dict_row({"item_id": "31", "title": "Song J", "author": "Band H"}),
             ]
         )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Foo Fighters", "distance": 0.15}])
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Band H", "distance": 0.15}])
 
         with (
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            result = mod._artist_similarity_api_sync("Nirvana", count=5, get_songs=10)
+            result = mod._artist_similarity_api_sync("Band G", count=5, get_songs=10)
 
         assert "songs" in result
         assert "similar_artists" in result
@@ -917,35 +919,35 @@ class TestArtistSimilarityApiSync:
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
-        cur.fetchone = Mock(return_value=_make_dict_row({"author": "The Beatles"}))
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": "The Band I"}))
         cur.fetchall = Mock(
             return_value=[
-                _make_dict_row({"item_id": "40", "title": "Hey Jude", "author": "The Beatles"}),
-                _make_dict_row({"item_id": "41", "title": "Imagine", "author": "John Lennon"}),
+                _make_dict_row({"item_id": "40", "title": "Song K", "author": "The Band I"}),
+                _make_dict_row({"item_id": "41", "title": "Song L", "author": "Artist J"}),
             ]
         )
         conn = _make_connection(cur)
         conn.cursor = Mock(return_value=cur)
 
-        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "John Lennon", "distance": 0.1}])
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Artist J", "distance": 0.1}])
 
         with (
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            result = mod._artist_similarity_api_sync("The Beatles", count=5, get_songs=10)
+            result = mod._artist_similarity_api_sync("The Band I", count=5, get_songs=10)
 
         original_entries = [c for c in result["component_matches"] if c.get("is_original") is True]
         assert len(original_entries) >= 1
-        assert original_entries[0]["artist"] == "The Beatles"
+        assert original_entries[0]["artist"] == "The Band I"
 
     def test_get_songs_limits_results(self):
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
 
-        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Coldplay"}))
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Band K"}))
         many_songs = [
-            _make_dict_row({"item_id": str(i), "title": f"Song {i}", "author": "Coldplay"})
+            _make_dict_row({"item_id": str(i), "title": f"Song {i}", "author": "Band K"})
             for i in range(50)
         ]
         cur.fetchall = Mock(return_value=many_songs)
@@ -953,15 +955,15 @@ class TestArtistSimilarityApiSync:
         conn.cursor = Mock(return_value=cur)
 
         gmm_mod = self._setup_gmm_module(
-            find_return=[{"artist": "U2", "distance": 0.2}],
-            tracks_per_artist={"Coldplay": 50, "U2": 50},
+            find_return=[{"artist": "Band L", "distance": 0.2}],
+            tracks_per_artist={"Band K": 50, "Band L": 50},
         )
 
         with (
             patch.object(mod, 'get_db_connection', return_value=conn),
             patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
         ):
-            result = mod._artist_similarity_api_sync("Coldplay", count=5, get_songs=5)
+            result = mod._artist_similarity_api_sync("Band K", count=5, get_songs=5)
 
         assert len(result["songs"]) == 5
 
@@ -989,9 +991,9 @@ class TestArtistSimilarityApiSync:
     def test_songs_come_from_get_artist_tracks_not_a_hand_rolled_query(self):
         mod = _import_mcp_impl()
         similar = [f"Similar {i}" for i in range(1, 16)]
-        tracks = {"Madonna": 300}
+        tracks = {"Artist M": 300}
         tracks.update({a: 40 for a in similar})
-        result = self._run_with_track_source(mod, "Madonna", similar, tracks, 200)
+        result = self._run_with_track_source(mod, "Artist M", similar, tracks, 200)
 
         assert len(result["songs"]) == 200
         assert len({s["artist"] for s in result["songs"]}) == 16
@@ -999,31 +1001,95 @@ class TestArtistSimilarityApiSync:
     def test_a_prolific_seed_artist_cannot_consume_the_whole_limit(self):
         mod = _import_mcp_impl()
         similar = [f"Similar {i}" for i in range(1, 16)]
-        tracks = {"Madonna": 300}
+        tracks = {"Artist M": 300}
         tracks.update({a: 40 for a in similar})
-        result = self._run_with_track_source(mod, "Madonna", similar, tracks, 200)
+        result = self._run_with_track_source(mod, "Artist M", similar, tracks, 200)
 
-        madonna = [s for s in result["songs"] if s["artist"] == "Madonna"]
-        assert len(madonna) <= 20
-        assert len(result["songs"]) - len(madonna) >= 150
+        seed_rows = [s for s in result["songs"] if s["artist"] == "Artist M"]
+        assert len(seed_rows) <= 20
+        assert len(result["songs"]) - len(seed_rows) >= 150
 
     def test_the_seed_artist_still_leads_the_returned_list(self):
         mod = _import_mcp_impl()
         result = self._run_with_track_source(
-            mod, "Madonna", ["Kylie", "Cher"],
-            {"Madonna": 10, "Kylie": 10, "Cher": 10}, 9,
+            mod, "Artist M", ["Artist N", "Artist O"],
+            {"Artist M": 10, "Artist N": 10, "Artist O": 10}, 9,
         )
-        assert result["songs"][0]["artist"] == "Madonna"
-        assert [s["artist"] for s in result["songs"][:3]] == ["Madonna", "Kylie", "Cher"]
+        assert result["songs"][0]["artist"] == "Artist M"
+        assert [s["artist"] for s in result["songs"][:3]] == ["Artist M", "Artist N", "Artist O"]
 
     def test_an_artist_with_no_tracks_does_not_stall_the_interleave(self):
         mod = _import_mcp_impl()
         result = self._run_with_track_source(
-            mod, "Madonna", ["Kylie", "Cher"],
-            {"Madonna": 2, "Kylie": 0, "Cher": 5}, 10,
+            mod, "Artist M", ["Artist N", "Artist O"],
+            {"Artist M": 2, "Artist N": 0, "Artist O": 5}, 10,
         )
-        assert {s["artist"] for s in result["songs"]} == {"Madonna", "Cher"}
+        assert {s["artist"] for s in result["songs"]} == {"Artist M", "Artist O"}
         assert len(result["songs"]) == 7
+
+    def test_a_selected_server_fills_the_count_from_its_own_tracks_only(self):
+        mod = _import_mcp_impl()
+        available = {f'Artist B-{i}' for i in range(10)} | {'Artist A-0'}
+        with patch.object(mod, '_available_on_server', return_value=available):
+            result = self._run_with_track_source(
+                mod, "Artist A", ["Artist B", "Artist C"],
+                {"Artist A": 10, "Artist B": 10, "Artist C": 10}, 8,
+            )
+        ids = [s["item_id"] for s in result["songs"]]
+        assert len(ids) == 8
+        assert set(ids) <= available
+
+
+@pytest.mark.unit
+class TestServerScopedSearch:
+    def _filter(self, mod, scope, default_id='default', secondaries=False):
+        with (
+            patch.object(mod, 'active_availability_scope', return_value=scope),
+            patch.object(mod.registry, 'get_default_server_id', return_value=default_id),
+            patch.object(mod.registry, 'has_secondary_servers', return_value=secondaries),
+        ):
+            return mod._server_availability_filter()
+
+    def test_no_filter_outside_a_server_scope(self):
+        mod = _import_mcp_impl()
+        assert self._filter(mod, None) == ('', [])
+
+    def test_no_filter_when_the_default_server_is_the_only_one(self):
+        mod = _import_mcp_impl()
+        assert self._filter(mod, 'default') == ('', [])
+
+    def test_the_default_server_keeps_its_legacy_rows_next_to_other_servers(self):
+        mod = _import_mcp_impl()
+        sql, params = self._filter(mod, 'default', secondaries=True)
+        assert sql == mod.registry.availability_sql('score')
+        assert params == ['default', True]
+
+    def test_a_secondary_server_keeps_exactly_its_mapped_rows(self):
+        mod = _import_mcp_impl()
+        sql, params = self._filter(mod, 'second', secondaries=True)
+        assert sql == mod.registry.availability_sql('score')
+        assert params == ['second', False]
+
+    def test_search_database_filters_by_server_before_the_limit(self):
+        mod = _import_mcp_impl()
+        cur = MagicMock()
+        cur.__enter__ = Mock(return_value=cur)
+        cur.__exit__ = Mock(return_value=False)
+        cur.fetchall = Mock(return_value=[])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.object(mod, '_server_availability_filter', return_value=('AVAILABLE(%s, %s)', ['second', False])),
+        ):
+            mod._database_genre_query_sync(genres=['rock'], get_songs=10)
+        sql, params = cur.execute.call_args[0]
+        where = sql.split('WHERE', 1)[1].split('ORDER BY', 1)[0]
+        assert 'AVAILABLE(%s, %s)' in where
+        assert sql.count('%s') == len(params)
+        assert params[-1] == 10
+        start = params.index('second')
+        assert params[start:start + 2] == ['second', False]
 
 
 @pytest.mark.unit
@@ -1094,31 +1160,31 @@ class TestSongAlchemySync:
         mod = _import_mcp_impl()
 
         alchemy_mod = self._setup_alchemy_module(return_value={"results": []})
-        row = {"item_id": "real-123", "title": "Get Lucky", "author": "Daft Punk"}
+        row = {"item_id": "real-123", "title": "Song Ten", "author": "Duo P"}
 
         with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}), \
                 patch.object(mod, 'get_db_connection', return_value=MagicMock()), \
                 patch.object(mod, '_resolve_song_row', return_value=row) as resolver:
             result = mod._song_alchemy_sync(
                 add_items=[
-                    {"type": "song", "id": "Get Lucky by Daft Punk"},
-                    {"type": "artist", "id": "Mozart"},
+                    {"type": "song", "id": "Song Ten by Duo P"},
+                    {"type": "artist", "id": "Composer A"},
                 ],
                 get_songs=10,
             )
 
         resolver.assert_called_once()
-        assert resolver.call_args[0][1] == "Get Lucky"
-        assert resolver.call_args[0][2] == "Daft Punk"
+        assert resolver.call_args[0][1] == "Song Ten"
+        assert resolver.call_args[0][2] == "Duo P"
         alchemy_mod.song_alchemy.assert_called_once_with(
             add_items=[
                 {"type": "song", "id": "real-123"},
-                {"type": "artist", "id": "Mozart"},
+                {"type": "artist", "id": "Composer A"},
             ],
             subtract_items=None,
             n_results=10,
         )
-        assert "resolved 'Get Lucky by Daft Punk'" in result["message"]
+        assert "resolved 'Song Ten by Duo P'" in result["message"]
 
     def test_unresolvable_song_seed_skipped_with_note(self):
         mod = _import_mcp_impl()
@@ -1131,13 +1197,13 @@ class TestSongAlchemySync:
             result = mod._song_alchemy_sync(
                 add_items=[
                     {"type": "song", "id": "Ghost Song by Nobody"},
-                    {"type": "artist", "id": "Mozart"},
+                    {"type": "artist", "id": "Composer A"},
                 ],
                 get_songs=10,
             )
 
         alchemy_mod.song_alchemy.assert_called_once_with(
-            add_items=[{"type": "artist", "id": "Mozart"}],
+            add_items=[{"type": "artist", "id": "Composer A"}],
             subtract_items=None,
             n_results=10,
         )
@@ -1147,19 +1213,19 @@ class TestSongAlchemySync:
         mod = _import_mcp_impl()
 
         alchemy_mod = self._setup_alchemy_module(return_value={"results": []})
-        row = {"item_id": "real-456", "title": "Song2", "author": "Blur"}
+        row = {"item_id": "real-456", "title": "Track2", "author": "Band S"}
 
         with patch.dict(sys.modules, {'tasks.song_alchemy': alchemy_mod}), \
                 patch.object(mod, 'get_db_connection', return_value=MagicMock()), \
                 patch.object(mod, '_resolve_song_row', return_value=row):
             mod._song_alchemy_sync(
-                add_items=[{"type": "artist", "id": "Oasis"}],
-                subtract_items=[{"type": "song", "id": "Song2 by Blur"}],
+                add_items=[{"type": "artist", "id": "Band R"}],
+                subtract_items=[{"type": "song", "id": "Track2 by Band S"}],
                 get_songs=10,
             )
 
         alchemy_mod.song_alchemy.assert_called_once_with(
-            add_items=[{"type": "artist", "id": "Oasis"}],
+            add_items=[{"type": "artist", "id": "Band R"}],
             subtract_items=[{"type": "song", "id": "real-456"}],
             n_results=10,
         )
@@ -1221,11 +1287,11 @@ class TestAiBrainstormSync:
 
     def test_recipe_drives_channels_and_fuses(self):
         mod = _import_mcp_impl()
-        ai_mod = self._make_ai_module(self._recipe(seed_artists=["Nirvana"]))
+        ai_mod = self._make_ai_module(self._recipe(seed_artists=["Band G"]))
         p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(
             mod,
             audio={"songs": [{"item_id": "1", "title": "A", "artist": "X"}]},
-            artist={"songs": [{"item_id": "2", "title": "B", "artist": "Nirvana"}]},
+            artist={"songs": [{"item_id": "2", "title": "B", "artist": "Band G"}]},
             filt={"songs": [{"item_id": "3", "title": "C", "artist": "Z"}]},
         )
         with (
@@ -1235,14 +1301,14 @@ class TestAiBrainstormSync:
             p_lyrics,
             p_filt as f,
         ):
-            result = mod._ai_brainstorm_sync("90s rock like Nirvana", self._make_ai_config(), 50)
+            result = mod._ai_brainstorm_sync("90s rock like Band G", self._make_ai_config(), 50)
         ids = sorted(s["item_id"] for s in result["songs"])
         assert ids == ["1", "2", "3"]
         assert a.called and ar.called and f.called
 
     def test_dedup_across_channels(self):
         mod = _import_mcp_impl()
-        ai_mod = self._make_ai_module(self._recipe(seed_artists=["Nirvana"]))
+        ai_mod = self._make_ai_module(self._recipe(seed_artists=["Band G"]))
         dup = {"songs": [{"item_id": "1", "title": "A", "artist": "X"}]}
         p_audio, p_artist, p_lyrics, p_filt = self._patch_channels(
             mod, audio=dup, artist=dup, filt=dup
@@ -1650,7 +1716,7 @@ class TestKnowledgeLookupDispatch:
                 {
                     'user_request': 'best of the 90s',
                     'grounding_filter': {'genres': ['rock']},
-                    'gate_filter': {'exclude_artists': ['Oasis']},
+                    'gate_filter': {'exclude_artists': ['Band R']},
                 },
                 {},
             )
@@ -1658,7 +1724,7 @@ class TestKnowledgeLookupDispatch:
             ai_mod._ai_brainstorm_sync = orig
 
         assert captured['grounding'] == {'genres': ['rock']}
-        assert captured['gate'] == {'exclude_artists': ['Oasis']}
+        assert captured['gate'] == {'exclude_artists': ['Band R']}
 
 
 class TestGenreVocabCoverage:
