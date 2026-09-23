@@ -15,12 +15,16 @@ per-pair loop it replaced: same kept songs, same order, same log lines.
 Main Features:
 * Identity against the per-pair reference for the angular, euclidean and dot
   metrics, both lookbacks, the single-window path (50 or fewer songs) and the
-  batched path, with missing vectors, a zero vector and exact copies planted
+  batched path, with missing vectors, a zero vector and exact copies planted.
+  A logged distance may differ from the reference in its 4th decimal: the
+  matrix product and the per-pair np.dot may round the last float32 bit apart
+  (BLAS kernels vary by CPU), so it is compared to within that rounding
 * The filter measures a whole window with one matrix product instead of one
   Python distance call per pair
 """
 
 import logging
+import re
 
 import numpy as np
 import pytest
@@ -70,6 +74,14 @@ def _reference_filter(songs, details_map, lookback, distance):
                     batch.append(song)
             kept.extend(batch)
     return [song['item_id'] for song in kept], messages
+
+
+_DISTANCE_IN_MESSAGE = re.compile(r"direct distance of (-?\d+\.\d+)")
+
+
+def _split_distance(message):
+    match = _DISTANCE_IN_MESSAGE.search(message)
+    return _DISTANCE_IN_MESSAGE.sub("direct distance of <d>", message), float(match.group(1))
 
 
 _NOISE = {'angular': (0.05, 0.3), 'euclidean': (0.005, 0.07), 'dot': (0.05, 0.3)}
@@ -133,7 +145,12 @@ def test_the_matrix_filter_keeps_exactly_what_the_per_pair_loop_kept(filter_setu
 
     messages = [r.getMessage() for r in caplog.records if 'DISTANCE FILTER' in r.getMessage()]
     assert [song['item_id'] for song in kept] == expected_ids
-    assert messages == expected_messages
+    assert [_split_distance(m)[0] for m in messages] == [
+        _split_distance(m)[0] for m in expected_messages
+    ]
+    assert [_split_distance(m)[1] for m in messages] == pytest.approx(
+        [_split_distance(m)[1] for m in expected_messages], abs=1.5e-4
+    )
     assert all(any(song is original for original in songs) for song in kept)
     assert 0 < len(expected_messages) and len(expected_ids) < total
 

@@ -18,6 +18,8 @@ Main Features:
   cancel-all, last-task and active-tasks polling, `/api/config`, `/api/playlists`.
 * Registers all feature blueprints and, on the Flask server only (never queue
   workers), loads similarity indexes/caches and starts the background listener.
+* Counts every request for the idle heap trim; timer-driven status polls and
+  health probes count as in flight but never push the trim back.
 """
 
 import os
@@ -231,6 +233,25 @@ def reject_non_object_json_body():
     return json_error(ERR_INVALID_REQUEST, "The request body must be a JSON object.")
 
 
+# Timer-driven UI polls (dashboard every 30 s, task pages every 3 s) and health
+# probes: they count as in flight but do not push the idle heap trim back, or any
+# open AudioMuse page would keep the web process "busy" and the trim never fires.
+_STATUS_POLL_PATHS = frozenset({
+    '/api/dashboard/summary',
+    '/api/active_tasks',
+    '/api/last_task',
+    '/api/health',
+})
+_STATUS_POLL_PREFIXES = ('/api/status/',)
+
+
+def _is_status_poll():
+    if request.method != 'GET':
+        return False
+    path = request.path
+    return path in _STATUS_POLL_PATHS or path.startswith(_STATUS_POLL_PREFIXES)
+
+
 @app.before_request
 def note_request_start():
     if _is_worker:
@@ -238,8 +259,10 @@ def note_request_start():
     try:
         from tasks.memory_utils import note_request_started
 
+        arm = not _is_status_poll()
         g._heap_trim_counted = True
-        note_request_started()
+        g._heap_trim_arms = arm
+        note_request_started(arm=arm)
     except Exception:
         app.logger.exception("Could not note the request start for the idle heap trim")
 
@@ -253,7 +276,7 @@ def note_request_end(exc=None):
     try:
         from tasks.memory_utils import note_request_finished
 
-        note_request_finished()
+        note_request_finished(arm=g.pop('_heap_trim_arms', True))
     except Exception:
         app.logger.exception("Could not note the request finish for the idle heap trim")
 

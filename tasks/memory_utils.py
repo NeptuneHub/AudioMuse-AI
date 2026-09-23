@@ -24,7 +24,10 @@ Main Features:
   burst of online searches leaves behind is handed back once it goes quiet.
 * note_request_started / note_request_finished: track in-flight requests so the
   idle trim never runs while an endpoint is still being served. Arming the timer
-  is best-effort, so a failure there can never leave the count unbalanced.
+  is best-effort, so a failure there can never leave the count unbalanced. A
+  status poll passes arm=False: it still counts as in flight but never pushes
+  the trim back (an open dashboard polls every 30 s), and a trim skipped while
+  one was in flight is re-armed when it finishes.
 * SessionRecycler: interval counter that signals when to rebuild a long-lived
   ONNX session to bound its memory growth.
 """
@@ -206,6 +209,7 @@ _IDLE_TRIM_TIMER = None
 _IDLE_TRIM_INIT_LOCK = threading.Lock()
 _ACTIVE_REQUESTS = 0
 _ACTIVE_REQUESTS_LOCK = threading.Lock()
+_TRIM_DEFERRED = False
 
 
 def _arm_quietly():
@@ -215,27 +219,36 @@ def _arm_quietly():
         logger.exception("Could not arm the idle heap trim")
 
 
-def note_request_started():
+def note_request_started(arm=True):
     global _ACTIVE_REQUESTS
 
     with _ACTIVE_REQUESTS_LOCK:
         _ACTIVE_REQUESTS += 1
-    _arm_quietly()
+    if arm:
+        _arm_quietly()
 
 
-def note_request_finished():
-    global _ACTIVE_REQUESTS
+def note_request_finished(arm=True):
+    global _ACTIVE_REQUESTS, _TRIM_DEFERRED
 
     with _ACTIVE_REQUESTS_LOCK:
         if _ACTIVE_REQUESTS > 0:
             _ACTIVE_REQUESTS -= 1
-    _arm_quietly()
+        if _TRIM_DEFERRED:
+            _TRIM_DEFERRED = False
+            arm = True
+    if arm:
+        _arm_quietly()
 
 
 def _idle_heap_trim():
+    global _TRIM_DEFERRED
+
     with _ACTIVE_REQUESTS_LOCK:
         if _ACTIVE_REQUESTS > 0:
+            _TRIM_DEFERRED = True
             return
+        _TRIM_DEFERRED = False
     if release_memory_to_os(full_gc=False):
         logger.info("Idle heap trim: released the web process's free heap to the OS")
 
