@@ -39,10 +39,10 @@ Main Features:
   SERIAL plans, because a parallel plan's shared-memory segment in /dev/shm
   (small in containers) made the analysis work map scan die with DiskFull.
 * Embedding, projection, and alchemy CRUD shared by workers and the web app.
-* pgserver skips the embedded PostgreSQL shutdown while its handle list names
-  another pid (a supervisor killed hard leaves one), so on start and before a
-  stop the list is pruned, under pgserver's lock, to live supervisors of this
-  executable.
+* pgserver skips the embedded shutdown while its handle list names another pid
+  (a supervisor killed hard leaves one), so the list is pruned under its lock
+  to live supervisors; a start gets a 120 s pg_ctl timeout and a failed one
+  forgets pgserver's cached instance so a retry really restarts.
 """
 
 import json
@@ -52,6 +52,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
+from pathlib import Path
 
 import numpy as np
 import psutil
@@ -265,13 +266,51 @@ def _drop_dead_handles(server):
         logger.exception("Could not prune the embedded PostgreSQL handle list")
 
 
+_EMBEDDED_PG_START_TIMEOUT_SECONDS = 120
+
+
+def _patch_pgserver_start_timeout():
+    try:
+        import pgserver.postgres_server as ps
+    except ImportError:
+        return
+    original = getattr(ps, "pg_ctl", None)
+    if original is None or getattr(ps, "_audiomuse_pg_ctl_patched", False):
+        return
+    timeout = _EMBEDDED_PG_START_TIMEOUT_SECONDS
+
+    def pg_ctl(args, **kwargs):
+        if args and "start" in args:
+            if kwargs.get("timeout") is None or kwargs["timeout"] < timeout:
+                kwargs["timeout"] = timeout
+            env = dict(os.environ if kwargs.get("env") is None else kwargs["env"])
+            env.setdefault("PGCTLTIMEOUT", str(timeout))
+            kwargs["env"] = env
+        return original(args, **kwargs)
+
+    ps.pg_ctl = pg_ctl
+    ps._audiomuse_pg_ctl_patched = True
+
+
 def start_embedded(data_dir):
     global _embedded_server
     import pgserver
 
-    _embedded_server = pgserver.get_server(data_dir)
+    _patch_pgserver_start_timeout()
+    try:
+        _embedded_server = pgserver.get_server(data_dir)
+    except Exception:
+        _forget_pgserver_instance(pgserver, data_dir)
+        raise
     _drop_dead_handles(_embedded_server)
     return _embedded_server.get_uri()
+
+
+def _forget_pgserver_instance(pgserver, data_dir):
+    try:
+        pgserver.PostgresServer._instances.pop(Path(data_dir).expanduser().resolve(), None)
+    except Exception:
+        logger.debug("Could not drop the cached pgserver instance", exc_info=True)
 
 
 def ensure_embedded_running(data_dir):
@@ -279,12 +318,9 @@ def ensure_embedded_running(data_dir):
     if _embedded_server is None:
         return start_embedded(data_dir)
     import pgserver
-    from pathlib import Path
 
-    try:
-        pgserver.PostgresServer._instances.pop(Path(data_dir).expanduser().resolve(), None)
-    except Exception:
-        pass
+    _forget_pgserver_instance(pgserver, data_dir)
+    _patch_pgserver_start_timeout()
     _embedded_server = pgserver.get_server(data_dir)
     _drop_dead_handles(_embedded_server)
     return _embedded_server.get_uri()

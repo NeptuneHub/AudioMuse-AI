@@ -17,10 +17,12 @@ Main Features:
 * _sample_items samples a deterministic fraction, returning a fresh list
 * _translated_bucket rewrites canonical ids to a server's provider ids, drops
   fp_/unmapped rows, and fails closed on a registry error (never leaks fp_)
-* build_map_cache reads the catalogue through a plain client-side cursor and
-  keeps a vector only for rows the stored projection does not already cover
+* build_map_cache reads the catalogue through a plain client-side cursor with
+  no embedding column, fetches embeddings in chunks only for rows the stored
+  projection does not cover, and drops a row whose embedding is unreadable
 """
 
+import gc
 import gzip
 import json
 from unittest.mock import MagicMock
@@ -134,42 +136,54 @@ class TestTranslatedBucket:
 
 
 class TestBuildMapCacheStreaming:
-    def _run(self, monkeypatch, rows, id_map, proj):
+    def _run(self, monkeypatch, rows, id_map, proj, emb_rows=None, warm=None):
         cur = MagicMock()
         cur.__enter__ = MagicMock(return_value=cur)
         cur.__exit__ = MagicMock(return_value=False)
-        cur.fetchall = MagicMock(return_value=list(rows))
+        cur.fetchall = MagicMock(side_effect=[list(rows), list(emb_rows or [])])
         conn = MagicMock()
         conn.cursor.return_value = cur
 
         monkeypatch.setattr(app_map, 'get_db', lambda: conn)
         monkeypatch.setattr(app_map, 'load_map_projection', lambda *a, **k: (id_map, proj))
-        monkeypatch.setattr(app_map, '_warm_server_buckets', lambda: None)
+        monkeypatch.setattr(app_map, '_warm_server_buckets', warm or (lambda: None))
         monkeypatch.setattr(app_map, 'MAP_JSON_CACHE', {})
         app_map.build_map_cache()
         return conn, cur
 
     def test_catalogue_scan_uses_a_plain_client_side_cursor(self, monkeypatch):
-        emb = np.array([0.1, 0.2], dtype=np.float32).tobytes()
         conn, cur = self._run(
             monkeypatch,
-            [('a', 'T', 'A', 'happy:1', emb)],
+            [('a', 'T', 'A', 'happy:1')],
             ['a'],
             np.array([[1.0, 2.0]], dtype=np.float32),
         )
         assert conn.cursor.call_args.kwargs.get('name') is None
         cur.fetchall.assert_called_once()
 
-    def test_row_already_in_the_projection_never_parses_its_embedding(self, monkeypatch):
-        self._run(
+    def test_catalogue_scan_selects_no_embedding_column(self, monkeypatch):
+        _, cur = self._run(
             monkeypatch,
-            [('a', 'Title', 'Artist', 'happy:1', b'not-a-float32-buffer')],
+            [('a', 'T', 'A', 'happy:1')],
             ['a'],
             np.array([[1.0, 2.0]], dtype=np.float32),
         )
+        sql = cur.execute.call_args_list[0].args[0]
+        select_list = sql.split('FROM')[0]
+        assert 'embedding' not in select_list
+        assert 'e.embedding IS NOT NULL' in sql
+
+    def test_projected_library_never_queries_embeddings(self, monkeypatch):
+        _, cur = self._run(
+            monkeypatch,
+            [('a', 'Title', 'Artist', 'happy:1'), ('b', 'Title', 'Artist', 'sad:1')],
+            ['a', 'b'],
+            np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        )
+        assert cur.execute.call_count == 1
         payload = _items_from_bucket(app_map.MAP_JSON_CACHE['100'])
-        assert [it['item_id'] for it in payload['items']] == ['a']
-        assert payload['items'][0]['embedding_2d'] == [1.0, 2.0]
+        coords = {it['item_id']: it['embedding_2d'] for it in payload['items']}
+        assert coords == {'a': [1.0, 2.0], 'b': [3.0, 4.0]}
 
     def test_only_rows_missing_from_the_projection_reach_the_projector(self, monkeypatch):
         emb = np.array([0.1, 0.2], dtype=np.float32).tobytes()
@@ -181,19 +195,73 @@ class TestBuildMapCacheStreaming:
 
         monkeypatch.setattr(app_map, '_project_with_umap', None)
         monkeypatch.setattr(app_map, '_project_to_2d', fake_project)
-        self._run(
+        _, cur = self._run(
             monkeypatch,
             [
-                ('a', 'T', 'A', 'happy:1', emb),
-                ('b', 'T', 'A', 'happy:1', emb),
+                ('a', 'T', 'A', 'happy:1'),
+                ('b', 'T', 'A', 'happy:1'),
             ],
             ['a'],
             np.array([[1.0, 2.0]], dtype=np.float32),
+            emb_rows=[('b', emb)],
         )
         assert seen['rows'] == 1
+        assert cur.execute.call_args_list[1].args[1] == (['b'],)
         payload = _items_from_bucket(app_map.MAP_JSON_CACHE['100'])
         coords = {it['item_id']: it['embedding_2d'] for it in payload['items']}
         assert coords == {'a': [1.0, 2.0], 'b': [9.0, 9.0]}
+
+    def test_unprojected_row_with_no_readable_embedding_is_left_off_the_map(self, monkeypatch):
+        emb = np.array([0.1, 0.2], dtype=np.float32).tobytes()
+        monkeypatch.setattr(app_map, '_project_with_umap', None)
+        monkeypatch.setattr(app_map, '_project_to_2d', lambda mat: [(9.0, 9.0)] * mat.shape[0])
+        self._run(
+            monkeypatch,
+            [
+                ('a', 'T', 'A', 'happy:1'),
+                ('b', 'T', 'A', 'happy:1'),
+                ('c', 'T', 'A', 'happy:1'),
+                ('d', 'T', 'A', 'happy:1'),
+            ],
+            ['a'],
+            np.array([[1.0, 2.0]], dtype=np.float32),
+            emb_rows=[('c', b'not-float32'), ('d', emb)],
+        )
+        payload = _items_from_bucket(app_map.MAP_JSON_CACHE['100'])
+        coords = {it['item_id']: it['embedding_2d'] for it in payload['items']}
+        assert coords == {'a': [1.0, 2.0], 'd': [9.0, 9.0]}
+
+    def test_missing_embeddings_are_fetched_in_chunks(self, monkeypatch):
+        monkeypatch.setattr(app_map, '_MISSING_EMBEDDING_CHUNK', 2)
+        cur = MagicMock()
+        cur.__enter__ = MagicMock(return_value=cur)
+        cur.__exit__ = MagicMock(return_value=False)
+        emb = np.array([0.5], dtype=np.float32).tobytes()
+        cur.fetchall = MagicMock(side_effect=[[('x', emb), ('y', emb)], [('z', emb)]])
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        found = app_map._fetch_missing_embeddings(conn, ['x', 'y', 'z'])
+        assert [c.args[1] for c in cur.execute.call_args_list] == [(['x', 'y'],), (['z'],)]
+        assert sorted(found) == ['x', 'y', 'z']
+
+    def test_item_rows_are_released_before_the_server_warmup(self, monkeypatch):
+        alive = {}
+
+        def warm():
+            gc.collect()
+            alive['first_row'] = any(
+                type(o) is dict and o.get('item_id') == 'row-first' and 'embedding_2d' in o
+                for o in gc.get_objects()
+            )
+
+        self._run(
+            monkeypatch,
+            [('row-first', 'T', 'A', 'happy:1'), ('row-last', 'T', 'A', 'happy:1')],
+            ['row-first', 'row-last'],
+            np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+            warm=warm,
+        )
+        assert alive == {'first_row': False}
 
     def test_empty_catalogue_leaves_an_empty_cache(self, monkeypatch):
         self._run(monkeypatch, [], [], np.zeros((0, 2), dtype=np.float32))

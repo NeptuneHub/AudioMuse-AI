@@ -19,30 +19,28 @@ Main Features:
   to plain nearest-neighbours; subtracted regions are filtered by distance and a
   2D projection of the centroid goes to the UI.
 * Returns the subtract vectors with their exclusion radius as `exclusions` and
-  every ADD point, not averaged, with its weight as `inclusions` so a saved
-  anchor can persist both; an anchor used as input contributes each stored
-  include point (its centroid when it has none) on whichever side it is placed,
-  and an ADD-ed anchor also re-applies its stored exclusions at their saved
-  radius, which keeps anchor re-runs and radios equal to the original run.
-* Stored song seeds of an anchor (on either side) are kept out of the results by
-  a metric-independent same-embedding test (cosine within twice the int8
-  rounding error of the index) and by their stored [title, artist] signature,
-  mirroring how a live run drops its input songs by id and signature.
-* Every exported point carries the index of the run input it came from; when a
-  run has more points than ALCHEMY_MAX_ANCHOR_POINTS, inputs are ranked by
-  total weight, then the stored groups inside an anchor, each taking its
-  heaviest point before the remaining slots are filled by point weight, so a
-  many-point anchor competes like a single song and a re-run of a saved anchor
-  queries the same points as the run it was saved from.
+  every ADD point with its weight as `inclusions` so a saved anchor persists
+  both; an anchor used as input contributes each stored include point (its
+  centroid when it has none) on either side, and an ADD-ed anchor re-applies
+  its stored exclusions, so anchor re-runs and radios equal the original run.
+* Stored song seeds of an anchor are kept out of the results by a same-embedding
+  test (cosine within twice the int8 rounding error of the index) and by their
+  stored [title, artist] signature, as a live run drops its input songs.
+* Every exported point carries the index of its run input; past
+  ALCHEMY_MAX_ANCHOR_POINTS, inputs are ranked by total weight, then the stored
+  groups inside an anchor, each taking its heaviest point before the rest fill
+  by point weight, so a re-run of a saved anchor queries the same points.
+* Every run input gets an equal share of the candidate pool; with the artist cap
+  on, each query over-fetches 5x and the quotas are filled after the cap.
 * Anchors are loaded once per run; one whose centroid size differs from the
   embedding dimension, or whose include points are stamped with another model
-  file (SHA-256 prefix) or dimension, is ignored for the whole run with a
-  warning. An unreadable model file yields no fingerprint, and then only the
-  dimension is compared.
+  file (SHA-256 prefix) or dimension, is ignored for the run with a warning;
+  an unreadable model file yields no fingerprint and only the dimension counts.
 * Governed by config: ALCHEMY_DEFAULT_N_RESULTS (50) when the caller names no
-  count, ALCHEMY_TEMPERATURE (1.0) and the metric-dependent subtract cutoffs
-  ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) / _EUCLIDEAN (5.0). n_results has no
-  upper bound here: ALCHEMY_MAX_N_RESULTS only caps the page's input box.
+  count, ALCHEMY_TEMPERATURE (1.0), ALCHEMY_SUBTRACT_DISTANCE_ANGULAR (0.2) /
+  _EUCLIDEAN (5.0), and MAX_SONGS_PER_ARTIST, applied when
+  SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT is on. n_results has no upper bound
+  here: ALCHEMY_MAX_N_RESULTS only caps the page's input box.
 """
 
 import hashlib
@@ -62,6 +60,7 @@ from .ivf_manager import (
     _filter_by_distance,
 )
 from .ivf_quant import I8_SCALE
+from .search_shaping import apply_artist_cap
 from .alchemy_projections import (
     _project_to_2d,
     _project_with_discriminant,
@@ -240,6 +239,22 @@ def _metric_distance(v_query: np.ndarray, v_cand: np.ndarray) -> float:
         cosine = np.clip(np.dot(a, b), -1.0, 1.0)
         return float(np.arccos(cosine) / np.pi)
     return float(np.linalg.norm(a - b))
+
+
+_DISTANCE_BLOCK_ROWS = 1024
+
+
+def _metric_distance_blocks(vectors, points):
+    angular = config.PATH_DISTANCE_METRIC == 'angular'
+    columns = np.asarray(points, dtype=float)
+    if angular:
+        columns = _unit_rows(columns)
+    for start in range(0, len(vectors), _DISTANCE_BLOCK_ROWS):
+        rows = np.asarray(vectors[start:start + _DISTANCE_BLOCK_ROWS], dtype=float)
+        if angular:
+            yield np.arccos(np.clip(_unit_rows(rows) @ columns.T, -1.0, 1.0)) / np.pi
+        else:
+            yield np.vstack([np.linalg.norm(row - columns, axis=1) for row in rows])
 
 
 def _song_anchor_points(item_id) -> List[dict]:
@@ -584,17 +599,62 @@ def _select_query_points(points: List[dict], max_points: int) -> List[dict]:
     return sorted((points[i] for i in sorted(chosen)), key=lambda p: p['weight'], reverse=True)
 
 
-def _multi_query_candidates(points: List[dict], n_results: int) -> List[str]:
+def _shares(weights: dict) -> dict:
+    total = sum(weights.values())
+    if total > 0:
+        return {key: weight / total for key, weight in weights.items()}
+    return {key: 1.0 / len(weights) for key in weights}
+
+
+def _query_quotas(points: List[dict], query_points: List[dict], target: int) -> List[int]:
+    group_totals: dict = {}
+    input_groups: dict = {}
+    for point in points:
+        key = _group_key(point)
+        group_totals[key] = group_totals.get(key, 0.0) + point['weight']
+        input_groups.setdefault(_input_key(point), {})[key] = None
+    group_shares: dict = {}
+    for groups in input_groups.values():
+        group_shares.update(_shares({key: group_totals[key] for key in groups}))
+    members: dict = {}
+    for position, point in enumerate(query_points):
+        members.setdefault(_group_key(point), {})[position] = point['weight']
+    shares = [0.0] * len(query_points)
+    for key, weights in members.items():
+        for position, share in _shares(weights).items():
+            shares[position] = group_shares[key] * share
+    total = sum(shares)
+    if total <= 0:
+        shares, total = [1.0] * len(shares), float(len(shares))
+    return [max(1, math.ceil(round(target * share / total, 6))) for share in shares]
+
+
+_CAPPED_POOL_FETCH_FACTOR = 5
+
+
+def _multi_query_candidates(points: List[dict], n_results: int, fetch_factor: int = 1):
     query_points = _select_query_points(points, config.ALCHEMY_MAX_ANCHOR_POINTS)
-    p = len(query_points)
-    if p == 0:
-        return []
-    target = n_results * 3
-    if p == 1:
-        per_point_n = target
-    else:
-        per_point_n = max(n_results // 4, (target + p - 1) // p)
-    return multi_query_ids([pt['vector'] for pt in query_points], per_point_n)
+    if not query_points:
+        return [], []
+    quotas = _query_quotas(points, query_points, n_results * 3)
+    ranked = [
+        multi_query_ids([point['vector']], quota * fetch_factor)
+        for point, quota in zip(query_points, quotas)
+    ]
+    return ranked, quotas
+
+
+def _fill_quotas(ranked: List[List[str]], quotas: List[int], keep) -> List[str]:
+    pool: dict = {}
+    for ids, quota in zip(ranked, quotas):
+        taken = 0
+        for cid in ids:
+            if taken >= quota:
+                break
+            if cid in keep and cid not in pool:
+                pool[cid] = None
+                taken += 1
+    return list(pool)
 
 
 def _fill_album_defaults(row):
@@ -663,6 +723,10 @@ def song_alchemy(
         except Exception:
             temperature = 1.0
 
+    capping = bool(config.SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT) and (
+        config.MAX_SONGS_PER_ARTIST or 0
+    ) > 0
+    fetch_factor = _CAPPED_POOL_FETCH_FACTOR if capping else 1
     if (
         temperature is not None
         and math.isclose(float(temperature), 0.0)
@@ -672,11 +736,13 @@ def song_alchemy(
     ):
         try:
             neighbors = find_nearest_neighbors_by_id(add_items[0]['id'], n=n_results)
-            candidate_ids = [n['item_id'] for n in neighbors]
+            ranked = [[n['item_id'] for n in neighbors]]
+            quotas = [len(ranked[0])]
         except Exception:
-            candidate_ids = _multi_query_candidates(add_anchor_points, n_results)
+            ranked, quotas = _multi_query_candidates(add_anchor_points, n_results, fetch_factor)
     else:
-        candidate_ids = _multi_query_candidates(add_anchor_points, n_results)
+        ranked, quotas = _multi_query_candidates(add_anchor_points, n_results, fetch_factor)
+    candidate_ids = list(dict.fromkeys(cid for ids in ranked for cid in ids))
     if not candidate_ids:
         return _empty_outcome()
 
@@ -711,6 +777,36 @@ def song_alchemy(
     if anchor_seed_vectors:
         candidate_ids = _drop_stored_seeds(candidate_ids, anchor_seed_vectors, _vec)
 
+    add_vecs = [p['vector'] for p in add_anchor_points]
+    distances: dict = {}
+
+    def _measure(ids):
+        measured = [cid for cid in ids if cid not in distances and _vec(cid) is not None]
+        nearest = [
+            float(value)
+            for block in _metric_distance_blocks([_vec(cid) for cid in measured], add_vecs)
+            for value in block.min(axis=1)
+        ]
+        distances.update(zip(measured, nearest))
+
+    detail_cache: dict = {}
+
+    def _details(ids):
+        missing = [cid for cid in ids if cid not in detail_cache]
+        if missing:
+            detail_cache.update(dict.fromkeys(missing))
+            detail_cache.update((d['item_id'], d) for d in get_score_data_by_ids(missing))
+        return {cid: detail_cache[cid] for cid in ids if detail_cache.get(cid) is not None}
+
+    if capping:
+        _measure(candidate_ids)
+        pool_details = _details(candidate_ids)
+        capped = apply_artist_cap(
+            [{'item_id': cid} for cid in sorted(candidate_ids, key=lambda c: distances.get(c, math.inf))],
+            lambda song: (pool_details.get(song['item_id']) or {}).get('author'),
+        )
+        candidate_ids = _fill_quotas(ranked, quotas, {song['item_id'] for song in capped})
+
     if subtract_distance is None:
         if config.PATH_DISTANCE_METRIC == 'angular':
             threshold = config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
@@ -729,16 +825,17 @@ def song_alchemy(
     filtered_out = []
     filtered = candidate_ids
     if exclusion_checks:
-        filtered = []
-        for cid in candidate_ids:
-            vec = _vec(cid)
-            if vec is None:
-                continue
-            v_sub = np.array(vec, dtype=float)
-            if any(_metric_distance(s, v_sub) < limit for s, limit in exclusion_checks):
-                filtered_out.append(cid)
-            else:
-                filtered.append(cid)
+        present = [cid for cid in candidate_ids if _vec(cid) is not None]
+        limits = np.array([limit for _, limit in exclusion_checks], dtype=float)
+        excluded = [
+            flag
+            for block in _metric_distance_blocks(
+                [_vec(cid) for cid in present], [s for s, _ in exclusion_checks]
+            )
+            for flag in (block < limits).any(axis=1)
+        ]
+        filtered = [cid for cid, out in zip(present, excluded) if not out]
+        filtered_out = [cid for cid, out in zip(present, excluded) if out]
 
     candidate_ids = filtered
 
@@ -894,11 +991,25 @@ def song_alchemy(
     except Exception:
         id_map, precomp_proj = None, None
 
+    wanted_coords = {
+        str(item.get('id'))
+        for item in (add_items or []) + (subtract_items or [])
+        if item.get('type') in ('song', 'anchor')
+    }
+    for pid in proj_ids:
+        if isinstance(pid, str) and pid.startswith(('__add_id__', '__sub_id__')):
+            wanted_coords.add(str(pid.replace('__add_id__', '').replace('__sub_id__', '')))
+        elif pid not in ('__add_centroid__', '__subtract_centroid__'):
+            wanted_coords.add(str(pid))
+
     id_to_coord = {}
     if id_map is not None and precomp_proj is not None:
         try:
-            for iid, coord in zip(id_map, precomp_proj.tolist()):
-                id_to_coord[str(iid)] = (float(coord[0]), float(coord[1]))
+            for position, iid in zip(range(len(precomp_proj)), id_map):
+                key = str(iid)
+                if key in wanted_coords:
+                    coord = precomp_proj[position]
+                    id_to_coord[key] = (float(coord[0]), float(coord[1]))
         except Exception:
             id_to_coord = {}
 
@@ -1108,17 +1219,8 @@ def song_alchemy(
     except Exception as e:
         logger.warning(f"Failed to compute centroid from member coords: {e}")
 
-    distances = {}
-    add_vecs = [p['vector'] for p in add_anchor_points]
-    for cid in candidate_ids:
-        vec = _vec(cid)
-        if vec is None:
-            continue
-        v = np.array(vec, dtype=float)
-        distances[cid] = min(_metric_distance(a, v) for a in add_vecs)
-
-    details = get_score_data_by_ids(candidate_ids)
-    details_map = {d['item_id']: d for d in details}
+    _measure(candidate_ids)
+    details_map = _details(candidate_ids)
 
     for d in details_map.values():
         _fill_album_defaults(d)

@@ -19,6 +19,8 @@ Main Features:
 * Console close, logoff and shutdown stop the stack in order; the supervisor's own
   fatal errors go to logs/supervisor-crash.log instead of a hidden console
 * Runs Flask via waitress or launches a named queue role in-process.
+* Tray quit and a console run wait until the supervisor has really stopped
+  before releasing the instance lock, so no orphan child is left behind.
 * Patches multiprocessing so loky's spawn payloads work in the frozen bundle.
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
   instead of re-entering the launcher as a stray copy of the app.
@@ -52,6 +54,7 @@ import service_roles
 from native_common import crash_log, frozen_children
 
 WEB_URL = "http://127.0.0.1:8000"
+_STOP_WAIT_SECONDS = 180
 
 
 def _run_role(role):
@@ -171,6 +174,7 @@ def _start_supervisor():
         print(f"Startup failed: {exc}", file=sys.stderr)
     finally:
         supervisor.stop_all()
+        supervisor.wait_until_stopped(_STOP_WAIT_SECONDS)
         _release_single_instance_lock()
 
 
@@ -266,6 +270,7 @@ def _run_tray():
         icon.run()
     finally:
         supervisor.stop_all()
+        supervisor.wait_until_stopped(_STOP_WAIT_SECONDS)
         _release_single_instance_lock()
 
 

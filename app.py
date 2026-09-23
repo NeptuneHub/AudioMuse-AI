@@ -328,13 +328,6 @@ def teardown_db(e=None):
         end_all_requests()
     except Exception:
         pass
-    if not _is_worker:
-        try:
-            from tasks.memory_utils import arm_idle_heap_trim
-
-            arm_idle_heap_trim()
-        except Exception:
-            logger.exception("Could not arm the idle heap trim")
 
 
 # Initialize the database schema when the application module is loaded.

@@ -22,6 +22,8 @@ hands back a connection mapping instead of a URL.
 Main Features:
 * Ordered boot behind a stop flag that is re-checked before every step
 * Child termination that escalates SIGTERM to SIGKILL and closes the log pipe
+* stop_all reaches the stopped state even when a stop step fails, so a
+  relaunch is never blocked waiting on it
 * Startup reaps --role= children of this executable that a dead supervisor left
   behind, restarted ones included, not only the pids of the last pid file
 * Orphan reaping from the pid file left by a previous run, plus any server still
@@ -113,18 +115,20 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
             self._stop_requested.set()
             self._desired.clear()
         self._health_stop.set()
-        self._join_workers()
-        self._close_probe_conn()
-        for name in reversed(BOOT_ORDER):
-            self._terminate_named(name)
         try:
-            self.db_backend.stop_embedded()
-        except Exception:
-            logger.exception("Error stopping embedded PostgreSQL")
-        self._control.stop()
-        self._clear_pidfile()
-        with self._lock:
-            self._state = "stopped"
+            self._join_workers()
+            self._close_probe_conn()
+            for name in reversed(BOOT_ORDER):
+                self._terminate_named(name)
+            try:
+                self.db_backend.stop_embedded()
+            except Exception:
+                logger.exception("Error stopping embedded PostgreSQL")
+            self._control.stop()
+            self._clear_pidfile()
+        finally:
+            with self._lock:
+                self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
 
     def start_child(self, name):

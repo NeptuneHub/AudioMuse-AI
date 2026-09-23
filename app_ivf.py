@@ -751,11 +751,7 @@ def create_media_server_playlist():
     if not data:
         return json_error(ERR_INVALID_REQUEST, "Invalid JSON payload")
 
-    # Debug log incoming payload to help trace client/server mismatch
-    try:
-        logger.info(f"/api/create_playlist called with payload: {data}")
-    except Exception:
-        logger.info('/api/create_playlist called (unable to serialize payload)')
+    logger.info("/api/create_playlist called with fields: %s", sorted(map(str, data)))
 
     playlist_name = data.get('playlist_name')
     track_ids_raw = data.get('track_ids', [])

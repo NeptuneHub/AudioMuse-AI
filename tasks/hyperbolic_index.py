@@ -14,31 +14,30 @@ byte cap. hyperbolic_nearest / hyperbolic_nearest_multi return item ids by
 exact Poincare distance, or None when nothing is built yet.
 
 Main Features:
-* The catalogue is partitioned by HYPERBOLIC k-means (hyperbolic_geometry
-  .poincare_kmeans) in the exact Poincare metric, 8*sqrt(n) cells capped at
-  IVF_NLIST_MAX. This REPLACED a radial-band split that still scanned 63-95% of
-  a 200k library: radius alone cannot separate points in 200 dimensions, where
-  the distance between two tracks is almost all direction
+* The catalogue is partitioned by HYPERBOLIC k-means (poincare_kmeans, random
+  init + Einstein midpoint update), 8*sqrt(n) cells capped at IVF_NLIST_MAX.
+  This REPLACED a radial-band split that scanned 63-95% of a 200k library:
+  radius alone cannot separate points in 200 dimensions
 * A query takes the exact distance to every centroid, probes IVF_NPROBE cells
-  and heaps the top-k, so a neighbour in an unprobed cell is missed.
-  _prefetch_cells pulls every uncached probed cell in ONE ANY() read and
-  returns the arrays rather than trusting the cache, which a probe set larger
-  than HYPERBOLIC_INDEX_CACHE_MB would evict mid-read
+  and heaps the top-k. _prefetch_cells pulls every uncached probed cell in ONE
+  ANY() read and returns the arrays rather than trusting the cache, which a
+  probe set larger than HYPERBOLIC_INDEX_CACHE_MB would evict mid-read
 * Cells are quantized through ivf_quant on config.IVF_STORAGE_DTYPE taken
-  LITERALLY (not effective_code, which downgrades a non-angular metric to f16);
-  centroids stay float32. Decoded points are pushed back inside the ball with
-  clip_into_ball, since the metric divides by (1 - ||u||^2) and the i8 grid
-  moves a boundary radius by far more than that
+  LITERALLY; centroids stay float32. Decoded points are clipped back inside the
+  ball, since the i8 grid moves a boundary radius past the metric's pole
 * The scan overfetches _RERANK_OVERFETCH-fold (capped at _RERANK_SCAN_CAP)
-  before re-ranking on the exact float32 rows, so its order is exact for what
-  the probed cells reached: 4x recovered 100% of the top-20 on a 60k catalogue
+  before re-ranking on the exact float32 rows: 4x recovered 100% of the top-20
+  on a 60k catalogue. An optional radius_window (bound, below) serves the
+  roots/niche modes: wrong-side points score inf in the scan (per-dtype slack)
+  and are dropped again in the re-rank
 * hyperbolic_nearest_multi skips that re-rank (the geodesic journey re-ranks
-  itself) and sizes its scan on BREADTH: waypoints of one geodesic are
-  near-duplicates whose top-k lists collapse into a tube, so 8x gave 903
-  candidates on a 198-step journey where _MULTI_OVERFETCH gives 3776. It
-  decodes the union of probed cells ONCE and scores every waypoint in one
-  hyperbolic_distance_matrix call, and masks each cell BEFORE its top-k, since
-  filtering after can drop every visible id in favour of another server's
+  itself) and sizes its scan on BREADTH, since waypoints of one geodesic are
+  near-duplicates. It decodes the union of probed cells ONCE, scores every
+  waypoint in one hyperbolic_distance_matrix call, and masks each cell BEFORE
+  its top-k, since filtering after can drop every visible id
+* Cell blobs are named per build, so a process holding an older directory
+  never pairs it with a new build's cells; a missing or mismatched cell is
+  logged and marks the index for reload on the next query
 * ONE union of every server's tracks is stored; a scoped request filters
   through tasks.index_availability, whose cache multiserver_sync drops when a
   sweep removes mappings. A rebuild also sweeps the retired radial layout's
@@ -51,6 +50,7 @@ import json
 import logging
 import re
 import threading
+import uuid
 from collections import OrderedDict
 
 import numpy as np
@@ -74,6 +74,7 @@ _MULTI_OVERFETCH = 64
 _RERANK_SCAN_CAP = 4096
 _SCAN_CHUNK = 4096
 _TRAIN_ITERATIONS = 10
+_WINDOW_SLACK = {quant.DTYPE_F32: 1e-6, quant.DTYPE_F16: 1e-3, quant.DTYPE_I8: 0.025}
 
 _INDEX_CACHE = {"loaded": False, "servers": {}}
 _INDEX_CACHE_LOCK = threading.RLock()
@@ -96,8 +97,8 @@ def _dir_name(server_key):
     return _scoped_name(_DIR_PREFIX, server_key)
 
 
-def _cell_name(server_key, cell):
-    return _scoped_name(_CELL_PREFIX, server_key) + f"__{cell}"
+def _cell_name(server_key, cell, build=""):
+    return _scoped_name(_CELL_PREFIX, server_key) + (f"__b{build}" if build else "") + f"__{cell}"
 
 
 def _centroids_name(server_key):
@@ -116,11 +117,13 @@ def _partition_into_cells(vectors):
     n_cells = _cell_count(n)
     sample_n = min(n, int(config.IVF_TRAIN_POINTS_PER_CELL) * n_cells)
     if sample_n >= n:
-        centroids, _labels = poincare_kmeans(vectors, n_cells, iterations=_TRAIN_ITERATIONS)
+        centroids, _labels = poincare_kmeans(
+            vectors, n_cells, iterations=_TRAIN_ITERATIONS, init="random", update="einstein"
+        )
         return centroids, nearest_centroid(vectors, centroids)
     picks = np.random.default_rng(0).choice(n, sample_n, replace=False)
     centroids, _labels = poincare_kmeans(
-        vectors[picks], n_cells, iterations=_TRAIN_ITERATIONS
+        vectors[picks], n_cells, iterations=_TRAIN_ITERATIONS, init="random", update="einstein"
     )
     return centroids, nearest_centroid(vectors, centroids)
 
@@ -166,10 +169,11 @@ def build_and_store_hyperbolic_index(db_conn=None):
             cell_item_ids[int(cell)].append(item_id)
             cell_rows[int(cell)].append(position)
 
+        build = uuid.uuid4().hex[:12]
         cells = []
         for cell in range(n_cells):
             members = cell_item_ids[cell]
-            blob = _cell_name(server_key, cell)
+            blob = _cell_name(server_key, cell, build)
             if members:
                 matrix = vectors[cell_rows[cell]].astype(np.float32, copy=False)
                 store_segmented_blob(
@@ -441,6 +445,10 @@ def _prefetch_cells(cells, index):
             vectors = np.empty((0, index["dim"]), dtype=stored_dtype)
         else:
             vectors = np.frombuffer(data, dtype=stored_dtype).reshape(-1, index["dim"])
+        if vectors.shape[0] != len(meta["item_ids"]):
+            _stale_cell(index, cell)
+            loaded[cell] = (vectors[:0], [])
+            continue
         _cache_cell((server_key, cell), vectors, meta["item_ids"])
         loaded[cell] = (vectors, meta["item_ids"])
     return loaded
@@ -465,8 +473,20 @@ def _load_cell(cell, index):
     else:
         vectors = np.frombuffer(data, dtype=stored_dtype).reshape(-1, index["dim"])
     item_ids = meta["item_ids"]
+    if vectors.shape[0] != len(item_ids):
+        _stale_cell(index, cell)
+        return vectors[:0], []
     _cache_cell(key, vectors, item_ids)
     return vectors, item_ids
+
+
+def _stale_cell(index, cell):
+    logger.warning(
+        "Hyperbolic Poincare index cell %s of '%s' is gone or no longer matches the loaded "
+        "directory (the index was rebuilt); the index is reloaded on the next query",
+        cell, index["server_key"],
+    )
+    _INDEX_CACHE["loaded"] = False
 
 
 def _decode_cell(vectors, code):
@@ -477,16 +497,34 @@ def _decode_cell(vectors, code):
     return clip_into_ball(quant.decode_row(vectors, code).astype(np.float32))
 
 
-def _cell_distances(vec, vectors, code):
+def _in_window(radius, radius_window):
+    if radius_window is None:
+        return True
+    bound, below = radius_window
+    return radius < bound if below else radius > bound
+
+
+def _outside_window(decoded, radius_window, code):
+    bound, below = radius_window
+    slack = _WINDOW_SLACK.get(int(code), _WINDOW_SLACK[quant.DTYPE_I8])
+    norms = np.linalg.norm(decoded, axis=1)
+    if below:
+        return norms >= bound + slack
+    return norms <= bound - slack
+
+
+def _cell_distances(vec, vectors, code, radius_window=None):
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
 
     n = vectors.shape[0]
     out = np.empty(n, dtype=np.float32)
     for start in range(0, n, _SCAN_CHUNK):
         stop = start + _SCAN_CHUNK
-        out[start:stop] = hyperbolic_distances_to(
-            vec, _decode_cell(vectors[start:stop], code)
-        )
+        decoded = _decode_cell(vectors[start:stop], code)
+        chunk = hyperbolic_distances_to(vec, decoded)
+        if radius_window is not None:
+            chunk[_outside_window(decoded, radius_window, code)] = np.inf
+        out[start:stop] = chunk
     return out
 
 
@@ -521,7 +559,7 @@ def _probe_matrix(points, index):
     return probed
 
 
-def _nearest(vector, k, index, exclude, available=None):
+def _nearest(vector, k, index, exclude, available=None, radius_window=None):
     k = max(1, int(k))
     vec = np.asarray(vector, dtype=np.float32).reshape(-1)
     probe = _probe_order(vec, index)
@@ -536,13 +574,15 @@ def _nearest(vector, k, index, exclude, available=None):
         vectors, item_ids = prefetched.get(cell) or _load_cell(cell, index)
         if vectors.shape[0] == 0:
             continue
-        distances = _cell_distances(vec, vectors, index["code"])
+        distances = _cell_distances(vec, vectors, index["code"], radius_window)
         for item_id, distance in zip(item_ids, distances):
             if item_id in exclude:
                 continue
             if available is not None and item_id not in available:
                 continue
             dist = float(distance)
+            if dist == np.inf:
+                continue
             if len(heap) < k:
                 heapq.heappush(heap, (-dist, item_id))
             elif dist < -heap[0][0]:
@@ -561,7 +601,7 @@ def _multi_scan_width(k):
     return min(max(k * _MULTI_OVERFETCH, k), max(k, _RERANK_SCAN_CAP))
 
 
-def _rerank_exact(vector, candidates, k, code):
+def _rerank_exact(vector, candidates, k, code, radius_window=None):
     if code == quant.DTYPE_F32 or not candidates:
         return candidates[:k]
     from tasks.hyperbolic_geometry import hyperbolic_distances_to
@@ -569,16 +609,21 @@ def _rerank_exact(vector, candidates, k, code):
 
     ids = [item_id for item_id, _distance in candidates]
     rows = fetch_poincare_rows(ids)
-    exact_ids = [item_id for item_id in ids if item_id in rows]
-    if not exact_ids:
+    if not any(item_id in rows for item_id in ids):
         return candidates[:k]
+    exact_ids = [
+        item_id for item_id in ids
+        if item_id in rows and _in_window(rows[item_id][1], radius_window)
+    ]
+    if not exact_ids:
+        return []
     vectors = np.stack([rows[item_id][0] for item_id in exact_ids]).astype(np.float32)
     distances = hyperbolic_distances_to(np.asarray(vector, dtype=np.float32), vectors)
     order = np.argsort(distances)
     return [(exact_ids[i], float(distances[i])) for i in order[:k]]
 
 
-def hyperbolic_nearest(vector, k, server_id=None, exclude=frozenset()):
+def hyperbolic_nearest(vector, k, server_id=None, exclude=frozenset(), radius_window=None):
     if not ensure_hyperbolic_index_loaded():
         return None
     index = _index_for(server_id)
@@ -587,9 +632,8 @@ def hyperbolic_nearest(vector, k, server_id=None, exclude=frozenset()):
     k = max(1, int(k))
     code = index["code"]
     available = _server_available(index, server_id)
-    return _rerank_exact(
-        vector, _nearest(vector, _scan_width(k, code), index, exclude, available), k, code
-    )
+    scanned = _nearest(vector, _scan_width(k, code), index, exclude, available, radius_window)
+    return _rerank_exact(vector, scanned, k, code, radius_window)
 
 
 def hyperbolic_nearest_multi(vectors, k, server_id=None, exclude=frozenset()):

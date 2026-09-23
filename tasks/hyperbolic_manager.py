@@ -20,16 +20,14 @@ Main Features:
   sync with the raw embedding, skipping NULL ones
 * fetch_poincare_rows, fetch_all_poincare_rows and get_projected_genre_subgenres
   are the public reads other managers need. fetch_all_poincare_rows streams
-  through a NAMED server-side cursor on its own side connection: the Poincare
-  IVF rebuild calls it unscoped on every rebuild, and an unstreamed fetchall
-  makes one backend sort and buffer the whole embedding table without giving
-  the RSS back
+  through a NAMED server-side cursor on its own connection, so the unscoped
+  read of every index rebuild never buffers the whole embedding table
 * hyperbolic_similar ranks by exact Poincare distance through the disk-paged
-  index and raises a "run analysis to build it" ValueError the Flask layer turns
-  into a 400, rather than scanning the catalogue; roots and niche instead draw
-  their pool by radius (at least radial_spread of the radial range from the
-  seed). Every mode ends with the content-dedup and MAX_SONGS_PER_ARTIST pass of
-  the similar-song page, then a near-duplicate pass at
+  index (a "run analysis to build it" ValueError becomes a 400); roots and
+  niche search the same index inside a radius window (below / above the bound
+  radial_spread of the radial range away from the seed radius). Every mode
+  ends with the content-dedup and MAX_SONGS_PER_ARTIST pass of the
+  similar-song page, then a near-duplicate pass at
   DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC (arccosh units, not cosine)
 * build_hyperbolic_tree_cache does the expensive part - the genre/subgenre
   partition, the mood fallback and the named Poincare k-means clusters - PER
@@ -67,6 +65,7 @@ _TREE_CACHE_BLOB_NAME = "hyperbolic_tree_cache"
 _TREE_SKELETON_BLOB_NAME = "hyperbolic_tree_skeleton"
 
 _FALLBACK_SCALE = 1.0
+_INDEX_MISSING_MESSAGE = "Poincare index not built yet - run analysis to build it."
 _SCALE_CACHE = {"value": None}
 _GENRE_CENTROID_CACHE = {"value": None}
 
@@ -348,58 +347,6 @@ def _fetch_all_poincare_rows(server_id=None, include_legacy_default=True):
         return {}
 
 
-def _fetch_poincare_rows_in_radius(
-    bound_radius, below=True, limit=100, server_id=None, include_legacy_default=True
-):
-    """Fetch up to ``limit`` projected tracks on one side of a radius bound.
-
-    Used by the roots/niche modes so their candidate pool spans the radius
-    range the mode promises instead of only the seed's own radius band:
-    ``below=True`` returns the tracks with ``hyperbolic_radius < bound``
-    ordered from the bound downward (closest to the seed first); ``below=False``
-    returns ``hyperbolic_radius > bound`` ordered from the bound upward.
-    Returns ``{item_id: (vec, radius)}``.
-    """
-    if bound_radius is None or not np.isfinite(bound_radius):
-        return {}
-    from database import get_db
-
-    operator = "<" if below else ">"
-    order = "DESC" if below else "ASC"
-    out = {}
-    db_conn = get_db()
-    try:
-        with db_conn.cursor() as cur:
-            if server_id is None:
-                sql = (
-                    "SELECT item_id, poincare_embedding, hyperbolic_radius FROM embedding "
-                    "WHERE poincare_embedding IS NOT NULL AND hyperbolic_radius IS NOT NULL "
-                    f"AND hyperbolic_radius {operator} %s ORDER BY hyperbolic_radius {order} LIMIT %s"
-                )
-                cur.execute(sql, (float(bound_radius), int(limit)))
-            else:
-                from tasks.mediaserver.registry import availability_sql
-
-                where = availability_sql("e")
-                sql = (
-                    "SELECT e.item_id, e.poincare_embedding, e.hyperbolic_radius FROM embedding e "
-                    "WHERE e.poincare_embedding IS NOT NULL AND e.hyperbolic_radius IS NOT NULL "
-                    f"AND e.hyperbolic_radius {operator} %s AND {where} "
-                    f"ORDER BY e.hyperbolic_radius {order} LIMIT %s"
-                )
-                cur.execute(
-                    sql,
-                    (float(bound_radius), server_id, bool(include_legacy_default), int(limit)),
-                )
-            for item_id, blob, radius in cur.fetchall():
-                vec = np.frombuffer(bytes(blob), dtype=np.float32)
-                if _is_finite_row(vec, radius):
-                    out[item_id] = (vec, float(radius))
-    except Exception:
-        logger.exception("Could not fetch hyperbolic rows in radius window")
-    return out
-
-
 def get_poincare_radius(item_id):
     """Return the hyperbolic radius of one track, or None when unavailable.
 
@@ -412,24 +359,36 @@ def get_poincare_radius(item_id):
     return row[1] if row is not None else None
 
 
-def _gather_mode_candidates(target_radius, mode, radial_spread, overfetch, server_id=None):
+def _mode_bound(target_radius, mode, radial_spread):
     spread = min(max(float(radial_spread), 0.0), 0.99)
     if mode == "roots":
-        bound = target_radius * (1.0 - spread)
-        return _fetch_poincare_rows_in_radius(
-            bound, below=True, limit=overfetch, server_id=server_id
-        )
-    bound = target_radius + (1.0 - target_radius) * spread
-    return _fetch_poincare_rows_in_radius(
-        bound, below=False, limit=overfetch, server_id=server_id
+        return target_radius * (1.0 - spread)
+    return target_radius + (1.0 - target_radius) * spread
+
+
+def _gather_mode_candidates(
+    target_item_id, target_vec, target_radius, mode, radial_spread, overfetch, server_id=None
+):
+    from tasks.hyperbolic_index import hyperbolic_nearest
+
+    bound = _mode_bound(target_radius, mode, radial_spread)
+    probe = target_vec
+    if target_radius > 1e-12:
+        probe = np.asarray(target_vec, dtype=np.float32) * np.float32(bound / target_radius)
+    nearest = hyperbolic_nearest(
+        probe, overfetch, server_id=server_id, exclude={target_item_id},
+        radius_window=(bound, mode == "roots"),
     )
+    if nearest is None:
+        raise ValueError(_INDEX_MISSING_MESSAGE)
+    return bound, _fetch_poincare_rows([item_id for item_id, _distance in nearest])
 
 
-def _rank_mode_results(ids, distances, cand_radii, mode, target_radius):
+def _rank_mode_results(ids, distances, cand_radii, mode, bound):
     if mode == "roots":
-        keep = cand_radii < target_radius
+        keep = cand_radii < bound
     elif mode == "niche":
-        keep = cand_radii > target_radius
+        keep = cand_radii > bound
     else:
         keep = np.ones(len(ids), dtype=bool)
     results = []
@@ -475,9 +434,7 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=None, radial_spread
             target_vec, overfetch, server_id=server_id, exclude={target_item_id}
         )
         if nearest is None:
-            raise ValueError(
-                "Poincare index not built yet - run analysis to build it."
-            )
+            raise ValueError(_INDEX_MISSING_MESSAGE)
         if not nearest:
             return []
         ids = [item_id for item_id, _distance in nearest]
@@ -496,16 +453,17 @@ def hyperbolic_similar(target_item_id, mode="similar", limit=None, radial_spread
             )
         return _deduplicate_and_cap_results(results, rows)[:limit]
 
-    rows = _gather_mode_candidates(
-        target_radius, mode, radial_spread, overfetch, server_id=server_id
+    bound, rows = _gather_mode_candidates(
+        target_item_id, target_vec, target_radius, mode, radial_spread, overfetch,
+        server_id=server_id,
     )
     if not rows:
         return []
     ids = list(rows.keys())
     cand_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float32)
-    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float32)
+    cand_radii = np.array([rows[i][1] for i in ids], dtype=np.float64)
     distances = hyperbolic_distances_to(target_vec, cand_vecs)
-    results = _rank_mode_results(ids, distances, cand_radii, mode, target_radius)
+    results = _rank_mode_results(ids, distances, cand_radii, mode, bound)
     results = results[:overfetch]
     return _deduplicate_and_cap_results(results, rows)[:limit]
 

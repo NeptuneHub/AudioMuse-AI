@@ -22,6 +22,8 @@ Main Features:
 * build_map_cache reads the catalogue through a plain client-side cursor, so
   Postgres streams the rows and holds nothing server-side; the transient peak
   lands in the web process, which is the one this app can release.
+* Embeddings are fetched, in chunks, only for rows the stored projection does
+  not cover, so a projected library loads none of them into the web process.
 * The build is the web process's largest short-lived allocation, so it ends by
   handing the freed heap back to the kernel: gc alone only returns it to the
   allocator's free lists and the pod would keep the peak RSS for good.
@@ -72,6 +74,8 @@ MAP_JSON_CACHE = {}
 # request streams precomputed bytes instead of translating the whole catalogue on
 # every call. Built for the default server at cache-build time, lazily for others.
 MAP_SERVER_JSON_CACHE = {}
+
+_MISSING_EMBEDDING_CHUNK = 5000
 
 def _pick_top_mood(mood_vector_str):
     """Return top mood label from 'label:score,label2:score' string.
@@ -124,6 +128,32 @@ def _sample_items(items, fraction):
     return out
 
 
+def _parse_embedding(emb_blob):
+    try:
+        return np.frombuffer(emb_blob, dtype=np.float32)
+    except Exception:
+        try:
+            return np.array(emb_blob, dtype=np.float32)
+        except Exception:
+            return None
+
+
+def _fetch_missing_embeddings(conn, item_ids):
+    found = {}
+    with conn.cursor() as cur:
+        for start in range(0, len(item_ids), _MISSING_EMBEDDING_CHUNK):
+            cur.execute(
+                "SELECT item_id, embedding FROM embedding "
+                "WHERE item_id = ANY(%s) AND embedding IS NOT NULL",
+                (item_ids[start:start + _MISSING_EMBEDDING_CHUNK],),
+            )
+            for item_id, emb_blob in cur.fetchall():
+                emb = _parse_embedding(emb_blob)
+                if emb is not None:
+                    found[str(item_id)] = emb
+    return found
+
+
 def _release_map_build_memory():
     gc.collect()
     try:
@@ -142,10 +172,6 @@ def build_map_cache():
     logger = logging.getLogger(__name__)
     logger.info('Building map JSON cache (this reads the DB once).')
 
-    # The precomputed projection is loaded BEFORE the catalogue scan: a row whose
-    # coordinates are already known can then drop its embedding the moment it is
-    # read, instead of every embedding staying resident until the projection step.
-    # On a projected library that keeps ZERO embeddings in RAM for the whole build.
     id_map, proj = None, None
     try:
         id_map, proj = load_map_projection('main_map', force_reload=True)
@@ -168,7 +194,7 @@ def build_map_cache():
     from tasks.simhash import is_fingerprint_id
 
     full_light = []
-    missing_slots = []
+    missing_items = {}
     has_canonical = False
 
     conn = get_db()
@@ -179,39 +205,40 @@ def build_map_cache():
     # the heap release at the end returns real memory, not just free lists.
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT s.item_id, s.title, s.author, s.mood_vector, e.embedding
+            SELECT s.item_id, s.title, s.author, s.mood_vector
             FROM score s
             JOIN embedding e ON s.item_id = e.item_id
+            WHERE e.embedding IS NOT NULL
         """)
         rows = cur.fetchall()
-    for item_id, title, author, mood_vector, emb_blob in rows:
-        if emb_blob is None:
-            continue
+    for item_id, title, author, mood_vector in rows:
         iid = str(item_id)
         if not has_canonical and is_fingerprint_id(iid):
             has_canonical = True
         coord = coords_by_id.get(iid)
+        item = {
+            'artist': author or '',
+            'embedding_2d': _round_coord(coord if coord is not None else (0.0, 0.0)),
+            'item_id': iid,
+            'mood_vector': _pick_top_mood(mood_vector),
+            'title': title or '',
+        }
         if coord is None:
-            try:
-                emb = np.frombuffer(emb_blob, dtype=np.float32)
-            except Exception:
-                # fallback if already stored as list
-                try:
-                    emb = np.array(emb_blob, dtype=np.float32)
-                except Exception:
-                    continue
-            missing_slots.append((len(full_light), emb))
-            coord = (0.0, 0.0)
-        full_light.append(
-            {
-                'artist': author or '',
-                'embedding_2d': _round_coord(coord),
-                'item_id': iid,
-                'mood_vector': _pick_top_mood(mood_vector),
-                'title': title or '',
-            }
-        )
+            missing_items[iid] = item
+        full_light.append(item)
     rows = None
+
+    missing_slots = []
+    if missing_items:
+        embeddings = _fetch_missing_embeddings(conn, list(missing_items))
+        missing_slots = [
+            (item, embeddings[iid]) for iid, item in missing_items.items() if iid in embeddings
+        ]
+        if len(missing_slots) < len(missing_items):
+            dropped = set(missing_items) - set(embeddings)
+            full_light = [it for it in full_light if it['item_id'] not in dropped]
+        embeddings = None
+    missing_items = {}
 
     # Set the canonical-id memo from the ids just loaded - NO extra DB probe. The
     # fast path may stream these cached bytes verbatim only when NONE is a canonical
@@ -260,8 +287,8 @@ def build_map_cache():
 
             del mat
 
-            for (slot, _emb), coord in zip(missing_slots, projections):
-                full_light[slot]['embedding_2d'] = _round_coord(
+            for (item, _emb), coord in zip(missing_slots, projections):
+                item['embedding_2d'] = _round_coord(
                     (float(coord[0]), float(coord[1]))
                 )
             if used_projection == 'none':
@@ -274,6 +301,22 @@ def build_map_cache():
     gc.collect()
 
     n = len(full_light)
+    new_cache = _serialize_buckets(full_light, used_projection)
+    full_light = None
+
+    MAP_JSON_CACHE = new_cache
+    MAP_SERVER_JSON_CACHE.clear()
+    _warm_server_buckets()
+    logger.info(
+        'Map JSON cache built: %d total items; cache sizes: %s',
+        n,
+        {k: v['count'] for k, v in MAP_JSON_CACHE.items()},
+    )
+    del new_cache
+    _release_map_build_memory()
+
+
+def _serialize_buckets(full_light, used_projection):
     frac_map = {'100': 1.0, '75': 0.75, '50': 0.5, '25': 0.25}
     new_cache = {}
     for k, frac in frac_map.items():
@@ -288,18 +331,7 @@ def build_map_cache():
         else:
             del js
         new_cache[k] = entry
-
-    MAP_JSON_CACHE = new_cache
-    MAP_SERVER_JSON_CACHE.clear()
-    _warm_server_buckets()
-    logger.info(
-        'Map JSON cache built: %d total items; cache sizes: %s',
-        n,
-        {k: v['count'] for k, v in MAP_JSON_CACHE.items()},
-    )
-    del full_light
-    del new_cache
-    _release_map_build_memory()
+    return new_cache
 
 
 def _translated_bucket(entry, server_id):

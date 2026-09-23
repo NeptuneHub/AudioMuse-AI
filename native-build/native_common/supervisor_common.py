@@ -20,6 +20,7 @@ Main Features:
 * One readiness wait that honours a stop request and reports the last error
 * Control dispatch that runs every service and reports the aggregate result
 * Pid file writes and removal that tolerate a read-only or missing state dir
+* wait_until_stopped lets a quit or a CLI stop block until the stop finished
 * references_pgdata tells a postgres/pg_ctl command line that runs OUR data
   directory (its -D argument) from one that runs a sibling such as a backup
   copy, which a substring match would have killed too.
@@ -113,6 +114,12 @@ class SupervisorCommonMixin:
 
     def state(self):
         return self._state
+
+    def wait_until_stopped(self, timeout):
+        deadline = time.monotonic() + timeout
+        while self._state == "stopping" and time.monotonic() < deadline:
+            time.sleep(0.2)
+        return self._state == "stopped"
 
     def start_in_background(self, on_ready=None, on_error=None):
         def _boot():

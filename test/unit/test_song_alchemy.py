@@ -30,9 +30,14 @@ Main Features:
   stored seed signatures drop other copies of a seed; the seed test ignores
   metric settings and int8 rounding; the embedding stamp fingerprints the model
   file content and tolerates an unreadable model on the dimension alone
+* Each input gets an equal candidate quota, the pool keeps at most
+  MAX_SONGS_PER_ARTIST per artist and is over-fetched only when that cap is on,
+  so an artist-dominated pool still fills N; the vectorised distances and the
+  map lookup match the old per-pair loop without copying the whole map
 """
 
 import hashlib
+import tracemalloc
 import pytest
 from unittest.mock import patch
 import numpy as np
@@ -81,6 +86,7 @@ class TestSongAlchemy:
             mock_config.ALCHEMY_PLAYLIST_MAX_CENTROIDS = 10
             mock_config.EMBEDDING_DIMENSION = 2
             mock_config.EMBEDDING_MODEL_PATH = '/nonexistent/model/musicnn_embedding.onnx'
+            mock_config.MAX_SONGS_PER_ARTIST = 3
 
             yield {
                 'get_vector_by_id': mock_get_vec,
@@ -599,8 +605,10 @@ class TestSongAlchemy:
                 add_items=[{'type': 'anchor', 'id': 7}], n_results=3, temperature=0.0
             )
 
-        query_vectors = mock_dependencies['multi_query_ids'].call_args.args[0]
-        assert [list(v) for v in query_vectors] == [[1.0, 0.0], [0.0, 1.0]]
+        query_vectors = [
+            list(v) for call in mock_dependencies['multi_query_ids'].call_args_list for v in call.args[0]
+        ]
+        assert query_vectors == [[1.0, 0.0], [0.0, 1.0]]
         result_ids = [r['item_id'] for r in result['results']]
         assert 'seed_copy' not in result_ids
         assert result_ids[:2] in (['near_a', 'near_b'], ['near_b', 'near_a'])
@@ -1036,3 +1044,294 @@ class TestSongAlchemy:
         assert 'keep' in ids
         assert 'near_dup' not in ids
         assert mock_dependencies['filter_by_distance'].called
+
+    @staticmethod
+    def _asked(multi_query_mock):
+        return [
+            (list(vector), call.args[1])
+            for call in multi_query_mock.call_args_list
+            for vector in call.args[0]
+        ]
+
+    def test_each_input_gets_an_equal_candidate_quota_split_over_its_points(self, mock_dependencies):
+        mock_dependencies['multi_query_ids'].return_value = []
+        points = [
+            {'vector': np.array([1.0, 0.0]), 'weight': 1.0, 'source_type': 'song', 'source_id': 's1'}
+        ] + [
+            {'vector': np.array([0.0, float(j)]), 'weight': w, 'source_type': 'artist', 'source_id': 'a1'}
+            for j, w in enumerate((0.5, 0.25, 0.25), start=1)
+        ]
+
+        song_alchemy._multi_query_candidates(points, 40)
+
+        assert self._asked(mock_dependencies['multi_query_ids']) == [
+            ([1.0, 0.0], 60),
+            ([0.0, 1.0], 30),
+            ([0.0, 2.0], 15),
+            ([0.0, 3.0], 15),
+        ]
+
+    def test_a_many_point_anchor_does_not_outnumber_a_single_song_in_the_candidate_pool(self, mock_dependencies):
+        mock_dependencies['multi_query_ids'].return_value = []
+        song = {'vector': np.array([1.0, 0.0]), 'weight': 1.0, 'source_type': 'song', 'source_id': 's1'}
+        anchor = [
+            {'vector': np.array([0.0, float(j)]), 'weight': 1 / 12, 'source_type': 'anchor', 'source_id': 7}
+            for j in range(12)
+        ]
+
+        song_alchemy._multi_query_candidates([song] + anchor, 40)
+
+        asked = self._asked(mock_dependencies['multi_query_ids'])
+        assert asked[0] == ([1.0, 0.0], 60)
+        assert sum(k for _, k in asked[1:]) == 60
+
+    def test_saved_anchor_rerun_asks_every_point_for_the_quota_of_the_saved_run(self, mock_dependencies):
+        mock_dependencies['multi_query_ids'].return_value = []
+        live = [
+            {'vector': np.array([1.0, float(i)]), 'weight': 1.0, 'source_type': 'song', 'source_id': f's{i}', 'seed': True}
+            for i in range(10)
+        ]
+        component_weights = [0.2, 0.15, 0.12, 0.11, 0.1, 0.09, 0.08, 0.08, 0.07]
+        for name, base in (('a1', 100.0), ('a2', 200.0)):
+            live.extend(
+                {'vector': np.array([base, float(j)]), 'weight': w, 'source_type': 'artist', 'source_id': name}
+                for j, w in enumerate(component_weights)
+            )
+        anchor = {
+            'id': 7,
+            'name': 'Saved',
+            'centroid': [0.0, 0.0],
+            'exclusions': None,
+            'inclusions': {
+                'embedding_model_sha256': 'musicnn_embedding.onnx',
+                'dimension': 2,
+                'points': song_alchemy._export_inclusions(live, {}),
+            },
+        }
+
+        song_alchemy._multi_query_candidates(live, 50)
+        live_asked = self._asked(mock_dependencies['multi_query_ids'])
+        mock_dependencies['multi_query_ids'].reset_mock()
+        with patch('database.get_alchemy_anchor_by_id', return_value=anchor):
+            song_alchemy._multi_query_candidates(song_alchemy._anchor_anchor_points(7), 50)
+        rerun_asked = self._asked(mock_dependencies['multi_query_ids'])
+
+        assert len(live_asked) == 16
+        assert len({k for _, k in live_asked}) > 1
+        assert rerun_asked == live_asked
+
+    def _capped_run(self, mock_dependencies, eliminate):
+        mock_dependencies['config'].SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = eliminate
+        vectors = {
+            'a0': [1.0, 0.05], 'a1': [1.0, 0.1], 'a2': [1.0, 0.2], 'a3': [1.0, 0.3],
+            'b0': [1.0, 0.15], 'c0': [1.0, 0.25], 's1': [1.0, 0.0],
+        }
+        mock_dependencies['get_vector_by_id'].side_effect = vectors.get
+        mock_dependencies['multi_query_ids'].return_value = ['a3', 'a1', 'b0', 'a2', 'a0', 'c0']
+        details = {cid: {'item_id': cid, 'title': f'Song {cid}', 'author': 'Artist A'} for cid in ('a0', 'a1', 'a2', 'a3')}
+        details['b0'] = {'item_id': 'b0', 'title': 'Song b0', 'author': 'Artist B'}
+        details['c0'] = {'item_id': 'c0', 'title': 'Song c0', 'author': 'Artist C'}
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(details)
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        with patch('config.MAX_SONGS_PER_ARTIST', 2):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'song', 'id': 's1'}],
+                n_results=10,
+                temperature=0.5,
+            )
+        return sorted(r['item_id'] for r in result['results'])
+
+    def test_the_candidate_pool_keeps_at_most_max_songs_per_artist_and_the_closest_ones(self, mock_dependencies):
+        assert self._capped_run(mock_dependencies, True) == ['a0', 'a1', 'b0', 'c0']
+
+    def test_the_artist_cap_follows_the_similarity_eliminate_duplicates_default(self, mock_dependencies):
+        assert self._capped_run(mock_dependencies, False) == ['a0', 'a1', 'a2', 'a3', 'b0', 'c0']
+
+    def test_saved_anchor_rerun_matches_the_live_quotas_when_anchor_groups_are_left_out(self, mock_dependencies):
+        mock_dependencies['multi_query_ids'].return_value = []
+        stored = {
+            'id': 7,
+            'name': 'Twenty',
+            'centroid': [0.0, 0.0],
+            'exclusions': None,
+            'inclusions': {
+                'embedding_model_sha256': 'musicnn_embedding.onnx',
+                'dimension': 2,
+                'points': [
+                    {'vector': [float(j), 1.0], 'weight': 1.0, 'seed': True, 'group': j} for j in range(20)
+                ],
+            },
+        }
+        song = {'vector': np.array([1.0, 0.0]), 'weight': 1.0, 'source_type': 'song', 'source_id': 's1', 'seed': True}
+        with patch('database.get_alchemy_anchor_by_id', return_value=stored):
+            live = [song] + song_alchemy._anchor_anchor_points(7)
+        saved = {
+            **stored,
+            'id': 8,
+            'inclusions': {**stored['inclusions'], 'points': song_alchemy._export_inclusions(live, {})},
+        }
+
+        song_alchemy._multi_query_candidates(live, 50)
+        live_asked = self._asked(mock_dependencies['multi_query_ids'])
+        mock_dependencies['multi_query_ids'].reset_mock()
+        with patch('database.get_alchemy_anchor_by_id', return_value=saved):
+            song_alchemy._multi_query_candidates(song_alchemy._anchor_anchor_points(8), 50)
+        rerun_asked = self._asked(mock_dependencies['multi_query_ids'])
+
+        assert len(live_asked) == 16
+        assert live_asked[0] == ([1.0, 0.0], 86)
+        assert rerun_asked == live_asked
+
+    def _dominated_run(self, mock_dependencies, lists, add_items, authors, temperature):
+        mock_dependencies['config'].SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT = True
+        vectors = {'s1': [1.0, 0.0], 's2': [0.0, 1.0]}
+        for prefix, ids in lists.items():
+            for i, cid in enumerate(ids):
+                vectors[cid] = [1.0, 0.001 * i] if prefix == (1.0, 0.0) else [0.001 * i, 1.0]
+        mock_dependencies['multi_query_ids'].side_effect = lambda query, k: list(
+            dict.fromkeys(cid for vector in query for cid in lists[tuple(vector)][:k])
+        )
+        mock_dependencies['get_vector_by_id'].side_effect = vectors.get
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {cid: {'item_id': cid, 'title': f'Song {cid}', 'author': author} for cid, author in authors.items()}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+        with patch('config.MAX_SONGS_PER_ARTIST', 3):
+            return song_alchemy.song_alchemy(add_items=add_items, n_results=10, temperature=temperature)
+
+    def test_a_pool_dominated_by_one_artist_still_returns_n_results(self, mock_dependencies):
+        ranked = [f'r{i}' for i in range(200)]
+        authors = {cid: 'Artist A' if i % 5 else f'Artist {i}' for i, cid in enumerate(ranked)}
+
+        result = self._dominated_run(
+            mock_dependencies, {(1.0, 0.0): ranked}, [{'type': 'song', 'id': 's1'}], authors, 1.0
+        )
+
+        artists = [r['author'] for r in result['results']]
+        assert len(artists) == 10
+        assert artists.count('Artist A') <= 3
+
+    @pytest.mark.parametrize('cap, asked_k', [(3, 150), (0, 30)])
+    def test_the_pool_is_over_fetched_only_when_the_artist_cap_is_on(
+        self, mock_dependencies, cap, asked_k
+    ):
+        ranked = [f'r{i}' for i in range(200)]
+        authors = {cid: f'Artist {i}' for i, cid in enumerate(ranked)}
+        mock_dependencies['config'].MAX_SONGS_PER_ARTIST = cap
+
+        self._dominated_run(
+            mock_dependencies, {(1.0, 0.0): ranked}, [{'type': 'song', 'id': 's1'}], authors, 1.0
+        )
+
+        assert mock_dependencies['multi_query_ids'].call_args.args[1] == asked_k
+
+    def test_the_capped_pool_takes_each_input_quota_from_its_own_neighbours(self, mock_dependencies):
+        xs = [f'x{i}' for i in range(100)]
+        ys = [f'y{i}' for i in range(100)]
+        authors = {cid: 'Artist A' if i % 2 else f'Artist X{i}' for i, cid in enumerate(xs)}
+        authors.update({cid: f'Artist Y{i}' for i, cid in enumerate(ys)})
+
+        self._dominated_run(
+            mock_dependencies,
+            {(1.0, 0.0): xs, (0.0, 1.0): ys},
+            [{'type': 'song', 'id': 's1'}, {'type': 'song', 'id': 's2'}],
+            authors,
+            0.0,
+        )
+
+        pool = [song['item_id'] for song in mock_dependencies['filter_by_distance'].call_args.args[0]]
+        kept_x = [cid for i, cid in enumerate(xs) if i % 2 == 0 or i in (1, 3, 5)]
+        assert pool == kept_x[:15] + ys[:15]
+
+    @pytest.mark.parametrize('metric, limit', [('angular', 0.35), ('euclidean', 3.2)])
+    def test_distances_and_exclusions_match_the_per_pair_loop_without_calling_it(
+        self, mock_dependencies, metric, limit
+    ):
+        rng = np.random.default_rng(5)
+        dim = 8
+        config = mock_dependencies['config']
+        config.PATH_DISTANCE_METRIC = metric
+        config.EMBEDDING_DIMENSION = dim
+        include_points = [rng.standard_normal(dim) for _ in range(30)]
+        stored_exclusions = [(rng.standard_normal(dim), limit * f) for f in (0.8, 1.0, 1.2)]
+        anchor = {
+            'id': 7,
+            'name': 'Anchor 7',
+            'centroid': [0.0] * dim,
+            'exclusions': [{'vector': v.tolist(), 'distance': d} for v, d in stored_exclusions],
+            'inclusions': {
+                'embedding_model_sha256': 'm',
+                'dimension': dim,
+                'points': [{'vector': v.tolist(), 'weight': float(i + 1)} for i, v in enumerate(include_points)],
+            },
+        }
+        vectors = {f'c{i}': rng.standard_normal(dim).astype(np.float32) for i in range(80)}
+        vectors['c0'] = np.zeros(dim, dtype=np.float32)
+        vectors['s1'] = rng.standard_normal(dim)
+        vectors['sub1'] = rng.standard_normal(dim)
+        candidates = [f'c{i}' for i in range(80)]
+        mock_dependencies['get_vector_by_id'].side_effect = vectors.get
+        mock_dependencies['multi_query_ids'].return_value = candidates
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {cid: {'item_id': cid, 'title': f'Song {cid}', 'author': f'Artist {cid}'} for cid in vectors}
+        )
+        mock_dependencies['load_map_projection'].return_value = (None, None)
+
+        per_pair = song_alchemy._metric_distance
+        checks = [(vectors['sub1'], limit)] + stored_exclusions
+        add_vectors = include_points + [vectors['s1']]
+        expected_out = [
+            cid for cid in candidates
+            if any(per_pair(s, np.array(vectors[cid], dtype=float)) < d for s, d in checks)
+        ]
+        expected = {
+            cid: min(per_pair(a, np.array(vectors[cid], dtype=float)) for a in add_vectors)
+            for cid in candidates if cid not in expected_out
+        }
+
+        with (
+            patch('database.get_alchemy_anchor_by_id', return_value=anchor),
+            patch('tasks.song_alchemy.anchor_embedding_tag', return_value={'embedding_model_sha256': 'm', 'dimension': dim}),
+            patch('tasks.song_alchemy._metric_distance', side_effect=AssertionError('per-pair distance call')),
+        ):
+            result = song_alchemy.song_alchemy(
+                add_items=[{'type': 'anchor', 'id': 7}, {'type': 'song', 'id': 's1'}],
+                subtract_items=[{'type': 'song', 'id': 'sub1'}],
+                subtract_distance=limit,
+                n_results=100,
+                temperature=0.0,
+            )
+
+        assert 0 < len(expected_out) < len(candidates) - 10
+        assert [r['item_id'] for r in result['filtered_out']] == expected_out
+        assert [r['item_id'] for r in result['results']] == sorted(expected, key=expected.get)
+        assert np.allclose(
+            [r['distance'] for r in result['results']],
+            [expected[r['item_id']] for r in result['results']],
+            rtol=0.0, atol=1e-12,
+        )
+
+    def test_map_coordinates_come_from_the_projection_without_copying_the_whole_map(self, mock_dependencies):
+        total = 200_000
+        id_map = [f'id{i}' for i in range(total)]
+        projection = np.arange(total * 2, dtype=np.float32).reshape(total, 2)
+        mock_dependencies['get_vector_by_id'].side_effect = lambda x: {
+            's1': [1.0, 0.0], 'id5': [0.9, 0.1], 'id150000': [0.8, 0.2],
+        }.get(x)
+        mock_dependencies['multi_query_ids'].return_value = ['id5', 'id150000']
+        mock_dependencies['get_score_data_by_ids'].side_effect = _score_side_effect(
+            {cid: {'item_id': cid, 'title': f'Song {cid}', 'author': f'Artist {cid}'} for cid in ('s1', 'id5', 'id150000')}
+        )
+        mock_dependencies['load_map_projection'].return_value = (id_map, projection)
+
+        tracemalloc.start()
+        try:
+            result = song_alchemy.song_alchemy(add_items=[{'type': 'song', 'id': 's1'}], temperature=0.5)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        coords = {r['item_id']: r['embedding_2d'] for r in result['results']}
+        assert coords == {'id5': (10.0, 11.0), 'id150000': (300000.0, 300001.0)}
+        assert peak < 5 * 1024 * 1024

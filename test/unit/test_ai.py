@@ -15,6 +15,7 @@ Main Features:
 * Playlist-name sanitizing, unicode normalization, and think-tag stripping.
 * Streaming chunk assembly, rate-limit backoff, and parameter fallbacks.
 * URL-based OpenAI-vs-Ollama format detection and API-error handling.
+* An Ollama /api/chat URL is sent to /api/generate for plain text generation.
 """
 
 import os
@@ -793,6 +794,38 @@ class TestGetOllamaPlaylistName:
         )
 
         assert result == "Test Playlist"
+
+    @patch('tasks.ai.providers.openai.requests.post')
+    def test_chat_endpoint_url_is_sent_to_the_generate_endpoint(self, mock_post):
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = [b'{"response":"Test Playlist","done":true}']
+        mock_post.return_value = mock_response
+
+        result = get_openai_compatible_playlist_name(
+            server_url="http://localhost:11434/API/Chat",
+            model_name="model-a",
+            full_prompt="test prompt",
+            api_key="no-key-needed",
+        )
+
+        assert result == "Test Playlist"
+        assert mock_post.call_args[0][0] == "http://localhost:11434/api/generate"
+        assert json.loads(mock_post.call_args[1]['data'])['prompt'] == "test prompt"
+
+    def test_ollama_endpoints_derive_both_paths_from_any_form(self):
+        assert ai_openai._ollama_endpoints("http://h:11434/api/chat") == (
+            "http://h:11434/api/chat",
+            "http://h:11434/api/generate",
+        )
+        assert ai_openai._ollama_endpoints("http://h:11434/api/generate") == (
+            "http://h:11434/api/chat",
+            "http://h:11434/api/generate",
+        )
+        assert ai_openai._ollama_endpoints("http://h:11434/") == (
+            "http://h:11434/api/chat",
+            "http://h:11434/api/generate",
+        )
 
 
 class TestGetGeminiPlaylistName:

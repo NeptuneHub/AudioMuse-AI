@@ -18,7 +18,8 @@ Main Features:
 * Database failure re-raises while still tearing down loaded models
 * Session recycle empties the old dict and frees old GPU sessions before allocating new ones
 * The web process's idle heap trim holds off while requests keep arriving, fires
-  once the process goes quiet, and stays off when its config window is 0
+  once the process goes quiet, and stays off when its config window is 0;
+  no teardown_appcontext hook re-arms it, so background contexts cannot starve it
 * The idle heap trim returns free heap to the OS without dropping a single loaded
   index: every startup cache is still populated and identical after it runs
 * The heap release resolves its symbol once out of the running image - malloc_trim
@@ -685,3 +686,37 @@ class TestIdleTrimRequestWiring:
             pass
 
         assert memory_utils._ACTIVE_REQUESTS == 1
+
+
+class TestBackgroundContextsNeverStarveTheIdleTrim:
+    def test_no_app_context_teardown_re_arms_the_idle_trim(self):
+        import ast
+        import pathlib
+
+        source = pathlib.Path(__file__).resolve().parents[2] / 'app.py'
+        tree = ast.parse(source.read_text(encoding='utf-8'))
+        hooks = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and any(
+                isinstance(dec, ast.Attribute) and dec.attr == 'teardown_appcontext'
+                for dec in node.decorator_list
+            )
+        ]
+        assert hooks, 'app.py must still register its app-context teardown'
+        for hook in hooks:
+            names = {
+                getattr(node, 'id', None) or getattr(node, 'attr', None)
+                for node in ast.walk(hook)
+            }
+            names |= {
+                alias.name
+                for node in ast.walk(hook) if isinstance(node, ast.ImportFrom)
+                for alias in node.names
+            }
+            assert 'arm_idle_heap_trim' not in names, (
+                'the cron tick and the dashboard refresh each open an app context '
+                'every minute; re-arming the 60 s trim there pushed it back forever, '
+                'so the idle Flask heap was never returned to the OS (k3s, 0 trims '
+                'in an hour)'
+            )

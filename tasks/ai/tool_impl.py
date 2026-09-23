@@ -15,7 +15,7 @@ brainstorm recipe runner. This is where every AI tool actually touches data.
 
 Main Features:
 * Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M', so 'Nas' never matches 'Jonas Brothers'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
-* search_database scores mood_vector/other_features tags via SUBSTRING regex and orders by relevance; exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded); brainstorm fuses audio/artist/lyrics/filter channels round-robin, gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
+* search_database scores mood_vector/other_features tags via SUBSTRING regex and keeps the relevance order (no DISTINCT re-sort); exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded), and a male-only voices filter becomes an exclusion of the female vocal tags; brainstorm fuses audio/artist/lyrics/filter channels round-robin, gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
 * The brainstorm accepts a planner-supplied grounding_filter merged into the recipe (grounding wins over the model's guess for ranges, unions for lists) and a gate_filter applied per channel, so a metadata constraint next to knowledge_lookup shapes the search from inside the tool rather than filtering its output. The gate is asymmetric on purpose: exclusions are hard and never fall back, while a positive gate that empties a channel keeps that channel ungated so the request still returns songs.
 * Artist-seed similarity scales its similar-artist fanout to the indexed library size (total//10, min 5) and returns songs round-robin across the seed artist and its neighbors (one song each per round, seed first within a round), so the seed still leads the list but a prolific seed artist can never consume the whole LIMIT and shut every similar artist out.
 """
@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 from psycopg2.extras import DictCursor
 
 from database import like_contains_pattern
-from tasks.ai.vocab import parse_tag_score_pairs
+from tasks.ai.vocab import TAG_EXCLUDE_SCORE, female_voice_exclusions, parse_tag_score_pairs
 from tasks.mcp_helper import get_db_connection
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ COALESCE(
     0
 )"""
 _INSTRUMENTAL_REGEX = r"(?i)(?:^|,)\s*instrumental:(\d+\.?\d*)"
-_EXCLUDE_GENRE_SCORE = 0.3
+_EXCLUDE_GENRE_SCORE = TAG_EXCLUDE_SCORE
 _SIMILAR_ARTISTS_LIBRARY_DIVISOR = 10
 _SIMILAR_ARTISTS_MIN = 5
 
@@ -875,7 +875,17 @@ def _database_genre_query_sync(
                 has_genre_filter = True
 
             has_voice_filter = False
-            if voices:
+            female_exclusions = female_voice_exclusions(voices)
+            if female_exclusions:
+                for female in female_exclusions:
+                    conditions.append(_MOOD_VECTOR_LT_SQL)
+                    params.append(f"(?i)(?:^|,)\\s*{re.escape(female)}:(\\d+\\.?\\d*)")
+                    params.append(_EXCLUDE_GENRE_SCORE)
+                log_messages.append(
+                    f"voices {voices} applied as exclude {female_exclusions} "
+                    f"(tag score < {_EXCLUDE_GENRE_SCORE})"
+                )
+            elif voices:
                 voice_conditions = []
                 for voice in voices:
                     voice_conditions.append(_MOOD_VECTOR_GE_SQL)
@@ -1026,26 +1036,20 @@ def _database_genre_query_sync(
                     else "ORDER BY relevance_score DESC"
                 )
                 query = f"""
-                    SELECT DISTINCT item_id, title, author, album
-                    FROM (
-                        SELECT item_id, title, author, album,
-                               ({relevance_expr}) AS relevance_score
-                        FROM public.score
-                        WHERE {where_clause}
-                        {inner_order}
-                    ) AS ranked
+                    SELECT item_id, title, author, album,
+                           ({relevance_expr}) AS relevance_score
+                    FROM public.score
+                    WHERE {where_clause}
+                    {inner_order}
                     LIMIT %s
                 """
                 cur.execute(query, all_params)
             else:
                 query = f"""
-                    SELECT DISTINCT item_id, title, author, album
-                    FROM (
-                        SELECT item_id, title, author, album
-                        FROM public.score
-                        WHERE {where_clause}
-                        {order_clause}
-                    ) AS randomized
+                    SELECT item_id, title, author, album
+                    FROM public.score
+                    WHERE {where_clause}
+                    {order_clause}
                     LIMIT %s
                 """
                 cur.execute(query, params)

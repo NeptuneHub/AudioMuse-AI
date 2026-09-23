@@ -286,6 +286,10 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'SUPERVISORCTL_CMD',
     'SUPERVISOR_CONF',
     'DISABLE_FLASK_RESTART',
+    'AUDIOMUSE_PLATFORM',
+    'AUDIOMUSE_CONTROL_SOCKET',
+    'AUDIOMUSE_CONTROL_HOST',
+    'AUDIOMUSE_CONTROL_PORT',
     'ALCHEMY_ANCHOR_MAX_STORED_POINTS',
     # Per-endpoint result-count defaults. These DO reach the UI: each search page
     # renders one of them into its count input's value= attribute, so they are the
@@ -947,8 +951,8 @@ HYPERBOLIC_CANDIDATE_OVERFETCH = int(os.environ.get("HYPERBOLIC_CANDIDATE_OVERFE
 # (radius < seed_radius * (1 - spread)); niche only tracks at least this
 # fraction of the remaining distance toward the boundary (radius >
 # seed_radius + (1 - seed_radius) * spread). The candidates are then ranked by
-# exact Poincare distance within that window. 0 keeps the old band-hugging
-# behaviour where every mode returns the tracks nearest to the seed's radius.
+# exact Poincare distance within that window. At 0 roots/niche return the tracks
+# nearest the seed (Poincare distance) on the chosen side of the seed radius.
 HYPERBOLIC_RADIAL_SPREAD = float(os.environ.get("HYPERBOLIC_RADIAL_SPREAD", "0.15"))
 HYPERBOLIC_DEFAULT_LIMIT = int(os.environ.get("HYPERBOLIC_DEFAULT_LIMIT", "50"))
 # Directory tree shape: when genre_subgenre.json is present and dimensionally

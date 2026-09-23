@@ -583,10 +583,6 @@ def _find_intermediate_songs(
     all_centroids = interpolate_centroids(start_vector, end_vector, num=lreq, metric=metric)
     intermediate_centroids = all_centroids[1:-1]
 
-    initial_count = _compute_initial_count(
-        start_item_id, end_item_id, num_intermediate, neighbors_by_id_fn
-    )
-
     if not path_fix_size:
         _run_single_pass_jobs(
             intermediate_centroids,
@@ -602,6 +598,9 @@ def _find_intermediate_songs(
         )
         return
 
+    initial_count = _compute_initial_count(
+        start_item_id, end_item_id, num_intermediate, neighbors_by_id_fn
+    )
     jobs = _build_centroid_jobs(
         intermediate_centroids, num_intermediate, initial_count, k_base, k_max
     )

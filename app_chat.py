@@ -18,9 +18,11 @@ Main Features:
   `/api/chatPlaylistStream` (Server-Sent Events), `/api/create_playlist`.
 * Per-request AI provider/model override (Ollama/OpenAI/Gemini/Mistral) and
   optional `tasks.playlist_ordering.order_playlist` post-processing.
+* The stored OpenAI key is sent only to the configured OPENAI_SERVER_URL (or
+  for an admin), so a request-supplied URL never receives it.
 """
 
-from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context
+from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context, g
 from flasgger import swag_from  # Import swag_from
 import json  # For JSON serialization of tool arguments
 import logging
@@ -177,6 +179,18 @@ _CLOUD_KEY_CHECKS = {
     "GEMINI": ("Gemini", "gemini_key", "YOUR-GEMINI-API-KEY-HERE"),
     "MISTRAL": ("Mistral", "mistral_key", "YOUR-MISTRAL-API-KEY-HERE"),
 }
+
+
+def _openai_key_for_url(openai_url):
+    if str(openai_url or '').strip() == str(config.OPENAI_SERVER_URL or '').strip():
+        return config.OPENAI_API_KEY
+    if getattr(g, 'auth_role', None) == 'admin':
+        return config.OPENAI_API_KEY
+    logger.warning(
+        "chat_playlist_api: non-admin request targets an OpenAI URL other than the "
+        "configured one; the stored OpenAI key is not sent"
+    )
+    return "no-key-needed"
 
 
 def _missing_cloud_api_key(ai_provider, ai_secrets):
@@ -518,7 +532,7 @@ def _run_chat_pipeline(data, log_messages):
         'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME,
     }
     ai_secrets = {
-        'openai_key': config.OPENAI_API_KEY,
+        'openai_key': _openai_key_for_url(ai_config['openai_url']),
         'gemini_key': config.GEMINI_API_KEY,
         'mistral_key': config.MISTRAL_API_KEY,
     }

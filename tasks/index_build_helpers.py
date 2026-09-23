@@ -734,8 +734,8 @@ def unpack_artist_metadata(blob: bytes) -> Tuple[Dict[int, str], Dict[str, Dict]
         pos += weights_size
 
         artist_gmms[name] = {
-            "means": means.tolist(),
-            "weights": weights.tolist(),
+            "means": means.copy(),
+            "weights": weights.copy(),
             "n_components": int(n_components),
             "n_features": int(n_features),
             "n_tracks": int(n_tracks),

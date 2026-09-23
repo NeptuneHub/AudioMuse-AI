@@ -40,6 +40,8 @@ Main Features:
   index blobs keep the WAL and buffer cache inflated after the run; forcing the
   checkpoint (plus the per-step recycle) leaves Postgres back at its idle floor
   once the worker's child process exits.
+* Each step drops the map, artist-map and hyperbolic tree caches, so an inline
+  worker never keeps an index in RAM.
 """
 
 import gc
@@ -48,6 +50,7 @@ import uuid
 
 import taskqueue
 
+import database
 from flask_app import app
 from app_helper import (
     build_and_store_map_projection,
@@ -93,7 +96,11 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
     from ..lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from ..sem_grove_manager import build_and_store_sem_grove_index
     from ..artist_gmm_manager import build_and_store_artist_index
-    from ..hyperbolic_manager import backfill_hyperbolic_columns, build_hyperbolic_tree_cache
+    from ..hyperbolic_manager import (
+        backfill_hyperbolic_columns,
+        build_hyperbolic_tree_cache,
+        reset_hyperbolic_tree_cache,
+    )
     from ..hyperbolic_index import build_and_store_hyperbolic_index
     from ..neural_fingerprint_index import build_and_store_neural_fingerprint_index
 
@@ -157,6 +164,9 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
                 if fatal:
                     raise
             finally:
+                database.MAP_PROJECTION_CACHE = None
+                database.ARTIST_PROJECTION_CACHE = None
+                reset_hyperbolic_tree_cache()
                 _recycle_db_connection()
                 gc.collect()
     try:

@@ -20,10 +20,9 @@ Main Features:
 * Two-level quantizer: about sqrt(rows) cells capped at _MAX_CELLS, trained on
   _TRAIN_ROWS_PER_CELL rows per cell; past _SINGLE_LEVEL_CELLS the cells sit
   under sqrt(cells) coarse centroids and a row joins the nearest cell of its
-  nearest group, so a million tracks cost minutes not hours. It is retrained
-  when the library grew NEURAL_FINGERPRINT_RETRAIN_GROWTH-fold, a tenth of the
-  tracks are gone, the largest cell holds ten times the average, or the layout
-  changed
+  nearest group. It is retrained when the library grew
+  NEURAL_FINGERPRINT_RETRAIN_GROWTH-fold, a tenth of the tracks are gone, the
+  largest cell holds ten times the average, or the layout changed
 * Builds run full or append, in parts of _PART_ROWS rows cut at track
   boundaries, one ivf_cell row per cell under neural_fingerprint_index/p<part>
   (40 bytes a row), split further past IVF_MAX_PART_SIZE_MB. An append keeps
@@ -34,7 +33,8 @@ Main Features:
 * One union of every server, scoped per request through the availability mask
 * Flask holds ONE immutable Pack swapped by a single reference assignment, and
   drops the old build's cells. A foreign layout or codebook raises
-  IndexUnavailable, the one exception whose text may reach a user
+  IndexUnavailable, the one exception whose text may reach a user; so does a
+  cell read while the stored build id is not the loaded one
 * A search fetches every uncached probed cell in one query and scores it over
   NEURAL_FINGERPRINT_QUERY_THREADS threads through the codebook table; every
   third segment votes first and the rest is skipped once a track leads by
@@ -888,7 +888,7 @@ def _db_connection():
     return connect_raw(application_name='neural_fingerprint_query'), True
 
 
-def _read_cell_rows(cell_ids):
+def _read_cell_rows(cell_ids, build_id):
     pattern = like_escape(_CELL_NAMESPACE) + '%'
     conn, owned = _db_connection()
     try:
@@ -901,6 +901,13 @@ def _read_cell_rows(cell_ids):
                     (pattern, list(cell_ids[start:start + _CELL_FETCH_BATCH])),
                 )
                 rows.extend(cur.fetchall())
+        stored = _stored_build_id(conn)
+        if stored != build_id:
+            logger.warning(
+                'Neural fingerprint cells belong to build %s but the loaded index is build %s; '
+                'refusing to pair them until the index reload arrives', stored, build_id,
+            )
+            raise IndexUnavailable('The neural fingerprint index is being rebuilt; try again in a minute.')
         return rows
     finally:
         if owned:
@@ -932,7 +939,7 @@ def _cells_for(pack, cell_ids):
     if not missing:
         return found
     grouped = {cell: [] for cell in missing}
-    for _name, cell, blob in _read_cell_rows(missing):
+    for _name, cell, blob in _read_cell_rows(missing, pack.build_id):
         grouped[int(cell)].append(blob)
     for cell, blobs in grouped.items():
         arrays = _join_rows(blobs) if blobs else _empty_cell()
@@ -971,7 +978,9 @@ def _cell_scores(arrays, table, allowed):
     if not codes.shape[0]:
         return None
     if allowed is not None:
-        keep = allowed[tracks]
+        keep = np.zeros(tracks.shape[0], dtype=bool)
+        known = tracks < allowed.shape[0]
+        keep[known] = allowed[tracks[known]]
         if not keep.any():
             return None
         if not keep.all():
@@ -1138,7 +1147,11 @@ def identify_vectors(query_vectors, n_results, exclude_ids=()):
     nprobe = max(1, int(config.NEURAL_FINGERPRINT_NPROBE))
     pooled, scored_segments = _vote(pack, codebook()[0], query_vectors, nprobe, _allowed_tracks(pack, exclude_ids))
     ranked = sorted(pooled.items(), key=lambda kv: -kv[1][0])[:max(int(n_results), _VERIFY)]
-    candidates = [(str(pack.ids[track]), votes, offset) for track, (votes, offset) in ranked]
+    candidates = [
+        (str(pack.ids[track]), votes, offset)
+        for track, (votes, offset) in ranked
+        if track < len(pack.ids)
+    ]
     fetched = _candidate_codes([item_id for item_id, _votes, _offset in candidates])
     scored = []
     for item_id, votes, offset in candidates:

@@ -40,8 +40,9 @@ Main Features:
   No audio is decoded and no model runs.
 * warmup_recording_models maps the index when it is not (normally a no-op,
   Flask maps it at startup and keeps it), preloads the encoder session and
-  arms the idle timer that releases that session, and only it, after
-  RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
+  arms the idle timer (every search, search_by_track included, re-arms it)
+  that releases that session and the cell cache, then returns the freed heap
+  to the OS, after RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
 """
 
 import logging
@@ -53,6 +54,7 @@ import numpy as np
 
 import config
 from tasks.idle_unload import IdleUnloadTimer
+from tasks.memory_utils import release_memory_to_os
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +143,7 @@ def _unload_expired():
     with _TIMER.lock():
         neural_fingerprint.unload_session()
         neural_fingerprint_index.drop_cell_cache()
+    release_memory_to_os()
     logger.info(
         'Recording search encoder and cell cache released after %ss idle', config.RECORDING_SEARCH_WARMUP_DURATION
     )
@@ -233,6 +236,8 @@ def search_by_track(item_id, n_results=None):
     if codes is None or codes.shape[0] < 2:
         raise ValueError('The stored fingerprint of this song is unreadable; re-analyse it.')
     vectors = neural_fingerprint.decode_codes(codes)
+    with _TIMER.lock():
+        _arm_idle_unload()
     best = {}
     for window in query_windows(vectors):
         for row in neural_fingerprint_index.identify_vectors(window, n_results, exclude_ids=(item_id,)):
