@@ -192,8 +192,8 @@ def test_song_alchemy_and_playlist():
             return results[0]["item_id"]
         pytest.fail(f"Could not find song id for {artist} - {title}. Response: {results}")
 
-    add_id = find_song_id('Red Hot Chili Peppers', 'By the Way')
-    sub_id = find_song_id('System of a Down', 'Attack')
+    add_id = find_song_id('Artist A', 'Song 1')
+    sub_id = find_song_id('Artist B', 'Song 2')
 
     payload = {
         "items": [{"id": add_id, "op": "ADD"}, {"id": sub_id, "op": "SUBTRACT"}],
@@ -247,7 +247,7 @@ def test_map_visualization():
 
     sim_resp = get_with_retries(
         f'{BASE_URL}/api/similar_tracks',
-        params={'title': 'By the Way', 'artist': 'Red Hot Chili Peppers', 'n': 1},
+        params={'title': 'Song 1', 'artist': 'Artist A', 'n': 1},
     )
     assert sim_resp.status_code == 200, f"Status: {sim_resp.status_code}, Body: {sim_resp.text}"
     sim_data = sim_resp.json()
@@ -289,10 +289,10 @@ def test_song_path_and_playlist():
             return results[0]["item_id"]
         pytest.fail(f"Could not find song id for {artist} - {title}. Response: {results}")
 
-    start_artist = 'Red Hot Chili Peppers'
-    start_title = 'By the Way'
-    end_artist = 'System of a Down'
-    end_title = 'Attack'
+    start_artist = 'Artist A'
+    start_title = 'Song 1'
+    end_artist = 'Artist B'
+    end_title = 'Song 2'
 
     start_song_id = find_song_id(start_artist, start_title)
     end_song_id = find_song_id(end_artist, end_title)

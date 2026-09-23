@@ -272,7 +272,7 @@ class TestValidatePlanArgs:
                 {
                     'name': 'seed_search',
                     'arguments': {
-                        'seeds': [{'type': 'artist', 'name': 'Madonna'}],
+                        'seeds': [{'type': 'artist', 'name': 'Artist A'}],
                         'blend_mode': 'alchemy',
                     },
                 }
@@ -281,7 +281,7 @@ class TestValidatePlanArgs:
         )
         assert out[0]['name'] == 'seed_search'
         assert out[0]['arguments']['blend_mode'] == 'union'
-        assert out[0]['arguments']['seeds'][0]['name'] == 'Madonna'
+        assert out[0]['arguments']['seeds'][0]['name'] == 'Artist A'
 
     def test_coerces_empty_subtract_to_union(self):
         p = _plan()
@@ -292,8 +292,8 @@ class TestValidatePlanArgs:
                     'name': 'seed_search',
                     'arguments': {
                         'seeds': [
-                            {'type': 'artist', 'name': 'Wu-Tang Clan'},
-                            {'type': 'artist', 'name': 'Nujabes'},
+                            {'type': 'artist', 'name': 'Band-W Crew'},
+                            {'type': 'artist', 'name': 'Artist N'},
                         ],
                         'blend_mode': 'subtract',
                         'subtract': [],
@@ -311,8 +311,8 @@ class TestValidatePlanArgs:
         p = _plan()
         log = []
         seeds = [
-            {'type': 'artist', 'name': 'Wu-Tang Clan'},
-            {'type': 'artist', 'name': 'Nujabes'},
+            {'type': 'artist', 'name': 'Band-W Crew'},
+            {'type': 'artist', 'name': 'Artist N'},
         ]
         out = p.validate_plan_args(
             [
@@ -340,11 +340,11 @@ class TestValidatePlanArgs:
                 {
                     'name': 'seed_search',
                     'arguments': {
-                        'seeds': [{'type': 'artist', 'name': 'Oasis'}],
+                        'seeds': [{'type': 'artist', 'name': 'Band F'}],
                         'blend_mode': 'subtract',
                         'subtract': [
-                            {'type': 'artist', 'name': 'Oasis'},
-                            {'type': 'artist', 'name': 'Blur'},
+                            {'type': 'artist', 'name': 'Band F'},
+                            {'type': 'artist', 'name': 'Band G'},
                         ],
                     },
                 }
@@ -352,7 +352,7 @@ class TestValidatePlanArgs:
             user_wants_rating=False,
         )
         assert out[0]['arguments']['blend_mode'] == 'subtract'
-        assert out[0]['arguments']['subtract'] == [{'type': 'artist', 'name': 'Blur'}]
+        assert out[0]['arguments']['subtract'] == [{'type': 'artist', 'name': 'Band G'}]
 
     def test_strips_hallucinated_min_rating(self):
         p = _plan()
@@ -394,11 +394,11 @@ class TestMultiIntentClassification:
             [
                 {
                     'name': 'seed_search',
-                    'arguments': {'seeds': [{'type': 'artist', 'name': 'blink-182'}]},
+                    'arguments': {'seeds': [{'type': 'artist', 'name': 'band-123'}]},
                 },
                 {
                     'name': 'seed_search',
-                    'arguments': {'seeds': [{'type': 'artist', 'name': 'Green Day'}]},
+                    'arguments': {'seeds': [{'type': 'artist', 'name': 'Band B'}]},
                 },
             ]
         )
@@ -415,8 +415,8 @@ class TestMultiIntentClassification:
                         'seeds': [
                             {
                                 'type': 'song',
-                                'title': 'By The Way',
-                                'artist': 'Red Hot Chili Peppers',
+                                'title': 'Song 1',
+                                'artist': 'Band R',
                             }
                         ]
                     },
@@ -660,13 +660,13 @@ class TestPromptRendering:
         assert '"tool_calls"' in text
         assert text.count('"name"') >= 4
         assert 'play jazz' in text
-        assert 'Johnny Cash' in text
+        assert 'Artist A' in text
 
     def test_examples_shrink_with_tool_surface(self):
         pr = _prompts()
         only_filter = [t for t in _tools_fixture() if t['name'] == 'search_database']
         text = pr.build_ollama_tool_calling_prompt('x', only_filter)
-        assert 'Daft Punk' not in text
+        assert 'Artist C' not in text
         assert 'seed_search' not in text
 
 
@@ -766,22 +766,22 @@ class TestStripUnrequestedArgs:
         p = _plan()
         plan = p.ToolPlan(
             filter={
-                'artist': 'Emmylou Harris',
+                'artist': 'Artist H',
                 'genres': ['country', 'folk'],
                 'exclude_genres': ['Hip-Hop', 'rock', 'pop'],
-                'exclude_artists': ['Pitbull'],
+                'exclude_artists': ['Artist P'],
             }
         )
         log = []
         p._strip_unrequested_filter_args(
             plan,
             {'genres': ['country', 'folk']},
-            "Emmylou Harris songs plus similar country folk artists, only from the 70s",
+            "Artist H songs plus similar country folk artists, only from the 70s",
             log,
         )
         assert 'exclude_genres' not in plan.filter
         assert 'exclude_artists' not in plan.filter
-        assert plan.filter['artist'] == 'Emmylou Harris'
+        assert plan.filter['artist'] == 'Artist H'
         assert any('hallucinated exclusions' in ln for ln in log)
 
     def test_exclusions_kept_when_request_negates(self):
@@ -790,25 +790,25 @@ class TestStripUnrequestedArgs:
             filter={
                 'moods': ['party'],
                 'exclude_genres': ['Hip-Hop'],
-                'exclude_artists': ['Pitbull'],
+                'exclude_artists': ['Artist P'],
             }
         )
         p._strip_unrequested_filter_args(
             plan,
             {'exclude_genres': ['Hip-Hop']},
-            "upbeat party songs but absolutely no rap and nothing by Pitbull",
+            "upbeat party songs but absolutely no rap and nothing by Artist P",
             [],
         )
         assert plan.filter['exclude_genres'] == ['Hip-Hop']
-        assert plan.filter['exclude_artists'] == ['Pitbull']
+        assert plan.filter['exclude_artists'] == ['Artist P']
 
     def test_artist_exclusion_kept_on_negation_cue_alone(self):
         p = _plan()
-        plan = p.ToolPlan(filter={'genres': ['Hip-Hop'], 'exclude_artists': ['50 Cent']})
+        plan = p.ToolPlan(filter={'genres': ['Hip-Hop'], 'exclude_artists': ['Artist P']})
         p._strip_unrequested_filter_args(
-            plan, {}, "Hip hop songs but absolutely no 50 Cent", []
+            plan, {}, "Hip hop songs but absolutely no Artist P", []
         )
-        assert plan.filter['exclude_artists'] == ['50 Cent']
+        assert plan.filter['exclude_artists'] == ['Artist P']
 
 
 class TestArtistWordRegex:
@@ -816,8 +816,8 @@ class TestArtistWordRegex:
         _ensure_config_stub()
         from tasks.ai.tool_impl import _artist_word_regex
 
-        assert _artist_word_regex('Nas') == r'\mNas\M'
-        assert _artist_word_regex('  AC/DC ') == r'\mAC/DC\M'
+        assert _artist_word_regex('Tom') == r'\mTom\M'
+        assert _artist_word_regex('  A/B ') == r'\mA/B\M'
 
 
 class TestRerankSimilarityBlend:
@@ -999,18 +999,18 @@ class TestExclusionsHardCut:
     def test_exclude_artist_and_genre(self):
         p = _plan()
         songs = [
-            {'item_id': '1', 'title': 'S1', 'artist': '50 Cent'},
-            {'item_id': '2', 'title': 'S2', 'artist': 'Enya'},
-            {'item_id': '3', 'title': 'S3', 'artist': 'Mobb Deep'},
+            {'item_id': '1', 'title': 'S1', 'artist': 'Artist P'},
+            {'item_id': '2', 'title': 'S2', 'artist': 'Artist E'},
+            {'item_id': '3', 'title': 'S3', 'artist': 'Band M'},
         ]
         feats = {
-            '1': {'author': '50 Cent', 'mood_vector': ''},
-            '2': {'author': 'Enya', 'mood_vector': 'pop:0.1'},
-            '3': {'author': 'Mobb Deep', 'mood_vector': 'Hip-Hop:0.8'},
+            '1': {'author': 'Artist P', 'mood_vector': ''},
+            '2': {'author': 'Artist E', 'mood_vector': 'pop:0.1'},
+            '3': {'author': 'Band M', 'mood_vector': 'Hip-Hop:0.8'},
         }
         kept = p._apply_exclusions(
             songs,
-            {'exclude_artists': ['50 cent'], 'exclude_genres': ['Hip-Hop']},
+            {'exclude_artists': ['artist p'], 'exclude_genres': ['Hip-Hop']},
             feats,
             [],
         )
@@ -1031,13 +1031,13 @@ class TestPlanNormalizationExclusions:
                     'name': 'search_database',
                     'arguments': {
                         'exclude_genres': ['rap'],
-                        'exclude_artists': ['50 Cent', '50 Cent', ''],
+                        'exclude_artists': ['Artist P', 'Artist P', ''],
                     },
                 }
             ]
         )
         assert plan.filter['exclude_genres'] == ['Hip-Hop']
-        assert plan.filter['exclude_artists'] == ['50 Cent']
+        assert plan.filter['exclude_artists'] == ['Artist P']
 
     def test_exclusion_only_filter_counts_as_content(self):
         p = _plan()
@@ -1168,24 +1168,24 @@ class TestListArgDedupe:
     def test_repeated_seed_search_seeds_collapse_by_identity(self):
         p = _plan()
         calls = [{'name': 'seed_search', 'arguments': {'seeds': [
-            {'type': 'artist', 'name': 'Oasis'},
-            {'type': 'artist', 'name': 'oasis'},
-            {'type': 'artist', 'name': 'Blur'},
+            {'type': 'artist', 'name': 'Band F'},
+            {'type': 'artist', 'name': 'band f'},
+            {'type': 'artist', 'name': 'Band G'},
         ]}}]
         p._dedupe_call_lists(calls, log_messages=[])
         assert calls[0]['arguments']['seeds'] == [
-            {'type': 'artist', 'name': 'Oasis'},
-            {'type': 'artist', 'name': 'Blur'},
+            {'type': 'artist', 'name': 'Band F'},
+            {'type': 'artist', 'name': 'Band G'},
         ]
 
     def test_repeated_subtract_items_collapse_by_identity(self):
         p = _plan()
         calls = [{'name': 'seed_search', 'arguments': {
-            'seeds': [{'type': 'artist', 'name': 'Oasis'}],
-            'subtract': [{'type': 'artist', 'name': 'Blur'}] * 3,
+            'seeds': [{'type': 'artist', 'name': 'Band F'}],
+            'subtract': [{'type': 'artist', 'name': 'Band G'}] * 3,
         }}]
         p._dedupe_call_lists(calls, log_messages=[])
-        assert calls[0]['arguments']['subtract'] == [{'type': 'artist', 'name': 'Blur'}]
+        assert calls[0]['arguments']['subtract'] == [{'type': 'artist', 'name': 'Band G'}]
 
     def test_calls_differing_only_by_padding_collapse_and_free_a_cap_slot(self):
         p = _plan()
@@ -1210,13 +1210,13 @@ class TestContradictoryExclusionStrip:
         plan = p.ToolPlan(
             primaries=[{
                 'name': 'seed_search',
-                'arguments': {'seeds': [{'type': 'artist', 'name': 'Miles Davis'}]},
+                'arguments': {'seeds': [{'type': 'artist', 'name': 'Artist M'}]},
             }],
-            filter={'exclude_artists': ['Miles Davis'], 'year_max': 1970},
+            filter={'exclude_artists': ['Artist M'], 'year_max': 1970},
         )
 
         p._strip_contradictory_exclusions(
-            plan, {}, 'like Miles Davis, nothing after 1970', []
+            plan, {}, 'like Artist M, nothing after 1970', []
         )
 
         assert not (plan.filter or {}).get('exclude_artists')
@@ -1225,9 +1225,9 @@ class TestContradictoryExclusionStrip:
     def test_exclude_artist_matching_the_filter_artist_is_dropped(self):
         p = _plan()
         plan = p.ToolPlan(
-            filter={'artist': 'Nas', 'exclude_artists': ['Nas'], 'album': 'Illmatic'}
+            filter={'artist': 'Artist Q', 'exclude_artists': ['Artist Q'], 'album': 'Album X'}
         )
-        p._strip_contradictory_exclusions(plan, {}, 'play the album Illmatic by Nas', [])
+        p._strip_contradictory_exclusions(plan, {}, 'play the album Album X by Artist Q', [])
         assert not (plan.filter or {}).get('exclude_artists')
 
     def test_exclude_genre_the_user_asked_for_positively_is_dropped(self):
@@ -1260,15 +1260,15 @@ class TestContradictoryExclusionStrip:
 
     def test_misspelled_artist_exclusion_survives_via_fuzzy_message_match(self):
         p = _plan()
-        plan = p.ToolPlan(filter={'exclude_artists': ['Bee Gees']})
+        plan = p.ToolPlan(filter={'exclude_artists': ['Band Vees']})
         p._strip_contradictory_exclusions(
-            plan, {}, 'disco hits but absolutely nothing by the Beegees', [],
+            plan, {}, 'disco hits but absolutely nothing by the Bandvees', [],
         )
-        assert plan.filter['exclude_artists'] == ['Bee Gees']
+        assert plan.filter['exclude_artists'] == ['Band Vees']
 
     def test_exclude_artist_named_nowhere_in_the_request_is_dropped(self):
         p = _plan()
-        plan = p.ToolPlan(filter={'genres': ['pop'], 'exclude_artists': ['Nickelback']})
+        plan = p.ToolPlan(filter={'genres': ['pop'], 'exclude_artists': ['Artist Z']})
         p._strip_contradictory_exclusions(plan, {}, 'upbeat pop, nothing slow', [])
         assert not (plan.filter or {}).get('exclude_artists')
 
@@ -1280,11 +1280,11 @@ class TestContradictoryExclusionStrip:
 
     def test_exclusions_that_would_empty_the_pool_are_reverted_with_a_note(self):
         p = _plan()
-        pool = [{'item_id': 'a', 'title': 'T', 'artist': 'Miles Davis'}]
-        feats = {'a': {'author': 'Miles Davis', 'mood_vector': ''}}
+        pool = [{'item_id': 'a', 'title': 'T', 'artist': 'Artist M'}]
+        feats = {'a': {'author': 'Artist M', 'mood_vector': ''}}
         notes = []
         kept = p._apply_exclusions(
-            pool, {'exclude_artists': ['Miles Davis']}, feats, [], notes=notes
+            pool, {'exclude_artists': ['Artist M']}, feats, [], notes=notes
         )
         assert kept == pool
         assert notes
@@ -1391,15 +1391,15 @@ class TestKnowledgeLookupGrounding:
         p = _plan()
         _result, seen, _logs = _run_plan(
             p, monkeypatch,
-            'greatest disco hits of the 70s, but absolutely nothing by the Bee Gees',
+            'greatest disco hits of the 70s, but absolutely nothing by the Band Vees',
             [
                 {'name': 'knowledge_lookup',
                  'arguments': {'user_request': 'greatest disco hits of the 70s'}},
                 {'name': 'search_database',
-                 'arguments': {'exclude_artists': ['Bee Gees']}},
+                 'arguments': {'exclude_artists': ['Band Vees']}},
             ])
         kl = [a for n, a in seen if n == 'knowledge_lookup']
-        assert kl and kl[0]['gate_filter']['exclude_artists'] == ['Bee Gees']
+        assert kl and kl[0]['gate_filter']['exclude_artists'] == ['Band Vees']
 
     def test_plan_filter_cleared_so_the_rerank_never_touches_brainstorm_output(self, monkeypatch):
         p = _plan()
@@ -1427,13 +1427,13 @@ class TestKnowledgeLookupGrounding:
             p, monkeypatch, 'best of the 90s',
             [
                 {'name': 'knowledge_lookup', 'arguments': {'user_request': 'best of the 90s'}},
-                {'name': 'search_database', 'arguments': {'artist': 'Oasis'}},
+                {'name': 'search_database', 'arguments': {'artist': 'Band F'}},
             ])
         kl = [a for n, a in seen if n == 'knowledge_lookup']
         assert kl
         assert 'artist' not in (kl[0].get('grounding_filter') or {})
         assert 'artist' not in (kl[0].get('gate_filter') or {})
-        assert any('Oasis' in n for n in result['plan_notes'])
+        assert any('Band F' in n for n in result['plan_notes'])
 
 
 class TestThreeToolExampleIsOffered:
@@ -1470,11 +1470,11 @@ class TestPlannerLogLinesStayFrontendParsable:
         logs_all = []
         cases = [
             ('music', [{'name': 'search_database', 'arguments': {}}]),
-            ('like Miles Davis, nothing after 1970', [
+            ('like Artist M, nothing after 1970', [
                 {'name': 'seed_search',
-                 'arguments': {'seeds': [{'type': 'artist', 'name': 'Miles Davis'}]}},
+                 'arguments': {'seeds': [{'type': 'artist', 'name': 'Artist M'}]}},
                 {'name': 'search_database',
-                 'arguments': {'exclude_artists': ['Miles Davis'],
+                 'arguments': {'exclude_artists': ['Artist M'],
                                'exclude_genres': ['jazz', 'jazz'], 'year_max': 1970}},
             ]),
             ('famous 90s hits', [

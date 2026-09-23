@@ -169,7 +169,7 @@ class TestGenerate:
     @pytest.mark.parametrize('body', [
         {'seed_type': 'song'}, {'seed_type': 'song', 'item_id': '  '},
         {'seed_type': 'text'}, {'seed_type': 'text', 'query': '   '},
-        {'seed_type': 'album', 'album': 'Blue Lines'}, {'seed_type': 'artist', 'artist': 'Nina'},
+        {'seed_type': 'album', 'album': 'Album X'}, {'seed_type': 'artist', 'artist': 'Artist A'},
         {'seed_type': 'playlist', 'item_id': '1'}, {},
     ])
     def test_a_missing_or_unknown_seed_answers_400_and_builds_nothing(self, client, created, body):

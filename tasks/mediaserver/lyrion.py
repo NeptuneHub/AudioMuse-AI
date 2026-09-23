@@ -586,7 +586,7 @@ def _path_is_under(track_path, target_path):
     """True when ``track_path`` is inside the ``target_path`` folder.
 
     Anchored on whole path components: a bare substring test would put
-    '/music/Kid Rock Anthology/x.flac' inside a folder configured as 'Rock'.
+    '/music/Artist A Rock Anthology/x.flac' inside a folder configured as 'Rock'.
     """
     target = target_path.strip('/')
     if not target:

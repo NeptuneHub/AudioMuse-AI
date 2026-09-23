@@ -178,13 +178,13 @@ def _build_examples(tools: List[Dict]) -> List[str]:
     examples: List[str] = []
     if 'search_database' in tool_names:
         examples.append(
-            '"energetic songs by Johnny Cash"\n'
+            '"energetic songs by Artist A"\n'
             + _example(
-                "Johnny Cash's own songs, filtered to high energy.",
+                "Artist A's own songs, filtered to high energy.",
                 [
                     {
                         "name": "search_database",
-                        "arguments": {"artist": "Johnny Cash", "energy_min": 0.65},
+                        "arguments": {"artist": "Artist A", "energy_min": 0.65},
                     }
                 ],
             )
@@ -207,7 +207,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
             )
         )
         examples.append(
-            '"party songs but absolutely no rap and nothing by Pitbull"\n'
+            '"party songs but absolutely no rap and nothing by Artist B"\n'
             + _example(
                 "Party mood with a genre and an artist exclusion.",
                 [
@@ -216,7 +216,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
                         "arguments": {
                             "moods": ["party"],
                             "exclude_genres": ["Hip-Hop"],
-                            "exclude_artists": ["Pitbull"],
+                            "exclude_artists": ["Artist B"],
                         },
                     }
                 ],
@@ -224,7 +224,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
         )
     if 'seed_search' in tool_names and 'search_database' in tool_names:
         examples.append(
-            '"like Get Lucky by Daft Punk but with a female voice"\n'
+            '"like Song 1 by Artist C but with a female voice"\n'
             + _example(
                 "Songs similar to a named track, constrained to female vocals.",
                 [
@@ -232,7 +232,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
                         "name": "seed_search",
                         "arguments": {
                             "seeds": [
-                                {"type": "song", "title": "Get Lucky", "artist": "Daft Punk"}
+                                {"type": "song", "title": "Song 1", "artist": "Artist C"}
                             ]
                         },
                     },
@@ -248,14 +248,14 @@ def _build_examples(tools: List[Dict]) -> List[str]:
         and 'audio' in modes
     ):
         examples.append(
-            '"chill 2000s songs like Zero 7 with a warm rhodes sound, nothing by Moby"\n'
+            '"chill 2000s songs like Artist D with a warm rhodes sound, nothing by Artist E"\n'
             + _example(
                 "Three parts: an artist to resemble, a sound to match, and the era plus "
                 "the exclusion.",
                 [
                     {
                         "name": "seed_search",
-                        "arguments": {"seeds": [{"type": "artist", "name": "Zero 7"}]},
+                        "arguments": {"seeds": [{"type": "artist", "name": "Artist D"}]},
                     },
                     {
                         "name": "text_match",
@@ -269,7 +269,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
                         "arguments": {
                             "year_min": 2000,
                             "year_max": 2009,
-                            "exclude_artists": ["Moby"],
+                            "exclude_artists": ["Artist E"],
                         },
                     },
                 ],
@@ -277,16 +277,16 @@ def _build_examples(tools: List[Dict]) -> List[str]:
         )
     if 'seed_search' in tool_names:
         examples.append(
-            '"in the style of Oasis but not Blur"\n'
+            '"in the style of Band F but not Band G"\n'
             + _example(
                 "Similar to one named artist while removing another's flavor.",
                 [
                     {
                         "name": "seed_search",
                         "arguments": {
-                            "seeds": [{"type": "artist", "name": "Oasis"}],
+                            "seeds": [{"type": "artist", "name": "Band F"}],
                             "blend_mode": "subtract",
-                            "subtract": [{"type": "artist", "name": "Blur"}],
+                            "subtract": [{"type": "artist", "name": "Band G"}],
                         },
                     }
                 ],
@@ -423,7 +423,7 @@ RULES:
 - genres / moods / voices MUST come from the lists above, or be left empty.
 - Output ONLY the JSON object. No markdown fences, no comments, no extra text.
 
-EXAMPLE -- request "100 of the best rap songs from the 90s and 2000s":
-{{"filters": {{"genres": ["Hip-Hop"], "moods": [], "voices": [], "year_min": 1990, "year_max": 2009, "energy_min": 0.5, "energy_max": 1.0, "tempo_min": null, "tempo_max": null}}, "sound_descriptions": ["gritty 90s east coast boom bap hip hop with hard-hitting drums and jazzy samples", "glossy early 2000s mainstream rap with heavy bass and crossover hooks"], "seed_artists": ["Nas", "Jay-Z", "2Pac", "Eminem"], "lyric_themes": []}}
+EXAMPLE -- request "100 of the best rap songs from the 90s and 2000s" (Artist A to Artist D stand for real, well-known artists that fit the request):
+{{"filters": {{"genres": ["Hip-Hop"], "moods": [], "voices": [], "year_min": 1990, "year_max": 2009, "energy_min": 0.5, "energy_max": 1.0, "tempo_min": null, "tempo_max": null}}, "sound_descriptions": ["gritty 90s east coast boom bap hip hop with hard-hitting drums and jazzy samples", "glossy early 2000s mainstream rap with heavy bass and crossover hooks"], "seed_artists": ["Artist A", "Artist B", "Artist C", "Artist D"], "lyric_themes": []}}
 
 Now produce the JSON recipe for "{user_request}":"""

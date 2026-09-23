@@ -91,7 +91,7 @@ def endpoints_db(pg_dsn):
         cur.execute(_EMBEDDING_DDL)
         cur.execute(
             "INSERT INTO score (item_id, title, author) VALUES (%s, %s, %s)",
-            ('track-1', 'Hello', 'Adele'),
+            ('track-1', 'Song 1', 'Artist A'),
         )
         vec = np.array([0.1, 0.2, 0.3], dtype=np.float32).tobytes()
         cur.execute(
@@ -145,8 +145,8 @@ class TestScoreEndpointRealDb:
         assert resp.status_code == 200
         body = resp.get_json()
         assert body['item_id'] == 'track-1'
-        assert body['title'] == 'Hello'
-        assert body['author'] == 'Adele'
+        assert body['title'] == 'Song 1'
+        assert body['author'] == 'Artist A'
 
     def test_missing_id_returns_404(self, endpoints_db, monkeypatch):
         import database

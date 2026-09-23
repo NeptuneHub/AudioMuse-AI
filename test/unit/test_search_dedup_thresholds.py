@@ -93,7 +93,7 @@ class TestNameFilterOnTheLyricsStyleResultBuilder:
         idx = _index({0: [1.0, 0.0], 1: [0.0, 1.0], 2: [0.5, 0.5]})
         results = build_capped_results(
             idx, {0: 'a', 1: 'b', 2: 'c'},
-            _meta([('a', '', 'Aphex Twin'), ('b', '', 'Aphex Twin'), ('c', '', 'Aphex Twin')]),
+            _meta([('a', '', 'Artist A'), ('b', '', 'Artist A'), ('c', '', 'Artist A')]),
             [0, 1, 2], [0.1, 0.2, 0.3], 10, 0, dedup_names=True,
         )
 
@@ -440,8 +440,8 @@ class TestTheOtherDedupPathsCarryTheSameFixes:
 
         songs = [{'item_id': 'a'}, {'item_id': 'b'}, {'item_id': 'c'}]
         details = {
-            'a': {'item_id': 'a', 'title': '', 'author': 'Aphex Twin'},
-            'b': {'item_id': 'b', 'title': '', 'author': 'Aphex Twin'},
+            'a': {'item_id': 'a', 'title': '', 'author': 'Artist A'},
+            'b': {'item_id': 'b', 'title': '', 'author': 'Artist A'},
             'c': {'item_id': 'c', 'title': '', 'author': ''},
         }
 

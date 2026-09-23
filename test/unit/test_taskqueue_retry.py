@@ -156,10 +156,10 @@ class TestTheTerminalRowTheQueueWrites:
     def test_the_previous_details_survive_and_the_summary_wins(self):
         details = worker_mod._terminal_details(
             config.TASK_STATUS_SUCCESS, None, {'tracks_analyzed': 7, 'status': 'SUCCESS'},
-            previous={'album_name': 'Kind of Blue', 'tracks_analyzed': 0},
+            previous={'album_name': 'Album X', 'tracks_analyzed': 0},
         )
 
-        assert details['album_name'] == 'Kind of Blue'
+        assert details['album_name'] == 'Album X'
         assert details['tracks_analyzed'] == 7
         assert 'status' not in details, 'the status column is the truth, not a details key'
         assert details['final_summary_details'] == {'tracks_analyzed': 7, 'status': 'SUCCESS'}
@@ -212,7 +212,7 @@ class TestTheTerminalRowTheQueueWrites:
             config.TASK_STATUS_SUCCESS, None, {'message': 'Done on the retry.'},
             previous={
                 'error': {'error_code': 2005, 'error_message': 'attempt 1 failed'},
-                'album_name': 'Kind of Blue',
+                'album_name': 'Album X',
             },
         )
 
@@ -221,7 +221,7 @@ class TestTheTerminalRowTheQueueWrites:
             'returns without a progress write of its own would otherwise show a '
             'SUCCESS recap still carrying the previous attempt\'s error record'
         )
-        assert details['album_name'] == 'Kind of Blue'
+        assert details['album_name'] == 'Album X'
 
     def test_a_summary_value_json_cannot_encode_still_finishes_the_row(self):
         import datetime

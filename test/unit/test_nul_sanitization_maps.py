@@ -197,13 +197,13 @@ class TestTranslationReadSitesSanitize:
 
         mock_default_id.return_value = 'srv1'
         conn, cur = _mock_db()
-        cur.fetchall.return_value = [('artid1', 'AC/DC')]
+        cur.fetchall.return_value = [('artid1', 'A/B Band')]
 
         result = registry.artist_names_for_ids(['art\x01id1'], conn=conn)
 
         bound = cur.execute.call_args_list[0][0][1]
         assert bound == ('srv1', ['artid1'])
-        assert result == {'art\x01id1': 'AC/DC'}
+        assert result == {'art\x01id1': 'A/B Band'}
 
 
 class TestSweepUsesSameTransformAsRegistry:

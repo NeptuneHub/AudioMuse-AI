@@ -137,7 +137,7 @@ class TestPackUnpackArtistMetadata:
         assert loaded_gmms == {}
 
     def test_unicode_artist_names_round_trip(self):
-        artist_map = {0: "Sigur Rós", 1: "東京事変", 2: "Mötley Crüe"}
+        artist_map = {0: "Artíst A", 1: "歌手甲", 2: "Bänd Crüx"}
         artist_gmms = {
             name: {
                 'means': [[0.1, 0.2, 0.3]],

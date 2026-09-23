@@ -1906,9 +1906,9 @@ class TestSweepAlignment:
         assert sync._strip_nul(None) is None
         assert sync._strip_nul(2020) == 2020
         maps = sync._collect_artist_maps(
-            [{'artist': 'AC\x00DC', 'artist_id': 'id\x001'}]
+            [{'artist': 'AB\x00CD', 'artist_id': 'id\x001'}]
         )
-        assert maps == {'ACDC': 'id1'}
+        assert maps == {'ABCD': 'id1'}
 
     def test_full_refresh_binds_server_filters_and_prunes(self, monkeypatch):
         from tasks import multiserver_sync as sync
@@ -2998,13 +2998,13 @@ class TestLyrionFolderFilterIsAnchored:
     def test_substring_of_a_folder_name_does_not_match(self):
         from tasks.mediaserver import lyrion
 
-        song = {'FilePath': '/music/kid rock anthology/01.flac', 'url': ''}
+        song = {'FilePath': '/music/classic rock anthology/01.flac', 'url': ''}
         assert lyrion._song_in_target_paths(song, {'rock'}) is False
 
     def test_real_folder_matches(self):
         from tasks.mediaserver import lyrion
 
-        song = {'FilePath': '/music/rock/queen/01.flac', 'url': ''}
+        song = {'FilePath': '/music/rock/band q/01.flac', 'url': ''}
         assert lyrion._song_in_target_paths(song, {'rock'}) is True
 
     def test_full_configured_path_matches(self):

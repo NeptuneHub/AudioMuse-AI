@@ -45,8 +45,8 @@ LEGACY_TITLE_TEMPLATE_SHA256 = (
 )
 
 SONGS = [
-    ('1', 'Vienna', 'Billy Joel'),
-    ('2', 'Skinny Love', 'Bon Iver'),
+    ('1', 'Song Alpha', 'Artist A'),
+    ('2', 'Song Beta', 'Artist B'),
 ]
 
 
@@ -72,7 +72,7 @@ class TestDefaultTitlePrompt:
 
     def test_default_render_is_byte_identical_to_the_legacy_render(self):
         legacy = legacy_template().format(
-            song_list_sample='- Vienna by Billy Joel\n- Skinny Love by Bon Iver'
+            song_list_sample='- Song Alpha by Artist A\n- Song Beta by Artist B'
         )
         assert build_title_naming_prompt(
             config._AI_NAMING_TITLE_PROMPT_DEFAULT, SONGS, 25
@@ -98,10 +98,10 @@ class TestDefaultTitlePrompt:
 class TestTitlePromptBuilder:
     def test_the_song_sample_is_capped(self):
         block = title_prompt_song_block(SONGS, 1)
-        assert block == TITLE_PROMPT_PLAYLIST_HEADER + '- Vienna by Billy Joel\n\n'
+        assert block == TITLE_PROMPT_PLAYLIST_HEADER + '- Song Alpha by Artist A\n\n'
 
     def test_a_cap_below_one_still_sends_one_song(self):
-        assert '- Vienna by Billy Joel' in title_prompt_song_block(SONGS, 0)
+        assert '- Song Alpha by Artist A' in title_prompt_song_block(SONGS, 0)
 
     def test_missing_title_and_artist_use_the_legacy_placeholders(self):
         block = title_prompt_song_block([('1', None, '')], 5)
@@ -119,11 +119,11 @@ class TestTitlePromptBuilder:
         prompt = build_title_naming_prompt('Title please {song_list_sample}', SONGS, 5)
         assert prompt.startswith('Title please {song_list_sample}\n\n')
         assert prompt.count('This is the playlist:') == 1
-        assert prompt.count('- Vienna by Billy Joel') == 1
+        assert prompt.count('- Song Alpha by Artist A') == 1
 
     def test_edited_instructions_cannot_remove_the_song_sample(self):
         prompt = build_title_naming_prompt('Ignore the songs.', SONGS, 5)
-        assert prompt.endswith('- Vienna by Billy Joel\n- Skinny Love by Bon Iver\n\n')
+        assert prompt.endswith('- Song Alpha by Artist A\n- Song Beta by Artist B\n\n')
 
 
 class TestNormalizeMode:
@@ -230,7 +230,7 @@ class TestGetAiPlaylistTitle:
         mock_generate.return_value = 'Velvet Morning Light'
         get_ai_playlist_title('Name it.', SONGS, ai_config())
         prompt = mock_generate.call_args[0][0]
-        assert 'Vienna' in prompt and 'Skinny Love' not in prompt
+        assert 'Song Alpha' in prompt and 'Song Beta' not in prompt
 
 
 def _call_helper(name='Rock_Fast_automatic', provider='OLLAMA'):

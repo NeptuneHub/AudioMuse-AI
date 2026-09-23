@@ -127,10 +127,10 @@ def make_dict_row(mapping):
 def _minimal_track_row(**overrides):
     base = {
         'item_id': 'track-1',
-        'title': 'Echoes',
-        'author': 'Pink Floyd',
-        'album': 'Meddle',
-        'album_artist': 'Pink Floyd',
+        'title': 'Song 1',
+        'author': 'Artist A',
+        'album': 'Album X',
+        'album_artist': 'Artist A',
         'year': 1971,
         'tempo': 117.5,
         'key': 'C# Minor',
@@ -247,9 +247,9 @@ class TestClamping:
 class TestTrackShape:
     def test_artist_renamed_from_author(self, bp_mod, client, fake_db):
         _, cur = fake_db
-        _setup_payload(cur, total=1, tracks=[_minimal_track_row(author='Pink Floyd')])
+        _setup_payload(cur, total=1, tracks=[_minimal_track_row(author='Artist B')])
         track = client.get('/api/sync?limit=1').get_json()['tracks'][0]
-        assert track['artist'] == 'Pink Floyd'
+        assert track['artist'] == 'Artist B'
         assert 'author' not in track
 
     def test_id_field_from_item_id(self, bp_mod, client, fake_db):

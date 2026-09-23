@@ -563,7 +563,7 @@ class TestNamePlaylists:
     def test_every_playlist_goes_through_the_real_naming_call(self, monkeypatch, mode, prompt):
         from tasks import clustering_helper
 
-        answers = {'A_automatic': 'Velvet Light', 'B_automatic': 'Velvet Light', 'C_automatic': 'C_automatic'}
+        answers = {'A_automatic': 'Playlist A', 'B_automatic': 'Playlist A', 'C_automatic': 'C_automatic'}
         calls, reports = [], []
         db = _Connection()
 
@@ -600,7 +600,7 @@ class TestNamePlaylists:
 
         assert state['total'] == 4 and state['done'] == 4
         assert reports == [0, 1, 2, 3, 4]
-        assert [t['title'] for t in state['titles']] == ['Velvet Light', 'Velvet Light (2)', 'C_automatic', 'D_automatic']
+        assert [t['title'] for t in state['titles']] == ['Playlist A', 'Playlist A (2)', 'C_automatic', 'D_automatic']
         assert [t['tag_name_kept'] for t in state['titles']] == [False, False, True, True]
         assert state['titles'][0]['sample'] == ['Song 1 - Artist 1', 'Song 2 - Unknown Artist']
         assert all(c['naming_mode'] == mode and c['title_prompt'] == prompt for c in calls)
@@ -608,8 +608,8 @@ class TestNamePlaylists:
         assert all(c['centroids'] is centroids for c in calls)
         assert [c['primary_genre'] for c in calls] == ['rock', None, None, None]
         assert [c['avoid'] for c in calls] == [
-            [], ['Velvet Light'], ['Velvet Light', 'Velvet Light (2)'],
-            ['Velvet Light', 'Velvet Light (2)', 'C_automatic'],
+            [], ['Playlist A'], ['Playlist A', 'Playlist A (2)'],
+            ['Playlist A', 'Playlist A (2)', 'C_automatic'],
         ]
         assert db.rollbacks == 1
 

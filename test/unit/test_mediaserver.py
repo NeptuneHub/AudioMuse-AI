@@ -2072,8 +2072,8 @@ class TestLyrionGetTracksFromAlbum:
 
         mock_request.return_value = {
             'titles_loop': [
-                {'id': 1, 'title': 'A', 'artist': 'Nathan Eckel', 'artist_id': '764', 'url': 'file:///m/a.mp3'},
-                {'id': 2, 'title': 'B', 'trackartist': 'Scroach', 'trackartist_ids': '63',
+                {'id': 1, 'title': 'A', 'artist': 'Artist Q', 'artist_id': '764', 'url': 'file:///m/a.mp3'},
+                {'id': 2, 'title': 'B', 'trackartist': 'Artist R', 'trackartist_ids': '63',
                  'artist': 'Other', 'artist_id': '9', 'url': 'file:///m/b.mp3'},
                 {'id': 3, 'title': 'C', 'trackartist': 'X, Y', 'trackartist_ids': '4,5',
                  'artist': 'X', 'artist_id': '4', 'url': 'file:///m/c.mp3'},
@@ -2085,8 +2085,8 @@ class TestLyrionGetTracksFromAlbum:
 
         assert 'tags:galduAyRsS' in mock_request.call_args[0][1]
         assert [(t['AlbumArtist'], t['ArtistId']) for t in tracks] == [
-            ('Nathan Eckel', '764'),
-            ('Scroach', '63'),
+            ('Artist Q', '764'),
+            ('Artist R', '63'),
             ('X, Y', None),
             ('Someone', None),
         ], 'an id is kept only when it belongs to the artist name AudioMuse stores'
@@ -2096,7 +2096,7 @@ class TestLyrionGetTracksFromAlbum:
         from tasks.mediaserver.lyrion import get_all_songs
 
         mock_request.return_value = {
-            'titles_loop': [{'id': 1, 'title': 'A', 'artist': 'Nathan Eckel', 'artist_id': '764', 'url': 'file:///m/a.mp3'}]
+            'titles_loop': [{'id': 1, 'title': 'A', 'artist': 'Artist Q', 'artist_id': '764', 'url': 'file:///m/a.mp3'}]
         }
 
         songs = get_all_songs(user_creds={'url': 'http://lms:9000'}, apply_filter=False)

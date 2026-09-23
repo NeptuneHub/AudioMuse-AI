@@ -123,28 +123,28 @@ def _features(intensity, **columns):
 
 class TestDedupKeysAndHygiene:
     def test_a_bracketed_or_dashed_suffix_is_the_same_song(self):
-        plain = acm.song_key('Heroes', 'David Bowie')
-        assert acm.song_key('Heroes (2017 Remaster)', 'david bowie ') == plain
-        assert acm.song_key('Heroes - Single Version', 'David Bowie') == plain
-        assert acm.song_key('Heroes', 'Another Artist') != plain
+        plain = acm.song_key('Song One', 'Artist A')
+        assert acm.song_key('Song One (2017 Remaster)', 'artist a ') == plain
+        assert acm.song_key('Song One - Single Version', 'Artist A') == plain
+        assert acm.song_key('Song One', 'Another Artist') != plain
 
     def test_a_track_without_a_title_has_no_key_and_is_never_folded(self):
         assert acm.song_key('', 'Someone') is None
         assert acm.song_key('(Live)', 'Someone') is None
 
     @pytest.mark.parametrize('title', [
-        'Song (Live at Wembley)', 'Song - Demo', 'Song (Club Remix)', 'Skit', 'Interlude II',
+        'Song (Live at the Arena)', 'Song - Demo', 'Song (Club Remix)', 'Skit', 'Interlude II',
         'Intro', 'Song (Alternate Take 3)', 'Song (take 2)', 'Canzone (dal vivo)',
     ])
     def test_versions_and_non_songs_are_not_album_material(self, title):
         assert not acm.is_album_candidate(_track('x', np.ones(DIM), title=title), False)
 
-    @pytest.mark.parametrize('title', ['Alive', 'Demolition Man', 'Delivery', 'Introspection'])
+    @pytest.mark.parametrize('title', ['Alive', 'Demolition Site', 'Delivery', 'Introspection'])
     def test_the_version_filter_matches_whole_words_only(self, title):
         assert acm.is_album_candidate(_track('x', np.ones(DIM), title=title), False)
 
     @pytest.mark.parametrize('title', [
-        'Song (instrumental)', 'Song (Acoustic Version)', 'Song (extended mix)', 'Song [Morales dub mix]',
+        'Song (instrumental)', 'Song (Acoustic Version)', 'Song (extended mix)', 'Song [Remixer A dub mix]',
         'Song (edit)', 'Song (no choir)', 'Song (a cappella)', 'Song (Acappella)', 'Song (outtake)',
         'Song (Work in Progress)', 'Song (BBC session)', 'Song (August 12, Dinner Show)',
         'Song (Japanese ver.)', 'Song - Acoustic', 'Song - iTunes Session',
@@ -160,22 +160,22 @@ class TestDedupKeysAndHygiene:
     def test_the_song_itself_under_another_label_stays(self, title):
         assert acm.has_clean_title(_track('x', np.ones(DIM), title=title), False)
 
-    @pytest.mark.parametrize('title', ['Acoustic Dreams', 'Mix It Up', 'The Show Must Go On', 'Edit the Sad Parts'])
+    @pytest.mark.parametrize('title', ['Acoustic Dreams', 'Mix It Up', 'The Show Goes Quiet', 'Edit the Long Parts'])
     def test_a_rendition_word_outside_a_suffix_is_only_a_title(self, title):
         assert acm.has_clean_title(_track('x', np.ones(DIM), title=title), False)
 
     def test_a_year_tag_is_the_same_song(self):
-        plain = acm.song_key('Star People', 'George Michael')
-        assert acm.song_key("Star People '97 (radio version)", 'George Michael') == plain
-        assert acm.song_key('Star People \N{RIGHT SINGLE QUOTATION MARK}97', 'George Michael') == plain
-        assert acm.song_key('Star People 1997', 'George Michael') == plain
+        plain = acm.song_key('Song Star', 'Artist A')
+        assert acm.song_key("Song Star '97 (radio version)", 'Artist A') == plain
+        assert acm.song_key('Song Star \N{RIGHT SINGLE QUOTATION MARK}97', 'Artist A') == plain
+        assert acm.song_key('Song Star 1997', 'Artist A') == plain
 
     def test_a_title_that_is_only_a_year_or_a_number_keeps_it(self):
-        assert acm.song_key('1999', 'Prince') == ('1999', 'prince')
+        assert acm.song_key('1999', 'Artist A') == ('1999', 'artist a')
         assert acm.song_key('Sonata No. 14', 'X') != acm.song_key('Sonata No. 21', 'X')
 
     @pytest.mark.parametrize('author, known', [
-        ('Nick Drake', True), ('Unknown Artist', False), ('[Unknown Artist]', False), ('', False), (None, False),
+        ('Artist A', True), ('Unknown Artist', False), ('[Unknown Artist]', False), ('', False), (None, False),
     ])
     def test_a_placeholder_is_not_an_artist(self, author, known):
         assert acm.has_known_artist({'author': author}) is known
@@ -186,12 +186,13 @@ class TestDedupKeysAndHygiene:
         assert acm.is_album_candidate(_track('x', np.ones(DIM), duration=duration), False) is kept
 
     def test_holiday_songs_stay_out_unless_allowed(self):
-        carol = _track('x', np.ones(DIM), title='White Christmas')
-        by_album = _track('y', np.ones(DIM), title='Track 4', album='A Very Special Xmas')
+        carol = _track('x', np.ones(DIM), title='Song 1 (Christmas)')
+        by_album = _track('y', np.ones(DIM), title='Track 4', album='Album X for Xmas')
         assert not acm.is_album_candidate(carol, False)
         assert not acm.is_album_candidate(by_album, False)
         assert acm.is_album_candidate(carol, True)
-        assert acm.is_holiday_text('What Child Is This?') and acm.is_holiday_text('Hark! The Herald Angels Sing')
+        assert acm.is_holiday_text('Song 1 of the reindeer') and acm.is_holiday_text('Song 2 on a sleigh')
+        assert not acm.is_holiday_text('Song 3 of the night')
 
 
 class TestSignals:
@@ -413,7 +414,7 @@ class TestTheSequencer:
         features = self._features(
             [2.0, 1.9, 1.8, 1.7, 0.4, 0.1, -0.2, -0.4, 0.0, 0.3, -2.0, 0.6]
         )
-        crowded = ['britney'] * 4 + ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+        crowded = ['artist a'] * 4 + ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
         head = [index for index, _role in acm.sequence_album(
             features, acm.OPENER_BANG, crowded
         )][:3]
@@ -711,7 +712,7 @@ class TestCreateAlbum:
 
     def test_without_an_artist_seed_the_cap_holds_even_for_the_seed_song_artist(self, library):
         for track in library:
-            track['author'] = 'Nina Simone'
+            track['author'] = 'Artist A'
         assert len(self._create(item_id='fp_000')['tracks']) == 3
 
     def test_live_cuts_and_holiday_songs_never_reach_the_album(self, library):
@@ -727,7 +728,7 @@ class TestCreateAlbum:
         for track in library[1:]:
             track['album'] = 'Christmas Classics'
         assert len(self._create(item_id='fp_000', today=date(2026, 12, 5))['tracks']) == 12
-        library[0]['title'] = 'Jingle Bells'
+        library[0]['title'] = 'Xmas Song 1'
         assert len(self._create(item_id='fp_000')['tracks']) == 12
 
     def test_a_library_of_short_songs_still_gets_its_album(self, library):
@@ -961,7 +962,7 @@ class TestDatabaseReads:
     def test_the_weekly_seeds_are_scoped_to_the_bound_server_and_skip_live_and_holiday_titles(self):
         db, cur = self._db([
             ('short', 'Short Song', 'Album', 30.0), ('a', 'Song', 'Album', 200.0),
-            ('b', 'Song (Live)', 'Album', 200.0), ('c', 'Silent Night', 'Carols', 200.0),
+            ('b', 'Song (Live)', 'Album', 200.0), ('c', 'Xmas Song 1', 'Carols', 200.0),
         ])
         with (
             patch('database.get_db', return_value=db),
@@ -1269,9 +1270,9 @@ class TestTheReviewFindings:
         assert len(album['tracks']) == 12
 
     def test_a_dash_suffix_padded_with_extra_spaces_is_still_one_song(self):
-        plain = acm.song_key('Hey Jude', 'The Beatles')
-        assert acm.song_key('Hey Jude  -  Remastered 2015', 'The Beatles') == plain
-        assert not acm.has_clean_title(_track('x', np.ones(DIM), title='Hey Jude  -  Live Version'), False)
+        plain = acm.song_key('Song One', 'The Band A')
+        assert acm.song_key('Song One  -  Remastered 2015', 'The Band A') == plain
+        assert not acm.has_clean_title(_track('x', np.ones(DIM), title='Song One  -  Live Version'), False)
 
     def test_a_track_never_votes_on_its_own_voice(self):
         rng = np.random.default_rng(21)

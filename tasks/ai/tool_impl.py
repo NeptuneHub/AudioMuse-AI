@@ -14,10 +14,11 @@ alchemy, CLAP audio and lyrics text search, metadata filtering, and the
 brainstorm recipe runner. This is where every AI tool actually touches data.
 
 Main Features:
-* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M', so 'Nas' never matches 'Jonas Brothers'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
+* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M', so 'Tom' never matches 'Tomas Brothers'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
 * search_database scores mood_vector/other_features tags via SUBSTRING regex and keeps the relevance order (no DISTINCT re-sort); exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded), and a male-only voices filter becomes an exclusion of the female vocal tags; brainstorm fuses audio/artist/lyrics/filter channels round-robin, gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
 * The brainstorm accepts a planner-supplied grounding_filter merged into the recipe (grounding wins over the model's guess for ranges, unions for lists) and a gate_filter applied per channel, so a metadata constraint next to knowledge_lookup shapes the search from inside the tool rather than filtering its output. The gate is asymmetric on purpose: exclusions are hard and never fall back, while a positive gate that empties a channel keeps that channel ungated so the request still returns songs.
 * Artist-seed similarity scales its similar-artist fanout to the indexed library size (total//10, min 5) and returns songs round-robin across the seed artist and its neighbors (one song each per round, seed first within a round), so the seed still leads the list but a prolific seed artist can never consume the whole LIMIT and shut every similar artist out.
+* With a server selected, search_database and the artist-seed songs keep only that server's songs in SQL before the LIMIT (registry.availability_sql), so a small secondary server still fills the playlist.
 """
 
 import json
@@ -30,9 +31,33 @@ from psycopg2.extras import DictCursor
 
 from database import like_contains_pattern
 from tasks.ai.vocab import TAG_EXCLUDE_SCORE, female_voice_exclusions, parse_tag_score_pairs
+from tasks.index_availability import active_availability_scope
 from tasks.mcp_helper import get_db_connection
+from tasks.mediaserver import registry
 
 logger = logging.getLogger(__name__)
+
+
+def _server_availability_filter(alias='score'):
+    server_id = active_availability_scope()
+    if not server_id:
+        return '', []
+    default_id = str(registry.get_default_server_id() or '')
+    if server_id == default_id and not registry.has_secondary_servers():
+        return '', []
+    return registry.availability_sql(alias), [server_id, server_id == default_id]
+
+
+def _available_on_server(db_conn, item_ids):
+    availability, availability_params = _server_availability_filter('s')
+    if not availability or not item_ids:
+        return None
+    with db_conn.cursor() as cur:
+        cur.execute(
+            f"SELECT s.item_id FROM public.score s WHERE s.item_id = ANY(%s) AND {availability}",
+            [list(item_ids)] + availability_params,
+        )
+        return {str(row[0]) for row in cur.fetchall()}
 
 
 def _reroute_other_feature_labels(genres, moods, other_features):
@@ -420,9 +445,16 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
             f"Searching songs from {len(all_artist_names)} artists (original + similar)"
         )
 
+        tracks_by_artist = [(name, get_artist_tracks(name) or []) for name in all_artist_names]
+        available = _available_on_server(
+            db_conn, [t.get('item_id') for _name, tracks in tracks_by_artist for t in tracks if t.get('item_id')]
+        )
         per_artist = []
-        for name in all_artist_names:
-            tracks = get_artist_tracks(name)
+        for name, tracks in tracks_by_artist:
+            tracks = [
+                t for t in tracks
+                if t.get('item_id') and (available is None or str(t.get('item_id')) in available)
+            ]
             if tracks:
                 random.shuffle(tracks)
                 per_artist.append(
@@ -434,7 +466,6 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                             "album": t.get('album', ''),
                         }
                         for t in tracks
-                        if t.get('item_id')
                     ]
                 )
 
@@ -855,6 +886,12 @@ def _database_genre_query_sync(
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             conditions = []
             params = []
+
+            availability, availability_params = _server_availability_filter()
+            if availability:
+                conditions.append(availability)
+                params.extend(availability_params)
+                log_messages.append("Searching only the songs on the selected server")
 
             if candidate_item_ids:
                 conditions.append("item_id = ANY(%s)")

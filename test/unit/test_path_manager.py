@@ -257,9 +257,9 @@ class TestInterpolateCentroidsSLERP:
 
 class TestNormalizeSignature:
     def test_normalizes_case(self):
-        sig = _normalize_signature("The Beatles", "Hey Jude")
+        sig = _normalize_signature("The Band A", "Song One")
 
-        assert sig == ("the beatles", "hey jude")
+        assert sig == ("the band a", "song one")
 
     def test_strips_whitespace(self):
         sig = _normalize_signature("  Artist Name  ", "  Song Title  ")
@@ -277,11 +277,11 @@ class TestNormalizeSignature:
         assert sig == ("", "")
 
     def test_preserves_special_characters(self):
-        sig = _normalize_signature("AC/DC", "Back in Black")
+        sig = _normalize_signature("A/B Band", "Song in Red")
 
-        assert sig == ("ac/dc", "back in black")
+        assert sig == ("a/b band", "song in red")
 
     def test_multiple_spaces_collapsed(self):
-        sig = _normalize_signature("Pink  Floyd", "Wish You Were   Here")
+        sig = _normalize_signature("Band  C", "Song Two   Here")
 
-        assert sig == ("pink  floyd", "wish you were   here")
+        assert sig == ("band  c", "song two   here")

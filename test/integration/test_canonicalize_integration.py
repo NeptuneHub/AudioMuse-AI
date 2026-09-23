@@ -298,8 +298,8 @@ class TestRealCanonicalization:
         )
         same = _distinct_embedding(7)
         tracks = [
-            ('jf-1', '/music/Album/01 Rio.flac', same),
-            ('jf-2', '/music/Best Of/07 Rio.flac', same.copy()),
+            ('jf-1', '/music/Album/01 Song 1.flac', same),
+            ('jf-2', '/music/Best Of/07 Song 1.flac', same.copy()),
             ('jf-3', '/music/Other/03.flac', _distinct_embedding(9)),
         ]
         _build(db, tracks)
@@ -317,8 +317,8 @@ class TestRealCanonicalization:
         assert by_provider['jf-1'][0] == by_provider['jf-2'][0], (
             "two files of the same audio map to one AudioMuse id"
         )
-        assert by_provider['jf-1'][1] == '/music/Album/01 Rio.flac'
-        assert by_provider['jf-2'][1] == '/music/Best Of/07 Rio.flac'
+        assert by_provider['jf-1'][1] == '/music/Album/01 Song 1.flac'
+        assert by_provider['jf-2'][1] == '/music/Best Of/07 Song 1.flac'
 
         with db.cursor() as cur:
             cur.execute(
@@ -371,8 +371,8 @@ class TestRealCanonicalization:
         )
         same = _distinct_embedding(7)
         tracks = [
-            ('jf-1', '/music/Brendel/nocturne.flac', same),
-            ('jf-2', '/music/Arrau/nocturne.flac', same.copy()),
+            ('jf-1', '/music/Pianist A/nocturne.flac', same),
+            ('jf-2', '/music/Pianist B/nocturne.flac', same.copy()),
         ]
         _build(db, tracks)
         _seed_ivf_all(db, tracks)
@@ -394,8 +394,8 @@ class TestRealCanonicalization:
 
         same = _distinct_embedding(7)
         tracks = [
-            ('jf-1', '/music/Album/01 Rio.flac', same),
-            ('jf-2', '/music/Best Of/07 Rio.flac', same.copy()),
+            ('jf-1', '/music/Album/01 Song 1.flac', same),
+            ('jf-2', '/music/Best Of/07 Song 1.flac', same.copy()),
         ]
         _build(db, tracks)
         _seed_ivf_all(db, tracks)
@@ -416,8 +416,8 @@ class TestRealCanonicalization:
         )
         same = _distinct_embedding(7)
         tracks = [
-            ('jf-1', '/music/Album/01 Rio.flac', same),
-            ('jf-2', '/music/Best Of/07 Rio.flac', same.copy()),
+            ('jf-1', '/music/Album/01 Song 1.flac', same),
+            ('jf-2', '/music/Best Of/07 Song 1.flac', same.copy()),
         ]
         _build(db, tracks)
 
