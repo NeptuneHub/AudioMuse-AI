@@ -13,8 +13,7 @@
 #   caf         -> test-fixture strings in test/unit (not "calf")
 #   embbeding   -> part of the real filename query/read_bytea_embbeding.sql referenced in a comment
 #   acapella    -> deliberate user-query spelling variant matched in _VOCALNESS_RE (tasks/ai/planner.py), alongside "a cappella"
-#   claus       -> "santa claus" in the holiday-title regex (tasks/album_creation_manager.py)
-#   manger      -> "away in a manger" in the same holiday-title regex
-ignore-words-list = idel,re-uses,nd,datas,embeding,unparseable,caf,embbeding,acapella,claus,manger
+#   claus       -> "santa claus" in the holiday-word regex (tasks/album_creation_manager.py)
+ignore-words-list = idel,re-uses,nd,datas,embeding,unparseable,caf,embbeding,acapella,claus
 # Binary/vendored/generated trees and local caches kept out of the scan.
 skip = .git,*.lock,*.min.js,*.map,*.svg,*.egg-info,.mypy_cache,.pytest_cache,.ruff_cache,model,dist,native-build,.venv,.venv-windows,screenshot,test/songs,static,mood_centroids_real_080_clap.json,genre_subgenre.json,*/e2e/seed/golden.json
