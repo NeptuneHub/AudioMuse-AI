@@ -34,8 +34,8 @@ Main Features:
   a raise is requeued with backoff, TaskFailed fails at once, TaskCancelled is
   revoked, a killed child is retried. The requeue waits until the hold is
   dropped, whose notice would otherwise end this very worker
-* The terminal row (task message plus log) is COMMITTED before task_history and
-  the recap collapse, on their own transactions
+* The terminal row is COMMITTED before task_history and the recap collapse; an
+  outcome whose write failed is re-written every loop, the job never re-run
 * A payload that does not match the signature, a func outside ALLOWED_FUNCS and
   a vanished shared payload are permanent failures, never retries
 * Every FAIL carries a record from error.error_manager, and a child that died
@@ -166,6 +166,7 @@ class Worker:
         self._jobs_done = 0
         self._shared_cache = {}
         self._abandoned = []
+        self._unwritten = []
         self._uncharged = {}
         self._claim_txn = threading.Lock()
         self._fork_jobs = hasattr(os, 'fork') and not getattr(sys, 'frozen', False)
@@ -411,8 +412,24 @@ class Worker:
             )
             self._safe_rollback()
 
+    def _remember_unwritten(self, task_id, write):
+        logger.error(
+            "The outcome of %s is known but could not be written; the write is retried "
+            "on every worker loop until the database answers, and the task is not run again",
+            task_id,
+        )
+        self._unwritten.append((task_id, write))
+
+    def retry_unwritten(self):
+        pending, self._unwritten = self._unwritten, []
+        for task_id, write in pending:
+            logger.warning("Retrying the outcome write for %s", task_id)
+            with self._claim_txn:
+                write()
+
     def run_forever(self):
         while True:
+            self.retry_unwritten()
             self.requeue_abandoned()
             try:
                 job = self.claim()
@@ -549,9 +566,9 @@ class Worker:
                     )
                     self._drop_claim_conn()
                     continue
-                logger.exception(
-                    "Could not requeue %s for a retry; its row stays RUNNING for "
-                    "reclaim to pick up", task_id,
+                logger.exception("Could not requeue %s for a retry", task_id)
+                self._remember_unwritten(
+                    task_id, lambda: self._requeue_for_retry(job, summary, record)
                 )
                 return
             self._safe_commit()
@@ -758,6 +775,9 @@ class Worker:
                     self._drop_claim_conn()
                     continue
                 logger.exception("Could not write the terminal row for %s", task_id)
+                self._remember_unwritten(
+                    task_id, lambda: self.finalize(job, status, error, result=result)
+                )
                 return
             if recap is not None:
                 self._record_and_collapse(task_id, recap[0], status, recap[1])

@@ -16,7 +16,8 @@ Main Features:
   every worker; ``revoke_inline_task_row`` handles the tasks that run in the web
   process, which have no worker to signal and only need their own row revoked.
 * ``build_and_store_map_projection`` / ``build_and_store_artist_projection``
-  compute a 2D projection and persist it; ``attach_song_features`` /
+  compute a 2D projection and persist it (the artist one reads the stored GMM
+  metadata blob, never loading the artist index); ``attach_song_features`` /
   ``top_stratified_genre`` enrich API result rows.
 * Shared blueprint helpers: ``queue_busy_response`` / ``queue_race_response``
   answer a refused start with the structured task-in-progress error, and
@@ -407,13 +408,11 @@ def build_and_store_map_projection(index_name='main_map'):
 
 
 def build_and_store_artist_projection(index_name='artist_map'):
-    from tasks.artist_gmm_manager import load_artist_index_for_querying
+    from tasks.index_build_helpers import load_segmented_blob, unpack_artist_metadata
 
-    # Always reload artist GMM params from database (force reload to ensure fresh data)
-    load_artist_index_for_querying(force_reload=True)
-
-    # Re-import after loading to get the updated global variable
-    from tasks.artist_gmm_manager import artist_gmm_params as loaded_params
+    metadata_blob = load_segmented_blob(get_db(), "artist_metadata_data", "artist_metadata")
+    loaded_params = unpack_artist_metadata(metadata_blob)[1] if metadata_blob else None
+    metadata_blob = None
 
     if not loaded_params:
         logger.warning("No artist GMM params available to build artist projection.")
@@ -429,8 +428,8 @@ def build_and_store_artist_projection(index_name='artist_map'):
     total_components = 0
     component_dim = None
     for gmm in loaded_params.values():
-        means = gmm.get('means') or []
-        if not len(means):
+        means = gmm.get('means')
+        if means is None or not len(means):
             continue
         if component_dim is None:
             component_dim = int(np.asarray(means[0], dtype=np.float32).size)
@@ -444,9 +443,11 @@ def build_and_store_artist_projection(index_name='artist_map'):
     component_map = []
     row_i = 0
     for artist_name, gmm in loaded_params.items():
-        means = gmm.get('means') or []
-        weights = gmm.get('weights') or []
-        if not len(means):
+        means = gmm.get('means')
+        weights = gmm.get('weights')
+        if weights is None:
+            weights = ()
+        if means is None or not len(means):
             continue
         artist_id = artist_ids.get(artist_name) or artist_name
         for comp_idx in range(len(means)):

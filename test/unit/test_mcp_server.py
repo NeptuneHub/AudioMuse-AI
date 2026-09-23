@@ -13,7 +13,9 @@ tasks.ai.tool_impl plus library-context caching in tasks.mcp_helper.
 
 Main Features:
 * Genre/mood regex anchoring, energy normalization, and SQL filter construction
-  in the database query; recipe clamping to the vocabulary and JSON extraction
+  in the database query; recipe clamping to the vocabulary and JSON extraction;
+  LIMIT applies to the relevance order itself, and a male-only voice filter
+  excludes the female tags while female stays a positive filter
 * Song, artist, and alchemy similarity lookups with fuzzy and reverse-map fallbacks
 * AI brainstorm fuses per-channel results, dedups, caps, and applies the year gate;
   text search gates on CLAP being enabled and surfaces errors safely
@@ -427,6 +429,50 @@ class TestDatabaseGenreQuery:
         limit_param = cur.execute.call_args[0][1][-1]
         assert limit_param == 50
         assert isinstance(limit_param, int)
+
+    def _executed(self, **kwargs):
+        mod = _import_mcp_impl()
+        conn, cur = self._setup_mock_conn()
+        with patch.object(mod, 'get_db_connection', return_value=conn):
+            mod._database_genre_query_sync(get_songs=10, **kwargs)
+        sql, params = cur.execute.call_args[0][0], cur.execute.call_args[0][1]
+        return mod, " ".join(sql.split()), list(params)
+
+    def test_scored_query_applies_the_limit_to_the_relevance_order_itself(self):
+        _mod, sql, params = self._executed(moods=["aggressive"])
+        assert "DISTINCT" not in sql
+        assert sql.count("SELECT") == 1
+        assert sql.endswith("ORDER BY relevance_score DESC, RANDOM() LIMIT %s")
+        assert sql.count("%s") == len(params)
+
+    def test_unscored_query_is_a_single_random_limited_select(self):
+        _mod, sql, params = self._executed(tempo_min=120)
+        assert "DISTINCT" not in sql
+        assert sql.count("SELECT") == 1
+        assert sql.endswith("ORDER BY RANDOM() LIMIT %s")
+        assert sql.count("%s") == len(params)
+
+    def test_male_voice_is_applied_as_exclude_female(self):
+        mod, sql, params = self._executed(voices=["male vocalists"])
+        male_prefix = "(?i)(?:^|,)\\s*male vocalists:"
+        assert not any(isinstance(p, str) and p.startswith(male_prefix) for p in params)
+        for female in ("female vocalists", "female vocalist"):
+            regex = f"(?i)(?:^|,)\\s*{re.escape(female)}:(\\d+\\.?\\d*)"
+            assert regex in params
+            assert params[params.index(regex) + 1] == mod._EXCLUDE_GENRE_SCORE
+        assert sql.count("NUMERIC), 0) < %s") == 2
+        assert "relevance_score" not in sql
+
+    def test_female_voice_stays_a_positive_scored_filter(self):
+        _mod, sql, params = self._executed(voices=["female vocalists"])
+        assert "NUMERIC), 0) >= %s" in sql
+        assert "NUMERIC), 0) < %s" not in sql
+        assert "relevance_score DESC" in sql
+
+    def test_male_and_female_together_keep_the_positive_filter(self):
+        _mod, sql, _params = self._executed(voices=["male vocalists", "female vocalists"])
+        assert "NUMERIC), 0) < %s" not in sql
+        assert " OR " in sql
 
 
 @pytest.mark.unit

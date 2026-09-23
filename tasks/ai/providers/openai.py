@@ -15,7 +15,7 @@ first (Hermes template), falling back to structured JSON output on
 /api/generate when native calls fail.
 
 Main Features:
-* Detects Ollama vs OpenAI shape from the URL, adds OpenRouter referer headers, and strips <think>/[/INST] reasoning tags from streamed output.
+* Detects Ollama vs OpenAI shape from the URL, adds OpenRouter referer headers, and strips <think>/[/INST] reasoning tags from streamed output; generate_text maps an Ollama /api/chat URL to its /api/generate sibling.
 * Robust 400 fallbacks: retries without reasoning_effort (caching rejecting models), swaps max_tokens->max_completion_tokens, and cycles DeepSeek thinking-off forms; tool-call count is capped to 4 and all failures return a generic error, never a traceback.
 * Ollama dual-path: native /api/chat tool-calling (enable_thinking=false for Qwen) with structured-output format=schema fallback; tool names are validated against the registry and invalid names trigger a feedback retry.
 """
@@ -62,6 +62,20 @@ def _is_ollama_format_url(server_url: str) -> bool:
     return _OLLAMA_GENERATE_PATH in s or _OLLAMA_CHAT_PATH in s
 
 
+def _ollama_endpoints(ollama_url: str):
+    lowered = ollama_url.lower()
+    if _OLLAMA_CHAT_PATH in lowered:
+        return ollama_url, re.sub(
+            re.escape(_OLLAMA_CHAT_PATH), _OLLAMA_GENERATE_PATH, ollama_url, flags=re.IGNORECASE
+        )
+    if _OLLAMA_GENERATE_PATH in lowered:
+        return re.sub(
+            re.escape(_OLLAMA_GENERATE_PATH), _OLLAMA_CHAT_PATH, ollama_url, flags=re.IGNORECASE
+        ), ollama_url
+    base = ollama_url.rstrip("/")
+    return base + _OLLAMA_CHAT_PATH, base + _OLLAMA_GENERATE_PATH
+
+
 def _build_openai_headers(api_key: str, server_url: str) -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if api_key and api_key != "no-key-needed":
@@ -85,6 +99,8 @@ def generate_text(
     is_ollama_format = _is_ollama_format_url(server_url)
     is_openai_format = not is_ollama_format
     provider_label = "Ollama" if is_ollama_format else "OpenAI/OpenRouter"
+    if is_ollama_format:
+        server_url = _ollama_endpoints(server_url)[1]
 
     headers = _build_openai_headers(api_key, server_url)
 
@@ -715,18 +731,8 @@ def call_with_tools_ollama(
     """
     from tasks.ai.prompts import build_ollama_tool_calling_prompt  # noqa: E402
 
-    is_chat_url = "/api/chat" in ollama_url.lower()
-    is_generate_url = "/api/generate" in ollama_url.lower()
-
-    if is_chat_url:
-        chat_url = ollama_url
-        generate_url = re.sub(r"/api/chat", "/api/generate", ollama_url, flags=re.IGNORECASE)
-    elif is_generate_url:
-        chat_url = re.sub(r"/api/generate", "/api/chat", ollama_url, flags=re.IGNORECASE)
-        generate_url = ollama_url
-    else:
-        chat_url = ollama_url.rstrip("/") + "/api/chat"
-        generate_url = ollama_url.rstrip("/") + "/api/generate"
+    is_generate_url = _OLLAMA_GENERATE_PATH in ollama_url.lower()
+    chat_url, generate_url = _ollama_endpoints(ollama_url)
 
     timeout = config.AI_REQUEST_TIMEOUT_SECONDS
     log_messages.append(f"Using timeout: {timeout} seconds for Ollama request")

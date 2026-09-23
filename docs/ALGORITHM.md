@@ -1487,20 +1487,25 @@ syncs "online first" keeps following the same playlist.
    there are more, every input keeps its heaviest point first.
 3. **Centroids.** The Include points are averaged into the add centroid and the
    Exclude points into the subtract centroid.
-4. **Candidate search.** The index is queried around the add centroid (a
-   multi-query when there are several anchor points), asking for clearly more
-   candidates than requested so there is room to filter.
-5. **Filtering.** The original input songs are removed, then the standard
-   near-duplicate distance filter, the title and artist deduplication and the
-   `MAX_SONGS_PER_ARTIST` cap are applied.
+4. **Candidate search.** The index is queried around each Include point
+   separately. Every input gets an equal share of a pool of three times the
+   requested count (split among its own points by weight), so one input with
+   many points cannot crowd out the others. When `MAX_SONGS_PER_ARTIST` is above
+   0 and `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT` is on, each point fetches five
+   times its quota so the artist cap still leaves enough songs.
+5. **Filtering.** The original input songs and an anchor's stored song seeds are
+   removed first. With the artist cap on, it keeps each artist's songs closest
+   to the Include points, then each input fills its quota from its own ranked
+   neighbours. After the subtraction below, the standard near-duplicate distance
+   filter and the title and artist deduplication are applied.
 6. **Subtraction.** If there is a subtract centroid, every remaining candidate
    closer to it than the threshold
    (`ALCHEMY_SUBTRACT_DISTANCE_ANGULAR` or `ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN`,
    or the request override) is removed. Those songs are returned separately so
    the plot can show what was excluded and why.
-7. **Temperature sampling.** The distances of the survivors to the add centroid
-   are turned into similarity scores and passed through a softmax with the
-   requested temperature. A low temperature sharpens the distribution and
+7. **Temperature sampling.** The distance of each survivor to its nearest
+   Include point is turned into a similarity score, and the scores are passed
+   through a softmax with the requested temperature. A low temperature sharpens the distribution and
    effectively takes the closest songs; a high temperature flattens it and mixes
    in more distant ones. A single song at temperature 0 short-circuits to a plain
    nearest-neighbour query.
@@ -2409,7 +2414,9 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    seconds at any library size (a few megabytes: the song ids and the
    centroids); it is held as one immutable object swapped by a single
    reference assignment, so a query that started before a swap keeps a
-   consistent view. Nothing is copied to local disk. A query first lists the
+   consistent view. Cells stored by a build other than the loaded directory's
+   are refused ("being rebuilt") until the reload arrives, so new cells are
+   never paired with an old directory. Nothing is copied to local disk. A query first lists the
    `NEURAL_FINGERPRINT_NPROBE` cells each of its segments probes, fetches the
    ones it does not have in one query (every part of each cell, a few
    hundred kilobytes per cell) and keeps them in a RAM cache bounded by

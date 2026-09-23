@@ -19,6 +19,7 @@ Main Features:
 * build_tool_calls_schema emits typed per-tool branches (reasoning first, name enum locked); prompts derive tool prose from the schemas
 * Per-tool retrieval budget over-fetches a multiple of the requested playlist length
 * Genre/negation hint extraction (incl. 4-digit decades), hint backstop, hallucinated year/instrumental/exclusion stripping (exclusions need a negation cue), whole-word artist-relax regex, similarity-blended re-rank with skit demotion and the instrumental dimension, exclusion hard cuts, empty/self-subtract coercion to union, underfilled-hard-filter broadening, and the zero-result replan
+* A male-only voice request re-ranks songs without a female tag first
 """
 
 import importlib
@@ -899,6 +900,41 @@ class TestInstrumentalRerank:
             songs, {'instrumental': True}, feats, [], sim_by_id={'v': 1.0, 'i': 0.5}
         )
         assert [s['item_id'] for s in final] == ['i', 'v']
+        assert matched == 1
+
+
+class TestMaleVoiceExcludesFemale:
+    def test_female_exclusions_only_for_a_male_only_request(self):
+        v = _vocab()
+        assert v.female_voice_exclusions(['male vocalists']) == ['female vocalists', 'female vocalist']
+        assert v.female_voice_exclusions([' Male Vocalists ']) == ['female vocalists', 'female vocalist']
+        assert v.female_voice_exclusions(['female vocalists']) == []
+        assert v.female_voice_exclusions(['male vocalists', 'female vocalist']) == []
+        assert v.female_voice_exclusions([]) == []
+        assert v.female_voice_exclusions(None) == []
+
+    def test_dim_score_is_one_without_a_female_tag_and_zero_with_one(self):
+        from tasks.ai import rerank
+        filt = {'voices': ['male vocalists']}
+        assert rerank._filter_dim_scores(filt, {'mood_vector': 'rock:0.50'})['voices'] == 1.0
+        assert rerank._filter_dim_scores(filt, {'mood_vector': 'female vocalists:0.60'})['voices'] == 0.0
+        assert rerank._filter_dim_scores(filt, {'mood_vector': 'female vocalist:0.40'})['voices'] == 0.0
+        assert rerank._filter_dim_scores(filt, {'mood_vector': 'female vocalists:0.10'})['voices'] == 1.0
+
+    def test_songs_without_a_female_tag_rank_first(self):
+        from tasks.ai import rerank
+        songs = [
+            {'item_id': 'f', 'title': 'Song 1'},
+            {'item_id': 'm', 'title': 'Song 2'},
+        ]
+        feats = {
+            'f': {'mood_vector': 'female vocalists:0.70,pop:0.50'},
+            'm': {'mood_vector': 'rock:0.60'},
+        }
+        final, matched, _moved = rerank.rerank(
+            songs, {'voices': ['male vocalists']}, feats, [], sim_by_id={'f': 1.0, 'm': 0.5}
+        )
+        assert [s['item_id'] for s in final] == ['m', 'f']
         assert matched == 1
 
 

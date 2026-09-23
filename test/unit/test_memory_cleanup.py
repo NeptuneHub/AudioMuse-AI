@@ -18,7 +18,11 @@ Main Features:
 * Database failure re-raises while still tearing down loaded models
 * Session recycle empties the old dict and frees old GPU sessions before allocating new ones
 * The web process's idle heap trim holds off while requests keep arriving, fires
-  once the process goes quiet, and stays off when its config window is 0
+  once the process goes quiet, and stays off when its config window is 0;
+  no teardown_appcontext hook re-arms it, so background contexts cannot starve it;
+  UI status polls and health probes count as in flight but never re-arm it, a
+  trim skipped during one is re-armed once when it ends, and app.py classifies
+  exactly the timer-driven GET polls that way
 * The idle heap trim returns free heap to the OS without dropping a single loaded
   index: every startup cache is still populated and identical after it runs
 * The heap release resolves its symbol once out of the running image - malloc_trim
@@ -685,3 +689,170 @@ class TestIdleTrimRequestWiring:
             pass
 
         assert memory_utils._ACTIVE_REQUESTS == 1
+
+
+class TestBackgroundContextsNeverStarveTheIdleTrim:
+    def test_no_app_context_teardown_re_arms_the_idle_trim(self):
+        import ast
+        import pathlib
+
+        source = pathlib.Path(__file__).resolve().parents[2] / 'app.py'
+        tree = ast.parse(source.read_text(encoding='utf-8'))
+        hooks = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and any(
+                isinstance(dec, ast.Attribute) and dec.attr == 'teardown_appcontext'
+                for dec in node.decorator_list
+            )
+        ]
+        assert hooks, 'app.py must still register its app-context teardown'
+        for hook in hooks:
+            names = {
+                getattr(node, 'id', None) or getattr(node, 'attr', None)
+                for node in ast.walk(hook)
+            }
+            names |= {
+                alias.name
+                for node in ast.walk(hook) if isinstance(node, ast.ImportFrom)
+                for alias in node.names
+            }
+            assert 'arm_idle_heap_trim' not in names, (
+                'the cron tick and the dashboard refresh each open an app context '
+                'every minute; re-arming the 60 s trim there pushed it back forever, '
+                'so the idle Flask heap was never returned to the OS (k3s, 0 trims '
+                'in an hour)'
+            )
+
+
+class TestStatusPollsNeverStarveTheIdleTrim:
+    @pytest.fixture(autouse=True)
+    def _no_timer_thread_outlives_the_test(self):
+        yield
+        from tasks import memory_utils
+
+        timer = getattr(memory_utils, '_IDLE_TRIM_TIMER', None)
+        if timer is None or not hasattr(timer, 'lock'):
+            return
+        with timer.lock():
+            timer._expiry_time = None
+        thread = getattr(timer, '_timer_thread', None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=3.0)
+
+    def _counting(self, monkeypatch, window=60.0):
+        import config
+        from tasks import memory_utils
+
+        monkeypatch.setattr(config, 'FLASK_IDLE_HEAP_TRIM_SECONDS', window, raising=False)
+        monkeypatch.setattr(memory_utils, '_ACTIVE_REQUESTS', 0, raising=False)
+        monkeypatch.setattr(memory_utils, '_TRIM_DEFERRED', False, raising=False)
+        fired = []
+        monkeypatch.setattr(
+            memory_utils,
+            'release_memory_to_os',
+            lambda *args, **kwargs: fired.append(1) or True,
+        )
+        return memory_utils, fired
+
+    def _fake_timer(self, monkeypatch, memory_utils):
+        class FakeTimer:
+            def __init__(self):
+                self.arms = 0
+
+            def arm(self, duration, on_expire):
+                self.arms += 1
+
+        timer = FakeTimer()
+        monkeypatch.setattr(memory_utils, '_IDLE_TRIM_TIMER', timer, raising=False)
+        return timer
+
+    def test_a_status_poll_is_counted_but_never_re_arms(self, monkeypatch):
+        memory_utils, _ = self._counting(monkeypatch)
+        timer = self._fake_timer(monkeypatch, memory_utils)
+
+        memory_utils.note_request_started(arm=False)
+        assert memory_utils._ACTIVE_REQUESTS == 1
+        memory_utils.note_request_finished(arm=False)
+
+        assert memory_utils._ACTIVE_REQUESTS == 0
+        assert timer.arms == 0
+
+    def test_a_trim_skipped_during_a_poll_is_re_armed_once_when_it_ends(self, monkeypatch):
+        memory_utils, fired = self._counting(monkeypatch)
+        timer = self._fake_timer(monkeypatch, memory_utils)
+
+        memory_utils.note_request_started(arm=False)
+        memory_utils._idle_heap_trim()
+        assert fired == []
+
+        memory_utils.note_request_finished(arm=False)
+        assert timer.arms == 1
+
+        memory_utils.note_request_started(arm=False)
+        memory_utils.note_request_finished(arm=False)
+        assert timer.arms == 1
+
+    def test_the_trim_fires_while_polls_keep_arriving(self, monkeypatch):
+        import time
+
+        from tasks.idle_unload import IdleUnloadTimer
+
+        memory_utils, fired = self._counting(monkeypatch, window=0.3)
+        monkeypatch.setattr(memory_utils, '_IDLE_TRIM_TIMER', IdleUnloadTimer(), raising=False)
+
+        memory_utils.note_request_started()
+        memory_utils.note_request_finished()
+        deadline = time.time() + 5
+        while not fired and time.time() < deadline:
+            memory_utils.note_request_started(arm=False)
+            memory_utils.note_request_finished(arm=False)
+            time.sleep(0.05)
+
+        assert fired == [1]
+
+    def test_app_classifies_the_ui_polls_and_health_probes(self):
+        import ast
+        import pathlib
+
+        from flask import Flask
+
+        source = pathlib.Path(__file__).resolve().parents[2] / 'app.py'
+        tree = ast.parse(source.read_text(encoding='utf-8'))
+        wanted = {'_STATUS_POLL_PATHS', '_STATUS_POLL_PREFIXES', '_is_status_poll'}
+        nodes = [
+            node for node in tree.body
+            if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+            or (
+                isinstance(node, ast.Assign)
+                and any(getattr(t, 'id', None) in wanted for t in node.targets)
+            )
+        ]
+        assert len(nodes) == len(wanted)
+        import flask
+
+        namespace = {'request': flask.request}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), namespace)
+        is_poll = namespace['_is_status_poll']
+
+        probe = Flask(__name__)
+        polls = [
+            ('GET', '/api/dashboard/summary'),
+            ('GET', '/api/active_tasks'),
+            ('GET', '/api/last_task'),
+            ('GET', '/api/health'),
+            ('GET', '/api/status/0b6d6f8e-task'),
+        ]
+        work = [
+            ('POST', '/api/alchemy'),
+            ('GET', '/api/similar_tracks'),
+            ('GET', '/api/map'),
+            ('POST', '/api/status/0b6d6f8e-task'),
+            ('GET', '/api/statusbar'),
+        ]
+        for method, path in polls:
+            with probe.test_request_context(path, method=method):
+                assert is_poll(), (method, path)
+        for method, path in work:
+            with probe.test_request_context(path, method=method):
+                assert not is_poll(), (method, path)

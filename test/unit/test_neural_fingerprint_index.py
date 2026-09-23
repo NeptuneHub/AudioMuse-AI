@@ -43,6 +43,7 @@ Main Features:
   unloaded; the startup load is blocking and returns the track count, 0 when
   the feature is off, the model is missing, nothing is stored or the stored
   directory is unusable
+* cells from a newer build are never paired with the loaded directory
 """
 
 import numpy as np
@@ -95,7 +96,7 @@ def _directory(build_id, quantizer, ids, lengths, cell_sizes, parts, trained_tra
 
 
 def _serve_rows(monkeypatch, store, fetched=None):
-    def read_rows(cell_ids):
+    def read_rows(cell_ids, build_id=None):
         wanted = set(int(cell) for cell in cell_ids)
         if fetched is not None:
             fetched.append(sorted(wanted))
@@ -579,3 +580,40 @@ def test_unload_releases_the_index_and_a_missing_model_is_unavailable(monkeypatc
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_MODEL_PATH', '/nowhere/model.onnx')
     with pytest.raises(nfi.IndexUnavailable, match='not available'):
         nfi.identify(np.zeros(8000 * 4, dtype=np.float32), 8000, 5)
+
+
+class _RowsCursor:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params):
+        pass
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+class _RowsConn:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def cursor(self):
+        return _RowsCursor(self.rows)
+
+
+@pytest.mark.parametrize('stored, refused', [('build-one', False), ('build-two', True)])
+def test_cells_from_a_newer_build_are_never_paired_with_the_loaded_directory(monkeypatch, stored, refused):
+    rows = [(nfi._CELL_NAMESPACE + '0', 3, b'cell')]
+    monkeypatch.setattr(nfi, '_db_connection', lambda: (_RowsConn(rows), False))
+    monkeypatch.setattr(nfi, '_stored_build_id', lambda conn: stored)
+    if refused:
+        with pytest.raises(nfi.IndexUnavailable, match='being rebuilt'):
+            nfi._read_cell_rows([3], 'build-one')
+    else:
+        assert nfi._read_cell_rows([3], 'build-one') == rows

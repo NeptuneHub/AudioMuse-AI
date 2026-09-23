@@ -16,6 +16,7 @@ Flask/waitress server or a queue worker/maintenance/control-listener.
 Main Features:
 * Runs Flask via waitress or launches a named queue role in-process.
 * Enforces single-instance startup with an flock-based supervisor lock.
+* Exits with status 1 when the stack failed to start.
 * A closed terminal (SIGHUP) stops the stack in order like Ctrl+C does, so the
   children spawned in their own sessions never outlive the supervisor; the
   supervisor's own fatal errors go to logs/supervisor-crash.log.
@@ -126,8 +127,11 @@ def _run_supervisor(open_browser=True):
         if open_browser:
             _open_browser()
 
+    failed = []
+
     def _on_error(exc):
         print("AudioMuse-AI failed to start: %s" % exc, file=sys.stderr)
+        failed.append(exc)
         stop_event.set()
 
     supervisor.start_in_background(on_ready=_on_ready, on_error=_on_error)
@@ -137,7 +141,7 @@ def _run_supervisor(open_browser=True):
             pass
     finally:
         supervisor.stop_all()
-    return 0
+    return 1 if failed else 0
 
 
 def _cmd_stop():

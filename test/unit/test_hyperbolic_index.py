@@ -36,6 +36,10 @@ Main Features:
 * The multi scan width is wider than the single-query one and does not shrink
   for unquantized storage, because the journey needs candidate BREADTH along a
   geodesic rather than precision at rank k
+* roots / niche apply the radius window before the top k and return the exact
+  nearest songs inside it; the build takes the random-init Einstein fast path
+* Each build names its own cells, and a cell that does not match the loaded
+  directory is refused and triggers a reload
 """
 
 import gzip
@@ -612,3 +616,162 @@ def test_build_and_store_writes_one_union_index_and_sweeps_legacy_names(monkeypa
     hji.build_and_store_hyperbolic_index(_FakeConn())
 
     assert set(deleted) == {hji._DEFAULT_SERVER_KEY, "srv1", "srv2"}
+
+
+def _window_cell(rng, dim, count, radius, direction, jitter):
+    points = direction[None, :] + rng.standard_normal((count, dim)) * jitter
+    points /= np.linalg.norm(points, axis=1, keepdims=True)
+    return (points * radius).astype(np.float32)
+
+
+def test_the_radius_window_is_applied_before_the_top_k(monkeypatch):
+    rng = np.random.default_rng(40)
+    dim = 8
+    axis = np.zeros(dim)
+    axis[0] = 1.0
+    outer = _window_cell(rng, dim, 60, 0.45, axis, 0.05)
+    inner = _window_cell(rng, dim, 5, 0.2, -axis, 0.5)
+    outer_ids = [f"outer_{i}" for i in range(60)]
+    inner_ids = [f"inner_{i}" for i in range(5)]
+    index = _install_minimal_index(
+        monkeypatch, [(np.concatenate([outer, inner]), outer_ids + inner_ids)], dim=dim
+    )
+    query = (axis * 0.4).astype(np.float32)
+
+    unwindowed = hji._nearest(query, 5, index, frozenset())
+    windowed = hji._nearest(query, 5, index, frozenset(), None, (0.4, True))
+
+    assert {item_id for item_id, _d in unwindowed} <= set(outer_ids)
+    assert {item_id for item_id, _d in windowed} == set(inner_ids)
+
+
+def test_the_window_rerank_drops_the_quantization_slack_band_on_the_exact_radius(monkeypatch):
+    rng = np.random.default_rng(41)
+    dim = 8
+    axis = np.zeros(dim)
+    axis[0] = 1.0
+    band = _window_cell(rng, dim, 3, 0.41, axis, 0.01)
+    inner = _window_cell(rng, dim, 4, 0.2, axis, 0.3)
+    ids = [f"band_{i}" for i in range(3)] + [f"inner_{i}" for i in range(4)]
+    vectors = np.concatenate([band, inner])
+    rows = {
+        iid: (vec, float(np.linalg.norm(vec.astype(np.float64)))) for iid, vec in zip(ids, vectors)
+    }
+    index = _install_minimal_index(monkeypatch, [(vectors, ids)], dim=dim)
+    monkeypatch.setattr(hji, "_server_available", lambda idx, server_id: None)
+    monkeypatch.setattr(
+        "tasks.hyperbolic_manager.fetch_poincare_rows",
+        lambda wanted: {i: rows[i] for i in wanted if i in rows},
+    )
+    query = (axis * 0.4).astype(np.float32)
+
+    scanned = hji._nearest(query, 7, index, frozenset(), None, (0.4, True))
+    got = hji.hyperbolic_nearest(query, 7, radius_window=(0.4, True))
+
+    assert {item_id for item_id, _d in scanned} >= {"band_0", "band_1", "band_2"}
+    assert [item_id for item_id, _d in got] and all(i.startswith("inner_") for i, _d in got)
+    assert len(got) == 4
+
+
+def test_roots_and_niche_return_the_exact_nearest_songs_inside_the_window(monkeypatch):
+    import tasks.hyperbolic_manager as hm
+
+    rng = np.random.default_rng(42)
+    dim = 16
+    count = 3000
+    directions = rng.standard_normal((count, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    radii = rng.uniform(0.05, 0.95, (count, 1))
+    vectors = (directions * radii).astype(np.float32)
+    rows = {
+        f"t{i}": (vectors[i], float(np.linalg.norm(vectors[i].astype(np.float64))))
+        for i in range(count)
+    }
+
+    monkeypatch.setattr(config, "EMBEDDING_DIMENSION", dim)
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
+    stored, _directory = _build_into(monkeypatch, rows, "i8")
+    monkeypatch.setattr(
+        "tasks.index_build_helpers.load_segmented_blob",
+        lambda conn, table, name: stored.get(name),
+    )
+    monkeypatch.setattr("database.get_db", lambda: _FakeConn(stored))
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", lambda ids: {i: rows[i] for i in ids if i in rows})
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results, vector_map=None: results)
+    hji.reset_hyperbolic_index()
+    assert hji.load_hyperbolic_index() == 1
+
+    ids = list(rows)
+    all_vecs = np.stack([rows[i][0] for i in ids]).astype(np.float64)
+    all_radii = np.array([rows[i][1] for i in ids])
+    for seed in ("t3", "t77", "t512", "t1400", "t2999"):
+        seed_vec, seed_radius = rows[seed]
+        distances = hyperbolic_distances_to(seed_vec.astype(np.float64), all_vecs)
+        for mode in ("roots", "niche"):
+            if mode == "roots":
+                bound = seed_radius * 0.85
+                eligible = all_radii < bound
+            else:
+                bound = seed_radius + (1.0 - seed_radius) * 0.15
+                eligible = all_radii > bound
+            eligible &= np.array([i != seed for i in ids])
+            if eligible.sum() < 10:
+                continue
+            candidates = np.nonzero(eligible)[0]
+            truth = [ids[c] for c in candidates[np.argsort(distances[candidates])[:10]]]
+            got = hm.hyperbolic_similar(seed, mode=mode, limit=10)
+            assert [r["item_id"] for r in got] == truth, (seed, mode)
+
+
+def test_the_index_partition_takes_the_random_init_einstein_fast_path(monkeypatch):
+    import tasks.hyperbolic_geometry as geometry
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("the index build must not run k-means++ or the Karcher mean")
+
+    monkeypatch.setattr(geometry, "_kmeans_plus_plus", _forbidden)
+    monkeypatch.setattr(geometry, "karcher_mean", _forbidden)
+    rng = np.random.default_rng(43)
+    dim = 12
+    directions = rng.standard_normal((900, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    vectors = (directions * (0.9 * rng.random((900, 1)) ** (1.0 / dim))).astype(np.float32)
+
+    centroids, assigned = hji._partition_into_cells(vectors)
+
+    assert centroids.shape == (hji._cell_count(900), dim)
+    assert assigned.shape == (900,)
+    assert int(assigned.min()) >= 0 and int(assigned.max()) < centroids.shape[0]
+    assert float(np.linalg.norm(centroids, axis=1).max()) < 1.0
+
+
+def test_each_build_names_its_cells_so_an_old_directory_never_reads_a_new_build():
+    first = hji._cell_name("default", 7, "aaa111")
+    second = hji._cell_name("default", 7, "bbb222")
+    assert first != second
+    prefix = hji._scoped_name(hji._CELL_PREFIX, "default")
+    assert first.startswith(prefix) and second.startswith(prefix)
+
+
+def test_a_cell_that_no_longer_matches_the_loaded_directory_is_refused_and_reloads(monkeypatch):
+    import database
+    import tasks.index_build_helpers as helpers
+
+    dim = 4
+    stored = np.zeros((3, dim), dtype=np.float32).tobytes()
+    monkeypatch.setattr(database, "get_db", lambda: None)
+    monkeypatch.setattr(helpers, "load_segmented_blob", lambda conn, table, name: stored)
+    index = {
+        "server_key": "default",
+        "dim": dim,
+        "code": quant.DTYPE_F32,
+        "cells": [{"blob": "old-cell", "count": 2, "item_ids": ["a", "b"]}],
+    }
+    hji._clear_cell_cache()
+    monkeypatch.setitem(hji._INDEX_CACHE, "loaded", True)
+
+    vectors, item_ids = hji._load_cell(0, index)
+
+    assert vectors.shape[0] == 0 and item_ids == []
+    assert ("default", 0) not in hji._CELL_CACHE
+    assert hji._INDEX_CACHE["loaded"] is False

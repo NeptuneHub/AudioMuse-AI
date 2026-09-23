@@ -15,7 +15,9 @@ selected server's provider ids on output, so no internal canonical id leaks.
 
 Main Features:
 * POST /api/hyperbolic/similar: seed-song hyperbolic similarity re-ranked by
-  exact Poincare distance, with similar / roots / niche radial modes.
+  exact Poincare distance, with similar / roots / niche radial modes; roots
+  and niche keep only songs at least radial_spread inward / outward of the
+  seed instead of hugging its radius band.
 * GET /api/hyperbolic/tree: served from the in-memory tree cache, lazily
   loaded on demand (see warmup below) and rebuilt on every index-reload
   NOTIFY while warm (like the music map), so a request is a dict lookup,
@@ -99,13 +101,12 @@ def hyperbolic_similar_api():
     ---
     tags:
       - Hyperbolic Explorer
-    summary: Rank the projected catalogue by exact Poincare distance. similar
-      ranks every projected row directly (no IVF index and no cosine
-      shortcut); roots / niche draw their pool by radius (at least
-      radial_spread, default HYPERBOLIC_RADIAL_SPREAD and
-      caller-overridable, of the radial range away from the seed) so they
-      visibly move inward / outward instead of hugging the seed's radius
-      band.
+    summary: Rank the projected catalogue by exact Poincare distance through
+      the disk-paged Poincare index. roots / niche only keep songs at least
+      radial_spread (default HYPERBOLIC_RADIAL_SPREAD, caller-overridable)
+      of the radial range inward / outward of the seed, probing the index
+      from the seed moved along its own direction to that radius bound and
+      re-ranking the survivors by their distance to the seed.
     requestBody:
       required: true
       content:
@@ -186,7 +187,7 @@ def hyperbolic_similar_api():
                   format: float
                   description: The radial_spread value actually used for this search.
       400:
-        description: Missing item_id, invalid mode, or seed without a projection.
+        description: Missing item_id, invalid mode, seed without a projection, or Poincare index not built yet.
       500:
         description: Internal error.
     """

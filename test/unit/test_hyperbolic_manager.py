@@ -15,8 +15,9 @@ access following the repo's unit-test conventions.
 
 Main Features:
 * resolve_hyperbolic_scale prefers config, then persisted, then calibrates
-* hyperbolic_similar re-ranks candidates by hyperbolic distance and applies
-  roots / niche radial filtering relative to the target radius
+* hyperbolic_similar re-ranks candidates by hyperbolic distance; roots / niche
+  probe the index from the seed moved to the radius bound, drop candidates
+  between that bound and the seed radius, and raise without an index
 * Invalid modes and missing target projections raise ValueError
 * backfill_hyperbolic_columns writes projections for every streamed batch
 * build_hyperbolic_tree renders root / mood / main-genre / second-genre /
@@ -177,108 +178,125 @@ def test_similar_mode_raises_when_index_is_missing(monkeypatch):
         hm.hyperbolic_similar("fp_t", mode="similar", limit=2)
 
 
-def test_roots_mode_filters_radius_below_target(monkeypatch):
+def _capture_nearest(captured, results):
+    def _nearest(vector, k, server_id=None, exclude=frozenset(), radius_window=None):
+        captured["vector"] = np.asarray(vector, dtype=np.float64)
+        captured["k"] = k
+        captured["exclude"] = set(exclude)
+        captured["window"] = radius_window
+        return None if results is None else list(results)
+
+    return _nearest
+
+
+_MODE_ROWS = {
+    "fp_t": (_vec(0.6, 0.0), 0.6),
+    "fp_inner": (_vec(0.45, 0.05), float(np.hypot(0.45, 0.05))),
+    "fp_deep": (_vec(0.05, 0.0), 0.05),
+    "fp_side": (_vec(0.0, 0.45), 0.45),
+    "fp_band": (_vec(0.55, 0.0), 0.55),
+    "fp_outer": (_vec(0.7, 0.0), 0.7),
+    "fp_edge": (_vec(0.0, 0.95), 0.95),
+}
+
+
+def test_roots_mode_probes_the_index_from_the_seed_moved_to_the_bound(monkeypatch):
     captured = {}
-
-    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
-        captured["bound"] = bound
-        captured["below"] = below
-        captured["limit"] = limit
-        return {"fp_inner": (_vec(0.1, 0.0), 0.2), "fp_deep": (_vec(0.02, 0.0), 0.05)}
-
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest",
+        _capture_nearest(captured, [("fp_deep", 0.1), ("fp_side", 0.2), ("fp_inner", 0.3)]),
+    )
     monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results, vector_map=None: results)
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
-    results = hm.hyperbolic_similar("fp_t", mode="roots", limit=2)
-    assert captured["below"] is True
-    assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.15))
-    assert [r["item_id"] for r in results] == ["fp_inner", "fp_deep"]
+    results = hm.hyperbolic_similar("fp_t", mode="roots", limit=3)
+    bound = 0.6 * (1.0 - 0.15)
+    assert captured["window"][0] == pytest.approx(bound)
+    assert captured["window"][1] is True
+    np.testing.assert_allclose(captured["vector"], [bound, 0.0], atol=1e-6)
+    assert captured["exclude"] == {"fp_t"}
+    assert captured["k"] == max(3 * int(config.HYPERBOLIC_CANDIDATE_OVERFETCH), 3 + 50)
+    assert [r["item_id"] for r in results] == ["fp_inner", "fp_deep", "fp_side"]
+    distances = [r["distance"] for r in results]
+    assert distances == sorted(distances)
 
 
-def test_niche_mode_filters_radius_above_target(monkeypatch):
-    captured = {}
-
-    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
-        captured["bound"] = bound
-        captured["below"] = below
-        captured["limit"] = limit
-        return {"fp_outer": (_vec(0.7, 0.0), 0.8), "fp_edge": (_vec(0.9, 0.0), 0.95)}
-
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+def test_roots_mode_drops_candidates_between_the_bound_and_the_seed_radius(monkeypatch):
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest",
+        _capture_nearest({}, [("fp_band", 0.05), ("fp_inner", 0.3)]),
+    )
     monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results, vector_map=None: results)
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
-    results = hm.hyperbolic_similar("fp_t", mode="niche", limit=2)
-    assert captured["below"] is False
-    assert captured["bound"] == pytest.approx(0.6 + (1.0 - 0.6) * 0.15)
+    results = hm.hyperbolic_similar("fp_t", mode="roots", limit=5)
+    assert [r["item_id"] for r in results] == ["fp_inner"]
+
+
+def test_niche_mode_probes_the_index_from_the_seed_moved_to_the_bound(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr(
+        "tasks.hyperbolic_index.hyperbolic_nearest",
+        _capture_nearest(captured, [("fp_edge", 0.1), ("fp_band", 0.15), ("fp_outer", 0.2)]),
+    )
+    monkeypatch.setattr(hm, "_deduplicate_and_cap_results", lambda results, vector_map=None: results)
+    monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
+    results = hm.hyperbolic_similar("fp_t", mode="niche", limit=3)
+    bound = 0.6 + (1.0 - 0.6) * 0.15
+    assert captured["window"][0] == pytest.approx(bound)
+    assert captured["window"][1] is False
+    np.testing.assert_allclose(captured["vector"], [bound, 0.0], atol=1e-6)
     assert [r["item_id"] for r in results] == ["fp_outer", "fp_edge"]
 
 
+@pytest.mark.parametrize("mode", ["roots", "niche"])
+def test_roots_and_niche_raise_when_the_index_is_missing(monkeypatch, mode):
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr("tasks.hyperbolic_index.hyperbolic_nearest", _capture_nearest({}, None))
+    with pytest.raises(ValueError):
+        hm.hyperbolic_similar("fp_t", mode=mode, limit=2)
+
+
 def test_roots_empty_window_returns_empty(monkeypatch):
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(
-        hm,
-        "_fetch_poincare_rows_in_radius",
-        lambda bound, below=True, limit=100, server_id=None, include_legacy_default=True: {},
-    )
-    results = hm.hyperbolic_similar("fp_t", mode="roots", limit=5)
-    assert results == []
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr("tasks.hyperbolic_index.hyperbolic_nearest", _capture_nearest({}, []))
+    assert hm.hyperbolic_similar("fp_t", mode="roots", limit=5) == []
 
 
 def test_roots_spread_clamped_and_zero_keeps_inner_pool(monkeypatch):
     captured = {}
-
-    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
-        captured["bound"] = bound
-        return {}
-
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr("tasks.hyperbolic_index.hyperbolic_nearest", _capture_nearest(captured, []))
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.0)
     hm.hyperbolic_similar("fp_t", mode="roots", limit=2)
-    assert captured["bound"] == pytest.approx(0.6)
+    assert captured["window"][0] == pytest.approx(0.6)
 
 
 def test_roots_mode_caller_spread_overrides_config(monkeypatch):
     captured = {}
-
-    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
-        captured["bound"] = bound
-        return {}
-
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr("tasks.hyperbolic_index.hyperbolic_nearest", _capture_nearest(captured, []))
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
     hm.hyperbolic_similar("fp_t", mode="roots", limit=2, radial_spread=0.5)
-    assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.5))
+    assert captured["window"][0] == pytest.approx(0.6 * (1.0 - 0.5))
 
 
 def test_niche_mode_caller_spread_overrides_config(monkeypatch):
     captured = {}
-
-    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
-        captured["bound"] = bound
-        return {}
-
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr("tasks.hyperbolic_index.hyperbolic_nearest", _capture_nearest(captured, []))
     monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
     hm.hyperbolic_similar("fp_t", mode="niche", limit=2, radial_spread=0.5)
-    assert captured["bound"] == pytest.approx(0.6 + (1.0 - 0.6) * 0.5)
+    assert captured["window"][0] == pytest.approx(0.6 + (1.0 - 0.6) * 0.5)
 
 
 def test_roots_mode_clamps_out_of_range_caller_spread(monkeypatch):
     captured = {}
-
-    def _fake_window(bound, below=True, limit=100, server_id=None, include_legacy_default=True):
-        captured["bound"] = bound
-        return {}
-
-    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows({"fp_t": (_vec(0.5, 0.0), 0.6)}))
-    monkeypatch.setattr(hm, "_fetch_poincare_rows_in_radius", _fake_window)
+    monkeypatch.setattr(hm, "_fetch_poincare_rows", _fake_rows(_MODE_ROWS))
+    monkeypatch.setattr("tasks.hyperbolic_index.hyperbolic_nearest", _capture_nearest(captured, []))
     hm.hyperbolic_similar("fp_t", mode="roots", limit=2, radial_spread=5.0)
-    assert captured["bound"] == pytest.approx(0.6 * (1.0 - 0.99))
+    assert captured["window"][0] == pytest.approx(0.6 * (1.0 - 0.99))
 
 
 def test_deduplicate_and_cap_results_matches_similar_song_rules(monkeypatch):

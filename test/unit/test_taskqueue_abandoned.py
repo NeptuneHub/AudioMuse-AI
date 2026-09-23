@@ -42,6 +42,7 @@ Main Features:
 * RUNNING is the ONLY status either statement's guard names: the status literals
   are collected out of the WHERE clause and compared as a whole set, so widening
   the guard to admit a terminal row is caught rather than merely un-asserted
+* A known outcome whose write failed is re-written later, the job never re-run
 """
 
 import re
@@ -87,6 +88,7 @@ def _worker():
     instance._jobs_done = 0
     instance._shared_cache = {}
     instance._abandoned = []
+    instance._unwritten = []
     instance._uncharged = {}
     instance._wake = threading.Event()
     instance._claim_txn = threading.Lock()
@@ -536,6 +538,70 @@ class TestOperationalErrorIsNotASynonymForALostConnection:
 
     def test_an_error_that_is_not_a_database_error_at_all_is_not(self):
         assert worker_mod._is_connectivity_error(ValueError('the album has no tracks')) is False
+
+
+class TestAKnownOutcomeIsWrittenLaterNeverRunAgain:
+    def test_a_failed_terminal_write_is_retried_and_the_job_is_not_requeued(
+        self, monkeypatch
+    ):
+        instance = _worker()
+        monkeypatch.setattr(instance, '_drop_claim_conn', lambda: None)
+        writes = []
+
+        def write(task_id, status, error, result, error_at_claim=None):
+            writes.append(status)
+            if len(writes) <= 2:
+                raise psycopg2.OperationalError('server closed the connection')
+            return None
+
+        monkeypatch.setattr(instance, '_write_terminal_row', write)
+        requeued = []
+        monkeypatch.setattr(
+            worker_mod.sql, 'requeue_uncharged', lambda *a, **k: requeued.append(a) or True
+        )
+
+        instance.finalize(_job('task-1'), config.TASK_STATUS_SUCCESS, None, result={'done': True})
+
+        assert instance._abandoned == []
+        assert [task_id for task_id, _write in instance._unwritten] == ['task-1']
+
+        instance.retry_unwritten()
+        instance.requeue_abandoned()
+
+        assert writes == [config.TASK_STATUS_SUCCESS] * 3
+        assert instance._unwritten == []
+        assert requeued == []
+
+    def test_a_failed_retry_requeue_is_retried_and_still_charges_its_attempt(
+        self, monkeypatch
+    ):
+        instance = _worker()
+        monkeypatch.setattr(instance, '_drop_claim_conn', lambda: None)
+        reads = []
+
+        def current_row(_cur, task_id):
+            reads.append(task_id)
+            if len(reads) <= 2:
+                raise psycopg2.OperationalError('server closed the connection')
+            return _running_row(instance.identity)
+
+        monkeypatch.setattr(worker_mod.sql, 'current_row', current_row)
+        charged = []
+        monkeypatch.setattr(
+            worker_mod.sql, 'requeue_or_fail',
+            lambda _cur, task_id, _now, _details, delay_seconds=None: (
+                charged.append(task_id) or config.TASK_STATUS_NEW
+            ),
+        )
+
+        instance._requeue_for_retry(_job('task-1'), 'the album has no tracks')
+
+        assert instance._abandoned == [] and charged == []
+
+        instance.retry_unwritten()
+
+        assert charged == ['task-1']
+        assert instance._unwritten == []
 
 
 class TestEveryLoopStartsByPuttingTheAbandonedRowsBack:

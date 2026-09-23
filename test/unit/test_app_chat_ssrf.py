@@ -14,6 +14,7 @@ being blocked and that API keys are masked in debug logging.
 Main Features:
 * LAN and omitted-field default URLs both reach the planner.
 * API keys are masked in the debug log output.
+* The stored OpenAI key goes only to the configured URL, or for an admin.
 """
 
 import sys
@@ -22,7 +23,7 @@ import logging
 from unittest.mock import patch
 
 import pytest
-from flask import Flask
+from flask import Flask, g
 
 
 def _ensure_flasgger():
@@ -135,3 +136,44 @@ class TestChatLogMasking:
         assert 'gm-SECRET-123' not in debug_text
         assert 'oa-SECRET-456' not in debug_text
         assert 'ms-SECRET-789' not in debug_text
+
+
+class TestOpenAiKeyBoundToConfiguredUrl:
+    SECRET = 'sk-server-secret'
+    CONFIGURED = 'https://configured.example/v1/chat/completions'
+    FOREIGN = 'https://collector.example/v1/chat/completions'
+
+    def _planner_ai_config(self, app_chat_mod, monkeypatch, role, url):
+        monkeypatch.setattr(app_chat_mod.config, 'OPENAI_API_KEY', self.SECRET)
+        monkeypatch.setattr(app_chat_mod.config, 'OPENAI_SERVER_URL', self.CONFIGURED)
+        app = Flask(__name__)
+        app.register_blueprint(app_chat_mod.chat_bp)
+
+        @app.before_request
+        def _set_role():
+            g.auth_role = role
+
+        planner_calls = []
+        with patch.dict(sys.modules, _install_fakes(planner_calls)):
+            app.test_client().post(
+                '/api/chatPlaylist',
+                json={'userInput': 'songs', 'ai_provider': 'OPENAI', 'openai_server_url': url},
+            )
+        assert len(planner_calls) == 1
+        return planner_calls[0][1]['ai_config']
+
+    def test_non_admin_foreign_url_never_receives_the_stored_key(self, app_chat_mod, monkeypatch):
+        ai_config = self._planner_ai_config(app_chat_mod, monkeypatch, 'user', self.FOREIGN)
+        assert ai_config['openai_url'] == self.FOREIGN
+        assert ai_config['openai_key'] != self.SECRET
+        assert self.SECRET not in ai_config.values()
+
+    def test_non_admin_configured_url_keeps_the_stored_key(self, app_chat_mod, monkeypatch):
+        ai_config = self._planner_ai_config(
+            app_chat_mod, monkeypatch, 'user', '  ' + self.CONFIGURED + ' '
+        )
+        assert ai_config['openai_key'] == self.SECRET
+
+    def test_admin_foreign_url_keeps_the_stored_key(self, app_chat_mod, monkeypatch):
+        ai_config = self._planner_ai_config(app_chat_mod, monkeypatch, 'admin', self.FOREIGN)
+        assert ai_config['openai_key'] == self.SECRET

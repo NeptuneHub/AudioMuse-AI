@@ -25,17 +25,15 @@ Main Features:
   gamma(t) = x (+) (t (x) (-x (+) y))
 * einstein_midpoint is the closed-form Lorentz-weighted average in the Klein
   model, and karcher_mean refines it into the true Frechet mean with Riemannian
-  gradient steps damped by the mean of d*coth(d): the Hessian of d^2 grows with
-  d in negative curvature, so an undamped step overshoots once the members span
-  a couple of units and the iteration walks OUTWARD to the boundary
-* poincare_kmeans is k-means entirely in the Poincare metric: k-means++ seeding
-  on hyperbolic distance, assignment through nearest_centroid, the Frechet mean
-  as the update. Both the tree builder and the disk-paged IVF index partition
-  through it. nearest_centroid skips the arccosh, since the argmin of
-  arccosh(1 + 2*d2/((1-|t|^2)(1-|c|^2))) is the argmin of d2/(1-|c|^2) once the
-  target-only factor drops, turning an assignment pass into one BLAS matmul per
-  chunk; it clips and upcasts one CHUNK at a time, so a float32 catalogue keeps
-  a flat working set
+  gradient steps damped by the mean of d*coth(d), since an undamped step
+  overshoots in negative curvature and walks OUTWARD to the boundary
+* poincare_kmeans is k-means in the Poincare metric: by default k-means++
+  seeding, assignment through nearest_centroid, the Frechet mean as update. The
+  tree builder uses that; the IVF index passes init="random" and
+  update="einstein" (vectorised Einstein midpoint), faster at the same recall.
+  nearest_centroid skips the arccosh (its argmin is the argmin of
+  d2/(1-|c|^2)), so an assignment pass is one BLAS matmul per chunk, clipped
+  and upcast one CHUNK at a time for a flat working set
 * geodesic_apex returns the geodesic's point closest to the origin: the
   continuous analogue of the endpoints' lowest common ancestor
 * apply_radial_dive deepens that bow by a bump zero at both endpoints, so a
@@ -249,7 +247,28 @@ def nearest_centroid(points, centroids, chunk=None):
     return labels
 
 
-def poincare_kmeans(points, k, iterations=10, seed=0, chunk=None):
+def _einstein_weights(norms2):
+    denom = 1.0 + norms2
+    klein2 = np.minimum(4.0 * norms2 / (denom * denom), _BALL_LIMIT ** 2)
+    gamma = 1.0 / np.sqrt(1.0 - klein2)
+    return gamma, 2.0 * gamma / denom
+
+
+def _einstein_centroids(pts, labels, previous, gamma, coef):
+    k = previous.shape[0]
+    weight = np.bincount(labels, weights=gamma, minlength=k)
+    sums = np.empty((k, pts.shape[1]), dtype=np.float64)
+    for dim in range(pts.shape[1]):
+        sums[:, dim] = np.bincount(labels, weights=coef * pts[:, dim], minlength=k)
+    filled = weight > 1e-12
+    centre = clip_into_ball((sums[filled] / weight[filled, None]).astype(np.float32))
+    centre2 = np.sum(centre * centre, axis=1, keepdims=True)
+    moved = previous.copy()
+    moved[filled] = centre / (1.0 + np.sqrt(np.maximum(1.0 - centre2, 0.0)))
+    return clip_into_ball(moved)
+
+
+def poincare_kmeans(points, k, iterations=10, seed=0, chunk=None, init="kmeans++", update="karcher"):
     pts = clip_into_ball(np.asarray(points, dtype=np.float32))
     n = pts.shape[0]
     if n == 0:
@@ -257,13 +276,20 @@ def poincare_kmeans(points, k, iterations=10, seed=0, chunk=None):
     k = max(1, min(int(k), n))
     norms2 = np.sum(pts * pts, axis=1)
     rng = np.random.default_rng(int(seed))
-    centroids = clip_into_ball(pts[_kmeans_plus_plus(pts, norms2, k, rng)])
+    if init == "random":
+        centroids = pts[rng.choice(n, k, replace=False)]
+    else:
+        centroids = clip_into_ball(pts[_kmeans_plus_plus(pts, norms2, k, rng)])
+    weights = _einstein_weights(norms2) if update == "einstein" else None
     labels = np.full(n, -1, dtype=np.int32)
     for _ in range(max(1, int(iterations))):
         new_labels = nearest_centroid(pts, centroids, chunk=chunk)
         if np.array_equal(new_labels, labels):
             break
         labels = new_labels
+        if weights is not None:
+            centroids = _einstein_centroids(pts, labels, centroids, *weights)
+            continue
         order = np.argsort(labels, kind="stable")
         bounds = np.concatenate(([0], np.cumsum(np.bincount(labels, minlength=k))))
         moved = np.empty_like(centroids)

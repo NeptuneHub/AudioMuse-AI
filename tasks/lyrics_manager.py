@@ -48,7 +48,6 @@ _LYRICS_AXIS_CACHE = {
     'id_map': None,
     'reverse_id_map': None,
     'axis_columns': None,
-    'metadata': None,
     'loaded': False,
 }
 
@@ -149,13 +148,10 @@ def _load_lyrics_axes_index_from_db() -> bool:
             return False
         loaded_index, id_map, reverse_id_map = loaded
 
-        metadata_map = _fetch_lyrics_metadata(list(id_map.values()))
-
         _LYRICS_AXIS_CACHE['index'] = loaded_index
         _LYRICS_AXIS_CACHE['id_map'] = id_map
         _LYRICS_AXIS_CACHE['reverse_id_map'] = reverse_id_map
         _LYRICS_AXIS_CACHE['axis_columns'] = columns
-        _LYRICS_AXIS_CACHE['metadata'] = metadata_map
         _LYRICS_AXIS_CACHE['loaded'] = True
 
         logger.info(f"Lyrics axes index loaded from database with {len(id_map)} items.")
@@ -186,7 +182,6 @@ def load_lyrics_cache_from_db() -> bool:
         _LYRICS_AXIS_CACHE['id_map'] = None
         _LYRICS_AXIS_CACHE['reverse_id_map'] = None
         _LYRICS_AXIS_CACHE['axis_columns'] = None
-        _LYRICS_AXIS_CACHE['metadata'] = None
         _LYRICS_AXIS_CACHE['loaded'] = False
 
     return index_ok or axis_ok
@@ -306,7 +301,6 @@ def search_by_axes(targets: Dict[str, str], limit: Optional[int] = None) -> List
 
     ivf_index = _LYRICS_AXIS_CACHE['index']
     id_map = _LYRICS_AXIS_CACHE['id_map'] or {}
-    metadata_map = _LYRICS_AXIS_CACHE['metadata'] or {}
 
     from .paged_ivf import begin_query
 
@@ -322,6 +316,9 @@ def search_by_axes(targets: Dict[str, str], limit: Optional[int] = None) -> List
     except Exception:
         logger.exception("Lyrics axes ivf query failed")
         return []
+
+    candidate_item_ids = [id_map.get(int(v)) for v in neighbor_ids]
+    metadata_map = _fetch_lyrics_metadata([iid for iid in candidate_item_ids if iid])
 
     results = _build_capped_results(
         ivf_index,

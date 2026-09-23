@@ -18,6 +18,7 @@ Main Features:
 * The supervisor's own fatal errors go to logs/supervisor-crash.log, the only
   place a menu-bar app without a console can be read back from
 * Runs Flask via waitress or launches a named queue role in-process.
+* Quit waits until the supervisor has really stopped, so no child outlives it.
 * Pins the numeric locale early and warms up scipy longdouble for every role
   except maintenance and restart-listener (macOS newlocale crash fix).
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
@@ -51,6 +52,7 @@ def _run_role(role):
 
 
 _INSTANCE_LOCK = None
+_STOP_WAIT_SECONDS = 180
 
 
 def _acquire_single_instance_lock(paths):
@@ -130,6 +132,7 @@ def _run_menubar():
 
         def on_quit(self, _):
             supervisor.stop_all()
+            supervisor.wait_until_stopped(_STOP_WAIT_SECONDS)
             rumps.quit_application()
 
         def _refresh(self, _):

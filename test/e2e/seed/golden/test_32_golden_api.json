@@ -5146,6 +5146,31 @@
     "top_mood": "relaxed"
    },
    {
+    "album": "Sousa Marches",
+    "author": "United States Marine Band",
+    "distance": 1.524,
+    "hyperbolic_radius": 0.758,
+    "item_id": "track:On the Campus | United States Marine Band",
+    "mood_vector": {
+     "easy listening": 0.512,
+     "female vocalists": 0.508,
+     "instrumental": 0.537,
+     "jazz": 0.685,
+     "oldies": 0.51
+    },
+    "other_features": {
+     "aggressive": 0.58,
+     "danceable": 0.6,
+     "happy": 0.62,
+     "party": 0.61,
+     "relaxed": 0.57,
+     "sad": 0.53
+    },
+    "title": "On the Campus",
+    "top_genre": "jazz",
+    "top_mood": "happy"
+   },
+   {
     "album": "Compilation Copies",
     "author": "Kimiko Ishizaka",
     "distance": 1.693,
@@ -5167,31 +5192,6 @@
      "sad": 0.56
     },
     "title": "Variatio 1 a 1 Clav.",
-    "top_genre": "jazz",
-    "top_mood": "happy"
-   },
-   {
-    "album": "Air Force Jazz",
-    "author": "Airmen of Note",
-    "distance": 1.736,
-    "hyperbolic_radius": 0.703,
-    "item_id": "track:Small Note Boogaloo | Airmen of Note",
-    "mood_vector": {
-     "female vocalists": 0.508,
-     "funk": 0.516,
-     "instrumental": 0.52,
-     "jazz": 0.682,
-     "soul": 0.511
-    },
-    "other_features": {
-     "aggressive": 0.55,
-     "danceable": 0.58,
-     "happy": 0.63,
-     "party": 0.61,
-     "relaxed": 0.55,
-     "sad": 0.51
-    },
-    "title": "Small Note Boogaloo",
     "top_genre": "jazz",
     "top_mood": "happy"
    }

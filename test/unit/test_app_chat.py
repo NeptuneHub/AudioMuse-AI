@@ -15,6 +15,7 @@ Main Features:
 * Seed-search song-seed validation and search_database filter detection.
 * Artist-diversity capping and progressive cap relaxation from the overflow.
 * Playlist-length resolution from the request `n`, with no API upper bound.
+* Multi-seed search interleaves the seeds rank by rank and drops shared songs.
 """
 
 import json
@@ -136,6 +137,57 @@ class TestSeedSearchSongSeedValidation:
 
         assert calls == [('Song', 'Artist', 60)]
         assert result['songs'] == [{'item_id': 's1'}]
+
+
+class TestSeedSearchMultiSeedInterleave:
+    def test_two_seeds_alternate_rank_by_rank_and_drop_shared_songs(self, monkeypatch):
+        per_seed = {
+            'Song 1': ['a1', 'a2', 'shared', 'a4'],
+            'Song 2': ['b1', 'shared', 'b3'],
+        }
+
+        def _fake_similarity(seed_title, seed_artist, limit):
+            return {'songs': [{'item_id': i} for i in per_seed[seed_title]], 'message': ''}
+
+        monkeypatch.setattr(tools, '_song_similarity_api_sync', _fake_similarity)
+
+        result = tools._dispatch_seed_search(
+            {
+                'seeds': [
+                    {'type': 'song', 'title': 'Song 1', 'artist': 'Artist A'},
+                    {'type': 'song', 'title': 'Song 2', 'artist': 'Artist B'},
+                ],
+                'get_songs': 60,
+            },
+            {},
+        )
+
+        assert [s['item_id'] for s in result['songs']] == [
+            'a1', 'b1', 'a2', 'shared', 'b3', 'a4'
+        ]
+
+    def test_the_second_seed_reaches_the_head_of_a_long_first_list(self, monkeypatch):
+        def _fake_similarity(seed_title, seed_artist, limit):
+            return {
+                'songs': [{'item_id': f'{seed_title}-{i}'} for i in range(limit)],
+                'message': '',
+            }
+
+        monkeypatch.setattr(tools, '_song_similarity_api_sync', _fake_similarity)
+
+        result = tools._dispatch_seed_search(
+            {
+                'seeds': [
+                    {'type': 'song', 'title': 'Song 1', 'artist': 'Artist A'},
+                    {'type': 'song', 'title': 'Song 2', 'artist': 'Artist B'},
+                ],
+                'get_songs': 50,
+            },
+            {},
+        )
+
+        head = [s['item_id'] for s in result['songs'][:10]]
+        assert sum(1 for i in head if i.startswith('Song 2-')) == 5
 
 
 class TestSearchDatabaseFilterDetection:

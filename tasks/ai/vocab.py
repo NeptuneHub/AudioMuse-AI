@@ -16,6 +16,7 @@ an optional WordNet synonym fallback.
 Main Features:
 * Routes each mood label into mood_vector vs other_features and splits out vocal-type tags into a separate voices list; tempo/energy phrases resolve to numeric BPM/energy ranges. Exact canonical mood labels (config.OTHER_FEATURE_LABELS) win over energy/tempo alias phrases so 'relaxed' stays a mood.
 * Fuzzy remap (rapidfuzz WRatio, cutoff 75, min length 4) plus gender-aware WordNet expansion for vocalist synonyms; unrecognized labels are dropped with a note rather than passed through.
+* female_voice_exclusions turns a male-only voices list into the female vocal tags to exclude (score below TAG_EXCLUDE_SCORE), shared by the SQL filter and the re-rank.
 * parse_tag_score_pairs is the shared parser for the DB's comma-separated 'tag:score' strings (mood_vector/other_features): entries without ':' or with a non-numeric score are silently skipped.
 """
 
@@ -471,6 +472,14 @@ def normalize_energy_phrase(value: str) -> Optional[Tuple[float, float]]:
 
 
 _VOICE_LABELS_SET = {'female vocalists', 'female vocalist', 'male vocalists'}
+TAG_EXCLUDE_SCORE = 0.3
+
+
+def female_voice_exclusions(voices) -> List[str]:
+    lows = {v.strip().lower() for v in voices or [] if isinstance(v, str) and v.strip()}
+    if not lows or not all(v.startswith('male') for v in lows):
+        return []
+    return [v for v in config.VOICE_VOCAB if v.lower().startswith('female')]
 
 
 def normalize_mood_list(values) -> dict:

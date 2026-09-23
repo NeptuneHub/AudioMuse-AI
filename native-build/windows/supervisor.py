@@ -32,6 +32,8 @@ Main Features:
   clears the pid file BEFORE the orderly stop and its thread joins, because
   Windows allows it five seconds and CTRL_BREAK has no console left to travel
   through.
+* Once a stop is requested no child is started or restarted (health loop
+  included, nor after a console-kill exit), and stop_all always ends stopped.
 * Startup reaps role children left behind by an earlier supervisor, so a torn
   down instance never leaves orphan workers draining the queue unseen.
 """
@@ -68,6 +70,7 @@ _CONSOLE_KILL_EXIT_CODES = {0xC000013A, 0xC000013A - (1 << 32)}
 class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
     paths = paths
     join_skips_main_thread = True
+    no_restart_exit_codes = frozenset(_CONSOLE_KILL_EXIT_CODES)
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -129,15 +132,17 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
                 return
             self._state = "stopping"
         self._log.info("=== AudioMuse-AI stopping ===")
-        self._join_workers()
-        self._control.stop()
-        for name in list(self._children.keys()):
-            self._stop_child(name)
-        db_backend.stop_embedded()
-        self._reap_orphans()
-        self._clear_pidfile()
-        with self._lock:
-            self._state = "stopped"
+        try:
+            self._join_workers()
+            self._control.stop()
+            for name in list(self._children.keys()):
+                self._stop_child(name)
+            db_backend.stop_embedded()
+            self._reap_orphans()
+            self._clear_pidfile()
+        finally:
+            with self._lock:
+                self._state = "stopped"
         self._log.info("=== AudioMuse-AI stopped ===")
 
     def install_console_handler(self):
@@ -199,7 +204,7 @@ class ProcessSupervisor(SupervisorCommonMixin, HealthLoopMixin):
         if role is None:
             return False
         with self._lock:
-            if self._state not in ("starting", "running"):
+            if self._state not in ("starting", "running") or self._stop_requested.is_set():
                 return False
             existing = self._children.get(name)
             if existing is not None and existing.poll() is None:

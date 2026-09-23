@@ -18,6 +18,8 @@ Main Features:
 * rerank: the single public seam (formerly planner._rerank_pool); returns the
   ordered pool plus the matched/moved counters the planner reports.
 * All scoring, dimension-stats and ordering helpers are private to this module.
+* A male-only voice filter scores as "not tagged female" (female tags below
+  TAG_EXCLUDE_SCORE), since the male tag itself is too sparse to rank by.
 """
 
 import logging
@@ -25,6 +27,7 @@ import re
 from typing import Dict, List, Optional
 
 import config
+from tasks.ai.vocab import TAG_EXCLUDE_SCORE, female_voice_exclusions
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +126,11 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
     if filt.get('genres'):
         out['genres'] = _max_conf(filt['genres'], mv)
     if filt.get('voices'):
-        out['voices'] = _max_conf(filt['voices'], mv)
+        female_exclusions = female_voice_exclusions(filt['voices'])
+        if female_exclusions:
+            out['voices'] = 0.0 if _max_conf(female_exclusions, mv) >= TAG_EXCLUDE_SCORE else 1.0
+        else:
+            out['voices'] = _max_conf(filt['voices'], mv)
     if filt.get('moods'):
         out['moods'] = _max_conf(filt['moods'], of)
     if filt.get('other_features'):

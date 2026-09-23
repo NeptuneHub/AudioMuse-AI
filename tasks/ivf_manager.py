@@ -416,40 +416,53 @@ def _normalize_string(text: str) -> str:
     return text.strip().lower()
 
 
-def _is_too_close(current_song, current_vector, window_songs, threshold, metric_name, details_map):
-    for recent_song in window_songs:
-        recent_vector = _get_cached_vector(recent_song['item_id'])
-        if recent_vector is None:
-            continue
-        direct_dist = get_direct_distance(current_vector, recent_vector)
-        if direct_dist < threshold:
-            current_details = details_map.get(
-                current_song['item_id'], {'title': 'N/A', 'author': 'N/A'}
-            )
-            recent_details = details_map.get(
-                recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'}
-            )
-            logger.info(
-                f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
-                f"due to direct distance of {direct_dist:.4f} from "
-                f"'{recent_details['title']}' by '{recent_details['author']}' (Threshold: {threshold})."
-            )
-            return True
-    return False
+def _direct_distance_matrix(rows, cols):
+    if IVF_METRIC == 'angular':
+        denom = np.outer(np.linalg.norm(rows, axis=1), np.linalg.norm(cols, axis=1))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            cosine = np.clip((rows @ cols.T) / denom, -1.0, 1.0).astype(np.float64)
+        return np.where(denom == 0, np.inf, 1.0 - cosine)
+    if IVF_METRIC == 'dot':
+        return -(rows @ cols.T).astype(np.float64)
+    return np.vstack([np.linalg.norm(row - cols, axis=1) for row in rows]).astype(np.float64)
 
 
-def _compute_distance_batch(song_batch, lookback_songs, threshold, metric_name, details_map):
-    batch_results = []
-    for current_song in song_batch:
-        current_vector = _get_cached_vector(current_song['item_id'])
-        if current_vector is None:
+def _log_distance_filtered(current_song, recent_song, direct_dist, threshold, metric_name, details_map):
+    current_details = details_map.get(current_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
+    recent_details = details_map.get(recent_song['item_id'], {'title': 'N/A', 'author': 'N/A'})
+    logger.info(
+        f"Filtering song (DISTANCE FILTER) with {metric_name} distance: '{current_details['title']}' by '{current_details['author']}' "
+        f"due to direct distance of {direct_dist:.4f} from "
+        f"'{recent_details['title']}' by '{recent_details['author']}' (Threshold: {threshold})."
+    )
+
+
+def _accept_distance_chunk(positions, base, vectors, song_results, window_limit, log_args):
+    present = [p for p in positions if vectors[p] is not None]
+    if not present:
+        return []
+    columns = base + present
+    column_of = {position: column for column, position in enumerate(columns)}
+    matrix = _direct_distance_matrix(
+        np.vstack([vectors[p] for p in present]).astype(np.float32),
+        np.vstack([vectors[p] for p in columns]).astype(np.float32),
+    )
+    threshold = log_args[0]
+    accepted = []
+    for row, position in enumerate(present):
+        window = base + accepted
+        if window_limit:
+            window = window[-window_limit:]
+        hits = np.flatnonzero(matrix[row, [column_of[p] for p in window]] < threshold) if window else ()
+        if len(hits):
+            recent = window[hits[0]]
+            _log_distance_filtered(
+                song_results[position], song_results[recent],
+                float(matrix[row, column_of[recent]]), *log_args,
+            )
             continue
-        combined_recent = list(lookback_songs) + list(batch_results)
-        if not _is_too_close(
-            current_song, current_vector, combined_recent, threshold, metric_name, details_map
-        ):
-            batch_results.append(current_song)
-    return batch_results
+        accepted.append(position)
+    return accepted
 
 
 def _filter_by_distance(song_results: list, db_conn):
@@ -468,36 +481,26 @@ def _filter_by_distance(song_results: list, db_conn):
         else DUPLICATE_DISTANCE_THRESHOLD_EUCLIDEAN
     )
     metric_name = 'Angular' if IVF_METRIC == 'angular' else 'Euclidean'
+    log_args = (threshold, metric_name, details_map)
+    vectors = [_get_cached_vector(song['item_id']) for song in song_results]
+    total = len(song_results)
 
-    filtered_songs = []
-
-    if len(song_results) <= BATCH_SIZE_VECTOR_OPS:
-        for current_song in song_results:
-            current_vector = _get_cached_vector(current_song['item_id'])
-            if current_vector is None:
-                continue
-            lookback_window = filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:]
-            if not _is_too_close(
-                current_song, current_vector, lookback_window, threshold, metric_name, details_map
-            ):
-                filtered_songs.append(current_song)
+    if total <= BATCH_SIZE_VECTOR_OPS:
+        kept = _accept_distance_chunk(
+            range(total), [], vectors, song_results, DUPLICATE_DISTANCE_CHECK_LOOKBACK, log_args
+        )
     else:
-        remaining_songs = song_results.copy()
-
-        while remaining_songs:
-            current_batch = remaining_songs[:BATCH_SIZE_VECTOR_OPS]
-            remaining_songs = remaining_songs[BATCH_SIZE_VECTOR_OPS:]
-
-            lookback_window = (
-                filtered_songs[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:] if filtered_songs else []
+        kept = []
+        for start in range(0, total, BATCH_SIZE_VECTOR_OPS):
+            kept.extend(
+                _accept_distance_chunk(
+                    range(start, min(start + BATCH_SIZE_VECTOR_OPS, total)),
+                    kept[-DUPLICATE_DISTANCE_CHECK_LOOKBACK:],
+                    vectors, song_results, None, log_args,
+                )
             )
 
-            batch_results = _compute_distance_batch(
-                current_batch, lookback_window, threshold, metric_name, details_map
-            )
-            filtered_songs.extend(batch_results)
-
-    return filtered_songs
+    return [song_results[p] for p in kept]
 
 
 def _deduplicate_and_filter_neighbors(song_results: list, db_conn, original_song_details: dict):

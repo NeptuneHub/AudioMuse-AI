@@ -27,7 +27,8 @@ cannot kill a supervisor before it can even open its log.
 
 Main Features:
 * One guarded loop: a stop request is honoured before every restart decision
-* Restarts the embedded database first, then any child whose process exited
+* Restarts the embedded database first, then any child whose process exited,
+  never after a stop request or an exit code in no_restart_exit_codes
 * A child that cannot be restarted is logged and retried on the next pass
 """
 
@@ -41,6 +42,8 @@ PROBE_KEEPALIVE_COUNT = 2
 
 
 class HealthLoopMixin:
+    no_restart_exit_codes = frozenset()
+
     def _claim_start(self, name):
         with self._lock:
             starting = getattr(self, '_starting_children', None)
@@ -145,6 +148,8 @@ class HealthLoopMixin:
         with self._lock:
             proc = self._children.get(name)
         if proc is None or proc.poll() is None:
+            return
+        if self._stop_requested.is_set() or proc.returncode in self.no_restart_exit_codes:
             return
         self._log.warning("%s exited (code %s); restarting", name, proc.returncode)
         try:

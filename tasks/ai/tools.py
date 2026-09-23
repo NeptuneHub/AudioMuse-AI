@@ -16,6 +16,7 @@ emitted call to the grounded implementations in ``tool_impl``. Sits between
 Main Features:
 * get_mcp_tools builds the schema dynamically, exposing text_match modes only when CLAP/LYRICS are enabled; tool descriptions carry the routing rules (when to use each tool and when to use a sibling instead) so they work as the primary routing signal for small models, with genre/voice/mood enums from the canonical vocab.
 * execute_mcp_tool converts normalized energy 0..1 to raw score units before search_database, expands female/male voice spelling variants deterministically, passes exclude_artists/exclude_genres through as hard SQL cuts, and rejects year-only text_match queries (routing them to search_database); all failures return a generic error, never a traceback.
+* A multi-seed seed_search interleaves the per-seed results round-robin (deduplicated), so every seed gets songs instead of the first one filling the list.
 * Array args carry maxItems caps so small-model structured output cannot loop a value forever; Ollama does not honour uniqueItems, so repeated values are collapsed deterministically by the planner instead. Exclusion fields document that excluded names never go in seeds or positive filters.
 """
 
@@ -94,6 +95,20 @@ def _seed_to_alchemy_item(seed: Dict) -> Optional[Dict]:
     return None
 
 
+def _interleave_unique(song_lists: List[List[Dict]]) -> List[Dict]:
+    merged: List[Dict] = []
+    ids_seen: set = set()
+    for rank in range(max((len(songs) for songs in song_lists), default=0)):
+        for songs in song_lists:
+            if rank >= len(songs):
+                continue
+            iid = songs[rank].get("item_id")
+            if iid and iid not in ids_seen:
+                merged.append(songs[rank])
+                ids_seen.add(iid)
+    return merged
+
+
 def _dispatch_seed_search(tool_args: Dict, ai_config: Dict) -> Dict:
     seeds = tool_args.get("seeds") or []
     if not seeds:
@@ -116,8 +131,7 @@ def _dispatch_seed_search(tool_args: Dict, ai_config: Dict) -> Dict:
         else:
             return _song_alchemy_sync(add_items, sub_items, get_songs)
 
-    all_songs: List[Dict] = []
-    ids_seen: set = set()
+    per_seed_songs: List[List[Dict]] = []
     messages: List[str] = []
     per_seed_budget = max(50, get_songs)
 
@@ -144,12 +158,9 @@ def _dispatch_seed_search(tool_args: Dict, ai_config: Dict) -> Dict:
 
         if res.get("message"):
             messages.append(res["message"])
-        for s in res.get("songs", []) or []:
-            iid = s.get("item_id")
-            if iid and iid not in ids_seen:
-                all_songs.append(s)
-                ids_seen.add(iid)
+        per_seed_songs.append(list(res.get("songs", []) or []))
 
+    all_songs = _interleave_unique(per_seed_songs)
     if not all_songs:
         return {
             "songs": [],

@@ -31,6 +31,8 @@ Main Features:
   coincides, and its k-means++ only ever measures against the centre it just
   added, so seeding stays linear in the catalogue instead of rebuilding the
   whole points-by-centres matrix on every pick
+* The random-init Einstein k-means moves each centroid to its cell's Einstein
+  midpoint, keeps an empty cell's centroid, and runs no k-means++ or Karcher
 * nearest_centroid agrees with a full hyperbolic_distance_matrix argmin while
   skipping the arccosh, which is what keeps a full-catalogue assignment pass
   affordable, clips and upcasts one CHUNK at a time so its working set does not
@@ -357,3 +359,47 @@ def test_nearest_centroid_still_clips_points_that_sit_outside_the_ball():
     centroids = np.array([[0.5, 0.0], [-0.5, 0.0]], dtype=np.float64)
     outside = np.array([[9.0, 0.0], [-9.0, 0.0]], dtype=np.float64)
     np.testing.assert_array_equal(nearest_centroid(outside, centroids), [0, 1])
+
+
+def _spread_cloud(seed, count, dim, rmax=0.95):
+    rng = np.random.default_rng(seed)
+    directions = rng.standard_normal((count, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    return clip_into_ball(directions * rmax * rng.random((count, 1)) ** (1.0 / dim))
+
+
+def test_einstein_update_moves_each_centroid_to_the_einstein_midpoint_of_its_cell():
+    pts = _spread_cloud(23, 400, 10)
+    centroids, labels = poincare_kmeans(pts, 7, iterations=1, init="random", update="einstein")
+    assert centroids.shape == (7, 10)
+    filled = 0
+    for cell in range(7):
+        members = pts[labels == cell]
+        if members.shape[0] == 0:
+            continue
+        filled += 1
+        np.testing.assert_allclose(centroids[cell], einstein_midpoint(members), atol=1e-5)
+    assert filled >= 2
+
+
+def test_random_init_einstein_kmeans_never_runs_kmeans_plus_plus_or_karcher(monkeypatch):
+    import tasks.hyperbolic_geometry as geometry
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("random init + Einstein update must skip k-means++ and Karcher")
+
+    monkeypatch.setattr(geometry, "_kmeans_plus_plus", _forbidden)
+    monkeypatch.setattr(geometry, "karcher_mean", _forbidden)
+    pts = _spread_cloud(24, 300, 8)
+    centroids, labels = geometry.poincare_kmeans(pts, 12, iterations=6, init="random", update="einstein")
+    assert centroids.shape == (12, 8)
+    assert labels.shape == (300,)
+    assert float(np.linalg.norm(centroids, axis=1).max()) < 1.0
+
+
+def test_einstein_kmeans_keeps_an_empty_cell_on_its_previous_centroid():
+    pts = np.tile(np.array([0.3, -0.2, 0.1], dtype=np.float32), (20, 1))
+    centroids, labels = poincare_kmeans(pts, 3, iterations=3, init="random", update="einstein")
+    assert centroids.shape == (3, 3)
+    assert np.all(np.isfinite(centroids))
+    np.testing.assert_allclose(centroids, np.tile(pts[0], (3, 1)), atol=1e-6)

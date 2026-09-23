@@ -67,6 +67,7 @@ def _worker():
     instance._jobs_done = 0
     instance._shared_cache = {}
     instance._abandoned = []
+    instance._unwritten = []
     instance._uncharged = {}
     instance._wake = threading.Event()
     instance._claim_txn = threading.Lock()

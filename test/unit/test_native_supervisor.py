@@ -21,6 +21,8 @@ Main Features:
 * All three platforms share one health loop, and none keeps a private copy
 * A stop requested during the database probe restarts no child
 * start_child refuses to spawn while stopping but is allowed while starting
+* A stop step that raises still leaves the state stopped; once a stop is
+  requested no child starts, and a console-killed child is never resurrected
 * start_in_background owns the boot thread and invokes start_all
 * The database probe holds one autocommit session and reuses it across ticks
 * A dropped session is replaced once before the database is declared unhealthy
@@ -239,6 +241,24 @@ class TestStartHealthLoopClearsStop:
             real_event.set()
             if sup._health_thread is not None:
                 sup._health_thread.join(2)
+
+
+class TestAFailedStopStillEndsTheStop:
+    def test_a_stop_step_that_raises_leaves_the_state_stopped(self, supervisor_case, monkeypatch):
+        _platform, mod = supervisor_case
+        sup = _bare_supervisor(mod)
+        sup._state = 'running'
+
+        def _boom():
+            raise RuntimeError('join failed')
+
+        monkeypatch.setattr(sup, '_join_workers', _boom)
+
+        with pytest.raises(RuntimeError):
+            sup.stop_all()
+
+        assert sup._state == 'stopped'
+        assert sup.wait_until_stopped(0.2) is True
 
 
 class TestSpawnRefusedWhileStopping:
@@ -813,6 +833,45 @@ class TestATornDownWindowsSupervisorLeavesNoOrphanBehind:
             'a console close kills every attached child before it reaches the '
             'supervisor handler; a restart decided in that gap outlived the '
             'supervisor as an orphan (the 19:15 crash)'
+        )
+
+    def test_the_health_loop_never_resurrects_a_child_killed_with_the_console(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        popen = MagicMock(returncode=0xC000013A)
+        popen.poll.return_value = 0xC000013A
+        sup._children['config-restart-listener'] = popen
+        sup._desired.add('config-restart-listener')
+        sup._state = 'running'
+        sup.start_child = MagicMock()
+
+        sup._restart_if_exited('config-restart-listener')
+        assert not sup.start_child.called, (
+            'the health tick that began before the console handler ran restarted '
+            'the listener 0.4 s after the console killed it; it outlived the '
+            'supervisor as an orphan (2026-09-23 09:46)'
+        )
+
+        popen.poll.return_value = 1
+        popen.returncode = 1
+        sup._stop_requested.set()
+        sup._restart_if_exited('config-restart-listener')
+        assert not sup.start_child.called
+
+        sup._stop_requested.clear()
+        sup._restart_if_exited('config-restart-listener')
+        sup.start_child.assert_called_once_with('config-restart-listener')
+
+    def test_no_child_starts_once_a_stop_is_requested(self, monkeypatch):
+        mod, sup = self._windows(monkeypatch)
+        sup._state = 'running'
+        sup._stop_requested.set()
+        popen = MagicMock()
+        monkeypatch.setattr(mod.subprocess, 'Popen', popen)
+
+        assert sup.start_child('queue-worker-high') is False
+        assert not popen.called and 'queue-worker-high' not in sup._desired, (
+            'the console handler clears _desired before it kills the children; a '
+            'start decided in that window re-added the child and spawned an orphan'
         )
 
     def test_a_console_close_kills_the_children_and_stops_postgres_before_the_orderly_stop(self, monkeypatch):

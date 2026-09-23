@@ -262,6 +262,15 @@ class TestSimilarityEngine:
         conn = _point_get_db_to_test
         _seed_poincare(conn)
         hm = _load_hyperbolic_manager()
+        from tasks.hyperbolic_index import (
+            build_and_store_hyperbolic_index,
+            ensure_hyperbolic_index_loaded,
+            reset_hyperbolic_index,
+        )
+
+        build_and_store_hyperbolic_index(conn)
+        reset_hyperbolic_index()
+        ensure_hyperbolic_index_loaded()
         target = "item-010"
         target_radius = _get_radius(conn, target)
         monkeypatch.setattr(config, "HYPERBOLIC_RADIAL_SPREAD", 0.15)
