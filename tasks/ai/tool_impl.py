@@ -17,8 +17,9 @@ Main Features:
 * Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M', so 'Tom' never matches 'Tomas Brothers'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
 * search_database scores mood_vector/other_features tags via SUBSTRING regex and keeps the relevance order (no DISTINCT re-sort); exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded), and a male-only voices filter becomes an exclusion of the female vocal tags; brainstorm fuses audio/artist/lyrics/filter channels round-robin, gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
 * The brainstorm accepts a planner-supplied grounding_filter merged into the recipe (grounding wins over the model's guess for ranges, unions for lists) and a gate_filter applied per channel, so a metadata constraint next to knowledge_lookup shapes the search from inside the tool rather than filtering its output. The gate is asymmetric on purpose: exclusions are hard and never fall back, while a positive gate that empties a channel keeps that channel ungated so the request still returns songs.
-* Artist-seed similarity scales its similar-artist fanout to the indexed library size (total//10, min 5) and returns songs round-robin across the seed artist and its neighbors (one song each per round, seed first within a round), so the seed still leads the list but a prolific seed artist can never consume the whole LIMIT and shut every similar artist out.
+* Artist-seed similarity scales its similar-artist fanout to the library size (total//10, min 5) and returns songs round-robin across the seed artist and its neighbors (seed first), so a prolific seed artist can never fill the whole LIMIT.
 * With a server selected, search_database and the artist-seed songs keep only that server's songs in SQL before the LIMIT (registry.availability_sql), so a small secondary server still fills the playlist.
+* search_database bounds track length and created_at; an album keeps file order. _album_named_in_request skips the artist's own name; _journey_sync returns the path_manager song path.
 """
 
 import json
@@ -30,6 +31,7 @@ from typing import Dict, List, Optional
 from psycopg2.extras import DictCursor
 
 from database import like_contains_pattern
+from tasks.ai.calibration import energy_to_raw
 from tasks.ai.vocab import TAG_EXCLUDE_SCORE, female_voice_exclusions, parse_tag_score_pairs
 from tasks.index_availability import active_availability_scope
 from tasks.mcp_helper import get_db_connection
@@ -147,7 +149,7 @@ def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
             cur.execute(
                 """
                 SELECT item_id, mood_vector, other_features, tempo, energy,
-                       year, scale, key, rating, author, album
+                       year, scale, key, rating, author, album, duration, created_at
                 FROM public.score
                 WHERE item_id = ANY(%s)
                 """,
@@ -167,6 +169,8 @@ def _fetch_pool_features(item_ids: List[str]) -> Dict[str, Dict]:
                 'rating': r.get('rating'),
                 'author': r.get('author'),
                 'album': r.get('album'),
+                'duration': r.get('duration'),
+                'created_at': r.get('created_at'),
             }
         return out
     finally:
@@ -188,6 +192,65 @@ def _normalize_for_match(s: Optional[str]) -> str:
         .replace("'", '')
         .lower()
     )
+
+
+def _album_text(value: str) -> str:
+    return ' ' + re.sub(r'[^\w]+', ' ', (value or '').lower()).strip() + ' '
+
+
+def _mask_artist(text: str, artist: Optional[str]) -> str:
+    name = _album_text(artist).strip()
+    if not name:
+        return text
+    by_phrase = f' by {name} '
+    if by_phrase in text:
+        return text.replace(by_phrase, ' ', 1)
+    return text.replace(f' {name} ', ' ', 1)
+
+
+def _album_named_in_request(request: str, artist: Optional[str] = None) -> Optional[Dict]:
+    text = _album_text(request)
+    if not text.strip():
+        return None
+    db_conn = get_db_connection()
+    try:
+        with db_conn.cursor() as cur:
+            rows = []
+            if artist:
+                cur.execute(
+                    "SELECT album, author, count(*) FROM public.score "
+                    "WHERE album IS NOT NULL AND album <> '' AND LOWER(author) = LOWER(%s) "
+                    "GROUP BY album, author",
+                    (artist,),
+                )
+                rows = cur.fetchall()
+            if not rows:
+                cur.execute(
+                    "SELECT album, author, count(*) FROM public.score "
+                    "WHERE album IS NOT NULL AND length(album) >= 3 "
+                    "AND position(lower(album) in %s) > 0 "
+                    "GROUP BY album, author ORDER BY length(album) DESC LIMIT 50",
+                    ((request or '').lower(),),
+                )
+                rows = cur.fetchall()
+    finally:
+        db_conn.close()
+    best = None
+    for album, author, count in rows:
+        norm = _album_text(album)
+        core = re.sub(r'\b(?:the|an?|albums?|lp|by|of)\b', ' ', norm).strip()
+        if len(core) < 3 or norm not in _mask_artist(text, artist or author):
+            continue
+        if best is None or (len(norm), count) > (len(best[0]), best[3]):
+            best = (norm, album, author, count)
+    if best is None:
+        return None
+    author = best[2] or ''
+    return {
+        'album': best[1],
+        'author': author,
+        'artist_named': bool(author) and _album_text(author) in text,
+    }
 
 
 def _fuzzy_match_author_title(
@@ -514,7 +577,11 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
 
 
 def _text_search_sync(
-    description: str, tempo_filter: Optional[str], energy_filter: Optional[str], get_songs: int
+    description: str,
+    tempo_filter: Optional[str],
+    energy_filter: Optional[str],
+    get_songs: int,
+    steering: Optional[List[Dict]] = None,
 ) -> Dict:
     from tasks.clap_text_search import search_by_text
     from config import CLAP_ENABLED
@@ -532,9 +599,13 @@ def _text_search_sync(
             return {"songs": [], "message": "No description provided for text search"}
 
         limit = int(get_songs) if get_songs else 200
-        log_messages.append(f"CLAP text search: '{description}' (pool up to {limit})")
+        steered = ', '.join(f"{t['term']} x{t['weight']:g}" for t in steering or [])
+        log_messages.append(
+            f"CLAP text search: '{description}' (pool up to {limit})"
+            + (f", steered toward {steered} with the DCLAP concept model" if steered else "")
+        )
 
-        clap_results = search_by_text(description, limit=limit)
+        clap_results = search_by_text(description, limit=limit, steering=steering or None)
         if not clap_results:
             log_messages.append("No results from CLAP text search")
             return {"songs": [], "message": "\n".join(log_messages)}
@@ -557,6 +628,97 @@ def _text_search_sync(
         logger.exception("Error in CLAP text search")
         log_messages.append("Error in text search: check container logs")
         return {"songs": [], "message": "\n".join(log_messages)}
+
+
+def _seed_profile(seeds: List[Dict]) -> Optional[Dict]:
+    artists = [
+        (s.get('name') or s.get('artist') or '').strip()
+        for s in seeds if (s.get('type') or '').lower() == 'artist'
+    ]
+    songs = [
+        ((s.get('title') or '').strip(), (s.get('artist') or '').strip())
+        for s in seeds if (s.get('type') or '').lower() == 'song'
+    ]
+    conditions, params = [], []
+    for name in artists:
+        if name:
+            conditions.append("LOWER(author) = LOWER(%s)")
+            params.append(name)
+    for title, artist in songs:
+        if title and artist:
+            conditions.append("(LOWER(title) = LOWER(%s) AND LOWER(author) = LOWER(%s))")
+            params.extend([title, artist])
+    if not conditions:
+        return None
+    db_conn = get_db_connection()
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT avg(energy), avg(tempo), count(*) FROM public.score WHERE "
+                + " OR ".join(conditions),
+                params,
+            )
+            energy, tempo, count = cur.fetchone()
+    finally:
+        db_conn.close()
+    if not count or energy is None:
+        return None
+    return {'energy': float(energy), 'tempo': float(tempo) if tempo is not None else None}
+
+
+def _journey_end_row(db_conn, seed: Dict, log_messages: List[str]):
+    if (seed.get('type') or '').lower() == 'song':
+        return _resolve_song_row(
+            db_conn, (seed.get('title') or '').strip(), (seed.get('artist') or '').strip(), log_messages
+        )
+    name = (seed.get('name') or seed.get('artist') or '').strip()
+    if not name:
+        return None
+    availability, availability_params = _server_availability_filter()
+    where = f" AND {availability}" if availability else ''
+    with db_conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            "SELECT item_id, title, author, album FROM public.score "
+            "WHERE LOWER(author) = LOWER(%s) AND COALESCE(duration, 200) >= 90 "
+            r"AND title !~* '\m(intro|outro|skit|interlude)\M'" + where
+            + " ORDER BY md5(item_id) LIMIT 1",
+            [name] + availability_params,
+        )
+        return cur.fetchone()
+
+
+def _journey_sync(start_seed: Dict, end_seed: Dict, length: int) -> Dict:
+    from tasks.path_manager import find_path_between_songs
+
+    log_messages: List[str] = []
+    db_conn = get_db_connection()
+    try:
+        ends = []
+        for seed in (start_seed, end_seed):
+            row = _journey_end_row(db_conn, seed, log_messages)
+            if not row:
+                label = seed.get('title') or seed.get('name') or '?'
+                log_messages.append(f"journey: '{label}' was not found in the library")
+                return {"songs": [], "message": "\n".join(log_messages)}
+            ends.append(row)
+    finally:
+        db_conn.close()
+
+    path, _distance = find_path_between_songs(ends[0]['item_id'], ends[1]['item_id'], max(2, int(length)))
+    songs = [
+        {
+            "item_id": s['item_id'],
+            "title": s.get('title', ''),
+            "artist": s.get('author', ''),
+            "album": s.get('album', ''),
+        }
+        for s in path or []
+    ]
+    log_messages.append(
+        f"journey: {len(songs)} songs from '{ends[0]['title']}' to '{ends[1]['title']}' "
+        "(song path, order kept)"
+    )
+    return {"songs": songs, "message": "\n".join(log_messages)}
 
 
 def _song_similarity_api_sync(song_title: str, song_artist: str, get_songs: int) -> Dict:
@@ -855,6 +1017,9 @@ def _database_genre_query_sync(
     fuzzy_match: bool = False,
     exclude_artists: Optional[List[str]] = None,
     exclude_genres: Optional[List[str]] = None,
+    duration_min: Optional[float] = None,
+    duration_max: Optional[float] = None,
+    added_within_days: Optional[int] = None,
 ) -> Dict:
     get_songs = int(get_songs) if get_songs is not None else 100
 
@@ -997,6 +1162,17 @@ def _database_genre_query_sync(
                 conditions.append("rating >= %s")
                 params.append(int(min_rating))
 
+            if duration_min is not None:
+                conditions.append("duration >= %s")
+                params.append(float(duration_min))
+            if duration_max is not None:
+                conditions.append("duration <= %s")
+                params.append(float(duration_max))
+
+            if added_within_days:
+                conditions.append("created_at >= NOW() - (%s * INTERVAL '1 day')")
+                params.append(int(added_within_days))
+
             if album:
                 conditions.append("LOWER(album) LIKE LOWER(%s)")
                 params.append(like_contains_pattern(album))
@@ -1033,7 +1209,12 @@ def _database_genre_query_sync(
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             params.append(get_songs)
 
-            order_clause = "ORDER BY RANDOM()" if pool_order_index is None else ""
+            if pool_order_index is not None:
+                order_clause = ""
+            elif album:
+                order_clause = "ORDER BY album, file_path, title"
+            else:
+                order_clause = "ORDER BY RANDOM()"
 
             if has_genre_filter or has_voice_filter or has_other_filter or has_instrumental_filter:
                 score_parts = []
@@ -1127,6 +1308,13 @@ def _database_genre_query_sync(
             filters.append(f"year: {year_min or 'any'}-{year_max or 'any'}")
         if min_rating:
             filters.append(f"min_rating: {min_rating}")
+        if duration_min is not None or duration_max is not None:
+            filters.append(
+                f"duration: {duration_min if duration_min is not None else 'any'}-"
+                f"{duration_max if duration_max is not None else 'any'}s"
+            )
+        if added_within_days:
+            filters.append(f"added in the last {added_within_days} days")
         if album:
             filters.append(f"album: {album}")
         if artist:
@@ -1404,9 +1592,12 @@ def _ai_brainstorm_sync(
         return added
 
     def _energy_to_raw(value):
-        return config.ENERGY_MIN + float(value) * (config.ENERGY_MAX - config.ENERGY_MIN)
+        return energy_to_raw(value)
 
-    _POSITIVE_GATE_KEYS = ('key', 'scale', 'min_rating', 'instrumental', 'album')
+    _POSITIVE_GATE_KEYS = (
+        'key', 'scale', 'min_rating', 'instrumental', 'album', 'duration_min', 'duration_max',
+        'added_within_days',
+    )
     _EXCLUDE_GATE_KEYS = ('exclude_artists', 'exclude_genres')
 
     def _gate_subset(keys):

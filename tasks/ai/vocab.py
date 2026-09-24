@@ -18,6 +18,7 @@ Main Features:
 * Fuzzy remap (rapidfuzz WRatio, cutoff 75, min length 4) plus gender-aware WordNet expansion for vocalist synonyms; unrecognized labels are dropped with a note rather than passed through.
 * female_voice_exclusions turns a male-only voices list into the female vocal tags to exclude (score below TAG_EXCLUDE_SCORE), shared by the SQL filter and the re-rank.
 * parse_tag_score_pairs is the shared parser for the DB's comma-separated 'tag:score' strings (mood_vector/other_features): entries without ':' or with a non-numeric score are silently skipped.
+* OUT_OF_VOCAB_GENRES and SOUND_DESCRIPTORS list genre and atmosphere words that no metadata field holds, so the planner can match them by sound; ACTIVITY_TEMPO gives workout-style words a tempo floor; INSTRUMENT_WORDS maps instrument words and synonyms (sax, fiddle, tabla) to DCLAP SAE concept terms; None marks timbres the SAE confuses (rhodes/electric piano fires on acoustic piano, synth on ambient pads, choir, organ, drums), which are matched by sound only.
 """
 
 import functools
@@ -200,6 +201,104 @@ ALIAS_GENRE = {
     'indie rock music': 'indie rock',
     'indie pop music': 'indie pop',
     'dance music': 'dance',
+    'dance songs': 'dance',
+    'dance tracks': 'dance',
+    'dance hits': 'dance',
+    'dance party': 'dance',
+    'dance floor': 'dance',
+    'dancefloor': 'dance',
+    'dance pop': 'dance',
+    'dance anthems': 'dance',
+    'soulful': 'soul',
+    'funky': 'funk',
+    'bluesy': 'blues',
+    'jazzy': 'jazz',
+    'folky': 'folk',
+    'punky': 'punk',
+}
+
+OUT_OF_VOCAB_GENRES = (
+    'techno', 'trance', 'drum and bass', 'drum n bass', 'dnb', 'dubstep', 'jungle', 'breakbeat',
+    'hardstyle', 'idm', 'glitch', 'deep house', 'tech house', 'trip hop', 'trip-hop', 'downtempo',
+    'synthwave', 'synth-pop', 'synthpop', 'synth pop', 'darkwave', 'new wave', 'vaporwave',
+    'chillwave', 'lo-fi', 'lofi', 'lo fi', 'shoegaze', 'dream pop', 'post-rock', 'post rock',
+    'post-punk', 'post punk', 'math rock', 'grunge', 'emo', 'screamo', 'hardcore', 'metalcore',
+    'nu metal', 'death metal', 'black metal', 'doom metal', 'thrash', 'power metal',
+    'symphonic metal', 'stoner rock', 'psychedelic', 'krautrock', 'surf rock', 'garage rock',
+    'rockabilly', 'britpop', 'gothic', 'industrial', 'ebm', 'reggae', 'reggaeton', 'dancehall',
+    'dub', 'ska', 'latin', 'salsa', 'bachata', 'cumbia', 'merengue', 'tango', 'bossa nova', 'samba',
+    'flamenco', 'fado', 'afrobeat', 'afrobeats', 'amapiano', 'highlife', 'k-pop', 'j-pop',
+    'city pop', 'disco', 'italo disco', 'eurodance', 'hyperpop', 'phonk', 'trap', 'drill',
+    'grime', 'boom bap', 'gospel', 'classical', 'baroque', 'orchestral', 'opera', 'choral',
+    'soundtrack', 'film score', 'chanson', 'swing', 'big band', 'bebop', 'smooth jazz',
+    'acid jazz', 'neo soul', 'doo-wop', 'bluegrass', 'americana', 'celtic',
+    'klezmer', 'polka', 'world music', 'new age', 'chiptune', 'shanty', 'lullaby',
+)
+
+SOUND_DESCRIPTORS = (
+    'dark', 'moody', 'brooding', 'haunting', 'eerie', 'creepy', 'spooky', 'sinister', 'ominous',
+    'dreamy', 'ethereal', 'atmospheric', 'cinematic', 'epic', 'majestic', 'triumphant',
+    'anthemic', 'melancholic', 'melancholy', 'bittersweet', 'nostalgic', 'wistful', 'somber',
+    'gloomy', 'hopeful', 'euphoric', 'blissful', 'sunny', 'bright', 'warm', 'lush', 'gritty',
+    'raw', 'heavy', 'hypnotic', 'trippy', 'spacey', 'cosmic', 'meditative', 'meditation',
+    'spiritual', 'mystical', 'tribal', 'groovy', 'sensual', 'sultry', 'seductive', 'romantic',
+    'tender', 'intimate', 'minimal', 'minimalist', 'cozy', 'rainy',
+    'stormy', 'angry', 'furious', 'rebellious', 'playful', 'quirky', 'whimsical', 'mysterious',
+    'noir', 'retro', 'vintage', 'futuristic', 'chaotic', 'soothing',
+    'peaceful', 'serene', 'tranquil', 'lonely', 'heartbroken', 'uplifting', 'inspirational',
+)
+
+INSTRUMENT_WORDS = {
+    'viola': 'viola', 'violas': 'viola', 'violin': 'violin', 'violins': 'violin', 'fiddle': 'violin',
+    'fiddles': 'violin', 'cello': 'cello', 'cellos': 'cello', 'violoncello': 'cello',
+    'double bass': 'double bass', 'upright bass': 'double bass', 'contrabass': 'double bass',
+    'strings': 'strings section', 'string section': 'strings section', 'strings section': 'strings section',
+    'string quartet': 'strings section', 'harp': 'harp', 'harps': 'harp', 'mandolin': 'mandolin',
+    'ukulele': 'ukulele', 'uke': 'ukulele', 'banjo': 'banjo', 'sitar': 'sitar',
+    'acoustic guitar': 'acoustic guitar', 'acoustic guitars': 'acoustic guitar',
+    'piano': 'piano', 'pianos': 'piano', 'grand piano': 'piano', 'accordion': 'accordion',
+    'harmonica': 'harmonica', 'trumpet': 'trumpet', 'trumpets': 'trumpet', 'trombone': 'trombone',
+    'trombones': 'trombone', 'brass': 'brass section', 'horns': 'brass section',
+    'horn section': 'brass section', 'brass section': 'brass section', 'saxophone': 'saxophone',
+    'saxophones': 'saxophone', 'sax': 'saxophone', 'clarinet': 'clarinet', 'flute': 'flute',
+    'flutes': 'flute', 'woodwind': 'woodwind', 'woodwinds': 'woodwind', 'orchestra': 'orchestra',
+    'orchestral': 'orchestra', 'tabla': 'percussion', 'congas': 'percussion', 'bongos': 'percussion',
+    'percussion': 'percussion',
+    'electric piano': None, 'rhodes': None, 'wurlitzer': None, 'keyboard': None, 'keyboards': None,
+    'organ': None, 'hammond': None, 'synthesizer': None, 'synthesizers': None, 'synth': None,
+    'synths': None, 'synth bass': None, 'electric guitar': None, 'electric guitars': None,
+    'steel guitar': None, 'pedal steel': None, 'slide guitar': None, 'bass guitar': None,
+    'guitar': None, 'guitars': None, 'drums': None, 'choir': None, 'choirs': None, 'choral': None,
+    'steelpan': None, 'steel drums': None,
+}
+MOOD_WORDS = {
+    'relaxed': (
+        'chill', 'chilled', 'chillout', 'relaxing', 'relaxed', 'calm', 'mellow', 'laid back',
+        'laid-back', 'soothing', 'peaceful', 'rilassante', 'rilassanti', 'tranquilla', 'relajante',
+        'tranquila', 'entspannt', 'entspannte', 'entspannende', 'calme', 'relaxante',
+    ),
+    'sad': (
+        'sad', 'melancholic', 'melancholy', 'heartbroken', 'depressing', 'triste', 'tristi',
+        'tristes', 'traurig', 'traurige',
+    ),
+    'happy': (
+        'happy', 'cheerful', 'joyful', 'feel-good', 'feel good', 'uplifting', 'felice', 'felici',
+        'allegra', 'allegre', 'feliz', 'alegre', 'alegres', 'joyeux', 'joyeuse', 'frohliche',
+        'froehliche', 'gut gelaunt',
+    ),
+    'party': ('party', 'partying', 'festa', 'fiesta', 'fete'),
+    'danceable': (
+        'danceable', 'groovy', 'to dance to', 'bailar', 'ballare', 'tanzen', 'danser', 'dansante',
+    ),
+    'aggressive': ('aggressive', 'angry', 'furious', 'rage', 'aggressiva', 'aggressivo', 'wutend'),
+}
+
+ACTIVITY_TEMPO = {
+    'workout': (120.0, 200.0),
+    'running': (120.0, 200.0),
+    'jogging': (120.0, 200.0),
+    'cardio': (120.0, 200.0),
+    'gym': (115.0, 200.0),
 }
 
 ALIAS_SCALE = {
@@ -240,6 +339,10 @@ ALIAS_ENERGY = {
     'powerful': (0.7, 1.0),
     'upbeat': (0.55, 1.0),
     'workout': (0.65, 1.0),
+    'running': (0.65, 1.0),
+    'jogging': (0.6, 1.0),
+    'cardio': (0.65, 1.0),
+    'gym': (0.65, 1.0),
     'cheer me up': (0.55, 1.0),
     'cheer up': (0.55, 1.0),
     'cheerful': (0.55, 1.0),

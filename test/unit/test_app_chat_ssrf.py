@@ -74,6 +74,7 @@ def _install_fakes(planner_calls):
 
     fake_planner = types.ModuleType('tasks.ai.planner')
     fake_planner.plan_and_execute_once = _planner
+    fake_planner.requested_playlist_shape = lambda text: {}
 
     fake_mcp = types.ModuleType('tasks.mcp_helper')
     fake_mcp.get_library_context = lambda: {'total_songs': 0}

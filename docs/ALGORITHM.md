@@ -1966,13 +1966,21 @@ There is a single tool-calling request per user prompt. There is no separate
 classifier step. The model sees the full tool surface and emits one or more tool
 calls:
 
-- `seed_search`: find songs similar to a named song or artist.
+- `seed_search`: find songs similar to a named song or artist. Its blend modes
+  merge the seeds (union), blend them into one flavour (alchemy), remove one
+  flavour (subtract), or build a **journey** that starts at the first seed and
+  walks to the second through the song-path finder, keeping that order.
 - `text_match`: match a description against the audio (DCLAP) or the lyrics.
   Modes are only exposed when the matching feature is enabled.
 - `knowledge_lookup`: the brainstorm tool, for requests that need outside
   knowledge rather than a library lookup.
 - `search_database`: metadata and feature filtering (genre, mood, tempo, energy,
-  key, scale, year, rating, exclusions).
+  key, scale, year, rating, track length, recently added, exclusions).
+
+Energy is spoken as 0.0 (calm) to 1.0 (intense), and that scale is a **library
+percentile**: 0.35 means the calmest 35% of the analyzed songs. The percentiles
+are read from the library itself, so the energy filters keep working even when
+the stored `ENERGY_MIN`/`ENERGY_MAX` range no longer matches the analyzed values.
 
 The tool descriptions carry the routing rules, so the choice of tool is driven by
 the schemas rather than by a long prompt. The prompt text and the structured
@@ -1988,36 +1996,92 @@ This feature is designed to work with a small self-hosted model, so the
 intelligence lives in the schemas and in deterministic code rather than in prompt
 prose:
 
-- **Hint pre-extraction.** Years, decades, BPM, tempo and energy words, genres
-  and negated genres are extracted from the request with plain regular
-  expressions before the call. Anything the model then leaves out is merged back
-  into the filter afterwards.
+- **Hint pre-extraction.** Plain regular expressions read the request before the
+  call:
+  - years, decades (including "early/late 90s" and a few other languages' decade
+    words) and relative eras ("last 5 years", "recent");
+  - BPM values and bounds, tempo, energy and activity words;
+  - key and scale;
+  - track length ("under 3 minutes", "long songs") and a playlist time budget
+    ("an hour of");
+  - song count, a per-artist cap ("one song per artist") and excluded versions
+    ("no live versions");
+  - "recently added";
+  - genres and negated genres, with negation words in several languages.
+
+  Anything the model then leaves out is merged back into the filter afterwards.
+  Relative eras and explicit instrumental wording override the model, since a
+  model cannot know today's date.
+- **Sound words.** Genres outside the vocabulary (for example techno or
+  post-rock) and atmosphere words (dark, dreamy, cinematic) have no metadata
+  field. When the plan is filter-only, an audio `text_match` on those words is
+  added so the filter re-ranks a sound-matched pool.
+- **Instruments.** A single DCLAP text vector lets the loudest facets of a
+  request win, so "pop viola with a female voice" comes back as pop with a
+  female voice and no viola. Instrument words (viola, sax, rhodes, tabla...) are
+  mapped to the validated concepts of the DCLAP sparse autoencoder (section on
+  concept steering), and then:
+  - the sound search always runs, even when the model planned a metadata-only
+    search, and its query is steered mildly (x3) toward the instrument, which
+    enriches the pool without losing the genre and the voice (a strong x10 steer
+    returns instrumental covers);
+  - every candidate is read by the same SAE, and a song counts as "has the
+    instrument" when the concept fires in the library's top 5% (the threshold is
+    a sampled percentile of the library, cached for an hour);
+  - the genre and the instrument form the first ranking tier, so songs with
+    both come first; when too few candidates carry every requested value, an
+    instrument-led search (x10) tops the pool up.
+- **Copied examples and negations.** When the model's `text_match` query repeats
+  the prompt's own example (three or more of its words that the request does not
+  contain), the request's own words are used instead. A `text_match` query that
+  is only a negation ("nothing explicit", "no vocals") is dropped: an embedding
+  match reads it as its opposite.
 - **Hallucination stripping.** Year, instrumental and exclusion arguments that do
   not appear in the request are removed. An exclusion only survives if the
-  request actually contains a negation.
+  request actually contains a negation, and an excluded genre only if the
+  request names it (directly or by an alias such as "rap").
+- **Plan repairs.** A single-point tempo or energy range is widened to a window.
+  An album named in the request is looked up in the library and added to the
+  filter. `min_rating` is dropped when no song has a rating. "From X to Y" with
+  two seeds becomes a journey. "Like X but calmer / more upbeat / faster" is measured
+  against the seeds' own average energy and tempo instead of a fixed threshold.
+  Track-length and recently-added arguments the request never mentions are
+  stripped, like hallucinated years.
 - **Deduplication and caps.** Duplicate tool calls are dropped and a plan is
   capped at four calls.
 - **One replan.** If the plan returns nothing at all, exactly one replan runs with
   the failure as feedback.
-- **Unsupported constraints** (for example a duration request) are reported as a
-  note instead of being silently ignored.
 
 #### Composing the result
 
 When several tools return candidates, the results are merged and re-ranked:
 
-- Songs matching the requested categorical values (genre, voice type, mood) are
-  ranked above songs that do not. The continuous dimensions only order songs
+- Songs matching the requested categorical values are ranked above songs that do
+  not. These are genre, voice type, scale and instrumental, plus the **explicit
+  ranges**: a year range, a BPM number, a track length and "recently added",
+  where only a song inside the range counts as a match. A requested genre ranks
+  above the other categorical matches. The continuous dimensions only order songs
   **within** a tier, so the categorical request is a strong preference and not a
   hard gate.
+- A filter-only genre request puts the songs whose main style is that genre
+  first, keeping the database's relevance order inside each group.
 - Songs returned by more than one tool get an intersection boost.
 - The primary tool's own similarity rank is blended in as an extra dimension.
-- Titles that look like intros, skits or interludes are pushed down.
-- `exclude_artists` and `exclude_genres` are the one **hard** cut.
+- When the filter names a genre and the finder's pool holds fewer songs matching
+  every requested value than the playlist needs, library songs that do match are
+  added to the pool. They rank after the similar songs.
+- A continuous range is a gate, not a maximizer: every song inside it scores the
+  same, so similarity orders them ("calm" does not mean "the quietest drone"),
+  and a song outside it scores by its distance to the range.
+- Titles that look like intros, skits or interludes, and tracks under a minute,
+  are pushed down.
+- `exclude_artists` and `exclude_genres` are the one **hard** cut. Excluded
+  versions (live, remix, cover...) are removed by title, unless that would leave
+  nothing.
 - If a filtered pool comes up short, a relax loop lowers the score threshold to
   backfill. A filter-only query that still underfills re-runs without its soft
-  dimensions (tempo, energy, moods, key, scale, rating) and then applies them as
-  the soft re-rank over the broader pool.
+  dimensions (tempo, energy, moods, key, scale, rating, track length, recently
+  added) and then applies them as the soft re-rank over the broader pool.
 
 `knowledge_lookup` is the one exception: its results are returned as they are. It
 already grounds itself, because the model emits a *recipe* (filters, sound
@@ -2028,9 +2092,13 @@ re-rank on top of that would fight the brainstorm.
 #### Streaming and playlist creation
 
 The playlist length comes from the request's `n` (the chat page's "Number of
-songs" box), defaulting to `INSTANT_PLAYLIST_DEFAULT_N_RESULTS`. The pool the
-tools fill is ten times that, with a floor of 1000, so dedup and the artist
-diversity cap still leave enough to select from.
+songs" box), defaulting to `INSTANT_PLAYLIST_DEFAULT_N_RESULTS`. A count written
+in the request ("15 songs") wins over the box. A time budget ("an hour of")
+sizes the list and then trims it by the tracks' real durations. The pool the
+tools fill is ten times the length, with a floor of 1000, so dedup and the artist
+diversity cap still leave enough to select from. A per-artist cap written in the
+request replaces the default cap and is kept even when the list comes out
+shorter. A journey keeps its path order and is never reordered.
 
 `POST /chat/api/chatPlaylist` returns the final result in one response.
 `POST /chat/api/chatPlaylistStream` streams the same run as Server-Sent Events, so

@@ -46,6 +46,9 @@ TRUTHY_SEARCH_FILTERS = {
     'instrumental': True,
     'exclude_artists': ['Artist B'],
     'exclude_genres': ['Hip-Hop'],
+    'duration_min': 360,
+    'duration_max': 180,
+    'added_within_days': 30,
 }
 
 
