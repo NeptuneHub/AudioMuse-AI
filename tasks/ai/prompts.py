@@ -16,6 +16,7 @@ prompt, and the grounded brainstorm recipe prompt. Consumed by ``planner``,
 Main Features:
 * Tool prose and the Ollama structured-output grammar are both DERIVED from the get_mcp_tools schemas (names, descriptions, per-argument types and enums), so the routing knowledge lives in one place and stays in sync across providers.
 * build_title_naming_prompt renders the classic full-title naming prompt: the user-editable instructions followed by a fixed sample of the playlist songs, so editing the instructions can never change what data is sent.
+* EXAMPLE_TEXT_QUERIES holds the example text_match queries, shared with the planner so a plan that copies one is caught.
 * build_tool_calls_schema emits a typed per-tool grammar (reasoning field first with a hard maxLength, name+arguments branches with enum-locked labels, array caps from the shared maxItems) used to constrain Ollama structured output; prompts stay short with a few diverse worked examples per intent class, including a three-tool plan, exclusion ('no rap') and language/scene routing rules.
 """
 
@@ -159,6 +160,13 @@ HOW TO PLAN:
 {rules_block}"""
 
 
+EXAMPLE_TEXT_QUERIES = (
+    "warm rhodes keys, mellow downtempo groove",
+    "soft acoustic guitar for studying",
+    "growing old",
+)
+
+
 def _example(reasoning: str, calls: List[Dict]) -> str:
     return json.dumps({"reasoning": reasoning, "tool_calls": calls}, ensure_ascii=True)
 
@@ -260,7 +268,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
                     {
                         "name": "text_match",
                         "arguments": {
-                            "query": "warm rhodes keys, mellow downtempo groove",
+                            "query": EXAMPLE_TEXT_QUERIES[0],
                             "mode": "audio",
                         },
                     },
@@ -300,7 +308,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
                 [
                     {
                         "name": "text_match",
-                        "arguments": {"query": "soft acoustic guitar for studying", "mode": "audio"},
+                        "arguments": {"query": EXAMPLE_TEXT_QUERIES[1], "mode": "audio"},
                     }
                 ],
             )
@@ -313,7 +321,7 @@ def _build_examples(tools: List[Dict]) -> List[str]:
                 [
                     {
                         "name": "text_match",
-                        "arguments": {"query": "growing old", "mode": "lyrics"},
+                        "arguments": {"query": EXAMPLE_TEXT_QUERIES[2], "mode": "lyrics"},
                     }
                 ],
             )

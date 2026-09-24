@@ -16,7 +16,8 @@ emitted call to the grounded implementations in ``tool_impl``. Sits between
 Main Features:
 * get_mcp_tools builds the schema dynamically, exposing text_match modes only when CLAP/LYRICS are enabled; tool descriptions carry the routing rules (when to use each tool and when to use a sibling instead) so they work as the primary routing signal for small models, with genre/voice/mood enums from the canonical vocab.
 * execute_mcp_tool converts normalized energy 0..1 to raw score units before search_database, expands female/male voice spelling variants deterministically, passes exclude_artists/exclude_genres through as hard SQL cuts, and rejects year-only text_match queries (routing them to search_database); all failures return a generic error, never a traceback.
-* A multi-seed seed_search interleaves the per-seed results round-robin (deduplicated), so every seed gets songs instead of the first one filling the list.
+* A multi-seed seed_search interleaves the per-seed results round-robin (deduplicated), so every seed gets songs instead of the first one filling the list; blend_mode 'journey' walks the song path from the first seed to the second instead.
+* search_database energy 0..1 is a library percentile (calibration.energy_to_raw); duration_min/duration_max (seconds) and added_within_days are plain SQL bounds. text_match takes an internal steering list (SAE concepts) that the planner adds for named instruments.
 * Array args carry maxItems caps so small-model structured output cannot loop a value forever; Ollama does not honour uniqueItems, so repeated values are collapsed deterministically by the planner instead. Exclusion fields document that excluded names never go in seeds or positive filters.
 """
 
@@ -31,12 +32,14 @@ from tasks.ai.tool_impl import (
     _artist_similarity_api_sync,
     _database_genre_query_sync,
     _fuzzy_match_author_title,
+    _journey_sync,
     _lyrics_search_sync,
     _song_alchemy_sync,
     _song_similarity_api_sync,
     _text_search_sync,
 )
 from tasks.mcp_helper import get_db_connection as _get_db_connection
+from tasks.ai.calibration import energy_to_raw
 from tasks.ai.vocab import GENRE_VOCAB
 
 logger = logging.getLogger(__name__)
@@ -118,6 +121,10 @@ def _dispatch_seed_search(tool_args: Dict, ai_config: Dict) -> Dict:
     get_songs = int(tool_args.get("get_songs", 200) or 200)
     subtract = tool_args.get("subtract") or []
 
+    if blend_mode == "journey" and len(seeds) >= 2:
+        length = int(tool_args.get("journey_length") or config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS)
+        return _journey_sync(seeds[0], seeds[-1], length)
+
     if blend_mode == "alchemy" or (blend_mode == "subtract" and subtract):
         add_items = [it for it in (_seed_to_alchemy_item(s) for s in seeds) if it]
         sub_items = [it for it in (_seed_to_alchemy_item(s) for s in subtract) if it]
@@ -198,6 +205,7 @@ def _dispatch_text_match(tool_args: Dict, ai_config: Dict) -> Dict:
         tool_args.get("tempo_filter"),
         tool_args.get("energy_filter"),
         get_songs,
+        steering=tool_args.get("steering"),
     )
 
 
@@ -208,13 +216,14 @@ _SEARCH_OTHER_FILTER_KEYS = (
     "album", "other_features", "candidate_item_ids",
     "voices", "instrumental",
     "exclude_artists", "exclude_genres",
+    "duration_min", "duration_max", "added_within_days",
 )
 
 
 def _scale_energy(raw) -> Optional[float]:
     if raw is None:
         return None
-    return config.ENERGY_MIN + float(raw) * (config.ENERGY_MAX - config.ENERGY_MIN)
+    return energy_to_raw(raw)
 
 
 def _has_other_search_filters(tool_args: Dict) -> bool:
@@ -296,6 +305,9 @@ def _dispatch_search_database(tool_args: Dict) -> Dict:
             fuzzy_match=fuzzy,
             exclude_artists=tool_args.get("exclude_artists"),
             exclude_genres=tool_args.get("exclude_genres"),
+            duration_min=tool_args.get("duration_min"),
+            duration_max=tool_args.get("duration_max"),
+            added_within_days=tool_args.get("added_within_days"),
         )
 
     result = _do_query(artist_arg, fuzzy=False)
@@ -389,12 +401,14 @@ def get_mcp_tools() -> List[Dict]:
                     },
                     "blend_mode": {
                         "type": "string",
-                        "enum": ["union", "alchemy", "subtract"],
+                        "enum": ["union", "alchemy", "subtract", "journey"],
                         "default": "union",
                         "description": (
                             "union (default): songs similar to each seed, merged. "
                             "alchemy: one blended flavor of 2+ seeds ('X meets Y'). "
-                            "subtract: like the seeds minus the 'subtract' items ('X but not Y')."
+                            "subtract: like the seeds minus the 'subtract' items ('X but not Y'). "
+                            "journey: exactly 2 seeds, a playlist that starts at the first and "
+                            "gradually moves to the second ('from X to Y')."
                         ),
                     },
                     "subtract": {
@@ -497,7 +511,7 @@ def get_mcp_tools() -> List[Dict]:
             "description": (
                 "Filter the library by exact metadata. The tool for an artist's OWN songs "
                 "(artist), an album (album), and for genre, vocal type, mood, release year or "
-                "decade, tempo BPM, energy, key, scale, rating and instrumental. "
+                "decade, tempo BPM, energy, key, scale, rating, track length and instrumental. "
                 "Also the ONLY tool for exclusions: 'no X', 'without X', 'except X' go in "
                 "exclude_artists/exclude_genres, never in the positive fields. "
                 "Fill only the fields the user asked for. Works alone for pure metadata "
@@ -551,6 +565,21 @@ def get_mcp_tools() -> List[Dict]:
                         "description": "Latest release year, e.g. 1999 for '90s'",
                     },
                     "min_rating": {"type": "integer", "description": "Minimum user rating 1-5"},
+                    "duration_min": {
+                        "type": "number",
+                        "description": "Shortest track length in SECONDS, e.g. 360 for 'over 6 minutes'",
+                    },
+                    "duration_max": {
+                        "type": "number",
+                        "description": "Longest track length in SECONDS, e.g. 180 for 'under 3 minutes'",
+                    },
+                    "added_within_days": {
+                        "type": "integer",
+                        "description": (
+                            "Only songs added to the library in the last N days, "
+                            "e.g. 30 for 'recently added'"
+                        ),
+                    },
                     "album": {"type": "string", "description": "Album name, e.g. 'Album X'"},
                     "artist": {
                         "type": "string",

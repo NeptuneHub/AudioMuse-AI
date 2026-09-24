@@ -1600,8 +1600,26 @@ class TestTextSearchSync:
         finally:
             cfg.CLAP_ENABLED = orig
 
-        clap_mod.search_by_text.assert_called_once_with("anything", limit=10)
+        clap_mod.search_by_text.assert_called_once_with("anything", limit=10, steering=None)
         assert len(result["songs"]) == 10
+
+    def test_instrument_steering_reaches_the_clap_search(self):
+        mod = _import_mcp_impl()
+        clap_mod = self._make_clap_module(results=[{"item_id": "c1", "title": "Song 1", "author": "Artist 1"}])
+        steering = [{'term': 'viola', 'weight': 3.0, 'direction': 'more'}]
+
+        import config as cfg
+
+        orig = cfg.CLAP_ENABLED
+        try:
+            cfg.CLAP_ENABLED = True
+            with patch.dict(sys.modules, {'tasks.clap_text_search': clap_mod}):
+                result = mod._text_search_sync("pop viola", None, None, 10, steering=steering)
+        finally:
+            cfg.CLAP_ENABLED = orig
+
+        clap_mod.search_by_text.assert_called_once_with("pop viola", limit=10, steering=steering)
+        assert 'viola x3' in result["message"]
 
     def test_exception_returns_empty_with_message(self):
         mod = _import_mcp_impl()

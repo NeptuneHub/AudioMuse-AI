@@ -703,10 +703,11 @@ class TestGenreAndNegationHints:
         assert h.get('genres') == ['rock']
         assert h.get('exclude_genres') == ['metal']
 
-    def test_duration_flagged_unsupported(self):
+    def test_track_length_becomes_a_duration_bound(self):
         p = _plan()
         h = p.extract_hints("short punchy songs under 3 minutes")
-        assert any('duration' in u for u in h.get('unsupported', []))
+        assert h.get('duration_max') == 180.0
+        assert not h.get('unsupported')
 
 
 class TestHintBackstop:
@@ -1331,15 +1332,15 @@ class TestEmptyPlanRescue:
             plan = p._synthesize_rescue_plan(request, p.extract_hints(request), [])
             assert all(c['name'] != 'search_database' for c in plan.primaries)
 
-    def test_unsupported_duration_note_survives_the_rescue(self, monkeypatch):
+    def test_duration_hint_reaches_the_rescue_filter(self, monkeypatch):
         p = _plan()
-        result, _seen, _logs = _run_plan(
+        result, _seen, logs = _run_plan(
             p, monkeypatch, 'short punchy songs under 3 minutes',
             [{'name': 'search_database', 'arguments': {}}],
             raw_request='short punchy songs under 3 minutes',
         )
         assert result['songs']
-        assert any('duration' in n for n in result['plan_notes'])
+        assert any("'duration_max': 180.0" in line for line in logs)
 
     def test_at_most_one_extra_llm_call_across_the_empty_plan_path(self, monkeypatch):
         p = _plan()

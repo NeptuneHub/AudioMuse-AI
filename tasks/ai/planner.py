@@ -14,33 +14,51 @@ the full tool surface emits the plan, which is then validated, deduplicated,
 merged, run and composed.
 
 Main Features:
-* Regex pre-extraction of years/decades/BPM/tempo/energy/genre (and negated-genre) hints; hints the model omitted are deterministically merged back into the filter (hint backstop), while hallucinated year/instrumental/exclusion args absent from the request are stripped (exclusions survive only when the request carries a negation cue); unsupported constraints (duration) surface as plan notes.
-* Deterministic repair of what small models get wrong, because the output grammar cannot express it: repeated array values are collapsed (Ollama ignores uniqueItems, so a model pads a list to maxItems), and exclusions that contradict the request itself are dropped - an excluded artist that is also a seed or the filter's own artist, an excluded genre the request asks for positively, and exclusions naming something absent from the request (fuzzy-matched, so a misspelling still counts).
-* Soft categorical-priority re-rank (matching songs first, continuous dims within tiers) that blends the primary tool's similarity rank as an extra dimension and down-ranks intro/skit/interlude titles; exclude_artists/exclude_genres are the one HARD cut, reverted only when they would empty the pool; songs returned by several finder tools get an intersection boost.
-* knowledge_lookup (AI brainstorm) output is never post-filtered: the parsed filter is instead injected INTO the tool call, so the recipe is grounded and the channels are gated inside the brainstorm itself. The planner filter is still cleared, keeping brainstorm results out of the composition re-rank.
-* A request always yields a plan that can find songs: an empty or fully-dropped plan replans ONCE with failure feedback and then falls back to a deterministic match of the user's own words (text_match, or the hint-derived filter alone for a year-only request), and the same fallback covers a zero-result run and an unreachable provider. score_threshold relax loop backfills when a filter pool is short, and a filter-only query that still underfills the target re-runs without its soft dims (tempo/energy/moods/key/scale/rating) and applies them as the soft re-rank over the broader pool.
+* Regex hints (multilingual negation and decades): years, relative eras, BPM bounds, tempo/energy/activity words, key/scale, track length, time budget, song count, per-artist cap, excluded versions, recently added, genres, sound words. Missing hints are merged back (backstop); relative eras and instrumental wording override the model; hallucinated year/instrumental/exclusion args are stripped (exclusions need a negation cue).
+* Deterministic repair of what small models get wrong: repeated array values collapsed (Ollama ignores uniqueItems); contradicting exclusions dropped (seed/filter artist, a requested genre, a name absent from the request); point ranges widened; a named album looked up; min_rating dropped in an unrated library; a journey cue fixes blend_mode; "like X but calmer/faster" is relative to the seeds; sound words add an audio text_match to a filter-only plan; a genre-filtered pool short of full matches is backfilled; filter-only genre results lead with songs whose main style is that genre.
+* Soft categorical-priority re-rank (rerank.py); exclude_artists/exclude_genres are the one HARD cut (reverted only if they empty the pool); excluded versions go by title; multi-finder songs get an intersection boost; a journey runs alone, in order.
+* Named instruments (DCLAP SAE concepts) always get a sound search steered x3 toward them; each candidate is SAE-checked, and a pool short of songs that carry them is topped up by an x10 instrument-led search. A text_match query copying a prompt example becomes the request; a negation-only one is dropped.
+* knowledge_lookup output is never post-filtered: the parsed filter is injected INTO the tool call (grounded recipe, gated channels) and the planner filter is cleared.
+* A request always yields a plan that finds songs: an empty plan or a zero-result run replans ONCE with feedback, then falls back to a direct match of the user's words (also when the provider is unreachable); a short filter pool relaxes score_threshold, then re-runs without its soft dims and re-ranks by them.
 """
 
+import datetime
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import config
 
 from tasks.ai.vocab import (
+    ACTIVITY_TEMPO,
     ALIAS_ENERGY,
     ALIAS_GENRE,
     ALIAS_TEMPO,
     GENRE_VOCAB,
+    INSTRUMENT_WORDS,
+    MOOD_WORDS,
+    OUT_OF_VOCAB_GENRES,
+    SOUND_DESCRIPTORS,
     normalize_genre_list,
     normalize_mood_list,
     normalize_scale,
     normalize_voices_list,
 )
 
-from .rerank import _parse_tag_scores, rerank
+from .prompts import EXAMPLE_TEXT_QUERIES
+from .rerank import (
+    EXACT_TEMPO_KEY,
+    INSTRUMENT_HIT,
+    _NON_SONG_TITLE_RE,
+    _parse_tag_scores,
+    _short_track_floor,
+    count_full_matches,
+    genre_style_rank,
+    rerank,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +86,10 @@ FILTER_LIST_KEYS = (
     'other_features',
     'exclude_artists',
     'exclude_genres',
+    'instruments',
 )
-FILTER_MIN_KEYS = ('tempo_min', 'energy_min', 'year_min', 'min_rating')
-FILTER_MAX_KEYS = ('tempo_max', 'energy_max', 'year_max')
+FILTER_MIN_KEYS = ('tempo_min', 'energy_min', 'year_min', 'min_rating', 'duration_min')
+FILTER_MAX_KEYS = ('tempo_max', 'energy_max', 'year_max', 'duration_max', 'added_within_days')
 FILTER_SCALAR_KEYS = ('key', 'scale', 'album', 'artist', 'instrumental')
 FILTER_ALL_KEYS = FILTER_LIST_KEYS + FILTER_MIN_KEYS + FILTER_MAX_KEYS + FILTER_SCALAR_KEYS
 
@@ -136,44 +155,207 @@ class ToolPlan:
     notes: List[str] = field(default_factory=list)
 
 
+_DECADE_NUM = r"((?:19|20)?(?:[3-9]0|00|10|20))"
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
-_DECADE_RE = re.compile(r"\b((?:19|20)?(?:60|70|80|90|00|10|20))s\b", re.IGNORECASE)
+_DECADE_RE = re.compile(rf"\b{_DECADE_NUM}'?s\b", re.IGNORECASE)
+_DECADE_MOD_RE = re.compile(rf"\b(early|mid|late)[\s-]*{_DECADE_NUM}'?s\b", re.IGNORECASE)
+_DECADE_MOD_SPAN = {'early': (0, 4), 'mid': (3, 6), 'late': (5, 9)}
+_DECADE_WORDS = {
+    'thirties': 1930, 'forties': 1940, 'fifties': 1950, 'sixties': 1960,
+    'seventies': 1970, 'eighties': 1980, 'nineties': 1990, 'noughties': 2000,
+}
+_DECADE_WORD_RE = re.compile(r"\b(" + "|".join(_DECADE_WORDS) + r")\b", re.IGNORECASE)
+_DECADE_FOREIGN_RE = re.compile(
+    r"\b(?:anni|a[\u00f1n]os|ann[\u00e9e]es|jaren|d[\u00e9e]cada)\s+(?:de\s+|dos\s+|'|\u2019)?"
+    + _DECADE_NUM + r"\b|\b" + _DECADE_NUM + r"er(?:\s+jahre)?\b",
+    re.IGNORECASE,
+)
+_LAST_N_YEARS_RE = re.compile(
+    r"\b(?:last|past|previous)\s+(\d{1,2}|two|three|four|five|six|seven|eight|nine|ten|"
+    r"fifteen|twenty|few|couple\s+of)\s+years\b",
+    re.IGNORECASE,
+)
+_THIS_YEAR_RE = re.compile(r"\bthis\s+year(?:'s)?\b", re.IGNORECASE)
+_LAST_YEAR_RE = re.compile(r"\blast\s+year(?:'s)?\b", re.IGNORECASE)
+_RECENT_RE = re.compile(
+    r"\b(?:recent|latest|newest|brand[\s-]new)\s+(?:songs?|tracks?|music|releases?|hits?|"
+    r"stuff|albums?)\b|\bnew\s+releases?\b|\breleased\s+recently\b",
+    re.IGNORECASE,
+)
+_WORD_NUMBERS = {
+    'one': 1, 'a': 1, 'an': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6,
+    'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10, 'fifteen': 15, 'twenty': 20,
+    'few': 3, 'couple of': 2, 'half an': 0.5, 'half a': 0.5,
+}
+_BPM_RANGE_RE = re.compile(
+    r"\b(\d{2,3})\s*(?:-|to|and|\u2013)\s*(\d{2,3})\s*bpm\b", re.IGNORECASE
+)
+_BPM_MIN_RE = re.compile(
+    r"(?:\b(?:over|above|faster\s+than|at\s+least|more\s+than|min(?:imum)?)\s*|>=?\s*)"
+    r"(\d{2,3})\s*\+?\s*bpm\b|\b(\d{2,3})\s*\+\s*bpm\b|"
+    r"\b(\d{2,3})\s*bpm\s+(?:or\s+(?:more|faster|higher|above)|and\s+(?:up|above|faster))\b",
+    re.IGNORECASE,
+)
+_BPM_MAX_RE = re.compile(
+    r"(?:\b(?:under|below|slower\s+than|at\s+most|less\s+than|max(?:imum)?)\s*|<=?\s*)"
+    r"(\d{2,3})\s*bpm\b|\b(\d{2,3})\s*bpm\s+or\s+(?:less|slower|lower|below)\b",
+    re.IGNORECASE,
+)
 _BPM_RE = re.compile(r"\b(\d{2,3})\s*bpm\b", re.IGNORECASE)
 _ENERGY_NUM_RE = re.compile(
     r"\benergy\s*(?:above|>=?|over|min(?:imum)?)\s*([0-9]*\.[0-9]+|[0-9]+)\b", re.IGNORECASE
 )
-_INSTRUMENTAL_RE = re.compile(
-    r'\b(?:instrumentals?|no\s+(?:vocals?|lyrics|singing|voice)|'
-    r'without\s+(?:vocals?|lyrics|singing|voice))\b',
+_ACCIDENTAL = r"(#|b|\u266f|\u266d|\s+sharp|\s+flat)?"
+_KEY_SCALE_RE = re.compile(r"\b([A-G])" + _ACCIDENTAL + r"\s*(?i:(major|minor|maj|min))\b")
+_KEY_OF_RE = re.compile(
+    r"\bkey\s+of\s+([A-Ga-g])" + _ACCIDENTAL + r"(?:\s+(major|minor))?(?!\w)", re.IGNORECASE
+)
+_SCALE_WORD_RE = re.compile(
+    r"\b(major|minor)[\s-]+(?:keys?|scales?|mode|tonality)\b|\bin\s+(?:a\s+)?(major|minor)\b",
     re.IGNORECASE,
 )
-_DURATION_RE = re.compile(
-    r'\b(?:under|below|over|above|shorter\s+than|longer\s+than|less\s+than|more\s+than|'
-    r'at\s+least|at\s+most|max(?:imum)?|min(?:imum)?)\s+\d{1,3}\s*'
-    r'(?:minutes?|mins?|seconds?|secs?)\b',
+_NO_VOCALS_RE = re.compile(
+    r"\b(?:no|without|zero|sans|senza|sin|ohne|sem)\s+(?:vocals?|lyrics|singing|voices?|words|"
+    r"voce|voci|voz|voces|voix|stimme|gesang|testo|paroles?|letras?)\b|"
+    r"\bvocal[\s-]?free\b|\blyric[\s-]?less\b|\bwordless\b",
     re.IGNORECASE,
+)
+_INSTRUMENTAL_WORD_RE = re.compile(
+    r"\b(?:instrumentals?|instrumentale[ns]?|instrumentales|strumental[ei]|instrumentalmusik)\b"
+    r"(?!\s+(?:passages?|sections?|parts?|breaks?|bits?|solos?|interludes?|intros?|outros?|"
+    r"moments?|jams?|stretches?|versions?)\b)",
+    re.IGNORECASE,
+)
+_DURATION_UNIT = r"(\d{1,3}(?:[.,]\d+)?)\s*(minutes?|mins?|seconds?|secs?)\b"
+_DURATION_MAX_RE = re.compile(
+    r"\b(?:under|below|shorter\s+than|less\s+than|at\s+most|max(?:imum)?|up\s+to|"
+    r"no\s+longer\s+than)\s+" + _DURATION_UNIT,
+    re.IGNORECASE,
+)
+_DURATION_MIN_RE = re.compile(
+    r"\b(?:over|above|longer\s+than|more\s+than|at\s+least|min(?:imum)?)\s+" + _DURATION_UNIT,
+    re.IGNORECASE,
+)
+_SHORT_TRACKS_RE = re.compile(
+    r"\b(?:short|quick|brief)\s+(?:songs?|tracks?|tunes?|ones)\b|\bshort\s+and\s+sweet\b",
+    re.IGNORECASE,
+)
+_LONG_TRACKS_RE = re.compile(
+    r"\b(?:long|lengthy|extended|longer)\s+(?:[a-z]+\s+)?(?:songs?|tracks?|tunes?|jams?|pieces?|ones)\b|"
+    r"\blong[\s-]form\b",
+    re.IGNORECASE,
+)
+_TOTAL_LENGTH_RE = re.compile(
+    r"\b(\d{1,3}(?:[.,]\d+)?|an?|one|two|three|four|five|half\s+an?)[\s-]*"
+    r"(hours?|hrs?|minutes?|mins?)(?:\s+(?:of|long|worth)\b|"
+    r"(?:[\s-]+[a-z]+)?\s+(?:playlist|mix|set|session)\b)",
+    re.IGNORECASE,
+)
+_MAX_PER_ARTIST_RE = re.compile(
+    r"\b(?:(?:max(?:imum)?|at\s+most|up\s+to|no\s+more\s+than|only|just)\s+)?"
+    r"(\d|one|a\s+single|two|three|four|five)\s+(?:(?:songs?|tracks?)\s+)?"
+    r"(?:per|from\s+each|by\s+each|for\s+each|of\s+each|each)\s+(?:artists?|bands?|singers?)\b",
+    re.IGNORECASE,
+)
+_DISTINCT_ARTISTS_RE = re.compile(
+    r"\b(?:all\s+|only\s+)?different\s+artists\b|\bno\s+(?:repeated|repeat|duplicate)\s+artists?\b|"
+    r"\bevery\s+(?:song|track)\s+(?:by|from)\s+a\s+different\s+artist\b|"
+    r"\bone[\s-]hit[\s-]wonders?\b",
+    re.IGNORECASE,
+)
+_SONG_COUNT_RE = re.compile(
+    r"\b(\d{1,3})\s+(?:(?!(?:hours?|hrs?|minutes?|mins?|seconds?|years?|per|from|by|of|bpm)\b)"
+    r"[a-z-]+\s+){0,3}(?:songs?|tracks?|tunes)\b"
+    r"(?!\s+(?:per|from\s+each|by\s+each|for\s+each|each)\b)|"
+    r"\b(\d{1,3})[\s-](?:song|track)\s+(?:playlist|mix|list)\b",
+    re.IGNORECASE,
+)
+_VERSION_PATTERNS = {
+    'live': r"[\(\[\-\u2013]\s*live\b|\blive\s+(?:at|in|from|version|recording|session)\b",
+    'remix': r"\bre-?mix(?:ed|es)?\b|\b(?:club|extended|dub|radio)\s+mix\b",
+    'cover': r"\bcover(?:ed)?\b",
+    'demo': r"\bdemo\b",
+    'acoustic': r"[\(\[\-\u2013]\s*acoustic\b|\bacoustic\s+version\b",
+    'karaoke': r"\bkaraoke\b",
+    'remaster': r"\bremaster(?:ed)?\b",
+    'edit': r"\b(?:radio|single)\s+edit\b",
+    'instrumental version': r"[\(\[\-\u2013]\s*instrumental\b|\binstrumental\s+version\b",
+}
+_VERSION_WORDS = {
+    'live': 'live', 'remix': 'remix', 'remixes': 'remix', 'cover': 'cover', 'covers': 'cover',
+    'demo': 'demo', 'demos': 'demo', 'acoustic version': 'acoustic',
+    'acoustic versions': 'acoustic', 'karaoke': 'karaoke', 'remaster': 'remaster',
+    'remasters': 'remaster', 'remastered': 'remaster', 'edits': 'edit', 'radio edits': 'edit',
+    'instrumental versions': 'instrumental version',
+}
+_VERSION_EXCLUDE_RE = re.compile(
+    r"\b(?:no|without|exclude|excluding|skip|avoid|not)\s+(?:any\s+|the\s+)?"
+    r"(" + "|".join(sorted((re.escape(w) for w in _VERSION_WORDS), key=len, reverse=True)) + r")"
+    r"(?:\s+(?:versions?|tracks?|songs?|recordings?))?\b|"
+    r"\b(studio|original)\s+(?:versions?|recordings?)\s+only\b|\bonly\s+(studio|original)\s+"
+    r"(?:versions?|recordings?)\b",
+    re.IGNORECASE,
+)
+_ADDED_RE = re.compile(
+    r"\b(?:recently|newly|just|latest|last)\s+added\b|\badded\s+(?:recently|lately)\b|"
+    r"\bnew(?:est)?\s+(?:additions?|arrivals?)\b|\badded\s+(?:to\s+(?:my|the)\s+library\s+)?"
+    r"(?:this|last|in\s+the\s+(?:last|past))\s+(\d{1,3}\s+days?|week|month|year)\b",
+    re.IGNORECASE,
+)
+_ADDED_PERIOD_DAYS = {'week': 7, 'month': 31, 'year': 365}
+_MORE_ENERGY_RE = re.compile(
+    r"\b(?:more|mroe|moer|much\s+more|a\s+bit\s+more|even\s+more)\s+(?:upbeat|energetic|intense|aggressive|"
+    r"lively|danceable|powerful|hype|punchy)\b|\b(?:harder|heavier|louder|livelier)\b|"
+    r"\bless\s+(?:chill|calm|mellow|relaxed|soft|quiet)\b",
+    re.IGNORECASE,
+)
+_LESS_ENERGY_RE = re.compile(
+    r"\b(?:more|mroe|moer|much\s+more|a\s+bit\s+more|even\s+more)\s+(?:chill|calm|mellow|relaxed|relaxing|"
+    r"laid[\s-]back|quiet|soft|gentle|peaceful)\b|\b(?:calmer|softer|quieter|mellower|chiller|gentler)\b|"
+    r"\bless\s+(?:intense|energetic|aggressive|upbeat|loud|heavy)\b",
+    re.IGNORECASE,
+)
+_FASTER_RE = re.compile(r"\b(?:faster|quicker|more\s+uptempo|higher\s+tempo)\b", re.IGNORECASE)
+_SLOWER_RE = re.compile(r"\b(?:slower|lower\s+tempo|less\s+fast)\b", re.IGNORECASE)
+RELATIVE_ENERGY_STEP = 0.15
+RELATIVE_TEMPO_STEP = 10.0
+RECENTLY_ADDED_DAYS = 30
+_JOURNEY_WORD_RE = re.compile(r"\b(?:journey|transition(?:s|ing)?)\b", re.IGNORECASE)
+_FROM_TO_RE = re.compile(r"\bfrom\b(.+?)\bto\b(.+)", re.IGNORECASE)
+_NEGATION_WORDS = (
+    r"no|not|without|except|excluding|exclude|avoid|nothing|never|zero|skip|hates?|dislikes?|"
+    r"niente|nessun[oa]?|senza|non(?!-)|tranne|evita(?:re)?|sin|nada|ning[u\u00fa]n[oa]?|"
+    r"excepto|sans|aucune?|ohne|keine?[nrs]?|nicht|au(?:ss|\u00df)er|sem|nenhuma?|geen|zonder"
 )
 _NEGATION_TAIL_RE = re.compile(
-    r"\b(?:no|not|without|except|excluding|exclude|avoid|nothing|never|zero|skip|"
-    r"hates?|dislikes?)\b[^,.;!?]*$",
+    rf"(?:\b(?:{_NEGATION_WORDS})\b|\bpas\s+de\b)[^,.;!?]*$",
     re.IGNORECASE,
 )
 _NEGATION_CUE_RE = re.compile(
-    r"\b(?:no|not|without|except|excluding|exclude|avoid|nothing|never|zero|skip|hate)\b"
-    r"|anything but",
+    rf"\b(?:{_NEGATION_WORDS})\b|anything but|\bpas\s+de\b",
     re.IGNORECASE,
 )
+_NEGATION_NEAR_RE = re.compile(rf"(?:\b(?:{_NEGATION_WORDS})\b|\bpas\s+de\b)\W*(?:\w+\W+)?$", re.IGNORECASE)
 _YEARISH_RE = re.compile(
     r'\b(?:recent|latest|new(?:est)?|modern|current|today|old(?:er)?|oldies|classic|'
     r'vintage|early|late|decades?|years?|era)\b',
     re.IGNORECASE,
 )
 _VOCALNESS_RE = re.compile(
-    r'\b(?:instrumentals?|vocals?|vocalists?|voices?|singing|singers?|sung|'
-    r'karaoke|acapella|a\s+cappella)\b',
+    r'\b(?:instrumentals?|vocals?|vocalists?|voices?|singing|singers?|sung|lyrics|words|'
+    r'karaoke|acapella|a\s+cappella|instrumentale[ns]?|instrumentales|strumental[ei]|'
+    r'voce|voci|voz|voces|voix|paroles?|letras?|testo|testi|gesang|stimme|cantad[oa]s?|'
+    r'cantat[oa]|chant[\u00e9e]e?s?|gesungen)\b',
     re.IGNORECASE,
 )
-_GENRE_HINT_SKIP = {'house'}
+_LENGTHISH_RE = re.compile(
+    r'\b(?:minutes?|mins?|seconds?|secs?|hours?|long|longer|short|shorter|length|lengthy|'
+    r'duration|quick|brief|extended|epic)\b',
+    re.IGNORECASE,
+)
+_ADDED_WORDING_RE = re.compile(r'\b(?:added|additions?|arrivals?|imported)\b', re.IGNORECASE)
+_GENRE_HINT_SKIP = {'house', 'dance'}
+_MUSIC_NOUN_SUFFIX = r"(?:musik|\s+(?:music|songs?|tracks?|hits?|pop|party|anthems?|floor|beats?|mix))?"
 
 
 def _genre_hint_tokens() -> List[str]:
@@ -182,19 +364,30 @@ def _genre_hint_tokens() -> List[str]:
     return sorted(tokens, key=len, reverse=True)
 
 
+def _is_compound_part(text: str, start: int, end: int, token: str) -> bool:
+    if '-' in token:
+        return False
+    before = text[start - 1] if start > 0 else ''
+    after = text[end] if end < len(text) else ''
+    return before == '-' or after == '-'
+
+
 def _extract_genre_hints(text: str) -> Dict[str, List[str]]:
     masked = text.lower()
     positive_raw: List[str] = []
     negative_raw: List[str] = []
     for token in _genre_hint_tokens():
-        pattern = re.compile(rf"\b{re.escape(token)}\b")
+        suffix = _MUSIC_NOUN_SUFFIX if ' ' not in token else ''
+        pattern = re.compile(rf"\b{re.escape(token)}{suffix}\b")
         pos = 0
         while True:
             m = pattern.search(masked, pos)
             if not m:
                 break
             window = masked[max(0, m.start() - 40):m.start()]
-            if _NEGATION_TAIL_RE.search(window):
+            if _is_compound_part(masked, m.start(), m.end(), token):
+                pass
+            elif _NEGATION_TAIL_RE.search(window):
                 negative_raw.append(token)
             else:
                 positive_raw.append(token)
@@ -215,13 +408,53 @@ def _normalize_decade(prefix: str) -> int:
     return 2000 + p
 
 
-def extract_hints(text: str) -> Dict:
-    if not text or not isinstance(text, str):
-        return {}
+def _word_number(raw: str) -> Optional[float]:
+    raw = re.sub(r"\s+", " ", (raw or '').strip().lower().replace(',', '.'))
+    if raw in _WORD_NUMBERS:
+        return float(_WORD_NUMBERS[raw])
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
-    hints: Dict = {}
-    notes: List[str] = []
 
+def _decade_ranges(text: str) -> List[tuple]:
+    ranges: List[tuple] = []
+    masked = text
+    for m in _DECADE_MOD_RE.finditer(text):
+        start = _normalize_decade(m.group(2))
+        lo, hi = _DECADE_MOD_SPAN[m.group(1).lower()]
+        ranges.append((start + lo, start + hi))
+        masked = masked[:m.start()] + ' ' * (m.end() - m.start()) + masked[m.end():]
+    for d in _DECADE_RE.findall(masked):
+        start = _normalize_decade(d)
+        ranges.append((start, start + 9))
+    for w in _DECADE_WORD_RE.findall(masked):
+        start = _DECADE_WORDS[w.lower()]
+        ranges.append((start, start + 9))
+    for a, b in _DECADE_FOREIGN_RE.findall(masked):
+        start = _normalize_decade(a or b)
+        ranges.append((start, start + 9))
+    return ranges
+
+
+def _relative_year_range(text: str, today_year: int, library_year_max: Optional[int]) -> Optional[tuple]:
+    m = _LAST_N_YEARS_RE.search(text)
+    if m:
+        n = _word_number(m.group(1))
+        if n and n >= 1:
+            return today_year - int(n) + 1, today_year
+    if _THIS_YEAR_RE.search(text):
+        return today_year, today_year
+    if _LAST_YEAR_RE.search(text):
+        return today_year - 1, today_year - 1
+    if _RECENT_RE.search(text):
+        ref = min(today_year, library_year_max) if library_year_max else today_year
+        return ref - 2, ref
+    return None
+
+
+def _year_hints(text: str, hints: Dict, notes: List[str], library_year_max: Optional[int]) -> None:
     years = [int(y) for y in _YEAR_RE.findall(text)]
     if years:
         hints['years'] = years
@@ -229,31 +462,253 @@ def extract_hints(text: str) -> Dict:
         hints['year_max'] = max(years)
         notes.append(f"years detected: {years}")
 
-    decade_matches = _DECADE_RE.findall(text)
-    if decade_matches:
-        decade_starts = [_normalize_decade(d) for d in decade_matches]
-        hints.setdefault('year_min', min(decade_starts))
-        hints['year_max'] = max(hints.get('year_max', 0), max(d + 9 for d in decade_starts))
-        notes.append(f"decade(s) detected: {[f'{d}s' for d in decade_starts]}")
+    decades = _decade_ranges(text)
+    if decades:
+        hints['year_min'] = min([lo for lo, _hi in decades] + ([hints['year_min']] if years else []))
+        hints['year_max'] = max([hi for _lo, hi in decades] + ([hints['year_max']] if years else []))
+        notes.append(f"decade(s) detected: {[f'{lo}-{hi}' for lo, hi in decades]}")
 
+    if years or decades:
+        return
+    relative = _relative_year_range(text, datetime.date.today().year, library_year_max)
+    if relative:
+        hints['year_min'], hints['year_max'] = relative
+        hints['year_relative'] = True
+        notes.append(f"relative era detected: {relative[0]}-{relative[1]}")
+
+
+_SOFT_TEMPO_PHRASES = {'upbeat', 'uptempo'}
+
+
+def _tempo_hints(text: str, hints: Dict, notes: List[str]) -> None:
+    m = _BPM_RANGE_RE.search(text)
+    if m:
+        lo, hi = sorted((int(m.group(1)), int(m.group(2))))
+        hints['tempo_min'], hints['tempo_max'] = float(lo), float(hi)
+        hints['tempo_explicit'] = True
+        notes.append(f"BPM range detected: {lo}-{hi}")
+        return
+    m_min = _BPM_MIN_RE.search(text)
+    m_max = _BPM_MAX_RE.search(text)
+    if m_min or m_max:
+        if m_min:
+            hints['tempo_min'] = float(next(g for g in m_min.groups() if g))
+        if m_max:
+            hints['tempo_max'] = float(next(g for g in m_max.groups() if g))
+        hints['tempo_explicit'] = True
+        notes.append(f"BPM bound detected: {hints.get('tempo_min', '?')}..{hints.get('tempo_max', '?')}")
+        return
     bpm_match = _BPM_RE.search(text)
     if bpm_match:
         bpm = int(bpm_match.group(1))
         hints['bpm'] = bpm
+        hints['tempo_explicit'] = True
         notes.append(f"BPM detected: {bpm}")
+        return
 
     low = text.lower()
-    for phrase, (tmin, tmax) in ALIAS_TEMPO.items():
-        if re.search(rf"\b{re.escape(phrase)}\b", low):
-            hints['tempo_min'] = (
-                tmin if hints.get('tempo_min') is None else min(hints['tempo_min'], tmin)
-            )
-            hints['tempo_max'] = (
-                tmax if hints.get('tempo_max') is None else max(hints['tempo_max'], tmax)
-            )
-            notes.append(f"tempo phrase '{phrase}' -> {tmin}-{tmax} BPM")
+    for table in (ACTIVITY_TEMPO, ALIAS_TEMPO):
+        for phrase, (tmin, tmax) in table.items():
+            if re.search(rf"\b{re.escape(phrase)}\b", low):
+                hints['tempo_min'], hints['tempo_max'] = tmin, tmax
+                if table is ALIAS_TEMPO and phrase not in _SOFT_TEMPO_PHRASES:
+                    hints['tempo_explicit'] = True
+                notes.append(f"tempo phrase '{phrase}' -> {tmin}-{tmax} BPM")
+                return
+
+
+def _key_hints(text: str, hints: Dict, notes: List[str]) -> None:
+    for m in _KEY_SCALE_RE.finditer(text):
+        note, accidental, mode = m.group(1), (m.group(2) or '').strip().lower(), m.group(3).lower()
+        preceding = text[:m.start()].rstrip().lower()
+        if note == 'A' and not accidental and not re.search(r"\b(?:in|of)$", preceding):
+            continue
+        accidental = {'sharp': '#', '\u266f': '#', 'flat': 'b', '\u266d': 'b'}.get(accidental, accidental)
+        hints['key'] = note + accidental
+        hints['scale'] = 'major' if mode.startswith('maj') else 'minor'
+        notes.append(f"key detected: {hints['key']} {hints['scale']}")
+        return
+    m = _KEY_OF_RE.search(text)
+    if m:
+        accidental = (m.group(2) or '').strip().lower()
+        accidental = {'sharp': '#', '\u266f': '#', 'flat': 'b', '\u266d': 'b'}.get(accidental, accidental)
+        hints['key'] = m.group(1).upper() + accidental
+        if m.group(3):
+            hints['scale'] = m.group(3).lower()
+        notes.append(f"key detected: {hints['key']} {hints.get('scale', '')}".rstrip())
+        return
+    m = _SCALE_WORD_RE.search(text)
+    if m:
+        hints['scale'] = (m.group(1) or m.group(2)).lower()
+        notes.append(f"scale detected: {hints['scale']}")
+
+
+def _instrumental_hint(text: str, hints: Dict, notes: List[str]) -> None:
+    if _NO_VOCALS_RE.search(text):
+        hints['instrumental'] = True
+        notes.append("instrumental requested")
+        return
+    m = _INSTRUMENTAL_WORD_RE.search(text)
+    if not m:
+        return
+    if _NEGATION_NEAR_RE.search(text[max(0, m.start() - 25):m.start()]):
+        hints['instrumental'] = False
+        notes.append("instrumental EXCLUDED (vocal tracks only)")
+    else:
+        hints['instrumental'] = True
+        notes.append("instrumental requested")
+
+
+def _minutes_to_seconds(value: str, unit: str) -> Optional[float]:
+    number = _word_number(value)
+    if number is None:
+        return None
+    return number if unit.lower().startswith('s') else number * 60.0
+
+
+_TOTAL_LENGTH_GUARD_RE = re.compile(
+    r"\b(?:under|below|over|above|less\s+than|more\s+than|at\s+least|at\s+most|shorter\s+than|"
+    r"longer\s+than|max(?:imum)?|min(?:imum)?|up\s+to)\s*$",
+    re.IGNORECASE,
+)
+TRACK_DURATION_LIMIT_SECONDS = 15 * 60
+SHORT_TRACK_SECONDS = 180.0
+LONG_TRACK_SECONDS = 360.0
+
+
+def _duration_hints(text: str, hints: Dict, notes: List[str]) -> None:
+    for regex, key in ((_DURATION_MAX_RE, 'duration_max'), (_DURATION_MIN_RE, 'duration_min')):
+        m = regex.search(text)
+        if m:
+            seconds = _minutes_to_seconds(m.group(1), m.group(2))
+            if seconds and seconds < TRACK_DURATION_LIMIT_SECONDS:
+                hints[key] = seconds
+    if hints.get('duration_max') is None and hints.get('duration_min') is None:
+        if _SHORT_TRACKS_RE.search(text):
+            hints['duration_max'] = SHORT_TRACK_SECONDS
+        elif _LONG_TRACKS_RE.search(text):
+            hints['duration_min'] = LONG_TRACK_SECONDS
+    if hints.get('duration_min') is not None or hints.get('duration_max') is not None:
+        notes.append(
+            f"track length detected: {hints.get('duration_min', '?')}..{hints.get('duration_max', '?')} s"
+        )
+
+    for m in _TOTAL_LENGTH_RE.finditer(text):
+        if _TOTAL_LENGTH_GUARD_RE.search(text[:m.start()]):
+            continue
+        number = _word_number(m.group(1))
+        if number is None:
+            continue
+        seconds = number * (3600.0 if m.group(2).lower().startswith('h') else 60.0)
+        if seconds >= 10 * 60:
+            hints['total_seconds'] = seconds
+            notes.append(f"playlist length detected: {int(seconds // 60)} minutes")
+            return
+
+
+def _playlist_shape_hints(text: str, hints: Dict, notes: List[str]) -> None:
+    m = _MAX_PER_ARTIST_RE.search(text)
+    if m:
+        n = _word_number(m.group(1).replace('a single', 'one'))
+        if n and n >= 1:
+            hints['max_per_artist'] = int(n)
+    elif _DISTINCT_ARTISTS_RE.search(text):
+        hints['max_per_artist'] = 1
+    if hints.get('max_per_artist'):
+        notes.append(f"at most {hints['max_per_artist']} song(s) per artist")
+
+    for m in _SONG_COUNT_RE.finditer(text):
+        n = int(m.group(1) or m.group(2))
+        if 1 <= n <= config.INSTANT_PLAYLIST_MAX_N_RESULTS:
+            hints['song_count'] = n
+            notes.append(f"song count detected: {n}")
             break
 
+    added = _ADDED_RE.search(text)
+    if added:
+        period = (added.group(1) or '').lower()
+        digits = re.match(r"(\d+)", period)
+        hints['added_within_days'] = (
+            int(digits.group(1)) if digits else _ADDED_PERIOD_DAYS.get(period, RECENTLY_ADDED_DAYS)
+        )
+        notes.append(f"recently added: last {hints['added_within_days']} days")
+
+    versions: List[str] = []
+    for m in _VERSION_EXCLUDE_RE.finditer(text):
+        if m.group(1):
+            versions.append(_VERSION_WORDS[m.group(1).lower()])
+        elif (m.group(2) or m.group(3) or '').lower() == 'studio':
+            versions.extend(['live', 'demo'])
+        else:
+            versions.extend(['cover', 'remix', 'live', 'karaoke'])
+    if versions:
+        hints['exclude_versions'] = list(dict.fromkeys(versions))
+        notes.append(f"excluded versions: {hints['exclude_versions']}")
+
+
+def _fold_accents(text: str) -> str:
+    return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+
+
+def _instrument_hints(text: str, hints: Dict, notes: List[str]) -> None:
+    masked = ' ' + re.sub(r"[^a-z0-9 ]+", ' ', _fold_accents(text).lower()) + ' '
+    canonical: List[str] = []
+    surface: List[str] = []
+    for word in sorted(INSTRUMENT_WORDS, key=len, reverse=True):
+        m = re.search(rf"(?<=\s){re.escape(word)}(?=\s)", masked)
+        if not m:
+            continue
+        if not _NEGATION_NEAR_RE.search(masked[max(0, m.start() - 25):m.start()]):
+            if INSTRUMENT_WORDS[word]:
+                canonical.append(INSTRUMENT_WORDS[word])
+            surface.append(word)
+        masked = masked[:m.start()] + ' ' * (m.end() - m.start()) + masked[m.end():]
+    if surface:
+        order = {w: text.lower().find(w) for w in surface}
+        surface.sort(key=lambda w: order[w])
+        hints['instrument_words'] = surface
+        notes.append(f"instrument(s) detected: {surface}")
+    if canonical:
+        hints['instruments'] = list(dict.fromkeys(canonical))
+
+
+def _mood_hints(text: str) -> List[str]:
+    folded = _fold_accents(text).lower()
+    moods: List[str] = []
+    for mood, words in MOOD_WORDS.items():
+        for word in words:
+            m = re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", folded)
+            if m and not _NEGATION_NEAR_RE.search(folded[max(0, m.start() - 25):m.start()]):
+                moods.append(mood)
+                break
+    return moods
+
+
+def _sound_words(text: str) -> List[str]:
+    text = _fold_accents(text)
+    masked = text.lower()
+    found: List[str] = []
+    for phrase in sorted(OUT_OF_VOCAB_GENRES + SOUND_DESCRIPTORS, key=len, reverse=True):
+        m = re.search(rf"(?<![\w-]){re.escape(phrase)}(?![\w-])", masked)
+        if m:
+            if not _NEGATION_TAIL_RE.search(masked[max(0, m.start() - 40):m.start()]):
+                found.append(phrase)
+            masked = masked[:m.start()] + ' ' * (m.end() - m.start()) + masked[m.end():]
+    order = {w: text.lower().find(w) for w in found}
+    return sorted(found, key=lambda w: order[w])
+
+
+def extract_hints(text: str, library_year_max: Optional[int] = None) -> Dict:
+    if not text or not isinstance(text, str):
+        return {}
+
+    hints: Dict = {}
+    notes: List[str] = []
+
+    _year_hints(text, hints, notes, library_year_max)
+    _tempo_hints(text, hints, notes)
+
+    low = text.lower()
     for phrase, (emin, emax) in ALIAS_ENERGY.items():
         if re.search(rf"\b{re.escape(phrase)}\b", low):
             hints['energy_min'] = (
@@ -277,11 +732,13 @@ def extract_hints(text: str) -> Dict:
         except ValueError:
             pass
 
-    if _INSTRUMENTAL_RE.search(text):
-        hints['instrumental'] = True
-        notes.append("instrumental requested")
+    _instrumental_hint(text, hints, notes)
+    _key_hints(text, hints, notes)
+    _duration_hints(text, hints, notes)
+    _playlist_shape_hints(text, hints, notes)
 
-    genre_hints = _extract_genre_hints(text)
+    genre_text = _NO_VOCALS_RE.sub(',', _VERSION_EXCLUDE_RE.sub(',', text))
+    genre_hints = _extract_genre_hints(genre_text)
     if genre_hints['genres']:
         hints['genres'] = genre_hints['genres']
         notes.append(f"genre word(s) detected: {genre_hints['genres']}")
@@ -289,14 +746,19 @@ def extract_hints(text: str) -> Dict:
         hints['exclude_genres'] = genre_hints['exclude_genres']
         notes.append(f"NEGATED genre word(s) detected: {genre_hints['exclude_genres']}")
 
-    duration_match = _DURATION_RE.search(text)
-    if duration_match:
-        unsupported = (
-            f"duration constraint '{duration_match.group(0)}' is not supported "
-            "and was IGNORED (the library has no track-length filter)"
-        )
-        hints['unsupported'] = [unsupported]
-        notes.append(unsupported)
+    moods = _mood_hints(genre_text)
+    if moods:
+        hints['moods'] = moods
+        notes.append(f"mood word(s) detected: {moods}")
+
+    _instrument_hints(genre_text, hints, notes)
+    if _is_holiday(text):
+        hints['holiday'] = True
+
+    sound = _sound_words(genre_text)
+    if sound:
+        hints['sound_words'] = sound
+        notes.append(f"sound word(s) detected: {sound}")
 
     if notes:
         hints['notes'] = notes
@@ -315,8 +777,20 @@ def format_hints_block(hints: Optional[Dict]) -> str:
         lines.append(f"  tempo: {hints.get('tempo_min', '?')}..{hints.get('tempo_max', '?')}")
     if hints.get('energy_min') is not None or hints.get('energy_max') is not None:
         lines.append(f"  energy: {hints.get('energy_min', '?')}..{hints.get('energy_max', '?')}")
+    if hints.get('duration_min') is not None or hints.get('duration_max') is not None:
+        lines.append(
+            f"  track length seconds: {hints.get('duration_min', '?')}..{hints.get('duration_max', '?')}"
+        )
+    if hints.get('added_within_days'):
+        lines.append(f"  added_within_days: {hints['added_within_days']}")
+    if hints.get('key'):
+        lines.append(f"  key: {hints['key']}")
+    if hints.get('scale'):
+        lines.append(f"  scale: {hints['scale']}")
     if hints.get('instrumental') is True:
         lines.append("  instrumental: true (use instrumental=true in search_database)")
+    elif hints.get('instrumental') is False:
+        lines.append("  instrumental: false (only songs with vocals)")
     if hints.get('genres'):
         lines.append(f"  genres: {hints['genres']}")
     if hints.get('exclude_genres'):
@@ -356,6 +830,17 @@ def _strip_unrequested_filter_args(
         )
         filt.pop('year_min', None)
         filt.pop('year_max', None)
+    for keys, hint_keys, wording_re, label in (
+        (('duration_min', 'duration_max'), ('duration_min', 'duration_max'), _LENGTHISH_RE, 'track length'),
+        (('added_within_days',), ('added_within_days',), _ADDED_WORDING_RE, 'recently added'),
+    ):
+        present = {k: filt[k] for k in keys if filt.get(k) is not None}
+        if present and not any(hints.get(k) for k in hint_keys) and not wording_re.search(original_message):
+            log_messages.append(
+                f"   strip hallucinated {label} {present} (the request says nothing about it)"
+            )
+            for k in keys:
+                filt.pop(k, None)
     if (
         filt.get('instrumental') is not None
         and hints.get('instrumental') is not True
@@ -416,19 +901,53 @@ def _backstop_missing_list(backstop: Dict, filt: Dict, hints: Dict, key: str) ->
         backstop[key] = missing
 
 
+def _override_from_hints(plan: 'ToolPlan', hints: Dict, log_messages: List[str]) -> None:
+    filt = plan.filter
+    if filt is None:
+        return
+    if hints.get('year_relative') and (
+        filt.get('year_min') != hints['year_min'] or filt.get('year_max') != hints['year_max']
+    ):
+        log_messages.append(
+            f"   relative era: year {filt.get('year_min')}..{filt.get('year_max')} -> "
+            f"{hints['year_min']}..{hints['year_max']} (resolved against today's date)"
+        )
+        filt['year_min'], filt['year_max'] = hints['year_min'], hints['year_max']
+    want = hints.get('instrumental')
+    if want is not None and filt.get('instrumental') is not None and bool(filt['instrumental']) != want:
+        log_messages.append(
+            f"   instrumental {filt['instrumental']} -> {want} (the request wording says so)"
+        )
+        filt['instrumental'] = want
+
+
 def _apply_hint_backstop(plan: 'ToolPlan', hints: Dict, log_messages: List[str]) -> None:
+    _override_from_hints(plan, hints, log_messages)
     filt = plan.filter or {}
     backstop: Dict = {}
 
     _backstop_tempo(backstop, filt, hints)
     _backstop_min_max(backstop, filt, hints, 'energy_min', 'energy_max')
     _backstop_min_max(backstop, filt, hints, 'year_min', 'year_max')
+    _backstop_min_max(backstop, filt, hints, 'duration_min', 'duration_max')
 
-    if filt.get('instrumental') is None and hints.get('instrumental') is True:
-        backstop['instrumental'] = True
+    if filt.get('instrumental') is None and hints.get('instrumental') is not None:
+        backstop['instrumental'] = hints['instrumental']
+    for key in ('key', 'scale', 'added_within_days'):
+        if not filt.get(key) and hints.get(key):
+            backstop[key] = hints[key]
 
     _backstop_missing_list(backstop, filt, hints, 'genres')
     _backstop_missing_list(backstop, filt, hints, 'exclude_genres')
+    if not plan.primaries and not filt.get('moods') and hints.get('moods'):
+        backstop['moods'] = list(hints['moods'])
+    excluded = {
+        g.lower() for g in (filt.get('exclude_genres') or []) + (backstop.get('exclude_genres') or [])
+    }
+    if backstop.get('genres') and excluded:
+        backstop['genres'] = [g for g in backstop['genres'] if g.lower() not in excluded]
+        if not backstop['genres']:
+            backstop.pop('genres')
 
     if backstop:
         plan.filter = _merge_filter(plan.filter, backstop)
@@ -436,6 +955,230 @@ def _apply_hint_backstop(plan: 'ToolPlan', hints: Dict, log_messages: List[str])
             f"   hint backstop: merged {backstop} into the filter "
             "(detected in the request but missing from the plan)"
         )
+        if backstop.get('genres'):
+            dropped: List[str] = []
+            _drop_broader_genres(plan.filter, dropped)
+            log_messages.extend(f"   {d}" for d in dropped)
+    if hints.get('tempo_explicit') and plan.filter is not None and (
+        plan.filter.get('tempo_min') is not None or plan.filter.get('tempo_max') is not None
+    ):
+        plan.filter[EXACT_TEMPO_KEY] = True
+
+
+def _add_sound_primary(
+    plan: 'ToolPlan', hints: Dict, tool_names: set, log_messages: List[str]
+) -> None:
+    if plan.primaries or plan.filter is None or 'text_match' not in tool_names:
+        return
+    if not config.CLAP_ENABLED:
+        return
+    filt = plan.filter
+    if filt.get('artist') or filt.get('album'):
+        return
+    words = list(hints.get('instrument_words') or []) + list(hints.get('sound_words') or [])
+    if not words:
+        return
+    genres = [g for g in (filt.get('genres') or []) if g.lower() not in words]
+    voices = {str(v).lower() for v in filt.get('voices') or []}
+    voice = ['female vocals'] if any(v.startswith('female') for v in voices) else (
+        ['male vocals'] if voices else []
+    )
+    query = ' '.join(words[:6] + genres[:2]) + ' music' + (' with ' + voice[0] if voice else '')
+    plan.primaries.append({'name': 'text_match', 'arguments': {'query': query, 'mode': 'audio'}})
+    log_messages.append(
+        f"   sound match: {words} has no exact metadata field -> added "
+        f"text_match(audio, '{query}'); the filter re-ranks that sound-matched pool"
+    )
+
+
+INSTRUMENT_STEER_WEIGHT = 3.0
+INSTRUMENT_BACKFILL_WEIGHT = 10.0
+INSTRUMENT_BACKFILL_SONGS = 2000
+
+
+def _apply_instruments(plan: 'ToolPlan', hints: Dict, tool_names: set, log_messages: List[str]) -> None:
+    wanted = list(hints.get('instruments') or [])
+    if not wanted or not config.CLAP_ENABLED or 'text_match' not in tool_names:
+        return
+    if plan.filter is not None and (plan.filter.get('artist') or plan.filter.get('album')):
+        return
+    from tasks.clap_steering import concept_terms
+
+    known = set(concept_terms())
+    terms = [t for t in wanted if t in known]
+    if not terms:
+        return
+    plan.filter = _merge_filter(plan.filter, {'instruments': terms})
+    log_messages.append(
+        f"   instrument(s) {terms}: each candidate is checked with the DCLAP concept model and "
+        "songs where it clearly plays rank first"
+    )
+
+
+def _steering_for(filt: Optional[Dict], weight: float) -> List[Dict]:
+    return [
+        {'term': t, 'weight': weight, 'direction': 'more'}
+        for t in (filt or {}).get('instruments') or []
+    ]
+
+
+def _relative_change(request: str, hints: Dict, profile: Dict) -> Dict:
+    from tasks.ai.calibration import energy_to_norm
+
+    change: Dict = {}
+    up, down = _MORE_ENERGY_RE.search(request), _LESS_ENERGY_RE.search(request)
+    if bool(up) != bool(down):
+        pct = energy_to_norm(profile['energy'])
+        if up:
+            change['energy_min'] = round(min(0.95, pct + RELATIVE_ENERGY_STEP), 2)
+        else:
+            change['energy_max'] = round(max(0.05, pct - RELATIVE_ENERGY_STEP), 2)
+    tempo = profile.get('tempo')
+    if tempo and not hints.get('tempo_explicit'):
+        faster, slower = _FASTER_RE.search(request), _SLOWER_RE.search(request)
+        if faster and not slower:
+            change['tempo_min'] = round(tempo + RELATIVE_TEMPO_STEP)
+        elif slower and not faster:
+            change['tempo_max'] = round(tempo - RELATIVE_TEMPO_STEP)
+    return change
+
+
+def _apply_seed_relative(plan: 'ToolPlan', request: str, hints: Dict, log_messages: List[str]) -> None:
+    if not request:
+        return
+    seeds = [
+        s
+        for p in plan.primaries
+        if isinstance(p, dict) and p.get('name') == 'seed_search'
+        for s in (p.get('arguments') or {}).get('seeds') or []
+        if isinstance(s, dict)
+    ]
+    if not seeds or not any(
+        r.search(request) for r in (_MORE_ENERGY_RE, _LESS_ENERGY_RE, _FASTER_RE, _SLOWER_RE)
+    ):
+        return
+    from tasks.ai.tool_impl import _seed_profile
+
+    try:
+        profile = _seed_profile(seeds)
+    except Exception:
+        logger.exception("Reading the seed energy for a relative request failed")
+        return
+    if not profile:
+        return
+    change = _relative_change(request, hints, profile)
+    if not change:
+        return
+    filt = plan.filter or {}
+    for prefix in {k.split('_')[0] for k in change}:
+        filt.pop(f'{prefix}_min', None)
+        filt.pop(f'{prefix}_max', None)
+    filt.update(change)
+    filt.pop(EXACT_TEMPO_KEY, None)
+    plan.filter = filt
+    log_messages.append(
+        f"   relative to the seeds (energy {profile['energy']:.3f}, tempo "
+        f"{(profile.get('tempo') or 0):.0f}): {change}"
+    )
+
+
+_ALBUM_WORD_RE = re.compile(r"\b(?:albums?|[\u00e1a]lbum|lp)\b", re.IGNORECASE)
+
+
+def _backstop_album(plan: 'ToolPlan', request: str, log_messages: List[str]) -> None:
+    if plan.primaries or not request or not _ALBUM_WORD_RE.search(request):
+        return
+    filt = plan.filter or {}
+    if filt.get('album'):
+        return
+    from tasks.ai.tool_impl import _album_named_in_request
+
+    try:
+        hit = _album_named_in_request(request, filt.get('artist'))
+    except Exception:
+        logger.exception("Album lookup for the chat request failed")
+        return
+    if not hit:
+        return
+    backstop = {'album': hit['album']}
+    if not filt.get('artist') and hit.get('artist_named'):
+        backstop['artist'] = hit['author']
+    plan.filter = _merge_filter(plan.filter, backstop)
+    log_messages.append(
+        f"   album backstop: the request names the album '{hit['album']}' -> merged {backstop} "
+        "into the filter"
+    )
+
+
+def _strip_unrated_filter(
+    plan: 'ToolPlan', library_context: Optional[Dict], log_messages: List[str]
+) -> None:
+    if plan.filter is None or not plan.filter.get('min_rating'):
+        return
+    if not library_context or library_context.get('has_ratings', True):
+        return
+    log_messages.append(
+        f"   strip min_rating={plan.filter['min_rating']} (no song in the library has a rating)"
+    )
+    plan.filter.pop('min_rating', None)
+    plan.notes.append("your library has no song ratings yet, so the rating filter was skipped")
+    if not _has_filter_content(plan.filter):
+        plan.filter = None
+
+
+def _drop_versions(songs: List[Dict], versions: List[str], log_messages: List[str]) -> List[Dict]:
+    patterns = [_VERSION_PATTERNS[v] for v in versions if v in _VERSION_PATTERNS]
+    if not patterns or not songs:
+        return songs
+    version_re = re.compile('|'.join(patterns), re.IGNORECASE)
+
+    def _is_version(s):
+        text = f"{s.get('title') or ''} | {s.get('album') or ''}" if 'live' in versions else s.get('title') or ''
+        return bool(version_re.search(text))
+
+    kept = [s for s in songs if not _is_version(s)]
+    if kept and len(kept) < len(songs):
+        log_messages.append(
+            f"   versions excluded {versions}: removed {len(songs) - len(kept)} of {len(songs)} songs"
+        )
+        return kept
+    return songs
+
+
+def _is_holiday(*texts) -> bool:
+    from tasks.album_creation_manager import is_holiday_text
+
+    return bool(is_holiday_text(*texts))
+
+
+def _demote_holidays(songs: List[Dict], log_messages: List[str]) -> List[Dict]:
+    seasonal = [s for s in songs if _is_holiday(s.get('title'), s.get('album'))]
+    if not seasonal or len(seasonal) == len(songs):
+        return songs
+    moved = {id(s) for s in seasonal}
+    log_messages.append(
+        f"   holiday songs: {len(seasonal)} moved to the end (the request does not ask for them)"
+    )
+    return [s for s in songs if id(s) not in moved] + seasonal
+
+
+def _shape_result(result: Dict, hints: Dict, log_messages: List[str], plan: 'ToolPlan') -> Dict:
+    if hints.get('exclude_versions') and result.get('songs'):
+        result['songs'] = _drop_versions(result['songs'], hints['exclude_versions'], log_messages)
+    if not hints.get('holiday') and result.get('songs') and _journey_call(plan) is None:
+        result['songs'] = _demote_holidays(result['songs'], log_messages)
+    result['max_per_artist'] = hints.get('max_per_artist')
+    result['keep_order'] = _journey_call(plan) is not None
+    return result
+
+
+def requested_playlist_shape(text: str) -> Dict:
+    hints: Dict = {}
+    notes: List[str] = []
+    if text and isinstance(text, str):
+        _duration_hints(text, hints, notes)
+        _playlist_shape_hints(text, hints, notes)
+    return {k: hints[k] for k in ('song_count', 'total_seconds', 'max_per_artist') if hints.get(k)}
 
 
 def _synthesize_rescue_plan(
@@ -509,6 +1252,19 @@ def _merge_filter(base: Optional[Dict], incoming: Dict) -> Dict:
     return base
 
 
+def _drop_broader_genres(filt: Dict, notes: List[str]) -> None:
+    genres = filt.get('genres') or []
+    if len(genres) < 2:
+        return
+    broader = [
+        g for g in genres
+        if any(h != g and re.search(rf"\b{re.escape(g.lower())}\b", h.lower()) for h in genres)
+    ]
+    if broader:
+        filt['genres'] = [g for g in genres if g not in broader]
+        notes.append(f"dropped broader genre(s) {broader}: a more specific one was requested")
+
+
 def _normalize_filter_inplace(filt: Dict, notes: List[str]) -> Dict:
     if 'genres' in filt and filt['genres']:
         g = normalize_genre_list(filt['genres'])
@@ -517,6 +1273,8 @@ def _normalize_filter_inplace(filt: Dict, notes: List[str]) -> Dict:
             notes.append(n)
         if not filt['genres']:
             filt.pop('genres', None)
+
+    _drop_broader_genres(filt, notes)
 
     if 'exclude_genres' in filt and filt['exclude_genres']:
         eg = normalize_genre_list(filt['exclude_genres'])
@@ -612,7 +1370,52 @@ def _normalize_filter_inplace(filt: Dict, notes: List[str]) -> Dict:
             notes.append(f"vocab_normalizer dropped unknown scale: {filt['scale']}")
             filt.pop('scale', None)
 
+    _widen_narrow_range(filt, 'tempo_min', 'tempo_max', _BPM_HINT_HALF_WINDOW, 'BPM', notes)
+    _widen_narrow_range(filt, 'energy_min', 'energy_max', _ENERGY_HALF_WINDOW, 'energy', notes)
+    _sanitize_duration(filt, notes)
     return filt
+
+
+_ENERGY_HALF_WINDOW = 0.1
+_POINT_RANGE_FRACTION = 0.2
+
+
+def _widen_narrow_range(filt: Dict, lo_key: str, hi_key: str, half: float, unit: str, notes: List[str]) -> None:
+    lo, hi = filt.get(lo_key), filt.get(hi_key)
+    if lo is None or hi is None:
+        return
+    try:
+        lo, hi = sorted((float(lo), float(hi)))
+    except (TypeError, ValueError):
+        return
+    filt[lo_key], filt[hi_key] = lo, hi
+    if hi - lo >= 2 * half * _POINT_RANGE_FRACTION:
+        return
+    center = (lo + hi) / 2.0
+    filt[lo_key], filt[hi_key] = round(center - half, 3), round(center + half, 3)
+    notes.append(
+        f"{unit} {lo:g}-{hi:g} widened to {filt[lo_key]:g}-{filt[hi_key]:g} "
+        "(an exact point matches almost nothing)"
+    )
+
+
+def _sanitize_duration(filt: Dict, notes: List[str]) -> None:
+    for key in ('duration_min', 'duration_max'):
+        v = filt.get(key)
+        if v is None:
+            continue
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v <= 0:
+            notes.append(f"dropped nonsensical {key}={filt[key]}")
+            filt.pop(key, None)
+        else:
+            filt[key] = v
+    lo, hi = filt.get('duration_min'), filt.get('duration_max')
+    if lo is not None and hi is not None and lo > hi:
+        filt['duration_min'], filt['duration_max'] = hi, lo
 
 
 def _seed_identity(seed: Dict) -> tuple:
@@ -723,6 +1526,13 @@ def _named_in_request(value: str, message: str) -> bool:
     return fuzz.partial_ratio(v, (message or '').lower()) >= 85
 
 
+def _genre_named(genre: str, message: str) -> bool:
+    text = _fold_accents(message or '').lower()
+    names = {genre.lower()} | {alias for alias, target in ALIAS_GENRE.items() if target == genre}
+    names |= {n.replace('-', ' ') for n in names}
+    return any(re.search(rf"(?<![\w-]){re.escape(n)}(?:s|es|p?ers?)?(?![\w-])", text) for n in names)
+
+
 def _strip_contradictory_exclusions(
     plan: 'ToolPlan',
     hints: Dict,
@@ -781,11 +1591,10 @@ def _strip_contradictory_exclusions(
                     f"'{g}' was both requested and excluded; kept it as a positive filter"
                 )
                 continue
-            named = low in (original_message or '').lower()
-            if hint_excluded and low not in hint_excluded and not named:
+            if low not in hint_excluded and not _genre_named(g, original_message):
                 log_messages.append(
                     f"   contradiction: dropped exclude_genres '{g}' "
-                    "(not one of the genres the request rejects)"
+                    "(the request does not name that genre)"
                 )
                 plan.notes.append(f"invented exclusion of '{g}' was dropped")
                 continue
@@ -800,11 +1609,76 @@ def _strip_contradictory_exclusions(
         plan.filter = None
 
 
+COPIED_EXAMPLE_MIN_WORDS = 3
+_NEGATED_QUERY_RE = re.compile(r"^\W*(?:no|not|nothing|without|never|zero|avoid|excluding)\b", re.IGNORECASE)
+
+
+def _content_words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z]+", (text or '').lower()) if len(w) > 2}
+
+
+def _copied_example_words(query: str, request: str) -> List[str]:
+    if not request or not request.strip():
+        return []
+    asked = _content_words(request)
+    said = _content_words(query)
+    for example in EXAMPLE_TEXT_QUERIES:
+        borrowed = sorted((_content_words(example) & said) - asked)
+        if len(borrowed) >= COPIED_EXAMPLE_MIN_WORDS:
+            return borrowed
+    return []
+
+
+def _seed_label(seed: Dict) -> str:
+    return (seed.get('title') if seed.get('type') == 'song' else seed.get('name')) or ''
+
+
+def _is_journey_request(seeds: List[Dict], text: str) -> bool:
+    if len(seeds) != 2 or not text:
+        return False
+    if _JOURNEY_WORD_RE.search(text):
+        return True
+    m = _FROM_TO_RE.search(text)
+    return bool(m) and _named_in_request(_seed_label(seeds[0]), m.group(1)) and _named_in_request(
+        _seed_label(seeds[1]), m.group(2)
+    )
+
+
+def _journey_call(plan: 'ToolPlan') -> Optional[Dict]:
+    for p in plan.primaries:
+        if (
+            isinstance(p, dict)
+            and p.get('name') == 'seed_search'
+            and (p.get('arguments') or {}).get('blend_mode') == 'journey'
+        ):
+            return p
+    return None
+
+
+def _prepare_journey(plan: 'ToolPlan', target_song_count: Optional[int], log_messages: List[str]) -> None:
+    journey = _journey_call(plan)
+    if journey is None:
+        return
+    journey['arguments']['journey_length'] = (
+        target_song_count or config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS
+    )
+    dropped = [p.get('name') for p in plan.primaries if p is not journey]
+    if dropped or plan.filter:
+        log_messages.append(
+            f"   journey: kept the song path alone (dropped {dropped or '-'} and the filter "
+            f"{plan.filter or '-'}) so its order stays intact"
+        )
+        plan.notes.append("a journey keeps its path order, so the other constraints were not applied")
+    plan.primaries = [journey]
+    plan.filter = None
+
+
 def validate_plan_args(
     tool_calls: List[Dict],
     *,
     user_wants_rating: bool,
     log_messages: Optional[List[str]] = None,
+    request_text: str = '',
 ) -> List[Dict]:
     if log_messages is None:
         log_messages = []
@@ -844,6 +1718,16 @@ def validate_plan_args(
             args['seeds'] = cleaned_seeds
 
             blend = (args.get('blend_mode') or 'union').lower()
+            journey_ok = blend != 'subtract' or not args.get('subtract')
+            if blend != 'journey' and journey_ok and _is_journey_request(cleaned_seeds, request_text):
+                log_messages.append(
+                    f"   coerce blend_mode '{blend}' -> 'journey' (the request goes from one seed to the other)"
+                )
+                blend = 'journey'
+                args.pop('subtract', None)
+            if blend == 'journey' and len(cleaned_seeds) != 2:
+                log_messages.append("   coerce blend_mode 'journey' -> 'union' (a journey needs exactly 2 seeds)")
+                blend = 'union'
             if blend == 'alchemy' and len(cleaned_seeds) < 2:
                 log_messages.append("   coerce blend_mode 'alchemy' -> 'union' (need 2+ seeds)")
                 blend = 'union'
@@ -890,6 +1774,18 @@ def validate_plan_args(
             if not query:
                 log_messages.append(f"   skip {name}: empty query")
                 continue
+            if _NEGATED_QUERY_RE.match(query):
+                log_messages.append(
+                    f"   skip {name}: '{query}' is a negation, which a sound or lyric match reads as its opposite"
+                )
+                continue
+            copied = _copied_example_words(query, request_text)
+            if copied:
+                log_messages.append(
+                    f"   text_match query '{query}' repeats the prompt example ({', '.join(copied)}); "
+                    f"using the request's own words '{request_text.strip()}'"
+                )
+                query = request_text.strip()
             args['query'] = query
             mode = (args.get('mode') or '').lower()
             if mode in ('audio', 'lyrics'):
@@ -1012,6 +1908,9 @@ SOFT_SQL_KEYS = (
     'key',
     'scale',
     'min_rating',
+    'duration_min',
+    'duration_max',
+    'added_within_days',
 )
 
 
@@ -1116,7 +2015,7 @@ _GROUNDING_FILTER_KEYS = (
 )
 _GATE_FILTER_KEYS = (
     'key', 'scale', 'min_rating', 'instrumental', 'album',
-    'exclude_artists', 'exclude_genres',
+    'exclude_artists', 'exclude_genres', 'duration_min', 'duration_max', 'added_within_days',
 )
 
 
@@ -1216,7 +2115,7 @@ def _finish_plan(
 
     history = exec_result['tools_used_history']
     summary = exec_result['tool_execution_summary']
-    return {
+    return _shape_result({
         "songs": exec_result['songs'],
         "song_sources": exec_result['song_sources'],
         "tools_used_history": history,
@@ -1225,7 +2124,7 @@ def _finish_plan(
         "plan_notes": plan.notes,
         "executed_query_str": f"MCP single-pass ({len(history)} tools): {' -> '.join(summary)}",
         "filter_applied": plan.filter is not None,
-    }
+    }, hints, log_messages, plan)
 
 
 def plan_and_execute_once(
@@ -1249,7 +2148,9 @@ def plan_and_execute_once(
         f"   tools offered: {', '.join(t.get('name', '') for t in tools)}"
     )
 
-    hints = extract_hints(original_user_message)
+    hints = extract_hints(
+        raw_request, (library_context or {}).get('year_max') if library_context else None
+    )
     hints_block = format_hints_block(hints)
     if hints_block:
         for n in hints.get('notes', []):
@@ -1293,7 +2194,10 @@ def plan_and_execute_once(
     raw_calls = _dedupe_call_lists(raw_calls, log_messages=log_messages)
     raw_calls = dedupe_and_cap_calls(raw_calls, log_messages=log_messages)
     raw_calls = validate_plan_args(
-        raw_calls, user_wants_rating=user_wants_rating, log_messages=log_messages
+        raw_calls,
+        user_wants_rating=user_wants_rating,
+        log_messages=log_messages,
+        request_text=raw_request,
     )
 
     plan = validate_and_normalize_plan(raw_calls)
@@ -1361,9 +2265,15 @@ def plan_and_execute_once(
         isinstance(p, dict) and p.get('name') == 'knowledge_lookup' for p in plan.primaries
     )
 
-    _strip_unrequested_filter_args(plan, hints, original_user_message, log_messages)
-    _strip_contradictory_exclusions(plan, hints, original_user_message, log_messages)
+    _strip_unrequested_filter_args(plan, hints, raw_request, log_messages)
+    _strip_contradictory_exclusions(plan, hints, raw_request, log_messages)
+    _strip_unrated_filter(plan, library_context, log_messages)
     _apply_hint_backstop(plan, hints, log_messages)
+    _apply_seed_relative(plan, raw_request, hints, log_messages)
+    _backstop_album(plan, raw_request, log_messages)
+    _add_sound_primary(plan, hints, {t.get('name') for t in tools}, log_messages)
+    _apply_instruments(plan, hints, {t.get('name') for t in tools}, log_messages)
+    _prepare_journey(plan, target_song_count, log_messages)
 
     for u in hints.get('unsupported', []):
         plan.notes.append(u)
@@ -1431,7 +2341,7 @@ def plan_and_execute_once(
                 )
             )
 
-    return {
+    return _shape_result({
         "songs": all_songs,
         "song_sources": exec_result['song_sources'],
         "tools_used_history": tools_used_history,
@@ -1440,7 +2350,155 @@ def plan_and_execute_once(
         "plan_notes": plan.notes,
         "executed_query_str": f"MCP single-pass ({len(tools_used_history)} tools): {' -> '.join(tool_execution_summary)}",
         "filter_applied": plan.filter is not None,
-    }
+    }, hints, log_messages, plan)
+
+
+BACKFILL_POOL_FACTOR = 4
+
+
+def _backfill_genre_matches(
+    filt: Dict,
+    pool_songs: List[Dict],
+    feats: Dict,
+    ai_config: Dict,
+    target_song_count: int,
+    log_messages: List[str],
+) -> List[Dict]:
+    from tasks.ai.tools import execute_mcp_tool
+    from tasks.ai.tool_impl import _fetch_pool_features
+
+    if not filt.get('genres'):
+        return pool_songs
+    full = count_full_matches(pool_songs, filt, feats)
+    if full >= target_song_count:
+        return pool_songs
+    args = {k: v for k, v in filt.items() if k in FILTER_ALL_KEYS}
+    args['get_songs'] = max(200, target_song_count * BACKFILL_POOL_FACTOR)
+    res = execute_mcp_tool('search_database', args, ai_config)
+    pooled = {s.get('item_id') for s in pool_songs}
+    extra = [s for s in res.get('songs') or [] if s.get('item_id') and s['item_id'] not in pooled]
+    if not extra:
+        return pool_songs
+    feats.update(_fetch_pool_features([s['item_id'] for s in extra]))
+    log_messages.append(
+        f"   pool backfill: only {full} of {len(pool_songs)} pooled songs match every requested "
+        f"value (target {target_song_count}); added {len(extra)} library songs that do, "
+        "ranked after the similar ones"
+    )
+    return pool_songs + extra
+
+
+def _attach_instruments(filt: Dict, songs: List[Dict], feats: Dict, log_messages: List[str]) -> None:
+    from tasks.ai.calibration import concept_percentiles
+
+    terms = list(filt.get('instruments') or [])
+    todo = [s['item_id'] for s in songs if 'instrument_pct' not in (feats.get(s['item_id']) or {})]
+    if not terms or not todo:
+        return
+    try:
+        scored = concept_percentiles(todo, terms)
+    except Exception:
+        logger.exception("Scoring the pool for the requested instruments failed")
+        scored = {}
+    for item_id in todo:
+        feats.setdefault(item_id, {})['instrument_pct'] = scored.get(item_id, {})
+    clear = sum(
+        1 for s in songs
+        if all((feats.get(s['item_id']) or {}).get('instrument_pct', {}).get(t, 0.0) >= INSTRUMENT_HIT for t in terms)
+    )
+    log_messages.append(
+        f"   instrument check {terms}: {clear} of {len(songs)} pooled songs are in the library's "
+        f"top {int(round((1 - INSTRUMENT_HIT) * 100))}% for it"
+    )
+
+
+def _backfill_instrument_matches(
+    plan: 'ToolPlan',
+    pool_songs: List[Dict],
+    feats: Dict,
+    ai_config: Dict,
+    target_song_count: int,
+    log_messages: List[str],
+) -> List[Dict]:
+    from tasks.ai.tools import execute_mcp_tool
+
+    filt = plan.filter
+    if count_full_matches(pool_songs, filt, feats) >= target_song_count:
+        return pool_songs
+    queries = [
+        (p.get('arguments') or {}).get('query') for p in plan.primaries
+        if p.get('name') == 'text_match' and (p.get('arguments') or {}).get('mode', 'audio') == 'audio'
+    ]
+    query = next((q for q in queries if q), None) or ' '.join(filt['instruments'])
+    res = execute_mcp_tool('text_match', {
+        'query': query,
+        'mode': 'audio',
+        'get_songs': INSTRUMENT_BACKFILL_SONGS,
+        'steering': _steering_for(filt, INSTRUMENT_BACKFILL_WEIGHT),
+    }, ai_config)
+    pooled = {s.get('item_id') for s in pool_songs}
+    extra = [s for s in res.get('songs') or [] if s.get('item_id') and s['item_id'] not in pooled]
+    if not extra:
+        return pool_songs
+    log_messages.append(
+        f"   instrument backfill: too few pooled songs carry every requested value; added "
+        f"{len(extra)} songs from a search led by {filt['instruments']}"
+    )
+    from tasks.ai.tool_impl import _fetch_pool_features
+
+    feats.update(_fetch_pool_features([s['item_id'] for s in extra]))
+    merged = pool_songs + extra
+    _attach_instruments(filt, extra, feats, log_messages)
+    return merged
+
+
+def _genre_purity_sort(songs: List[Dict], genres: List[str], log_messages: List[str]) -> List[Dict]:
+    from tasks.ai.tool_impl import _fetch_pool_features
+
+    wanted = {g.lower() for g in genres}
+    try:
+        feats = _fetch_pool_features([s['item_id'] for s in songs])
+    except Exception:
+        logger.exception("Reading genre tags for the purity order failed")
+        return songs
+    ranks = [
+        genre_style_rank((feats.get(s['item_id']) or {}).get('mood_vector') or '', wanted)
+        for s in songs
+    ]
+    order = sorted(range(len(songs)), key=lambda i: ranks[i])
+    if order != list(range(len(songs))):
+        log_messages.append(
+            f"   genre purity: {ranks.count(0)} of {len(songs)} songs have {sorted(wanted)} as their "
+            "main style and lead the list"
+        )
+    return [songs[i] for i in order]
+
+
+def _demote_non_songs(songs: List[Dict], log_messages: List[str], short_floor: Optional[float]) -> None:
+    from tasks.ai.tool_impl import _fetch_pool_features
+
+    lengths: Dict = {}
+    if short_floor:
+        try:
+            feats = _fetch_pool_features([s['item_id'] for s in songs if s.get('item_id')])
+            lengths = {k: (v or {}).get('duration') for k, v in feats.items()}
+        except Exception:
+            logger.exception("Reading track lengths for the non-song demotion failed")
+
+    def _is_non_song(s):
+        if _NON_SONG_TITLE_RE.search(s.get('title') or ''):
+            return True
+        length = lengths.get(s.get('item_id'))
+        return bool(short_floor) and length is not None and 0 < float(length) < short_floor
+
+    demoted = [s for s in songs if _is_non_song(s)]
+    if not demoted or len(demoted) == len(songs):
+        return
+    demoted_ids = {id(s) for s in demoted}
+    songs[:] = [s for s in songs if id(s) not in demoted_ids] + demoted
+    log_messages.append(
+        f"   non-song tracks (intro/skit/interlude titles or very short): {len(demoted)} moved to the end"
+    )
 
 
 def _execute_plan(
@@ -1513,6 +2571,10 @@ def _execute_plan(
                 parts.append(f"energy={args.get('energy_min', '')}..{args.get('energy_max', '')}")
             if args.get('year_min') is not None or args.get('year_max') is not None:
                 parts.append(f"year={args.get('year_min', '')}..{args.get('year_max', '')}")
+            if args.get('duration_min') is not None or args.get('duration_max') is not None:
+                parts.append(f"duration={args.get('duration_min', '')}..{args.get('duration_max', '')}s")
+            if args.get('added_within_days'):
+                parts.append(f"added_within_days={args['added_within_days']}")
         elif name == 'seed_search':
             seeds = args.get('seeds') or []
             blend = args.get('blend_mode', 'union')
@@ -1557,6 +2619,8 @@ def _execute_plan(
             tn = tc.get('name')
             ta = dict(tc.get('arguments', {}) or {})
             ta['get_songs'] = pool_target
+            if tn == 'text_match' and ta.get('mode', 'audio') == 'audio' and plan.filter.get('instruments'):
+                ta['steering'] = _steering_for(plan.filter, INSTRUMENT_STEER_WEIGHT)
             pretty = {k: v for k, v in ta.items() if k != 'get_songs'}
             log_messages.append(f"\nPRIMARY: {tn}")
             try:
@@ -1594,6 +2658,18 @@ def _execute_plan(
         pool_songs = _apply_exclusions(
             pool_songs, plan.filter, feats, log_messages, notes=plan.notes
         )
+        instruments = bool(plan.filter.get('instruments'))
+        if pool_songs and instruments:
+            _attach_instruments(plan.filter, pool_songs, feats, log_messages)
+        if pool_songs:
+            pool_songs = _backfill_genre_matches(
+                plan.filter, pool_songs, feats, ai_config, target_song_count, log_messages
+            )
+        if pool_songs and instruments:
+            _attach_instruments(plan.filter, pool_songs, feats, log_messages)
+            pool_songs = _backfill_instrument_matches(
+                plan, pool_songs, feats, ai_config, target_song_count, log_messages
+            )
         yield
 
         for tn, ta, pooled, errored, msg in primary_logs:
@@ -1605,6 +2681,7 @@ def _execute_plan(
                     'error': errored,
                     'call_index': tool_call_counter,
                     'result_message': msg,
+                    'role': 'pool',
                 }
             )
             tool_execution_summary.append(_summary(tn, ta, pooled if pool_songs else 0))
@@ -1626,6 +2703,7 @@ def _execute_plan(
                     'songs': added,
                     'call_index': filter_call_index,
                     'result_message': f"priority re-rank: {matched}/{N} matched filter",
+                    'role': 'rerank',
                 }
             )
             tool_execution_summary.append(_summary('search_database', plan.filter, added))
@@ -1660,6 +2738,8 @@ def _execute_plan(
                     ta, ai_config, target_song_count, log_messages,
                     pool_target=relax_pool_target,
                 )
+                if ta.get('genres') and not ta.get('album') and not ta.get('artist') and res.get('songs'):
+                    res['songs'] = _genre_purity_sort(res['songs'], ta['genres'], log_messages)
             else:
                 res = execute_mcp_tool(tn, ta, ai_config)
             if 'error' in res:
@@ -1722,6 +2802,8 @@ def _execute_plan(
                     f"   intersection boost: {boosted} songs returned by MULTIPLE finder "
                     "tools moved to the front (likely what the user meant by combining them)"
                 )
+        if not (plan.filter and plan.filter.get('album')) and _journey_call(plan) is None:
+            _demote_non_songs(all_songs, log_messages, _short_track_floor(plan.filter or {}))
 
     return {
         "songs": all_songs,

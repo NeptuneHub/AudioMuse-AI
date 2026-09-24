@@ -20,18 +20,39 @@ Main Features:
 * All scoring, dimension-stats and ordering helpers are private to this module.
 * A male-only voice filter scores as "not tagged female" (female tags below
   TAG_EXCLUDE_SCORE), since the male tag itself is too sparse to rank by.
+* Explicit ranges are categorical tiers where only an in-range song is a match:
+  year, an explicit BPM (EXACT_TEMPO_KEY), track length and recently added. The
+  requested genre and instrument (SAE concept in the library's top 5%,
+  INSTRUMENT_HIT) are the primary tier, ranked above the other categorical hits.
+* Energy is scored on the library-calibrated percentile scale; a range is a
+  gate (flat inside, decaying with distance outside) so similarity orders the
+  songs inside it; the genre lead prefers songs whose main style it is; tracks
+  under a minute sink with intro/skit titles unless the request wants short.
 """
 
+import datetime
 import logging
 import re
 from typing import Dict, List, Optional
 
 import config
-from tasks.ai.vocab import TAG_EXCLUDE_SCORE, female_voice_exclusions
+from tasks.ai.calibration import energy_to_norm
+from tasks.ai.vocab import GENRE_VOCAB, TAG_EXCLUDE_SCORE, female_voice_exclusions
 
 logger = logging.getLogger(__name__)
 
-CATEGORICAL_DIMS = ('genres', 'voices', 'scale', 'artist', 'album', 'instrumental')
+CATEGORICAL_DIMS = (
+    'genres', 'voices', 'scale', 'artist', 'album', 'instrumental', 'year', 'duration', 'bpm',
+    'added', 'instrument',
+)
+PRIMARY_DIMS = ('genres', 'instrument')
+INSTRUMENT_HIT = 0.95
+IN_RANGE_DIMS = ('year', 'duration', 'bpm', 'added')
+EXACT_TEMPO_KEY = '_exact_tempo'
+_GENRE_TAGS = {g.lower() for g in GENRE_VOCAB}
+TEMPO_DECAY_BPM = 40.0
+DURATION_DECAY_SECONDS = 180.0
+SHORT_TRACK_SECONDS = 60.0
 
 _NON_SONG_TITLE_RE = re.compile(
     r'\b(?:intro|outro|skit|interlude|interludio|prelude|epilogue)\b',
@@ -78,15 +99,20 @@ def _key_pitch_class(k) -> Optional[int]:
 
 def _range_pref_score(v_norm: float, req_lo: float, req_hi: float) -> float:
     v = max(0.0, min(1.0, v_norm))
-    prefer_high = req_hi >= 0.99 and req_lo > 0.01
-    prefer_low = req_lo <= 0.01 and req_hi < 0.99
-    if prefer_high:
-        return v
-    if prefer_low:
-        return 1.0 - v
-    center = (req_lo + req_hi) / 2.0
-    half = max((req_hi - req_lo) / 2.0, 1e-6)
-    return max(0.0, 1.0 - abs(v - center) / half)
+    if req_lo <= v <= req_hi:
+        return 1.0
+    dist = (req_lo - v) if v < req_lo else (v - req_hi)
+    return max(0.0, 1.0 - dist)
+
+
+def _in_range_score(value, lo, hi, decay_span: float) -> float:
+    if value is None:
+        return 0.0
+    value = float(value)
+    if (lo is None or value >= lo) and (hi is None or value <= hi):
+        return 1.0
+    dist = (lo - value) if (lo is not None and value < lo) else (value - hi)
+    return max(0.0, 1.0 - dist / decay_span)
 
 
 def _parse_tag_scores(raw: str) -> Dict[str, float]:
@@ -144,19 +170,41 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
         out['instrumental'] = conf if want else max(0.0, 1.0 - conf)
 
     if filt.get('year_min') is not None or filt.get('year_max') is not None:
-        year = feats.get('year')
-        if year is None:
-            out['year'] = 0.0
-        else:
-            ymin = int(filt['year_min']) if filt.get('year_min') is not None else None
-            ymax = int(filt['year_max']) if filt.get('year_max') is not None else None
-            if (ymin is None or year >= ymin) and (ymax is None or year <= ymax):
-                out['year'] = 1.0
-            else:
-                dist = (ymin - year) if (ymin is not None and year < ymin) else (year - ymax)
-                out['year'] = max(0.0, 1.0 - dist / YEAR_DECAY_SPAN)
+        out['year'] = _in_range_score(
+            feats.get('year') or None,
+            int(filt['year_min']) if filt.get('year_min') is not None else None,
+            int(filt['year_max']) if filt.get('year_max') is not None else None,
+            YEAR_DECAY_SPAN,
+        )
 
-    if filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
+    if filt.get('instruments'):
+        heard = feats.get('instrument_pct') or {}
+        out['instrument'] = min(float(heard.get(t, 0.0)) for t in filt['instruments'])
+
+    if filt.get('added_within_days'):
+        created = feats.get('created_at')
+        days = float(filt['added_within_days'])
+        age = (datetime.datetime.now() - created).total_seconds() / 86400.0 if created else None
+        out['added'] = _in_range_score(age, None, days, max(days, 1.0))
+
+    if filt.get('duration_min') is not None or filt.get('duration_max') is not None:
+        out['duration'] = _in_range_score(
+            feats.get('duration'),
+            float(filt['duration_min']) if filt.get('duration_min') is not None else None,
+            float(filt['duration_max']) if filt.get('duration_max') is not None else None,
+            DURATION_DECAY_SECONDS,
+        )
+
+    if filt.get(EXACT_TEMPO_KEY) and (
+        filt.get('tempo_min') is not None or filt.get('tempo_max') is not None
+    ):
+        out['bpm'] = _in_range_score(
+            feats.get('tempo'),
+            float(filt['tempo_min']) if filt.get('tempo_min') is not None else None,
+            float(filt['tempo_max']) if filt.get('tempo_max') is not None else None,
+            TEMPO_DECAY_BPM,
+        )
+    elif filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
         tempo = feats.get('tempo')
         if tempo is None:
             out['tempo'] = 0.0
@@ -183,8 +231,7 @@ def _filter_dim_scores(filt: Dict, feats: Dict) -> Dict[str, float]:
         if energy is None:
             out['energy'] = 0.0
         else:
-            span = (config.ENERGY_MAX - config.ENERGY_MIN) or 1.0
-            v_norm = (float(energy) - config.ENERGY_MIN) / span
+            v_norm = energy_to_norm(energy)
             req_lo = float(filt['energy_min']) if filt.get('energy_min') is not None else 0.0
             req_hi = float(filt['energy_max']) if filt.get('energy_max') is not None else 1.0
             out['energy'] = _range_pref_score(
@@ -276,15 +323,39 @@ def _filter_dimension_report(filt: Dict, feats_map: Dict, pool_songs: List[Dict]
         )
         machine['energy'] = (filt.get('energy_min'), filt.get('energy_max'))
     if filt.get('tempo_min') is not None or filt.get('tempo_max') is not None:
-        lines.append(
-            f"   tempo {filt.get('tempo_min', '?')}..{filt.get('tempo_max', '?')} -> continuous gradient"
-        )
+        if filt.get(EXACT_TEMPO_KEY):
+            lines.append(
+                f"   bpm {filt.get('tempo_min', '?')}..{filt.get('tempo_max', '?')} -> "
+                "categorical (in range first, then closeness)"
+            )
+        else:
+            lines.append(
+                f"   tempo {filt.get('tempo_min', '?')}..{filt.get('tempo_max', '?')} -> continuous gradient"
+            )
         machine['tempo'] = (filt.get('tempo_min'), filt.get('tempo_max'))
     if filt.get('year_min') is not None or filt.get('year_max') is not None:
         lines.append(
-            f"   year {filt.get('year_min', '?')}..{filt.get('year_max', '?')} -> proximity gradient"
+            f"   year {filt.get('year_min', '?')}..{filt.get('year_max', '?')} -> "
+            "categorical (in range first, then proximity)"
         )
         machine['year'] = (filt.get('year_min'), filt.get('year_max'))
+    if filt.get('duration_min') is not None or filt.get('duration_max') is not None:
+        lines.append(
+            f"   duration {filt.get('duration_min', '?')}..{filt.get('duration_max', '?')}s -> "
+            "categorical (in range first, then closeness)"
+        )
+        machine['duration'] = (filt.get('duration_min'), filt.get('duration_max'))
+    if filt.get('added_within_days'):
+        lines.append(
+            f"   added within {filt['added_within_days']} days -> categorical (recent first)"
+        )
+        machine['added'] = filt['added_within_days']
+    if filt.get('instruments'):
+        lines.append(
+            f"   instrument {filt['instruments']} -> DCLAP concept check, a match = the library's "
+            f"top {int(round((1 - INSTRUMENT_HIT) * 100))}% for it"
+        )
+        machine['instrument'] = filt['instruments']
     if filt.get('min_rating') is not None:
         lines.append(f"   min_rating {filt['min_rating']} -> rating/5 gradient")
         machine['min_rating'] = filt['min_rating']
@@ -316,8 +387,49 @@ def _cont_dim_score(d, cont_keys, dim_min, dim_max, sim_score):
     return total / n_dims if n_dims else 0.0
 
 
+def _cat_hit(d, k) -> bool:
+    if k in IN_RANGE_DIMS:
+        return d.get(k, 0.0) >= 0.999
+    if k == 'instrument':
+        return d.get(k, 0.0) >= INSTRUMENT_HIT
+    return d.get(k, 0.0) > 0
+
+
 def _cat_dim_count(d, cat_keys):
-    return sum(1 for k in cat_keys if d.get(k, 0.0) > 0)
+    return sum(1 for k in cat_keys if _cat_hit(d, k))
+
+
+GENRE_LEAD_BUCKETS = 2
+
+
+def genre_style_rank(mood_vector: str, wanted: set) -> int:
+    tags = sorted(
+        ((k, v) for k, v in _parse_tag_scores(mood_vector).items() if k in _GENRE_TAGS),
+        key=lambda kv: -kv[1],
+    )
+    for i, (k, _v) in enumerate(tags):
+        if k in wanted:
+            return min(i, GENRE_LEAD_BUCKETS)
+    return GENRE_LEAD_BUCKETS + 1
+
+
+def _genre_lead(pool_songs: List[Dict], filt: Dict, feats: Dict) -> List[int]:
+    wanted = {str(g).strip().lower() for g in filt.get('genres') or []}
+    return [
+        GENRE_LEAD_BUCKETS + 1
+        - genre_style_rank((feats.get(s.get('item_id')) or {}).get('mood_vector') or '', wanted)
+        for s in pool_songs
+    ]
+
+
+def count_full_matches(pool_songs: List[Dict], filt: Dict, feats: Dict) -> int:
+    full = 0
+    for s in pool_songs:
+        d = _filter_dim_scores(filt, feats.get(s.get('item_id'), {}))
+        keys = [k for k in d if k in CATEGORICAL_DIMS]
+        if keys and all(_cat_hit(d, k) for k in keys):
+            full += 1
+    return full
 
 
 def _cat_dim_conf(d, cat_keys, dim_min, dim_max):
@@ -353,28 +465,45 @@ def _log_pool_ranges(log_messages, dim_keys, dim_min, dim_max, sim_scores, n_dem
         )
     if n_demoted:
         log_messages.append(
-            f"   non-song tracks (intro/skit/interlude titles): {n_demoted} down-ranked to the end"
+            f"   non-song tracks (intro/skit/interlude titles or under {int(SHORT_TRACK_SECONDS)} s): "
+            f"{n_demoted} down-ranked to the end"
         )
 
 
-def _order_by_category(pool_songs, keep_rank, sort_keys, cat_label, cont_label, log_messages):
+def _short_track_floor(filt: Dict) -> Optional[float]:
+    wanted_max = filt.get('duration_max')
+    if wanted_max is not None and float(wanted_max) < SHORT_TRACK_SECONDS * 1.5:
+        return None
+    return SHORT_TRACK_SECONDS
+
+
+def _is_non_song(song: Dict, feats: Dict, short_floor: Optional[float]) -> bool:
+    if _NON_SONG_TITLE_RE.search(song.get('title') or ''):
+        return True
+    duration = feats.get('duration')
+    return short_floor is not None and duration is not None and 0 < float(duration) < short_floor
+
+
+def _order_by_category(pool_songs, keep_rank, sort_keys, cat_label, cont_label, log_messages, lead, n_cat):
     N = len(pool_songs)
-    matched = sum(1 for t in sort_keys if t[0] > 0)
+    matched = sum(1 for t in sort_keys if t[0] >= n_cat)
+    partial = sum(1 for t in sort_keys if 0 < t[0] < n_cat)
     order = sorted(
         range(N),
-        key=lambda i: (keep_rank[i], sort_keys[i][0], sort_keys[i][1], sort_keys[i][2]),
+        key=lambda i: (keep_rank[i], lead[i], sort_keys[i][0], sort_keys[i][1], sort_keys[i][2]),
         reverse=True,
     )
     final = [pool_songs[i] for i in order]
     moved = sum(1 for new_i, old_i in enumerate(order) if new_i != old_i)
-    if matched == 0:
+    if matched == 0 and partial == 0:
         log_messages.append(
             f"   re-rank: 0/{N} match the requested {cat_label}; all ordered by {cont_label}"
         )
     else:
         log_messages.append(
-            f"   re-rank: {matched}/{N} match the requested {cat_label} and rank first; "
-            f"remaining ordered by {cont_label} (categorical priority, then gradient)"
+            f"   re-rank: {matched}/{N} match the requested {cat_label} (every one) and rank first; "
+            f"{partial} match only some of them and follow; within each tier ordered by {cont_label} "
+            "(categorical priority, then gradient)"
         )
     return final, matched, moved
 
@@ -417,7 +546,9 @@ def rerank(
     sim_by_id: Optional[Dict[str, float]] = None,
 ):
     N = len(pool_songs)
-    clean_filter = {k: v for k, v in filt.items() if k not in ('candidate_item_ids', 'get_songs')}
+    clean_filter = {
+        k: v for k, v in filt.items() if k not in ('candidate_item_ids', 'get_songs', EXACT_TEMPO_KEY)
+    }
 
     log_messages.append(f"\nFILTER (priority re-rank): {N} songs from pool")
     log_messages.append(f"   filter applied: {clean_filter}")
@@ -429,7 +560,10 @@ def rerank(
     dim_keys, dim_min, dim_max, cat_keys, cont_keys = _dimension_stats(raw_dims)
 
     sim_scores = _blend_sim_scores(sim_by_id, pool_songs)
-    keep_rank = [0 if _NON_SONG_TITLE_RE.search(s.get('title') or '') else 1 for s in pool_songs]
+    short_floor = _short_track_floor(filt)
+    keep_rank = [
+        0 if _is_non_song(s, feats.get(s['item_id'], {}), short_floor) else 1 for s in pool_songs
+    ]
     n_demoted = keep_rank.count(0)
 
     cont_scores = [
@@ -453,8 +587,13 @@ def rerank(
         ]
         cat_label = ", ".join(cat_keys)
         cont_label = ", ".join(cont_keys) if cont_keys else "similarity"
+        purity = _genre_lead(pool_songs, filt, feats) if 'genres' in cat_keys else [0] * N
+        primary = [k for k in PRIMARY_DIMS if k in cat_keys]
+        lead = [
+            (sum(1 for k in primary if _cat_hit(raw_dims[i], k)), purity[i]) for i in range(N)
+        ]
         final, matched, moved = _order_by_category(
-            pool_songs, keep_rank, sort_keys, cat_label, cont_label, log_messages
+            pool_songs, keep_rank, sort_keys, cat_label, cont_label, log_messages, lead, len(cat_keys)
         )
     else:
         matched = sum(1 for d in raw_dims if any(v > 0 for v in d.values()))

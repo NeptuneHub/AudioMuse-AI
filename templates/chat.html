@@ -262,6 +262,10 @@
                     {% endif %}
                     <button type="button" class="suggestion-btn" data-text="Top pop radio songs of 2025">🧠 AI Brainstorming</button>
                     <button type="button" class="suggestion-btn" data-text="Sad jazz from the 90s in minor key">💃 Genre / Mood / Year</button>
+                    <button type="button" class="suggestion-btn" data-text="A journey from By The Way by Red Hot Chili Peppers to Run to the Hills by Iron Maiden">🧭 Song Journey</button>
+                    <button type="button" class="suggestion-btn" data-text="Running playlist around 170 BPM, no rap">🏃 Tempo + Exclusion</button>
+                    <button type="button" class="suggestion-btn" data-text="One hour of chill acoustic music, one song per artist">⏱️ Time Budget</button>
+                    <button type="button" class="suggestion-btn" data-text="Songs added recently, under 4 minutes, no live versions">🆕 Recently Added</button>
                 </div>
             </div>
             <div>
@@ -806,11 +810,11 @@
             const DIM_LABEL = {
                 genres: 'genre', voices: 'voice', moods: 'mood', other_features: 'mood',
                 energy: 'energy', tempo: 'tempo', year: 'era', min_rating: 'rating',
-                scale: 'scale', key: 'key', artist: 'artist', album: 'album'
+                scale: 'scale', key: 'key', artist: 'artist', album: 'album', duration: 'length', bpm: 'tempo', added: 'recently added', instrument: 'instrument'
             };
             // Mirrors CATEGORICAL_DIMS in planner.py - presence/identity dims that
             // get priority-tier ranking over continuous gradient dims.
-            const CATEGORICAL_DIM_SET = ['genres', 'voices', 'scale', 'artist', 'album'];
+            const CATEGORICAL_DIM_SET = ['genres', 'voices', 'scale', 'artist', 'album', 'instrumental', 'year', 'duration', 'bpm', 'added', 'instrument'];
             function splitDims(dims) {
                 const cat = [], cont = [];
                 (dims || []).forEach(d => { (CATEGORICAL_DIM_SET.indexOf(d) >= 0 ? cat : cont).push(d); });
@@ -862,7 +866,7 @@
                     else if ((m = t.match(/re-rank:\s*(\d+)\/(\d+)\s*matched but scores tied/i))) {
                         model.matched = Number.parseInt(m[1], 10); model.total = Number.parseInt(m[2], 10); model.moved = 0;
                     }
-                    else if ((m = t.match(/^(genres|voices|moods|other_features|energy|tempo|year|min_rating|scale|key|artist|album)\s+.*->/))) {
+                    else if ((m = t.match(/^(genres|voices|moods|other_features|energy|tempo|year|duration|bpm|added|instrument|min_rating|scale|key|artist|album)\s+.*->/))) {
                         if (model.filterDims.indexOf(m[1]) === -1) model.filterDims.push(m[1]);
                     }
                     else if ((m = t.match(/retrieved\s+(\d+)\s+songs,\s*added\s+(\d+)/i))) { model.seqRetrieved += Number.parseInt(m[1], 10); model.seqAdded += Number.parseInt(m[2], 10); }

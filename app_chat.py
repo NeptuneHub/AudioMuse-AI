@@ -20,12 +20,16 @@ Main Features:
   optional `tasks.playlist_ordering.order_playlist` post-processing.
 * The stored OpenAI key is sent only to the configured OPENAI_SERVER_URL (or
   for an admin), so a request-supplied URL never receives it.
+* A song count or time budget written in the request sizes the playlist (a
+  budget is trimmed by real track lengths); a requested per-artist cap replaces
+  the default and is not relaxed; a journey keeps its path order.
 """
 
 from flask import Blueprint, render_template, request, jsonify, Response, stream_with_context, g
 from flasgger import swag_from  # Import swag_from
 import json  # For JSON serialization of tool arguments
 import logging
+import math
 import re
 import time
 
@@ -45,6 +49,8 @@ import config
 from error.responses import json_error, json_exception
 
 _SSE_DATA_PREFIX = "data: "
+_BUDGET_SECONDS_PER_SONG = 180.0
+_BUDGET_TOLERANCE = 1.05
 
 # Create a Blueprint for chat-related routes
 chat_bp = Blueprint(
@@ -461,6 +467,30 @@ def _drain_pipeline(pipeline):
         return stop.value or ({}, 200)
 
 
+def _trim_to_duration(songs, total_seconds, log_messages):
+    from tasks.ai.tool_impl import _fetch_pool_features
+
+    try:
+        feats = _fetch_pool_features([s['item_id'] for s in songs])
+    except Exception:
+        logger.exception("Reading track lengths for the playlist time budget failed")
+        return songs
+    kept, used = [], 0.0
+    limit = total_seconds * _BUDGET_TOLERANCE
+    for song in songs:
+        length = (feats.get(song['item_id']) or {}).get('duration') or _BUDGET_SECONDS_PER_SONG
+        if kept and used + length > limit:
+            break
+        kept.append(song)
+        used += length
+    if len(kept) < len(songs):
+        log_messages.append(
+            f"   Time budget: kept {len(kept)} songs, about {int(used // 60)} of the "
+            f"{int(total_seconds // 60)} requested minutes"
+        )
+    return kept
+
+
 def _run_chat_pipeline(data, log_messages):
     """Core chat-to-playlist pipeline, a GENERATOR. Appends progress to
     ``log_messages`` and ``yield``s a bare tick after each blocking step so the
@@ -480,7 +510,7 @@ def _run_chat_pipeline(data, log_messages):
     logger.debug("chat_playlist_api called. Raw request data: %s", data_for_log)
 
     from tasks.ai.tools import get_mcp_tools
-    from tasks.ai.planner import plan_and_execute_once
+    from tasks.ai.planner import plan_and_execute_once, requested_playlist_shape
 
     original_user_input = data.get('userInput')
     # Detect if user's request mentions ratings (guard against AI hallucinating rating filters)
@@ -587,6 +617,18 @@ def _run_chat_pipeline(data, log_messages):
 
     log_messages.append("\nUsing MCP Agentic Workflow for playlist generation")
     target_song_count = _resolve_target_song_count(data)
+    shape = requested_playlist_shape(original_user_input)
+    if shape.get('song_count'):
+        target_song_count = shape['song_count']
+        log_messages.append(f"The request asks for {target_song_count} songs")
+    elif shape.get('total_seconds'):
+        target_song_count = min(
+            config.INSTANT_PLAYLIST_MAX_N_RESULTS,
+            max(1, math.ceil(shape['total_seconds'] / _BUDGET_SECONDS_PER_SONG)),
+        )
+        log_messages.append(
+            f"The request asks for about {int(shape['total_seconds'] // 60)} minutes of music"
+        )
     log_messages.append(f"Target: {target_song_count} songs")
 
     # Get MCP tools and library context
@@ -670,7 +712,8 @@ def _run_chat_pipeline(data, log_messages):
         # gradient), so high-rated songs float up but nothing is removed.
 
         # --- Phase 1: Artist Diversity Cap on full collected pool ---
-        max_per_artist = MAX_SONGS_PER_ARTIST_PLAYLIST
+        requested_cap = plan_result.get('max_per_artist')
+        max_per_artist = requested_cap or MAX_SONGS_PER_ARTIST_PLAYLIST
         artist_song_counts = {}
         diversified_pool = []
         diversity_overflow = []
@@ -692,7 +735,11 @@ def _run_chat_pipeline(data, log_messages):
         if len(diversified_pool) <= target_song_count:
             # Not enough songs after diversity cap - use all, then backfill from overflow
             final_query_results_list = list(diversified_pool)
-            if len(final_query_results_list) < target_song_count and diversity_overflow:
+            if requested_cap and diversity_overflow:
+                log_messages.append(
+                    f"   The request allows at most {requested_cap} song(s) per artist; the cap was kept"
+                )
+            elif len(final_query_results_list) < target_song_count and diversity_overflow:
                 # Progressive cap relaxation: raise per-artist cap until we hit target or exhaust overflow
                 current_cap = max_per_artist
                 while len(final_query_results_list) < target_song_count and diversity_overflow:
@@ -750,6 +797,11 @@ def _run_chat_pipeline(data, log_messages):
 
             final_query_results_list = final_query_results_list[:target_song_count]
 
+        if shape.get('total_seconds') and not shape.get('song_count'):
+            final_query_results_list = _trim_to_duration(
+                final_query_results_list, shape['total_seconds'], log_messages
+            )
+
         log_messages.append(
             f"\nPool: {len(all_songs)} collected -> {len(diversified_pool)} after diversity cap -> {len(final_query_results_list)} in final playlist"
         )
@@ -763,6 +815,10 @@ def _run_chat_pipeline(data, log_messages):
         if filter_applied:
             log_messages.append(
                 "\nPlaylist kept in filter-ranked order (matched songs first); smooth-transition reorder skipped"
+            )
+        elif plan_result.get('keep_order'):
+            log_messages.append(
+                "\nPlaylist kept in journey order (from the first seed to the second)"
             )
         else:
             try:
@@ -825,13 +881,41 @@ def _run_chat_pipeline(data, log_messages):
                 args_preview.append(f"exclude_artists={args['exclude_artists'][:2]}")
             if 'exclude_genres' in args and args['exclude_genres']:
                 args_preview.append(f"exclude_genres={args['exclude_genres'][:2]}")
+            if args.get('voices'):
+                args_preview.append(f"voices={args['voices'][:1]}")
+            if args.get('instrumental') is not None:
+                args_preview.append(f"instrumental={args['instrumental']}")
+            for label, lo_key, hi_key in (
+                ('year', 'year_min', 'year_max'),
+                ('tempo', 'tempo_min', 'tempo_max'),
+                ('energy', 'energy_min', 'energy_max'),
+                ('duration', 'duration_min', 'duration_max'),
+            ):
+                if args.get(lo_key) is not None or args.get(hi_key) is not None:
+                    args_preview.append(f"{label}={args.get(lo_key, '')}..{args.get(hi_key, '')}")
+            if args.get('album'):
+                args_preview.append(f"album='{args['album']}'")
+            if args.get('query'):
+                args_preview.append(f"query='{str(args['query'])[:30]}'")
+            if args.get('seeds'):
+                args_preview.append(f"seeds={len(args['seeds'])}")
+            if args.get('instruments'):
+                args_preview.append(f"instruments={args['instruments'][:2]}")
             if 'user_request' in args:
                 args_preview.append(f"request='{args['user_request'][:30]}...'")
 
             args_str = ", ".join(args_preview) if args_preview else "no filters"
             call_index = tool_info.get('call_index', -1)
             final_count = final_by_call.get(call_index, 0)
-            if song_count != final_count:
+            if tool_info.get('role') == 'pool':
+                log_messages.append(
+                    f"   - {tool_name}({args_str}): found {song_count} candidates, re-ranked by the filter below"
+                )
+            elif tool_info.get('role') == 'rerank':
+                log_messages.append(
+                    f"   - {tool_name}({args_str}): re-ranked those candidates -> {final_count} in final playlist"
+                )
+            elif song_count != final_count:
                 log_messages.append(
                     f"   - {tool_name}({args_str}): {song_count} collected -> {final_count} in final playlist"
                 )
