@@ -304,13 +304,13 @@ _ADDED_RE = re.compile(
 )
 _ADDED_PERIOD_DAYS = {'week': 7, 'month': 31, 'year': 365}
 _MORE_ENERGY_RE = re.compile(
-    r"\b(?:more|mroe|moer|much\s+more|a\s+bit\s+more|even\s+more)\s+(?:upbeat|energetic|intense|aggressive|"
+    r"\b(?:m[or]{2}e|mo[e]r|much\s+more|a\s+bit\s+more|even\s+more)\s+(?:upbeat|energetic|intense|aggressive|"
     r"lively|danceable|powerful|hype|punchy)\b|\b(?:harder|heavier|louder|livelier)\b|"
     r"\bless\s+(?:chill|calm|mellow|relaxed|soft|quiet)\b",
     re.IGNORECASE,
 )
 _LESS_ENERGY_RE = re.compile(
-    r"\b(?:more|mroe|moer|much\s+more|a\s+bit\s+more|even\s+more)\s+(?:chill|calm|mellow|relaxed|relaxing|"
+    r"\b(?:m[or]{2}e|mo[e]r|much\s+more|a\s+bit\s+more|even\s+more)\s+(?:chill|calm|mellow|relaxed|relaxing|"
     r"laid[\s-]back|quiet|soft|gentle|peaceful)\b|\b(?:calmer|softer|quieter|mellower|chiller|gentler)\b|"
     r"\bless\s+(?:intense|energetic|aggressive|upbeat|loud|heavy)\b",
     re.IGNORECASE,
