@@ -35,15 +35,11 @@ Find answers to common questions about setting up, configuring, and deploying Au
 </details>
 
 <details>
-<summary>The analysis takes too long, can I speed it up?</summary>
+<summary>How can I make the analysis faster?</summary>
 
-> The time needed for the analysis really depends on your HW and how big your music collection is. For big collections (100k+ songs) or old HW, 1 week+ of analysis can be totally normal.
->
-> If you want faster analysis, you can disable the text search functionality by setting `CLAP_ENABLED` to false. This will run only the Musicnn model, skipping the CLAP model. The neural fingerprint of Search by Recording is off by default for the same reason: turn it on from the Machine Learning Models switches of the setup wizard (or `NEURAL_FINGERPRINT_ENABLED=true`) only if you want that feature.
->
-> Alternatives include running multiple worker containers in parallel (see the [ARCHITECTURE](ARCHITECTURE.md) page and deployment examples in the `deployment/` folder). GPU analysis is also supported but still experimental (see [GPU DEPLOYMENT](GPU.md)).
->
-> Also remember that Automatic Speech Recognition (ASR) of song is the part that take longer, configure Lyrics API on AudioMuse-AI or on your Music server when supported, will speed up the analysis.
+> 1. **Configure a Lyrics API** in the Setup Wizard (or have lyrics on your music server). Whisper ASR is by far the slowest part of the analysis and only runs when no lyrics are found.
+> 2. **Add more workers in parallel.** Just deploy another worker container, for example on another PC, using [these worker examples](../deployment/test/). It only needs to reach the database and the music server, see [ARCHITECTURE](ARCHITECTURE.md). This works only with the container version, not with the native apps.
+> 3. **As a last resort, turn off some models** under Machine Learning Models in the Setup Wizard. You lose the features that use them, but everything runs faster. Musicnn alone is enough for the basic features, but we suggest keeping DCLAP too.
 
 </details>
 
