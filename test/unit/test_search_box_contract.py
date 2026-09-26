@@ -9,24 +9,26 @@
 """Every search box follows one contract: search from the first letter, pages of 20.
 
 The song, artist and playlist pickers of every page run on static/autocomplete.js,
-and the endpoints they call share app_helper.search_query_arg / search_page_window.
-These tests pin both halves so no page and no endpoint can drift from the
-standard again.
+and the endpoints they call share app_helper.search_query_arg / search_page_window
+/ search_page_response. These tests pin both halves so no page and no endpoint
+can drift from the standard again.
 
 Main Features:
 * track, artist and playlist search answer a one-character query and page with
   start/end (default 20 rows, per-endpoint cap)
 * whitespace-only queries and empty windows never reach the backend
-* playlist search pages a name-sorted list
+* X-Search-Has-More is decided on the SQL page, so a row scoped away after the
+  SQL LIMIT never ends paging early
+* playlist search pages a name-sorted list and a blank query lists nothing
 * the library browser searches from one character
-* the widget's page size and minimum equal the backend's, the layout loads the
-  widget for every page, and no template keeps a private copy of the paging code
+* the page size and minimum have ONE source (app_helper), rendered onto the
+  widget's script tag by the layout, which loads the widget for every page
+* no template keeps a private copy of the paging code
 """
 
 import contextlib
-import glob
-import io
 import re
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,9 +41,19 @@ import app_dashboard
 import app_helper
 import app_ivf
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _read(relative):
+    return (ROOT / relative).read_text(encoding='utf-8')
+
 
 def _args(**kwargs):
     return MultiDict({key: str(value) for key, value in kwargs.items()})
+
+
+def _tracks(count):
+    return [{'item_id': 'id%d' % i, 'title': 't%d' % i, 'author': 'a', 'album': 'b'} for i in range(count)]
 
 
 @pytest.fixture
@@ -123,6 +135,19 @@ class TestTrackSearch:
             client.get('/api/search_tracks', query_string={'title': 't', 'artist': 'a'})
         assert backend.call_args.args[0] == 'a t'
 
+    def test_a_full_sql_page_says_more_even_when_scoping_drops_a_row(self, client, unscoped, monkeypatch):
+        monkeypatch.setattr(app_ivf.app_server_context, 'scope_results', lambda rows, *a, **k: rows[1:])
+        with patch.object(app_ivf, 'search_tracks_unified', return_value=_tracks(20)):
+            resp = client.get('/api/search_tracks', query_string={'search_query': 'r', 'start': 0, 'end': 20})
+        assert len(resp.get_json()) == 19
+        assert resp.headers['X-Search-Has-More'] == '1'
+
+    def test_a_short_sql_page_is_the_last(self, client, unscoped):
+        with patch.object(app_ivf, 'search_tracks_unified', return_value=_tracks(7)):
+            resp = client.get('/api/search_tracks', query_string={'search_query': 'r', 'start': 0, 'end': 20})
+        assert len(resp.get_json()) == 7
+        assert resp.headers['X-Search-Has-More'] == '0'
+
 
 class TestArtistSearch:
     def test_one_character_reaches_the_backend(self, client, unscoped):
@@ -145,6 +170,14 @@ class TestArtistSearch:
         assert resp.get_json() == []
         backend.assert_not_called()
 
+    def test_a_full_sql_page_says_more_even_when_scoping_drops_an_artist(self, client, unscoped, monkeypatch):
+        artists = [{'artist': 'n%d' % i, 'artist_id': 'x%d' % i, 'track_count': 1} for i in range(20)]
+        monkeypatch.setattr(app_artist_similarity.app_server_context, 'scope_artist_results', lambda rows, *a, **k: rows[1:])
+        with patch.object(app_artist_similarity, 'search_artists_by_name', return_value=artists):
+            resp = client.get('/api/search_artists', query_string={'query': 'n', 'start': 0, 'end': 20})
+        assert len(resp.get_json()) == 19
+        assert resp.headers['X-Search-Has-More'] == '1'
+
     def test_there_is_exactly_one_artist_search_route(self, client):
         rules = [rule for rule in client.application.url_map.iter_rules() if rule.rule == '/api/search_artists']
         assert [rule.endpoint for rule in rules] == ['artist_similarity_bp.search_artists_endpoint']
@@ -158,23 +191,27 @@ class TestPlaylistSearch:
         {'Id': 'p4', 'Name': 'other'},
     ]
 
-    def _get(self, client, monkeypatch, **params):
-        monkeypatch.setattr(app_alchemy, '_cached_all_playlists', lambda server_id: self.PLAYLISTS)
-        return client.get('/api/search_playlists', query_string=params).get_json()
+    def _get(self, client, monkeypatch, playlists=None, **params):
+        monkeypatch.setattr(app_alchemy, '_cached_all_playlists', lambda server_id: playlists or self.PLAYLISTS)
+        return client.get('/api/search_playlists', query_string=params)
 
     def test_matches_are_sorted_by_name_and_paged(self, client, unscoped, monkeypatch):
         first = self._get(client, monkeypatch, query='mix', start=0, end=2)
         second = self._get(client, monkeypatch, query='mix', start=2, end=4)
-        assert [row['id'] for row in first] == ['p1', 'p2']
-        assert [row['id'] for row in second] == ['p3']
+        assert [row['id'] for row in first.get_json()] == ['p1', 'p2']
+        assert first.headers['X-Search-Has-More'] == '1'
+        assert [row['id'] for row in second.get_json()] == ['p3']
+        assert second.headers['X-Search-Has-More'] == '0'
 
     def test_one_character_searches(self, client, unscoped, monkeypatch):
-        assert [row['id'] for row in self._get(client, monkeypatch, query='t', start=0, end=20)] == ['p4']
+        assert [row['id'] for row in self._get(client, monkeypatch, query='t', start=0, end=20).get_json()] == ['p4']
+
+    def test_a_blank_query_lists_nothing_like_every_other_search(self, client, unscoped, monkeypatch):
+        assert self._get(client, monkeypatch, query='  ', start=0, end=20).get_json() == []
 
     def test_without_a_window_the_old_default_of_fifty_stays(self, client, unscoped, monkeypatch):
         many = [{'Id': 'id%03d' % i, 'Name': 'mix %03d' % i} for i in range(80)]
-        monkeypatch.setattr(app_alchemy, '_cached_all_playlists', lambda server_id: many)
-        assert len(client.get('/api/search_playlists', query_string={'query': 'mix'}).get_json()) == 50
+        assert len(self._get(client, monkeypatch, playlists=many, query='mix').get_json()) == 50
 
 
 class TestBrowseSearch:
@@ -197,30 +234,35 @@ class TestBrowseSearch:
         assert '%r%' in listing[0][0][1]
 
 
-class TestWidgetMatchesTheBackend:
-    SOURCE = io.open('static/autocomplete.js', encoding='utf-8').read()
+class TestOneSourceForTheContract:
+    def test_the_widget_has_no_copy_of_the_page_size_or_minimum(self):
+        widget = _read('static/autocomplete.js')
+        assert 'settings.pageSize' in widget and 'settings.minChars' in widget
+        assert not re.search(r'(PAGE_SIZE|MIN_CHARS)\s*=\s*\d', widget)
 
-    def _constant(self, name):
-        found = re.search(r'var ' + name + r' = (\d+);', self.SOURCE)
-        assert found, name
-        return int(found.group(1))
-
-    def test_page_size_and_minimum_are_the_same_on_both_sides(self):
-        assert self._constant('PAGE_SIZE') == app_helper.SEARCH_PAGE_SIZE
-        assert self._constant('MIN_CHARS') == app_helper.SEARCH_MIN_QUERY_LENGTH
+    def test_the_layout_renders_the_backend_constants_onto_the_widget(self):
+        layout = _read('templates/includes/layout.html')
+        tag = re.search(r'<script[^>]*autocomplete\.js[^>]*>', layout).group(0)
+        assert 'data-page-size="{{ search_page_size }}"' in tag
+        assert 'data-min-chars="{{ search_min_chars }}"' in tag
+        entry = _read('app.py')
+        assert 'search_page_size=SEARCH_PAGE_SIZE' in entry
+        assert 'search_min_chars=SEARCH_MIN_QUERY_LENGTH' in entry
 
     def test_the_layout_loads_the_widget_before_every_page_script(self):
-        layout = io.open('templates/includes/layout.html', encoding='utf-8').read()
+        layout = _read('templates/includes/layout.html')
         widget = layout.index("filename='autocomplete.js'")
         assert layout.index("filename='error_display.js'") < widget < layout.index('{% block bodyAdditions %}')
 
     def test_no_template_keeps_its_own_copy_of_the_picker(self):
         endpoints = ('search_tracks_endpoint', 'search_artists_endpoint', 'search_playlists')
+        templates = sorted((ROOT / 'templates').rglob('*.html'))
+        assert len(templates) > 10
         offenders = []
-        for path in sorted(glob.glob('templates/**/*.html', recursive=True)):
-            text = io.open(path, encoding='utf-8').read()
+        for path in templates:
+            text = path.read_text(encoding='utf-8')
             if 'IntersectionObserver' in text or 'autocomplete-load-more' in text:
-                offenders.append(path + ': private infinite-scroll code')
+                offenders.append(path.name + ': private infinite-scroll code')
             if any(name in text for name in endpoints) and 'AudioMuseAutocomplete.attach' not in text:
-                offenders.append(path + ': calls a search endpoint without the shared widget')
+                offenders.append(path.name + ': calls a search endpoint without the shared widget')
         assert offenders == []

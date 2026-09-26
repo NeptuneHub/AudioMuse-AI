@@ -393,7 +393,6 @@ document.addEventListener('DOMContentLoaded', function () {
             box: document.getElementById('sg-autocomplete-results'),
             url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
             params: { index: 'sem_grove' },
-            container: document.getElementById('sg-autocomplete-container'),
             onSelect: (track) => {
                 sgItemId.value = track.item_id || '';
                 sgDisplay.textContent = 'Title: ' + (track.title || 'Unknown');

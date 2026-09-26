@@ -55,6 +55,8 @@ import app_server_context
 from app_helper import max_bound as _max_bound_filter
 from app_helper import min_bound as _min_bound_filter
 from app_helper import (
+    SEARCH_MIN_QUERY_LENGTH,
+    SEARCH_PAGE_SIZE,
     revoke_inline_task_row,
     cancel_job_and_children_recursive,
     sanitize_task_details,
@@ -208,6 +210,8 @@ def inject_globals():
         current_user=current_user,
         plugin_menu_items=plugin_menu_items,
         nav_music_servers=nav_music_servers,
+        search_page_size=SEARCH_PAGE_SIZE,
+        search_min_chars=SEARCH_MIN_QUERY_LENGTH,
     )
 
 

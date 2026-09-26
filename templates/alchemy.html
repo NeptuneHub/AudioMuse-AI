@@ -480,7 +480,7 @@
                         const allIds = Array.from(document.querySelectorAll('.song-id')).map(i => i.value).filter(Boolean);
                         if (allIds.includes(track.item_id) && idEl.value !== track.item_id) {
                             showMessageBox('Duplicate Song', 'This song is already selected in another row.', true);
-                            return;
+                            return false;
                         }
                         idEl.value = track.item_id;
                         selectedSongNameEl.textContent = `${track.title} - ${track.author}`;

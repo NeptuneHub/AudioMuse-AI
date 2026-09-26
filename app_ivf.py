@@ -35,6 +35,7 @@ from config import (
 )
 from app_helper import (
     SEARCH_MIN_QUERY_LENGTH,
+    search_page_response,
     search_page_window,
     search_query_arg,
     serialize_neighbor_results,
@@ -322,7 +323,7 @@ def search_tracks_endpoint():
             else:
                 results.append({'item_id': None, 'title': None, 'author': None, 'album': 'unknown'})
         results = app_server_context.scope_results(results, limit, id_key='item_id')
-        return jsonify(results)
+        return search_page_response(results, len(raw_results) >= limit)
     except Exception as exc:
         logger.exception("Error during track search")
         return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")

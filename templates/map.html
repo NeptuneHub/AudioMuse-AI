@@ -700,7 +700,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
     let selectedItemId = null;
 
     async function searchFirstTrack(searchQ){
-        const qs = new URLSearchParams({ search_query: searchQ, start: 0, end: 1 });
+        const qs = new URLSearchParams({ search_query: searchQ, start: 0, end: AudioMuseAutocomplete.PAGE_SIZE });
         const resp = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${qs.toString()}`);
         const body = await readJsonBody(resp);
         if (!resp.ok || !Array.isArray(body)) throw new Error(apiErrorText(body, `HTTP ${resp.status}`));
@@ -805,6 +805,7 @@ window.addEventListener('load', () => { setActivePctButton('btn-pct-25'); loadAn
                 searchInput.value = `${t.title || ''} - ${t.author || ''}`;
             }
         });
+        searchInput.addEventListener('input', () => { selectedItemId = null; });
         document.getElementById('map_search_btn').addEventListener('click', async ()=>{
             // If user selected an item from autocomplete, use it. Otherwise run a unified search and pick first.
             if (selectedItemId) {

@@ -24,7 +24,7 @@ import logging
 import config
 
 import app_server_context
-from app_helper import search_page_window, search_query_arg
+from app_helper import search_page_response, search_page_window, search_query_arg
 from error.error_dictionary import (
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
@@ -118,7 +118,7 @@ def search_artists_endpoint():
             server_id=server_id,
             include_legacy_default=include_legacy,
         )
-        return jsonify(app_server_context.scope_artist_results(results))
+        return search_page_response(app_server_context.scope_artist_results(results), len(results) >= limit)
     except Exception as exc:
         logger.exception("Error during artist search")
         return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")

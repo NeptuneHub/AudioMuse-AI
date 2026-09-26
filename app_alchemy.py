@@ -29,7 +29,7 @@ import threading
 import time
 
 from tasks.song_alchemy import anchor_embedding_tag, embedding_tags_match, song_alchemy
-from app_helper import attach_song_features, search_page_window
+from app_helper import attach_song_features, search_page_response, search_page_window, search_query_arg
 import app_server_context
 import config
 from error.error_dictionary import (
@@ -103,7 +103,7 @@ def search_playlists():
       - name: query
         in: query
         schema: { type: string }
-        description: Partial playlist name.
+        description: Partial playlist name (one character is enough; a blank query returns nothing).
       - name: start
         in: query
         schema: { type: integer, default: 0 }
@@ -116,9 +116,9 @@ def search_playlists():
       200:
         description: List of matching playlists (id, name, count), sorted by name.
     """
-    query = (request.args.get('query', '') or '').strip().lower()
+    query = search_query_arg(request.args, 'query').lower()
     window = search_page_window(request.args, 100, default=50)
-    if window is None:
+    if not query or window is None:
         return jsonify([])
     offset, limit = window
     try:
@@ -137,12 +137,12 @@ def search_playlists():
         pid = p.get('Id') or p.get('id')
         if not pid:
             continue
-        if query and query not in name.lower():
+        if query not in name.lower():
             continue
         count = p.get('songCount') if p.get('songCount') is not None else p.get('ChildCount')
         out.append({'id': str(pid), 'name': name, 'count': count})
     out.sort(key=lambda row: (str(row['name']).casefold(), row['id']))
-    return jsonify(out[offset:offset + limit])
+    return search_page_response(out[offset:offset + limit], len(out) > offset + limit)
 
 
 @alchemy_bp.route('/api/alchemy', methods=['POST'])

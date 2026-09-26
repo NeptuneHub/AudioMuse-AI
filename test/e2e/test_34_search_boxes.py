@@ -17,9 +17,12 @@ is the functional proof that no page drifted from the shared contract.
 
 Main Features:
 * one typed letter searches (start=0&end=20) on every picker of every page
-* the unfiltered song pickers load the next page on scroll, with no duplicate
+* the unfiltered song pickers load the next page on scroll, with no duplicate,
+  driven by the endpoint's X-Search-Has-More header
 * artist and playlist pickers send the same paged request
 * ArrowDown + Enter picks a suggestion, closes the list and fills the page
+* an alchemy pick refused as a duplicate leaves the list open for another pick
+* the map Search button searches the text typed after an earlier pick
 * no console error, page error, failed request or HTTP 500 on the way
 """
 
@@ -76,7 +79,7 @@ PICKERS = [
          params={'index': 'sem_grove'}, picked=('value', '#sg-selected-item-id')),
     dict(name='recording-by-song', path='/recording_search', ready='#recording-panel',
          clicks=['.tab-btn[data-mode="song"]'], input='#song-query', box='#song-suggestions', endpoint=TRACKS,
-         paged=False, params={'index': 'neural'}, picked=('text', '#song-selected')),
+         paged=False, params={'index': 'neural'}, picked=('text', '#song-selected'), optional=True),
 ]
 
 
@@ -116,8 +119,9 @@ def test_one_letter_searches_and_scrolling_loads_the_next_page(flow, picker):
     ui._open(page, picker['path'], picker['ready'])
     for selector in picker.get('clicks', []):
         target = page.locator(selector).first
-        if not target.count():
-            pytest.skip(f"{picker['name']}: {selector} is not on this instance")
+        if picker.get('optional') and not target.count():
+            pytest.skip(f"{picker['name']}: {selector} is not rendered on this instance")
+        target.wait_for(state='visible', timeout=ui.PICK_TIMEOUT_MS)
         target.click()
     field = page.locator(picker['input']).first
     box = page.locator(picker['box']).first
@@ -140,6 +144,7 @@ def test_one_letter_searches_and_scrolling_loads_the_next_page(flow, picker):
 
     if picker['paged']:
         assert len(rows) == PAGE, f"{picker['name']}: the seeded catalogue must fill the first page"
+        assert first.value.headers.get('x-search-has-more') == '1', first.value.headers
         with page.expect_response(_asks(picker['endpoint'], PAGE), timeout=ui.PICK_TIMEOUT_MS) as second:
             box.evaluate('b => { b.scrollTop = b.scrollHeight; }')
         more = second.value.json()
@@ -164,3 +169,45 @@ def test_one_letter_searches_and_scrolling_loads_the_next_page(flow, picker):
         else:
             assert target.inner_text().strip(), f"{picker['name']}: the pick was not shown"
     ui._clean(problems, picker['path'])
+
+
+def _first_suggestion(page, field, box):
+    with page.expect_response(_asks(TRACKS, 0), timeout=ui.PICK_TIMEOUT_MS):
+        field.fill(LETTER)
+    row = _rows(box).first
+    row.wait_for(state='visible', timeout=ui.PICK_TIMEOUT_MS)
+    return row
+
+
+def test_a_duplicate_alchemy_pick_keeps_the_list_open(flow):
+    page, problems = flow
+    ui._open(page, '/alchemy', '#alchemy-form')
+    cards = page.locator('.alchemy-card')
+    cards.nth(1).wait_for(state='attached', timeout=ui.PICK_TIMEOUT_MS)
+    first, second = cards.nth(0), cards.nth(1)
+    _first_suggestion(page, first.locator('input.song'), first.locator('.autocomplete-results-song')).click()
+    picked = first.locator('.song-id').input_value()
+    assert picked
+    box = second.locator('.autocomplete-results-song')
+    _first_suggestion(page, second.locator('input.song'), box).click()
+    page.wait_for_timeout(300)
+    assert second.locator('.song-id').input_value() == ''
+    assert box.is_visible(), 'a refused duplicate must leave the suggestions open for another pick'
+    assert _rows(box).count() >= 1
+    ui._clean(problems, '/alchemy')
+
+
+def test_the_map_search_button_follows_the_text_typed_after_a_pick(flow):
+    page, problems = flow
+    ui._open(page, '/map', '#map_size')
+    field = page.locator('#search_query_map')
+    _first_suggestion(page, field, page.locator('#map_autocomplete_results')).click()
+    picked_text = field.input_value()
+    assert picked_text
+    with page.expect_response(_asks(TRACKS, 0), timeout=ui.PICK_TIMEOUT_MS):
+        field.fill(LETTER)
+    with page.expect_response(_asks(TRACKS, 0), timeout=ui.PICK_TIMEOUT_MS) as searched:
+        page.locator('#map_search_btn').click()
+    sent = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(searched.value.url).query))
+    assert sent.get('search_query') == LETTER, sent
+    ui._clean(problems, '/map')
