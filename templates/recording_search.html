@@ -207,9 +207,8 @@
         <div id="song-panel" class="hidden">
             <div class="autocomplete-container">
                 <label for="song-query">Song, artist or album name:</label>
-                <input type="text" id="song-query" placeholder="Start typing..." autocomplete="off"
-                       role="combobox" aria-expanded="false" aria-controls="song-suggestions" aria-autocomplete="list">
-                <div id="song-suggestions" class="autocomplete-results hidden" role="listbox" aria-label="Song suggestions"></div>
+                <input type="text" id="song-query" placeholder="Start typing...">
+                <div id="song-suggestions" class="autocomplete-results hidden" aria-label="Song suggestions"></div>
             </div>
             <div id="song-selected" class="clip-info hidden"></div>
         </div>
@@ -254,7 +253,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const DEFAULT_RESULTS = {{ n_results_default }};
     const HTTPS_PORT = {{ https_port|int }};
     const HTTPS_ERROR = {{ https_error|tojson }};
-    const SUGGESTIONS = 20;
 
     function neuralBadge(song) {
         if (typeof song.score !== 'number') return null;
@@ -350,114 +348,26 @@ document.addEventListener('DOMContentLoaded', function () {
         setClip(file, file.name, 'Uploaded clip');
     });
 
-    let suggestTimer = null;
-    let activeSuggestion = -1;
-
-    function hideSuggestions() {
-        songSuggestions.classList.add('hidden');
-        songQuery.setAttribute('aria-expanded', 'false');
-        songQuery.removeAttribute('aria-activedescendant');
-        activeSuggestion = -1;
-    }
-
     function selectSong(track) {
         selectedSong = track;
         songSelected.textContent = `Selected: ${track.title || 'Unknown'}, ${track.author || 'Unknown'}${track.album ? ` (${track.album})` : ''}`;
         songSelected.classList.remove('hidden');
         songQuery.value = `${track.title || ''}${track.author ? ` - ${track.author}` : ''}`;
-        hideSuggestions();
         refreshSearchButton();
     }
 
-    function showSuggestions(tracks) {
-        songSuggestions.innerHTML = '';
-        activeSuggestion = -1;
-        if (!tracks.length) {
-            songSuggestions.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
-        }
-        tracks.forEach((track, index) => {
-            const item = document.createElement('div');
-            item.className = 'autocomplete-item';
-            item.setAttribute('role', 'option');
-            item.id = `song-option-${index}`;
-            item.innerHTML = `<div class="title">${escapeHtml(track.title || 'N/A')}</div>`
-                + `<div class="artist">${escapeHtml(track.author || 'N/A')}</div>`
-                + `<div class="album">Album: ${escapeHtml(track.album || 'Unknown')}</div>`;
-            item.addEventListener('click', () => selectSong(track));
-            songSuggestions.appendChild(item);
-        });
-        songSuggestions.classList.remove('hidden');
-        songQuery.setAttribute('aria-expanded', 'true');
-    }
-
-    function showSuggestionError(message) {
-        songSuggestions.innerHTML = '';
-        activeSuggestion = -1;
-        songQuery.removeAttribute('aria-activedescendant');
-        const item = document.createElement('div');
-        item.className = 'autocomplete-item';
-        const em = document.createElement('em');
-        em.textContent = message;
-        item.appendChild(em);
-        songSuggestions.appendChild(item);
-        songSuggestions.classList.remove('hidden');
-        songQuery.setAttribute('aria-expanded', 'true');
-    }
-
-    function highlightSuggestion(index) {
-        const options = songSuggestions.querySelectorAll('[role="option"]');
-        if (!options.length) return;
-        activeSuggestion = ((index % options.length) + options.length) % options.length;
-        options.forEach((option, i) => option.classList.toggle('active', i === activeSuggestion));
-        options[activeSuggestion].scrollIntoView({ block: 'nearest' });
-        songQuery.setAttribute('aria-activedescendant', options[activeSuggestion].id);
-    }
+    AudioMuseAutocomplete.attach({
+        input: songQuery,
+        box: songSuggestions,
+        url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
+        params: { index: 'neural' },
+        onSelect: selectSong
+    });
 
     songQuery.addEventListener('input', () => {
-        clearTimeout(suggestTimer);
         selectedSong = null;
         songSelected.classList.add('hidden');
         refreshSearchButton();
-        const query = songQuery.value.trim();
-        if (!query) {
-            hideSuggestions();
-            return;
-        }
-        suggestTimer = setTimeout(async () => {
-            try {
-                const params = new URLSearchParams({ search_query: query, start: 0, end: SUGGESTIONS, index: 'neural' });
-                const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                const tracks = await readJsonBody(response);
-                if (!response.ok || !Array.isArray(tracks)) {
-                    showSuggestionError(apiErrorText(tracks, `Search failed (HTTP ${response.status})`));
-                    return;
-                }
-                showSuggestions(tracks);
-            } catch (error) {
-                console.error('Song search failed:', error);
-                hideSuggestions();
-            }
-        }, 300);
-    });
-
-    songQuery.addEventListener('keydown', event => {
-        const open = !songSuggestions.classList.contains('hidden');
-        if (event.key === 'ArrowDown' && open) {
-            event.preventDefault();
-            highlightSuggestion(activeSuggestion + 1);
-        } else if (event.key === 'ArrowUp' && open) {
-            event.preventDefault();
-            highlightSuggestion(activeSuggestion - 1);
-        } else if (event.key === 'Enter' && open && activeSuggestion >= 0) {
-            event.preventDefault();
-            songSuggestions.querySelectorAll('[role="option"]')[activeSuggestion].click();
-        } else if (event.key === 'Escape') {
-            hideSuggestions();
-        }
-    });
-
-    document.addEventListener('click', event => {
-        if (!songSuggestions.contains(event.target) && event.target !== songQuery) hideSuggestions();
     });
 
     class RecordingBlocked extends Error {

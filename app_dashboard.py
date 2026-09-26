@@ -42,6 +42,7 @@ from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 
 import config
+from app_helper import search_query_arg
 from database import get_db, like_contains_pattern
 from tasks.mediaserver import registry
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
@@ -80,7 +81,6 @@ def dashboard_page():
 
 _BROWSE_KINDS = ('songs', 'artists', 'albums', 'unanalyzable')
 _BROWSE_FILTERS = ('all', 'unique', 'duplicates', 'orphan')
-_BROWSE_MIN_QUERY = 2
 
 
 @dashboard_bp.route('/browse', methods=['GET'])
@@ -282,9 +282,7 @@ def browse_api():
     filt = (request.args.get('filter') or 'all').strip().lower()
     if filt not in _BROWSE_FILTERS:
         filt = 'all'
-    q = (request.args.get('q') or '').strip()
-    if len(q) < _BROWSE_MIN_QUERY:
-        q = ''
+    q = search_query_arg(request.args, 'q')
     page = request.args.get('page', 1, type=int) or 1
     if page < 1:
         page = 1

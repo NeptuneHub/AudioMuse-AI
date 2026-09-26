@@ -334,7 +334,6 @@
         let similarArtists = [];
         let selectedArtist = null;
         let selectedArtistTracks = [];
-        let searchTimeout;
 
         const artistSearchForm = document.getElementById('artist-similarity-form');
         const playlistForm = document.getElementById('playlist-form');
@@ -347,125 +346,16 @@
         const playlistStatusDiv = document.getElementById('playlist-status');
         const selectedArtistInfo = document.getElementById('selected-artist-info');
 
-        // --- Autocomplete Logic ---
-        const PAGE_SIZE = 20;
-        let autocompleteOffset = 0;
-        let autocompleteQuery = '';
-        let isLoadingMore = false;
-
-        const handleSearchInput = () => {
-            clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(async () => {
-                const query = artistInput.value.trim();
-
-                if (query.length < 2) {
-                    hideAutocomplete();
-                    return;
-                }
-
-                autocompleteQuery = query;
-                autocompleteOffset = 0;
-
-                try {
-                    const params = new URLSearchParams({ query: query, start: 0, end: PAGE_SIZE });
-                    const response = await fetch(`{{ url_for('artist_similarity_bp.search_artists_endpoint') }}?${params}`);
-                    const artists = await readJsonBody(response);
-                    if (!response.ok || !Array.isArray(artists)) {
-                        showAutocompleteError(apiErrorText(artists, 'Search failed (HTTP ' + response.status + ')'));
-                        return;
-                    }
-                    autocompleteOffset = artists.length;
-                    showAutocomplete(artists, false);
-                } catch (error) {
-                    console.error('Autocomplete search error:', error);
-                    hideAutocomplete();
-                }
-            }, 300);
-        };
-
-        const loadMoreResults = async () => {
-            if (isLoadingMore) return;
-            isLoadingMore = true;
-            try {
-                const params = new URLSearchParams({ query: autocompleteQuery, start: autocompleteOffset, end: autocompleteOffset + PAGE_SIZE });
-                const response = await fetch(`{{ url_for('artist_similarity_bp.search_artists_endpoint') }}?${params}`);
-                const artists = await readJsonBody(response);
-                if (!response.ok || !Array.isArray(artists)) {
-                    const sentinel = autocompleteResults.querySelector('.autocomplete-load-more');
-                    if (sentinel) sentinel.textContent = apiErrorText(artists, 'Search failed (HTTP ' + response.status + ')');
-                    return;
-                }
-                if (artists.length > 0) {
-                    autocompleteOffset += artists.length;
-                    showAutocomplete(artists, true);
-                }
-            } catch (error) {
-                console.error('Load more error:', error);
-            } finally {
-                isLoadingMore = false;
-            }
-        };
-
-        const showAutocomplete = (artists, append) => {
-            if (!append) autocompleteResults.innerHTML = '';
-            const existingSentinel = autocompleteResults.querySelector('.autocomplete-load-more');
-            if (existingSentinel) existingSentinel.remove();
-
-            if (artists.length === 0 && !append) {
-                autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No artists found</em></div>';
-            } else {
-                artists.forEach(artist => {
-                    const itemDiv = document.createElement('div');
-                    itemDiv.className = 'autocomplete-item';
-                    itemDiv.innerHTML = `
-                        <span class="artist-name">${escapeHtml(artist.artist)}</span>
-                        <span class="track-count">(${artist.track_count} tracks)</span>
-                    `;
-                    itemDiv.addEventListener('click', () => selectArtist(artist.artist));
-                    autocompleteResults.appendChild(itemDiv);
-                });
-                if (artists.length >= PAGE_SIZE) {
-                    const sentinel = document.createElement('div');
-                    sentinel.className = 'autocomplete-load-more autocomplete-item';
-                    sentinel.innerHTML = '<em>Loading more...</em>';
-                    autocompleteResults.appendChild(sentinel);
-                    const observer = new IntersectionObserver((entries) => {
-                        if (entries[0].isIntersecting) {
-                            observer.disconnect();
-                            loadMoreResults();
-                        }
-                    }, { root: autocompleteResults });
-                    observer.observe(sentinel);
-                }
-            }
-            autocompleteResults.classList.remove('hidden');
-        };
-
-        const showAutocompleteError = (message) => {
-            autocompleteResults.innerHTML = '';
-            const itemDiv = document.createElement('div');
-            itemDiv.className = 'autocomplete-item';
-            const em = document.createElement('em');
-            em.textContent = message;
-            itemDiv.appendChild(em);
-            autocompleteResults.appendChild(itemDiv);
-            autocompleteResults.classList.remove('hidden');
-        };
-
-        const hideAutocomplete = () => {
-            autocompleteResults.classList.add('hidden');
-        };
-
-        const selectArtist = (artistName) => {
-            artistInput.value = artistName;
-            currentArtist = artistName;
-            hideAutocomplete();
-        };
-
-        artistInput.addEventListener('input', handleSearchInput);
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('.autocomplete-container')) {
-                hideAutocomplete();
+        AudioMuseAutocomplete.attach({
+            input: artistInput,
+            box: autocompleteResults,
+            url: "{{ url_for('artist_similarity_bp.search_artists_endpoint') }}",
+            queryParam: 'query',
+            render: AudioMuseAutocomplete.artistRow,
+            emptyText: 'No artists found',
+            onSelect: (artist) => {
+                artistInput.value = artist.artist;
+                currentArtist = artist.artist;
             }
         });
 

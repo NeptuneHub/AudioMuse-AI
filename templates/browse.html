@@ -214,7 +214,6 @@
   let hasMore = false, total = null, pageSize = {{ page_size }}, searchTimer = null, reqToken = 0;
   const MAX_OFFSET = {{ max_offset }};
   const MAX_PAGE = Math.floor(MAX_OFFSET / pageSize) + 1;  // deepest reachable page
-  const MIN_Q = 2;
 
   function readUrl() {
     const p = new URLSearchParams(location.search);
@@ -449,18 +448,10 @@
   $('browse-q').addEventListener('input', () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
-      const v = $('browse-q').value.trim();
-      // Mirror the server's minimum: a single character is not a search, so a
-      // 1-char box never renders the whole catalogue as if it had matched.
-      if (v.length === 1) {
-        $('browse-status').className = 'browse-meta';
-        $('browse-status').textContent = 'Type at least ' + MIN_Q + ' characters to search.';
-        return;
-      }
-      state.q = v;
+      state.q = $('browse-q').value.trim();
       state.page = 1;
       load();
-    }, 300);
+    }, AudioMuseAutocomplete.DEBOUNCE_MS);
   });
   $('browse-prev').addEventListener('click', () => { if (state.page > 1) { state.page--; load(); } });
   $('browse-next').addEventListener('click', () => { if (hasMore) { state.page++; load(); } });

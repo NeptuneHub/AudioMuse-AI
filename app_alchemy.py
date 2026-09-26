@@ -13,7 +13,8 @@ blending to `tasks.song_alchemy.song_alchemy`. Also manages the persisted
 "anchors" and "radios" that let a saved blend be re-run on demand.
 
 Main Features:
-* Routes: `/alchemy` page, artist/playlist autocomplete, `/api/alchemy`, plus
+* Routes: `/alchemy` page, paged playlist autocomplete (artist autocomplete is
+  the one `/api/search_artists` route in app_artist_similarity), `/api/alchemy`, plus
   CRUD for `/api/anchors` and `/api/radios` (with `/api/radios/run`). Every one
   of them acts on the server selected in the sidebar - the radio run included,
   since only the cron row is the all-servers batch path.
@@ -28,7 +29,7 @@ import threading
 import time
 
 from tasks.song_alchemy import anchor_embedding_tag, embedding_tags_match, song_alchemy
-from app_helper import attach_song_features
+from app_helper import attach_song_features, search_page_window
 import app_server_context
 import config
 from error.error_dictionary import (
@@ -72,42 +73,6 @@ def alchemy_page():
     )
 
 
-@alchemy_bp.route('/api/search_artists', methods=['GET'])
-def search_artists():
-    """
-    Artist autocomplete.
-    ---
-    tags:
-      - Alchemy
-    summary: Search artists by partial name for autocomplete suggestions.
-    parameters:
-      - name: query
-        in: query
-        schema: { type: string }
-        description: Partial artist name.
-      - name: start
-        in: query
-        schema: { type: integer, default: 0 }
-        description: 0-based pagination start.
-      - name: end
-        in: query
-        schema: { type: integer }
-        description: Exclusive pagination end. Default returns 20 items.
-    responses:
-      200:
-        description: List of matching artists.
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-    """
-    from app_artist_similarity import artist_search_from_request
-
-    return artist_search_from_request()
-
-
 def _cached_all_playlists(server_id):
     cache_key = server_id or '__default__'
     now = time.monotonic()
@@ -139,11 +104,23 @@ def search_playlists():
         in: query
         schema: { type: string }
         description: Partial playlist name.
+      - name: start
+        in: query
+        schema: { type: integer, default: 0 }
+        description: 0-based pagination start.
+      - name: end
+        in: query
+        schema: { type: integer }
+        description: Exclusive pagination end (at most 100 rows per page). Default returns 50 items.
     responses:
       200:
-        description: List of matching playlists (id, name, count).
+        description: List of matching playlists (id, name, count), sorted by name.
     """
     query = (request.args.get('query', '') or '').strip().lower()
+    window = search_page_window(request.args, 100, default=50)
+    if window is None:
+        return jsonify([])
+    offset, limit = window
     try:
         with app_server_context.use_request_server() as server_id:
             playlists = _cached_all_playlists(server_id)
@@ -164,7 +141,8 @@ def search_playlists():
             continue
         count = p.get('songCount') if p.get('songCount') is not None else p.get('ChildCount')
         out.append({'id': str(pid), 'name': name, 'count': count})
-    return jsonify(out[:50])
+    out.sort(key=lambda row: (str(row['name']).casefold(), row['id']))
+    return jsonify(out[offset:offset + limit])
 
 
 @alchemy_bp.route('/api/alchemy', methods=['POST'])

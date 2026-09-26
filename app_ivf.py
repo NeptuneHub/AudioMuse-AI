@@ -33,7 +33,12 @@ from config import (
     SIMILARITY_RADIUS_DEFAULT,
     MOOD_CENTROIDS_FILE,
 )
-from app_helper import serialize_neighbor_results
+from app_helper import (
+    SEARCH_MIN_QUERY_LENGTH,
+    search_page_window,
+    search_query_arg,
+    serialize_neighbor_results,
+)
 from error.error_dictionary import (
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
@@ -214,6 +219,17 @@ def search_tracks_endpoint():
         schema:
           type: string
           enum: ['musicnn', 'sem_grove', 'neural']
+      - name: start
+        in: query
+        description: 0-based pagination start.
+        schema:
+          type: integer
+          default: 0
+      - name: end
+        in: query
+        description: Exclusive pagination end (at most 500 rows per page). Default returns 20 items.
+        schema:
+          type: integer
     responses:
       200:
         description: A list of matching tracks.
@@ -234,7 +250,7 @@ def search_tracks_endpoint():
                     type: string
                     description: Album name or 'unknown' if missing
     """
-    search_query = request.args.get('search_query', '', type=str)
+    search_query = search_query_arg(request.args, 'search_query')
 
     # Backward compatibility: support legacy 'title' and 'artist' params
     # so external apps using the old API continue to work.
@@ -243,10 +259,7 @@ def search_tracks_endpoint():
         legacy_artist = request.args.get('artist', '', type=str).strip()
         search_query = f"{legacy_artist} {legacy_title}".strip()
 
-    if not search_query:
-        return jsonify([])
-
-    if len(search_query) < 1:
+    if len(search_query) < SEARCH_MIN_QUERY_LENGTH:
         return jsonify([])
 
     # Optional index filter: 'musicnn' (default), 'sem_grove' or 'neural'
@@ -272,16 +285,10 @@ def search_tracks_endpoint():
             logger.warning(f"Could not build the {index_param} autocomplete filter: {e}")
             return jsonify([])
 
-    # Pagination: start / end (0-based). Defaults to first 20 results.
-    start = request.args.get('start', 0, type=int)
-    end = request.args.get('end', None, type=int)
-    if start < 0:
-        start = 0
-    if end is not None and end <= start:
+    window = search_page_window(request.args, 500)
+    if window is None:
         return jsonify([])
-    limit = (end - start) if end is not None else 20
-    limit = min(limit, 500)
-    offset = start
+    offset, limit = window
 
     try:
         try:

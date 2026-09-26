@@ -1332,7 +1332,8 @@ def search_tracks_unified(
             ORDER BY ({score_sql}) DESC,
                      title,
                      author,
-                     album
+                     album,
+                     item_id
             LIMIT %s OFFSET %s
         """
 
