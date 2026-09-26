@@ -166,6 +166,10 @@ Prefer not to use Docker? We ship native packages for **macOS, Linux and Windows
 > [!IMPORTANT]
 > Before updating a native version, first stop any running instance.
 
+## ☁️ One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/AudioMuse-AI/)
+
 ## **Hardware Requirements**
 AudioMuse-AI has been tested on:
 * **Intel**: HP Mini PC with Intel i5-6500, 16 GB RAM and NVMe SSD
