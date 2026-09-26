@@ -87,33 +87,6 @@
     .tree-loading { color: var(--text-muted); font-size: 0.9rem; margin: 0.5rem 0; }
     .tree-error { color: #dc2626; font-size: 0.9rem; margin: 0.5rem 0; }
 
-    .autocomplete-container { position: relative; }
-    .autocomplete-results {
-        position: absolute;
-        top: 100%;
-        left: 0;
-        right: 0;
-        z-index: 20;
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        border-radius: 0.5rem;
-        box-shadow: var(--shadow-card);
-        max-height: 280px;
-        overflow-y: auto;
-    }
-    .autocomplete-item {
-        padding: 0.55rem 0.75rem;
-        cursor: pointer;
-        border-bottom: 1px solid var(--border-color);
-        font-size: 0.9rem;
-    }
-    .autocomplete-item:last-child { border-bottom: none; }
-    .autocomplete-item:hover,
-    .autocomplete-item.selected { background: var(--color-primary-soft, rgba(99, 102, 241, 0.12)); }
-    .autocomplete-item .title { font-weight: 500; }
-    .autocomplete-item .artist { color: var(--text-muted); font-size: 0.85rem; }
-    .autocomplete-item .album { color: var(--text-muted); font-size: 0.8rem; }
-
     /* Poincare ball panel */
     .hyper-ball-panel {
         margin: 1rem 0;
@@ -547,15 +520,21 @@
             const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
                 (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 
-            const showAutocompleteError = (box, response, body) => {
-                box.innerHTML = '';
-                const item = document.createElement('div');
-                item.className = 'autocomplete-item';
-                const em = document.createElement('em');
-                em.textContent = apiErrorText(body, 'Search failed (HTTP ' + response.status + ')');
-                item.appendChild(em);
-                box.appendChild(item);
-                box.classList.remove('hidden');
+            const bindAutocomplete = (inputId, resultsId, onPick) => {
+                const input = document.getElementById(inputId);
+                AudioMuseAutocomplete.attach({
+                    input,
+                    box: document.getElementById(resultsId),
+                    url: '{{ url_for("ivf_bp.search_tracks_endpoint") }}',
+                    emptyText: 'No songs found',
+                    onSelect: (t) => {
+                        input.value = (t.title || '') + ' - ' + (t.author || '');
+                        onPick(t);
+                    }
+                });
+                input.addEventListener('input', () => {
+                    if (!input.value.trim()) onPick(null);
+                });
             };
 
             // Warm up the tree cache on page load (it is not loaded at Flask
@@ -587,65 +566,10 @@
             });
 
             // ----- Tab 1: song autocomplete -----
-            const songInput = document.getElementById('hyper-song-input');
-            const autocompleteResults = document.getElementById('hyper-autocomplete-results');
             const similarForm = document.getElementById('hyper-similar-form');
             const statusDiv = document.getElementById('status');
             let selectedSong = null;
-            let searchTimeout = null;
-
-            const hideAutocomplete = () => autocompleteResults.classList.add('hidden');
-
-            const handleSearchInput = () => {
-                clearTimeout(searchTimeout);
-                const query = songInput.value.trim();
-                if (!query) {
-                    selectedSong = null;
-                    hideAutocomplete();
-                    return;
-                }
-                searchTimeout = setTimeout(async () => {
-                    try {
-                        const params = new URLSearchParams({ search_query: query });
-                        const response = await fetch('{{ url_for("ivf_bp.search_tracks_endpoint") }}?' + params.toString());
-                        const tracks = await readJsonBody(response);
-                        if (!response.ok || !Array.isArray(tracks)) {
-                            showAutocompleteError(autocompleteResults, response, tracks);
-                            return;
-                        }
-                        autocompleteResults.innerHTML = '';
-                        if (!tracks.length) {
-                            autocompleteResults.innerHTML = '<div class="autocomplete-item"><em>No songs found</em></div>';
-                        } else {
-                            tracks.forEach(t => {
-                                const item = document.createElement('div');
-                                item.className = 'autocomplete-item';
-                                item.innerHTML = '<div class="title">' + esc(t.title || 'Unknown') + '</div>' +
-                                    '<div class="artist">' + esc(t.author || 'Unknown') + '</div>' +
-                                    '<div class="album">Album: ' + esc(t.album || 'Unknown') + '</div>';
-                                item.addEventListener('click', () => {
-                                    selectedSong = t;
-                                    songInput.value = (t.title || '') + ' - ' + (t.author || '');
-                                    hideAutocomplete();
-                                });
-                                autocompleteResults.appendChild(item);
-                            });
-                        }
-                        autocompleteResults.classList.remove('hidden');
-                    } catch (err) {
-                        console.error('Autocomplete search error:', err);
-                        hideAutocomplete();
-                    }
-                }, 250);
-            };
-
-            songInput.addEventListener('input', handleSearchInput);
-            songInput.addEventListener('focus', () => {
-                if (autocompleteResults.children.length) autocompleteResults.classList.remove('hidden');
-            });
-            document.addEventListener('click', (e) => {
-                if (!e.target.closest('.autocomplete-container')) hideAutocomplete();
-            });
+            bindAutocomplete('hyper-song-input', 'hyper-autocomplete-results', (t) => { selectedSong = t; });
 
             const similarSection = document.getElementById('hyper-results-section');
             const resultsWrapper = document.getElementById('results-table-wrapper');
@@ -1113,61 +1037,6 @@
             });
 
             // ----- Tab 3: Hyperbolic Path -----
-            const bindAutocomplete = (inputId, resultsId, onPick) => {
-                const input = document.getElementById(inputId);
-                const box = document.getElementById(resultsId);
-                let timer = null;
-                const hide = () => box.classList.add('hidden');
-                document.addEventListener('click', (e) => {
-                    if (!e.target.closest('.autocomplete-container')) hide();
-                });
-                input.addEventListener('input', () => {
-                    clearTimeout(timer);
-                    const query = input.value.trim();
-                    if (!query) {
-                        onPick(null);
-                        hide();
-                        return;
-                    }
-                    timer = setTimeout(async () => {
-                        try {
-                            const params = new URLSearchParams({ search_query: query });
-                            const response = await fetch('{{ url_for("ivf_bp.search_tracks_endpoint") }}?' + params.toString());
-                            const tracks = await readJsonBody(response);
-                            if (!response.ok || !Array.isArray(tracks)) {
-                                showAutocompleteError(box, response, tracks);
-                                return;
-                            }
-                            box.innerHTML = '';
-                            if (!tracks.length) {
-                                box.innerHTML = '<div class="autocomplete-item"><em>No songs found</em></div>';
-                            } else {
-                                tracks.forEach(t => {
-                                    const item = document.createElement('div');
-                                    item.className = 'autocomplete-item';
-                                    item.innerHTML = '<div class="title">' + esc(t.title || 'Unknown') + '</div>' +
-                                        '<div class="artist">' + esc(t.author || 'Unknown') + '</div>' +
-                                        '<div class="album">Album: ' + esc(t.album || 'Unknown') + '</div>';
-                                    item.addEventListener('click', () => {
-                                        input.value = (t.title || '') + ' - ' + (t.author || '');
-                                        onPick(t);
-                                        hide();
-                                    });
-                                    box.appendChild(item);
-                                });
-                            }
-                            box.classList.remove('hidden');
-                        } catch (err) {
-                            console.error('Journey autocomplete error:', err);
-                            hide();
-                        }
-                    }, 250);
-                });
-                input.addEventListener('focus', () => {
-                    if (box.children.length) box.classList.remove('hidden');
-                });
-            };
-
             const journeyState = { start: null, end: null, data: null, dive: {{ hyperbolic_journey_dive_default }} };
             bindAutocomplete('journey-start-input', 'journey-start-results', (t) => { journeyState.start = t; });
             bindAutocomplete('journey-end-input', 'journey-end-results', (t) => { journeyState.end = t; });

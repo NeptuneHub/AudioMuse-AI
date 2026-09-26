@@ -151,9 +151,8 @@
                 </div>
                 <div class="autocomplete-container">
                     <label for="seed_query" id="seed-query-label">Song name:</label>
-                    <input type="text" id="seed_query" name="seed_query" placeholder="Start typing..." autocomplete="off"
-                           role="combobox" aria-expanded="false" aria-controls="seed-suggestions" aria-autocomplete="list">
-                    <div id="seed-suggestions" class="autocomplete-results hidden" role="listbox" aria-label="Seed suggestions"></div>
+                    <input type="text" id="seed_query" name="seed_query" placeholder="Start typing...">
+                    <div id="seed-suggestions" class="autocomplete-results hidden" aria-label="Seed suggestions"></div>
                     <div id="seed-selected"></div>
                     <p id="seed-hint" class="hidden">Name a genre and an instrument, for example "jazz with trumpet" or "folk with piano".</p>
                     <div id="seed-examples" class="hidden">
@@ -218,21 +217,15 @@
     {% if album_creation_enabled %}
     <script>
         (() => {
-            const PAGE_SIZE = 20;
             const SEEDS = {
                 song: {
                     label: 'Song, Artist or Album name:',
-                    minLength: 1,
-                    url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
-                    param: 'search_query',
                     placeholder: 'Start typing...',
-                    lines: (row) => [row.title || 'N/A', row.author || 'N/A', 'Album: ' + (row.album || 'Unknown')],
                     selected: (row) => 'Song: ' + (row.title || 'Unknown') + ' - ' + (row.author || 'Unknown'),
                     payload: (row) => ({ item_id: row.item_id }),
                 },
                 text: {
                     label: 'Text search:',
-                    minLength: 3,
                     placeholder: 'jazz with trumpet',
                     payload: () => ({ query: queryInput.value.trim() }),
                 },
@@ -265,20 +258,6 @@
             let seedType = 'song';
             let selectedRow = null;
             let currentTrackIds = [];
-            let searchTimer;
-            let searchQuery = '';
-            let searchOffset = 0;
-            let searchRun = 0;
-            let loadingMore = false;
-            let activeIndex = -1;
-            let optionSeq = 0;
-
-            const hideSuggestions = () => {
-                suggestions.classList.add('hidden');
-                queryInput.setAttribute('aria-expanded', 'false');
-                queryInput.removeAttribute('aria-activedescendant');
-                activeIndex = -1;
-            };
 
             const isText = () => seedType === 'text';
 
@@ -292,8 +271,15 @@
                 selectedRow = row;
                 selectedLine.textContent = SEEDS[seedType].selected(row);
                 createButton.disabled = false;
-                hideSuggestions();
             };
+
+            const ac = AudioMuseAutocomplete.attach({
+                input: queryInput,
+                box: suggestions,
+                url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
+                enabled: () => seedType === 'song',
+                onSelect: selectRow,
+            });
 
             const setSeedType = (next) => {
                 seedType = next;
@@ -315,158 +301,16 @@
                 }
                 renderNamed();
                 clearSelection();
-                hideSuggestions();
-            };
-
-            const messageItem = (text) => {
-                const item = document.createElement('div');
-                item.className = 'autocomplete-item';
-                const em = document.createElement('em');
-                em.textContent = text;
-                item.appendChild(em);
-                return item;
-            };
-
-            const showMessage = (text) => {
-                suggestions.innerHTML = '';
-                suggestions.appendChild(messageItem(text));
-                suggestions.classList.remove('hidden');
-                queryInput.setAttribute('aria-expanded', 'true');
-            };
-
-            const fetchPage = async (offset) => {
-                const seed = SEEDS[seedType];
-                const params = new URLSearchParams({ start: offset, end: offset + PAGE_SIZE });
-                params.set(seed.param, searchQuery);
-                const response = await fetch(seed.url + '?' + params);
-                const rows = await readJsonBody(response);
-                if (!response.ok || !Array.isArray(rows)) {
-                    throw new Error(apiErrorText(rows, 'Search failed (HTTP ' + response.status + ')'));
-                }
-                return rows;
-            };
-
-            const loadMore = async (run) => {
-                if (loadingMore) return;
-                loadingMore = true;
-                try {
-                    const rows = await fetchPage(searchOffset);
-                    if (run !== searchRun) return;
-                    searchOffset += rows.length;
-                    showRows(rows, true, run);
-                } catch (error) {
-                    const sentinel = suggestions.querySelector('.autocomplete-load-more');
-                    if (sentinel) sentinel.textContent = error.message;
-                } finally {
-                    loadingMore = false;
-                }
-            };
-
-            const showRows = (rows, append, run) => {
-                if (!append) {
-                    suggestions.innerHTML = '';
-                    activeIndex = -1;
-                    optionSeq = 0;
-                }
-                const oldSentinel = suggestions.querySelector('.autocomplete-load-more');
-                if (oldSentinel) oldSentinel.remove();
-                if (!rows.length && !append) {
-                    suggestions.appendChild(messageItem('No results found'));
-                }
-                const classes = ['title', 'artist', 'album'];
-                rows.forEach(row => {
-                    const item = document.createElement('div');
-                    item.className = 'autocomplete-item';
-                    item.setAttribute('role', 'option');
-                    item.id = 'seed-opt-' + (optionSeq++);
-                    item._row = row;
-                    SEEDS[seedType].lines(row).forEach((text, index) => {
-                        const line = document.createElement('div');
-                        line.className = classes[index];
-                        line.textContent = text;
-                        item.appendChild(line);
-                    });
-                    item.addEventListener('click', () => selectRow(row));
-                    suggestions.appendChild(item);
-                });
-                if (rows.length >= PAGE_SIZE) {
-                    const sentinel = messageItem('Loading more...');
-                    sentinel.classList.add('autocomplete-load-more');
-                    suggestions.appendChild(sentinel);
-                    const observer = new IntersectionObserver((entries) => {
-                        if (entries[0].isIntersecting) {
-                            observer.disconnect();
-                            loadMore(run);
-                        }
-                    }, { root: suggestions });
-                    observer.observe(sentinel);
-                }
-                suggestions.classList.remove('hidden');
-                queryInput.setAttribute('aria-expanded', 'true');
-            };
-
-            const setActiveOption = (index) => {
-                const options = suggestions.querySelectorAll('[role="option"]');
-                if (!options.length) return;
-                activeIndex = ((index % options.length) + options.length) % options.length;
-                options.forEach((option, i) => option.classList.toggle('active', i === activeIndex));
-                const current = options[activeIndex];
-                current.scrollIntoView({ block: 'nearest' });
-                queryInput.setAttribute('aria-activedescendant', current.id);
+                ac.reset();
             };
 
             queryInput.addEventListener('input', () => {
-                clearTimeout(searchTimer);
                 clearSelection();
-                if (isText()) {
-                    hideSuggestions();
-                    renderNamed();
-                    return;
-                }
-                searchTimer = setTimeout(async () => {
-                    const query = queryInput.value.trim();
-                    if (query.length < SEEDS[seedType].minLength) {
-                        hideSuggestions();
-                        return;
-                    }
-                    searchQuery = query;
-                    searchOffset = 0;
-                    const run = ++searchRun;
-                    try {
-                        const rows = await fetchPage(0);
-                        if (run !== searchRun) return;
-                        searchOffset = rows.length;
-                        showRows(rows, false, run);
-                    } catch (error) {
-                        if (run === searchRun) showMessage(error.message);
-                    }
-                }, 300);
+                if (isText()) renderNamed();
             });
 
             queryInput.addEventListener('keydown', (event) => {
-                const open = !suggestions.classList.contains('hidden') && !isText();
-                if (event.key === 'ArrowDown' && open) {
-                    event.preventDefault();
-                    setActiveOption(activeIndex + 1);
-                } else if (event.key === 'ArrowUp' && open) {
-                    event.preventDefault();
-                    setActiveOption(activeIndex < 0 ? -1 : activeIndex - 1);
-                } else if (event.key === 'Enter') {
-                    const options = suggestions.querySelectorAll('[role="option"]');
-                    if (open && activeIndex >= 0 && options[activeIndex]) {
-                        event.preventDefault();
-                        selectRow(options[activeIndex]._row);
-                    } else if (!selectedRow) {
-                        event.preventDefault();
-                    }
-                } else if (event.key === 'Escape' && open) {
-                    event.preventDefault();
-                    hideSuggestions();
-                }
-            });
-
-            document.addEventListener('click', (event) => {
-                if (!event.target.closest('.autocomplete-container')) hideSuggestions();
+                if (event.key === 'Enter' && !event.defaultPrevented && !selectedRow) event.preventDefault();
             });
 
             seedButtons.forEach(button => {

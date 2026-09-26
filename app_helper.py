@@ -19,6 +19,13 @@ Main Features:
   compute a 2D projection and persist it (the artist one reads the stored GMM
   metadata blob, never loading the artist index); ``attach_song_features`` /
   ``top_stratified_genre`` enrich API result rows.
+* Shared search-box contract: ``search_query_arg`` / ``search_page_window`` /
+  ``search_page_response`` give every autocomplete endpoint the same rules
+  (search from the first character, start/end pages of ``SEARCH_PAGE_SIZE``, a
+  per-endpoint cap, a bare array plus an ``X-Search-Has-More`` header decided
+  on the SQL page so rows scoped away afterwards never end paging early). The
+  two constants are rendered into ``static/autocomplete.js`` by the layout, so
+  the page side has no copy of them.
 * Shared blueprint helpers: ``queue_busy_response`` / ``queue_race_response``
   answer a refused start with the structured task-in-progress error, and
   ``probe_catalogue_canonical_ids`` probes score for canonical
@@ -81,6 +88,28 @@ def max_bound(value, ceiling):
     except (TypeError, ValueError):
         return ceiling
 
+
+SEARCH_PAGE_SIZE = 20
+SEARCH_MIN_QUERY_LENGTH = 1
+
+
+def search_query_arg(args, name):
+    query = (args.get(name, '', type=str) or '').strip()
+    return query if len(query) >= SEARCH_MIN_QUERY_LENGTH else ''
+
+
+def search_page_window(args, cap, default=SEARCH_PAGE_SIZE):
+    start = max(args.get('start', 0, type=int), 0)
+    end = args.get('end', None, type=int)
+    if end is not None and end <= start:
+        return None
+    return start, min(default if end is None else end - start, cap)
+
+
+def search_page_response(rows, has_more):
+    response = jsonify(rows)
+    response.headers['X-Search-Has-More'] = '1' if has_more else '0'
+    return response
 
 
 # The Flask `app` object is intentionally NOT imported here (circular import);

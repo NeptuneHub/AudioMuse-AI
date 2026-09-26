@@ -384,103 +384,21 @@ document.addEventListener('DOMContentLoaded', function () {
     // ----- SemGrove autocomplete -----
     (function () {
         const sgInput      = document.getElementById('sg-search-query');
-        const sgResults    = document.getElementById('sg-autocomplete-results');
         const sgDisplay    = document.getElementById('sg-selected-title-display');
         const sgItemId     = document.getElementById('sg-selected-item-id');
         if (!sgInput) return;
 
-        const PAGE_SIZE = 20;
-        let sgOffset = 0, sgQuery = '', sgTimeout, sgLoadingMore = false;
-
-        const sgHide = () => sgResults.classList.add('hidden');
-
-        const sgSelect = (track) => {
-            sgItemId.value = track.item_id || '';
-            sgDisplay.textContent = 'Title: ' + (track.title || 'Unknown');
-            document.getElementById('sg-selected-artist-display').textContent = 'Artist: ' + (track.author || 'Unknown');
-            document.getElementById('sg-selected-album-display').textContent  = track.album ? 'Album: ' + track.album : '';
-            sgHide();
-        };
-
-        const sgShowError = (message) => {
-            sgResults.innerHTML = '';
-            const d = document.createElement('div');
-            d.className = 'autocomplete-item';
-            const em = document.createElement('em');
-            em.textContent = message;
-            d.appendChild(em);
-            sgResults.appendChild(d);
-            sgResults.classList.remove('hidden');
-        };
-
-        const sgShow = (tracks, append) => {
-            if (!append) sgResults.innerHTML = '';
-            const sentinel = sgResults.querySelector('.autocomplete-load-more');
-            if (sentinel) sentinel.remove();
-
-            if (!tracks.length && !append) {
-                sgResults.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
-            } else {
-                tracks.forEach(t => {
-                    const d = document.createElement('div');
-                    d.className = 'autocomplete-item';
-                    d.innerHTML = `<div class="title">${escapeHtml(t.title||'N/A')}</div><div class="artist">${escapeHtml(t.author||'N/A')}</div><div class="album">Album: ${escapeHtml(t.album||'Unknown')}</div>`;
-                    d.addEventListener('click', () => sgSelect(t));
-                    sgResults.appendChild(d);
-                });
-                if (tracks.length >= PAGE_SIZE) {
-                    const more = document.createElement('div');
-                    more.className = 'autocomplete-load-more autocomplete-item';
-                    more.innerHTML = '<em>Loading more…</em>';
-                    sgResults.appendChild(more);
-                    const obs = new IntersectionObserver(entries => {
-                        if (entries[0].isIntersecting) {
-                            obs.disconnect();
-                            if (sgLoadingMore) return;
-                            sgLoadingMore = true;
-                            const p = new URLSearchParams({ search_query: sgQuery, start: sgOffset, end: sgOffset + PAGE_SIZE, index: 'sem_grove' });
-                            fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${p}`)
-                                .then(async r => {
-                                    const ts = await readJsonBody(r);
-                                    if (!r.ok || !Array.isArray(ts)) {
-                                        more.textContent = apiErrorText(ts, 'Search failed (HTTP ' + r.status + ')');
-                                        return;
-                                    }
-                                    sgOffset += ts.length;
-                                    sgShow(ts, true);
-                                })
-                                .catch(err => { console.error('Load more error:', err); })
-                                .finally(() => { sgLoadingMore = false; });
-                        }
-                    }, { root: sgResults });
-                    obs.observe(more);
-                }
-            }
-            sgResults.classList.remove('hidden');
-        };
-
-        sgInput.addEventListener('input', () => {
-            clearTimeout(sgTimeout);
-            sgTimeout = setTimeout(async () => {
-                const q = sgInput.value.trim();
-                if (q.length < 1) { sgHide(); return; }
-                sgQuery = q; sgOffset = 0;
-                try {
-                    const p = new URLSearchParams({ search_query: q, start: 0, end: PAGE_SIZE, index: 'sem_grove' });
-                    const r = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${p}`);
-                    const ts = await readJsonBody(r);
-                    if (!r.ok || !Array.isArray(ts)) {
-                        sgShowError(apiErrorText(ts, 'Search failed (HTTP ' + r.status + ')'));
-                        return;
-                    }
-                    sgOffset = ts.length;
-                    sgShow(ts, false);
-                } catch (err) { sgHide(); }
-            }, 300);
-        });
-
-        document.addEventListener('click', e => {
-            if (!e.target.closest('#sg-autocomplete-container')) sgHide();
+        AudioMuseAutocomplete.attach({
+            input: sgInput,
+            box: document.getElementById('sg-autocomplete-results'),
+            url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
+            params: { index: 'sem_grove' },
+            onSelect: (track) => {
+                sgItemId.value = track.item_id || '';
+                sgDisplay.textContent = 'Title: ' + (track.title || 'Unknown');
+                document.getElementById('sg-selected-artist-display').textContent = 'Artist: ' + (track.author || 'Unknown');
+                document.getElementById('sg-selected-album-display').textContent  = track.album ? 'Album: ' + track.album : '';
+            },
         });
     })();
 

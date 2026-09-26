@@ -127,6 +127,7 @@
     <script src="{{ url_for('static', filename='task_status.js') }}?v={{ app_version }}"></script>
     <script src="{{ url_for('static', filename='restart_wait.js') }}?v={{ app_version }}"></script>
     <script src="{{ url_for('static', filename='error_display.js') }}?v={{ app_version }}"></script>
+    <script src="{{ url_for('static', filename='autocomplete.js') }}?v={{ app_version }}" data-page-size="{{ search_page_size }}" data-min-chars="{{ search_min_chars }}"></script>
 
     {% block bodyAdditions %}
         {# body additions from template will be set here #}

@@ -307,17 +307,6 @@
 <script>
     (async () => {
 
-        const showAutocompleteError = (box, response, body) => {
-            box.innerHTML = '';
-            const itemDiv = document.createElement('div');
-            itemDiv.className = 'autocomplete-item';
-            const em = document.createElement('em');
-            em.textContent = apiErrorText(body, `Search failed (HTTP ${response.status})`);
-            itemDiv.appendChild(em);
-            box.appendChild(itemDiv);
-            box.classList.remove('hidden');
-        };
-
         // Fetch config to get ALCHEMY defaults
         let defaultN = {{ alchemy_n_results_default }};
         let maxN = {{ alchemy_max_n_results }};
@@ -390,8 +379,6 @@
         };
 
 
-        // Autocomplete plumbing
-        let searchTimeout;
         const songRows = document.getElementById('song-rows');
         const addRowBtn = document.getElementById('add-row');
 
@@ -418,9 +405,9 @@
                     <label>Song, Artist or Album name</label>
                     <div class="autocomplete-container">
                         <input type="text" placeholder="Start typing..." class="song" />
-                        <div class="autocomplete-results-artist hidden"></div>
-                        <div class="autocomplete-results-playlist hidden"></div>
-                        <div class="autocomplete-results hidden"></div>
+                        <div class="autocomplete-results autocomplete-results-artist hidden"></div>
+                        <div class="autocomplete-results autocomplete-results-playlist hidden"></div>
+                        <div class="autocomplete-results autocomplete-results-song hidden"></div>
                     </div>
                 </div>
                 <div class="field-row anchor-field-row hidden">
@@ -443,13 +430,9 @@
                 <input type="hidden" class="op" value="ADD" />
             `;
             const searchInput = card.querySelector('.song');
-            const resultsEl = card.querySelector('.autocomplete-results');
-            const resultsArtistEl = card.querySelector('.autocomplete-results-artist');
-            const resultsPlaylistEl = card.querySelector('.autocomplete-results-playlist');
             const idEl = card.querySelector('.song-id');
             const opHidden = card.querySelector('.op');
             const itemTypeHidden = card.querySelector('.item-type');
-            const songNumberEl = card.querySelector('.song-number');
             const opAddBtn = card.querySelector('.op-add');
             const opSubBtn = card.querySelector('.op-sub');
             const typeCycleBtn = card.querySelector('.type-cycle-btn');
@@ -461,13 +444,55 @@
             const moodSelect = card.querySelector('.mood-select');
             const centroidSelect = card.querySelector('.centroid-select');
 
+            const searches = [
+                AudioMuseAutocomplete.attach({
+                    input: searchInput,
+                    box: card.querySelector('.autocomplete-results-artist'),
+                    url: "{{ url_for('artist_similarity_bp.search_artists_endpoint') }}",
+                    queryParam: 'query',
+                    render: AudioMuseAutocomplete.artistRow,
+                    emptyText: 'No artists found',
+                    enabled: () => itemTypeHidden.value === 'artist',
+                    onSelect: (artist) => {
+                        idEl.value = artist.artist_id || artist.artist;
+                        selectedSongNameEl.textContent = artist.artist;
+                    }
+                }),
+                AudioMuseAutocomplete.attach({
+                    input: searchInput,
+                    box: card.querySelector('.autocomplete-results-playlist'),
+                    url: "{{ url_for('alchemy_bp.search_playlists') }}",
+                    queryParam: 'query',
+                    render: AudioMuseAutocomplete.playlistRow,
+                    emptyText: 'No playlists found',
+                    enabled: () => itemTypeHidden.value === 'playlist',
+                    onSelect: (playlist) => {
+                        idEl.value = playlist.id;
+                        selectedSongNameEl.textContent = `Playlist: ${playlist.name}`;
+                    }
+                }),
+                AudioMuseAutocomplete.attach({
+                    input: searchInput,
+                    box: card.querySelector('.autocomplete-results-song'),
+                    url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
+                    enabled: () => itemTypeHidden.value === 'song',
+                    onSelect: (track) => {
+                        const allIds = Array.from(document.querySelectorAll('.song-id')).map(i => i.value).filter(Boolean);
+                        if (allIds.includes(track.item_id) && idEl.value !== track.item_id) {
+                            showMessageBox('Duplicate Song', 'This song is already selected in another row.', true);
+                            return false;
+                        }
+                        idEl.value = track.item_id;
+                        selectedSongNameEl.textContent = `${track.title} - ${track.author}`;
+                    }
+                })
+            ];
+
             const clearSelection = () => {
                 searchInput.value = '';
                 idEl.value = '';
                 selectedSongNameEl.textContent = '';
-                resultsEl.classList.add('hidden');
-                resultsArtistEl.classList.add('hidden');
-                resultsPlaylistEl.classList.add('hidden');
+                searches.forEach(search => search.reset());
                 anchorSelect.value = '';
                 moodSelect.value = '';
                 centroidSelect.innerHTML = '<option value="">--</option>';
@@ -575,253 +600,10 @@
                 card.classList.remove('op-add-active');
             });
 
-            // Setup autocomplete for songs (existing logic)
-            const PAGE_SIZE = 20;
-            const setupAutocomplete = (searchInputEl, resultsEl, idEl, songCardEl, songNumberEl) => {
-                const selectedSongNameEl = songCardEl.querySelector('.selected-song-name');
-                let acOffset = 0;
-                let acQuery = '';
-                let acLoading = false;
-                let debounceTimer;
-
-                const loadMore = async () => {
-                    if (acLoading) return;
-                    acLoading = true;
-                    try {
-                        const params = new URLSearchParams({ search_query: acQuery, start: acOffset, end: acOffset + PAGE_SIZE });
-                        const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                        const tracks = await readJsonBody(response);
-                        if (!response.ok || !Array.isArray(tracks)) {
-                            const sentinel = resultsEl.querySelector('.autocomplete-load-more');
-                            if (sentinel) sentinel.textContent = apiErrorText(tracks, `Search failed (HTTP ${response.status})`);
-                            return;
-                        }
-                        if (tracks.length > 0) {
-                            acOffset += tracks.length;
-                            appendTrackResults(tracks);
-                        }
-                    } catch (e) { console.error('Load more error:', e); }
-                    finally { acLoading = false; }
-                };
-
-                const appendTrackResults = (tracks) => {
-                    const existingSentinel = resultsEl.querySelector('.autocomplete-load-more');
-                    if (existingSentinel) existingSentinel.remove();
-                    tracks.forEach(track => {
-                        const itemDiv = document.createElement('div');
-                        itemDiv.className = 'autocomplete-item';
-                        itemDiv.innerHTML = `<div class="title">${track.title}</div><div class="artist">${track.author}</div><div class="album">${track.album ? track.album : ''}</div>`;
-                        itemDiv.addEventListener('click', () => {
-                            const allIds = Array.from(document.querySelectorAll('.song-id')).map(i => i.value).filter(Boolean);
-                            if (allIds.includes(track.item_id) && idEl.value !== track.item_id) {
-                                showMessageBox('Duplicate Song', 'This song is already selected in another row.', true);
-                                return;
-                            }
-                            idEl.value = track.item_id;
-                            selectedSongNameEl.textContent = `${track.title} - ${track.author}`;
-                            resultsEl.classList.add('hidden');
-                        });
-                        resultsEl.appendChild(itemDiv);
-                    });
-                    if (tracks.length >= PAGE_SIZE) {
-                        const sentinel = document.createElement('div');
-                        sentinel.className = 'autocomplete-load-more autocomplete-item';
-                        sentinel.innerHTML = '<em>Loading more...</em>';
-                        resultsEl.appendChild(sentinel);
-                        const observer = new IntersectionObserver((entries) => {
-                            if (entries[0].isIntersecting) { observer.disconnect(); loadMore(); }
-                        }, { root: resultsEl });
-                        observer.observe(sentinel);
-                    }
-                };
-
-                const handleSearch = async () => {
-                    clearTimeout(debounceTimer);
-                    debounceTimer = setTimeout(async () => {
-                        const searchQuery = searchInputEl.value.trim();
-                        if (itemTypeHidden.value !== 'song' || searchQuery.length < 2) {
-                            resultsEl.classList.add('hidden');
-                            return;
-                        }
-                        acQuery = searchQuery;
-                        acOffset = 0;
-                        try {
-                            const params = new URLSearchParams({ search_query: searchQuery, start: 0, end: PAGE_SIZE });
-                            const response = await fetch(`{{ url_for('ivf_bp.search_tracks_endpoint') }}?${params}`);
-                            const tracks = await readJsonBody(response);
-                            if (!response.ok || !Array.isArray(tracks)) {
-                                showAutocompleteError(resultsEl, response, tracks);
-                                return;
-                            }
-                            resultsEl.innerHTML = '';
-                            acOffset = tracks.length;
-                            if (tracks.length === 0) {
-                                resultsEl.innerHTML = '<div class="autocomplete-item"><em>No results found</em></div>';
-                            } else {
-                                appendTrackResults(tracks);
-                            }
-                            resultsEl.classList.remove('hidden');
-                        } catch (error) {
-                            console.error('Autocomplete search error:', error);
-                            resultsEl.classList.add('hidden');
-                        }
-                    }, 300);
-                };
-                searchInputEl.addEventListener('input', handleSearch);
-            };
-
-            setupAutocomplete(searchInput, resultsEl, idEl, card, songNumberEl);
-
-            // Setup autocomplete for artists
-            let artistSearchTimeout;
-            let artistAcOffset = 0;
-            let artistAcQuery = '';
-            let artistAcLoading = false;
-
-            const loadMoreArtists = async () => {
-                if (artistAcLoading) return;
-                artistAcLoading = true;
-                try {
-                    const response = await fetch(`{{ url_for('alchemy_bp.search_artists') }}?query=${encodeURIComponent(artistAcQuery)}&start=${artistAcOffset}&end=${artistAcOffset + PAGE_SIZE}`);
-                    const artists = await readJsonBody(response);
-                    if (!response.ok || !Array.isArray(artists)) {
-                        const sentinel = resultsArtistEl.querySelector('.autocomplete-load-more');
-                        if (sentinel) sentinel.textContent = apiErrorText(artists, `Search failed (HTTP ${response.status})`);
-                        return;
-                    }
-                    if (artists.length > 0) {
-                        artistAcOffset += artists.length;
-                        appendArtistResults(artists);
-                    }
-                } catch (e) { console.error('Load more artists error:', e); }
-                finally { artistAcLoading = false; }
-            };
-
-            const appendArtistResults = (artists) => {
-                const existingSentinel = resultsArtistEl.querySelector('.autocomplete-load-more');
-                if (existingSentinel) existingSentinel.remove();
-                artists.forEach(artist => {
-                    const itemDiv = document.createElement('div');
-                    itemDiv.className = 'autocomplete-item';
-                    itemDiv.innerHTML = `<div class="title">${artist.artist}</div><div class="artist">${artist.track_count} tracks</div>`;
-                    itemDiv.addEventListener('click', () => {
-                        idEl.value = artist.artist_id || artist.artist;
-                        selectedSongNameEl.textContent = artist.artist;
-                        resultsArtistEl.classList.add('hidden');
-                    });
-                    resultsArtistEl.appendChild(itemDiv);
-                });
-                if (artists.length >= PAGE_SIZE) {
-                    const sentinel = document.createElement('div');
-                    sentinel.className = 'autocomplete-load-more autocomplete-item';
-                    sentinel.innerHTML = '<em>Loading more...</em>';
-                    resultsArtistEl.appendChild(sentinel);
-                    const observer = new IntersectionObserver((entries) => {
-                        if (entries[0].isIntersecting) { observer.disconnect(); loadMoreArtists(); }
-                    }, { root: resultsArtistEl });
-                    observer.observe(sentinel);
-                }
-            };
-
-            searchInput.addEventListener('input', async () => {
-                clearTimeout(artistSearchTimeout);
-                const query = searchInput.value.trim();
-                
-                // Only show artist autocomplete when in artist mode
-                if (itemTypeHidden.value !== 'artist' || query.length < 2) {
-                    resultsArtistEl.classList.add('hidden');
-                    return;
-                }
-                
-                artistSearchTimeout = setTimeout(async () => {
-                    artistAcQuery = query;
-                    artistAcOffset = 0;
-                    try {
-                        const response = await fetch(`{{ url_for('alchemy_bp.search_artists') }}?query=${encodeURIComponent(query)}&start=0&end=${PAGE_SIZE}`);
-                        const artists = await readJsonBody(response);
-                        if (!response.ok || !Array.isArray(artists)) {
-                            showAutocompleteError(resultsArtistEl, response, artists);
-                            return;
-                        }
-                        resultsArtistEl.innerHTML = '';
-                        artistAcOffset = artists.length;
-                        
-                        if (artists.length === 0) {
-                            resultsArtistEl.innerHTML = '<div class="autocomplete-item"><em>No artists found</em></div>';
-                        } else {
-                            appendArtistResults(artists);
-                        }
-                        resultsArtistEl.classList.remove('hidden');
-                    } catch (error) {
-                        console.error('Artist autocomplete error:', error);
-                        resultsArtistEl.classList.add('hidden');
-                    }
-                }, 300);
-            });
-
-            // Setup autocomplete for playlists
-            let playlistSearchTimeout;
-
-            const createPlaylistItem = (playlist) => {
-                const itemDiv = document.createElement('div');
-                itemDiv.className = 'autocomplete-item';
-                const countText = playlist.count ? `${playlist.count} tracks` : 'Playlist';
-                const titleDiv = document.createElement('div');
-                titleDiv.className = 'title';
-                titleDiv.textContent = playlist.name;
-                const countDiv = document.createElement('div');
-                countDiv.className = 'artist';
-                countDiv.textContent = countText;
-                itemDiv.appendChild(titleDiv);
-                itemDiv.appendChild(countDiv);
-                itemDiv.addEventListener('click', () => {
-                    idEl.value = playlist.id;
-                    selectedSongNameEl.textContent = `Playlist: ${playlist.name}`;
-                    resultsPlaylistEl.classList.add('hidden');
-                });
-                return itemDiv;
-            };
-
-            const appendPlaylistResults = (playlists) => {
-                playlists.forEach(playlist => {
-                    resultsPlaylistEl.appendChild(createPlaylistItem(playlist));
-                });
-            };
-
-            searchInput.addEventListener('input', async () => {
-                clearTimeout(playlistSearchTimeout);
-                const query = searchInput.value.trim();
-
-                if (itemTypeHidden.value !== 'playlist' || query.length < 1) {
-                    resultsPlaylistEl.classList.add('hidden');
-                    return;
-                }
-
-                playlistSearchTimeout = setTimeout(async () => {
-                    try {
-                        const response = await fetch(`{{ url_for('alchemy_bp.search_playlists') }}?query=${encodeURIComponent(query)}`);
-                        const playlists = await readJsonBody(response);
-                        if (!response.ok || !Array.isArray(playlists)) {
-                            showAutocompleteError(resultsPlaylistEl, response, playlists);
-                            return;
-                        }
-                        resultsPlaylistEl.innerHTML = '';
-                        if (playlists.length === 0) {
-                            resultsPlaylistEl.innerHTML = '<div class="autocomplete-item"><em>No playlists found</em></div>';
-                        } else {
-                            appendPlaylistResults(playlists);
-                        }
-                        resultsPlaylistEl.classList.remove('hidden');
-                    } catch (error) {
-                        console.error('Playlist autocomplete error:', error);
-                        resultsPlaylistEl.classList.add('hidden');
-                    }
-                }, 300);
-            });
-
             const closeBtn = card.querySelector('.card-close');
             if (closeBtn) {
                 closeBtn.addEventListener('click', () => {
+                    searches.forEach(search => search.destroy());
                     card.remove();
                     updateNumbers();
                 });
@@ -844,12 +626,6 @@
         makeRow();
         makeRow();
         refreshAnchors();
-
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('.autocomplete-container')) {
-                document.querySelectorAll('.autocomplete-results').forEach(el => el.classList.add('hidden'));
-            }
-        });
 
         const metric = ((cfg && cfg.path_distance_metric) || 'angular').toLowerCase();
         const subtractSlider = document.getElementById('subtract_distance');

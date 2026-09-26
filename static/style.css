@@ -905,6 +905,11 @@ html.dark-mode button:not(.btn):disabled {
     color: var(--text-muted);
 }
 
+.autocomplete-item .album {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
 #results-table-wrapper {
     background-color: var(--bg-body);
     padding: 0; /* Remove padding to let table be full width */

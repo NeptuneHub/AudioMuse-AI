@@ -12,7 +12,8 @@ Serves the `/artist_similarity` UI and its API, delegating lookups to
 `tasks.artist_gmm_manager` which backs similarity with a GMM-based index.
 
 Main Features:
-* Routes: `/artist_similarity` page, `/api/search_artists` (autocomplete),
+* Routes: `/artist_similarity` page, `/api/search_artists` (autocomplete, the
+  one artist search route, also used by Song Alchemy's artist mode),
   `/api/similar_artists`, and `/api/artist_tracks` (all tracks for an artist).
 * Pure route layer with no local state; playlist creation is driven from the
   returned track lists.
@@ -23,6 +24,7 @@ import logging
 import config
 
 import app_server_context
+from app_helper import search_page_response, search_page_window, search_query_arg
 from error.error_dictionary import (
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
@@ -36,44 +38,6 @@ logger = logging.getLogger(__name__)
 
 # Create Blueprint
 artist_similarity_bp = Blueprint('artist_similarity_bp', __name__, template_folder='templates')
-
-
-def artist_search_from_request():
-    query = request.args.get('query', '', type=str)
-    if not query or len(query) < 2:
-        return jsonify([])
-    start = request.args.get('start', 0, type=int)
-    end = request.args.get('end', None, type=int)
-    try:
-        return artist_search_response(query, start, end, 100)
-    except Exception as exc:
-        logger.exception("Error during artist search")
-        return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")
-
-
-def artist_search_response(query, start, end, cap):
-    if start < 0:
-        start = 0
-    if end is not None and end <= start:
-        return jsonify([])
-    limit = (end - start) if end is not None else 20
-    if cap is not None:
-        limit = min(limit, cap)
-    offset = start
-    try:
-        server_id, include_legacy = app_server_context.selected_server_scope()
-    except ValueError:
-        logger.warning("Invalid server selection.", exc_info=True)
-        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
-    results = search_artists_by_name(
-        query,
-        limit=limit,
-        offset=offset,
-        server_id=server_id,
-        include_legacy_default=include_legacy,
-    )
-    results = app_server_context.scope_artist_results(results)
-    return jsonify(results)
 
 
 @artist_similarity_bp.route('/artist_similarity', methods=['GET'])
@@ -105,9 +69,20 @@ def search_artists_endpoint():
     parameters:
       - name: query
         in: query
-        description: Partial or full name of the artist.
+        description: Partial or full name of the artist (one character is enough).
         schema:
           type: string
+      - name: start
+        in: query
+        description: 0-based pagination start.
+        schema:
+          type: integer
+          default: 0
+      - name: end
+        in: query
+        description: Exclusive pagination end (at most 100 rows per page). Default returns 20 items.
+        schema:
+          type: integer
     responses:
       200:
         description: A list of matching artists.
@@ -120,10 +95,33 @@ def search_artists_endpoint():
                 properties:
                   artist:
                     type: string
+                  artist_id:
+                    type: string
                   track_count:
                     type: integer
     """
-    return artist_search_from_request()
+    query = search_query_arg(request.args, 'query')
+    window = search_page_window(request.args, 100)
+    if not query or window is None:
+        return jsonify([])
+    offset, limit = window
+    try:
+        try:
+            server_id, include_legacy = app_server_context.selected_server_scope()
+        except ValueError:
+            logger.warning("Invalid server selection.", exc_info=True)
+            return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
+        results = search_artists_by_name(
+            query,
+            limit=limit,
+            offset=offset,
+            server_id=server_id,
+            include_legacy_default=include_legacy,
+        )
+        return search_page_response(app_server_context.scope_artist_results(results), len(results) >= limit)
+    except Exception as exc:
+        logger.exception("Error during artist search")
+        return json_exception(exc, ERR_SEARCH_FAILED, "An error occurred during search.")
 
 
 @artist_similarity_bp.route('/api/similar_artists', methods=['GET'])
