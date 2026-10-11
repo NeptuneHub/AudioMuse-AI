@@ -400,7 +400,7 @@ RUN set -ux; \
             libgomp1 \
             libpq5 \
             ffmpeg libchromaprint-tools wget curl \
-            supervisor procps \
+            supervisor procps tor \
             git vim strace iputils-ping \
             postgresql-common ca-certificates \
             "$(if [[ "$BASE_IMAGE" =~ ^nvidia/cuda:([0-9]+)\.([0-9]+).+$ ]]; then echo "cuda-compiler-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"; fi)" \

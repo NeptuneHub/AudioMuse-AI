@@ -6,7 +6,7 @@
 # the terms of the GNU Affero General Public License v3.0. See the LICENSE file
 # in the project root or <https://github.com/NeptuneHub/AudioMuse-AI/blob/main/LICENSE>
 
-"""Stopping, starting and restarting the supervised Flask and worker processes.
+"""Stopping, starting and restarting the supervised Flask, worker and P2P processes.
 
 The "how do I reach the other container" half now lives in ``taskqueue.control``,
 which broadcasts over Postgres and collects durable acknowledgements. What is
@@ -16,7 +16,10 @@ itself.
 
 Main Features:
 * ``publish_*`` delegate to ``taskqueue.control`` and keep their boolean contract.
-* supervisorctl-driven actions over the known Flask and worker service names.
+* supervisorctl-driven actions over the known Flask, worker and P2P service names.
+* The delayed Flask self-restart restarts the P2P node with it, so a wizard save
+  reaches the node; ``stop_p2p_node``/``start_p2p_node`` drive it alone around a
+  backup restore.
 * ``run_supervisorctl_detail`` returns WHY an action failed, so the restore log
   can say more than "did not confirm it stopped".
 * On native builds (control socket/host:port set), dispatches there instead of supervisorctl.
@@ -40,6 +43,7 @@ CONTROL_ACK_ADVISORY_TIMEOUT_SECONDS = config.QUEUE_CONTROL_ADVISORY_TIMEOUT_SEC
 
 FLASK_SERVICE = service_roles.FLASK_SERVICES
 WORKER_SERVICES = service_roles.WORKER_SERVICES
+P2P_SERVICES = service_roles.P2P_SERVICES
 
 
 def new_control_request_id():
@@ -249,6 +253,16 @@ def start_supervisor_workers():
     return _run_supervisorctl(['start'] + WORKER_SERVICES)
 
 
+def stop_p2p_node():
+    logger.info('Stopping supervised P2P node services: %s', P2P_SERVICES)
+    return _run_supervisorctl(['stop'] + P2P_SERVICES)
+
+
+def start_p2p_node():
+    logger.info('Starting supervised P2P node services: %s', P2P_SERVICES)
+    return _run_supervisorctl(['start'] + P2P_SERVICES)
+
+
 def _spawn_supervisorctl(arguments):
     if _use_control_ipc():
         return _send_control(arguments)
@@ -271,8 +285,8 @@ def _spawn_supervisorctl(arguments):
 
 
 def _restart_flask_program():
-    logger.info('Restarting supervised Flask program via supervisorctl')
-    return _spawn_supervisorctl(['restart'] + FLASK_SERVICE)
+    logger.info('Restarting supervised Flask and P2P node programs via supervisorctl')
+    return _spawn_supervisorctl(['restart'] + FLASK_SERVICE + P2P_SERVICES)
 
 
 def schedule_flask_restart(delay_seconds=2.5):

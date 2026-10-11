@@ -35,6 +35,7 @@ graph TB
 - **Similarity Queries**: Loads the similarity indexes and answers similar song, path, alchemy, map and search requests
 - **Data Access**: Reads track information, playlists, and results from PostgreSQL
 - **Media Server Integration**: Creates playlists on the media servers
+- **P2P Node**: A separate supervised `p2p-node` process that, when P2P Sharing is on (it idles when off), starts its own Tor and runs as a Tor onion service, reaching the other servers only through the Tor network, with no listening port on the network (Tor and the node listen only on `127.0.0.1`) and no project server; workers reach it through PostgreSQL `NOTIFY`, see [P2P](P2P.md)
 
 ### Worker Container
 - **Job Processing**: Claims tasks from the PostgreSQL queue with `FOR UPDATE SKIP LOCKED`

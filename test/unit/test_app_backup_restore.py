@@ -23,6 +23,9 @@ Main Features:
 * Every backup and restore timeout is one hour, the old stored Flask wait default
   is raised once, a running restore keeps its lock fresh, and a second backup
   create is refused while one is still dumping.
+* The P2P node stops after Flask and before psql, starts after Flask is back and
+  before the workers, is untouched by an aborted restore, and a node that does
+  not answer is logged loudly without ever aborting the restore.
 """
 
 import io
@@ -326,11 +329,17 @@ class TestPgConnectionArgs:
         )
         monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
         monkeypatch.setattr(app_backup.restart_manager, 'publish_start_request', worker_start)
+        node_stop = MagicMock(return_value=True)
+        node_start = MagicMock(return_value=True)
+        monkeypatch.setattr(app_backup.restart_manager, 'stop_p2p_node', node_stop)
+        monkeypatch.setattr(app_backup.restart_manager, 'start_p2p_node', node_start)
         monkeypatch.setattr(app_backup.subprocess, 'Popen', psql)
         monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: released.append(True))
 
         assert app_backup._run_restore_runner(str(dump_file), str(log_file)) == 1
         psql.assert_not_called()
+        node_stop.assert_not_called()
+        node_start.assert_not_called()
         worker_start.assert_called_once_with(
             timeout_seconds=app_backup.config.QUEUE_CONTROL_ACTION_WINDOW_SECONDS
         )
@@ -370,6 +379,8 @@ class TestPgConnectionArgs:
             app_backup.restart_manager, 'publish_start_request', lambda **_kwargs: False
         )
         monkeypatch.setattr(app_backup.restart_manager, 'start_local_flask_service', lambda: True)
+        monkeypatch.setattr(app_backup.restart_manager, 'stop_p2p_node', lambda: True)
+        monkeypatch.setattr(app_backup.restart_manager, 'start_p2p_node', lambda: True)
         monkeypatch.setattr(app_backup, '_wait_for_flask', lambda log=None: False)
         monkeypatch.setattr(app_backup.subprocess, 'Popen', lambda *_a, **_k: _PsqlProcess())
         monkeypatch.setattr(
@@ -387,6 +398,107 @@ class TestPgConnectionArgs:
         assert 'Restore command finished with return code 0' in log_text
         assert 'service recovery FAILED' in log_text
         assert 'restored database was committed' in log_text
+
+
+class _RecordedPsql:
+    def __init__(self, events):
+        events.append('psql')
+        self.stdin = _FakeStdin()
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _node_step(events, name, outcome):
+    def step():
+        events.append(name)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+    return step
+
+
+def _run_recorded_restore(monkeypatch, tmp_path, node_stop=True, node_start=True):
+    dump_file = tmp_path / 'dump.sql'
+    dump_file.write_text('SELECT 1;')
+    log_file = tmp_path / 'restore.log'
+    events = []
+    manager = app_backup.restart_manager
+    monkeypatch.setattr(app_backup.config, 'DATABASE_URL', 'postgresql://u:p@db:5432/music')
+    monkeypatch.setattr(
+        manager, 'stop_local_flask_service_detail',
+        lambda: events.append('flask-stop') or (True, ''),
+    )
+    monkeypatch.setattr(
+        manager, 'start_local_flask_service', lambda: events.append('flask-start') or True
+    )
+    monkeypatch.setattr(
+        app_backup, '_wait_for_flask', lambda log=None: events.append('flask-ready') or True
+    )
+    monkeypatch.setattr(manager, 'stop_p2p_node', _node_step(events, 'node-stop', node_stop))
+    monkeypatch.setattr(manager, 'start_p2p_node', _node_step(events, 'node-start', node_start))
+    monkeypatch.setattr(
+        manager, 'publish_start_request', lambda **_kwargs: events.append('workers-start') or True
+    )
+    monkeypatch.setattr(app_backup.subprocess, 'Popen', lambda *_a, **_k: _RecordedPsql(events))
+    monkeypatch.setattr(app_backup.subprocess, 'run', lambda *_a, **_k: MagicMock(returncode=0))
+    monkeypatch.setattr(app_backup, '_release_restore_lock', lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        'database',
+        types.SimpleNamespace(USERS_PASSWORD_CHANGED_AT_DDL='ALTER TABLE users ADD x int'),
+    )
+    code = app_backup._run_restore_runner(str(dump_file), str(log_file))
+    return code, events, log_file.read_text()
+
+
+class TestTheRestoreStopsAndStartsTheP2PNodeWithFlask:
+    def test_the_node_stops_after_flask_before_psql_and_starts_after_flask_is_back(
+        self, monkeypatch, tmp_path
+    ):
+        code, events, log_text = _run_recorded_restore(monkeypatch, tmp_path)
+
+        assert code == 0
+        assert events == [
+            'flask-stop', 'node-stop', 'psql',
+            'flask-start', 'flask-ready', 'node-start', 'workers-start',
+        ]
+        assert 'P2P node stop request completed' in log_text
+        assert 'P2P node start request completed' in log_text
+
+    @pytest.mark.parametrize('outcome', [False, RuntimeError('control socket gone')])
+    def test_a_node_that_does_not_stop_never_aborts_the_restore(
+        self, monkeypatch, tmp_path, outcome
+    ):
+        code, events, log_text = _run_recorded_restore(monkeypatch, tmp_path, node_stop=outcome)
+
+        assert code == 0
+        assert 'psql' in events
+        assert events.index('node-stop') < events.index('psql')
+        assert 'WARNING: the P2P node did not confirm the stop request' in log_text
+        marker = next(
+            line for line in log_text.splitlines()
+            if line.startswith(app_backup.RESTORE_RESULT_MARKER)
+        )
+        assert marker.split()[1] == app_backup.RESTORE_RESULT_COMPLETED
+
+    @pytest.mark.parametrize('outcome', [False, RuntimeError('control socket gone')])
+    def test_a_node_that_does_not_start_still_lets_the_workers_start(
+        self, monkeypatch, tmp_path, outcome
+    ):
+        code, events, log_text = _run_recorded_restore(monkeypatch, tmp_path, node_start=outcome)
+
+        assert code == 0
+        assert events[-2:] == ['node-start', 'workers-start']
+        assert 'WARNING: the P2P node did not confirm the start request' in log_text
+
+    def test_a_failure_is_logged_loudly_every_time(self, monkeypatch, tmp_path, caplog):
+        caplog.set_level('ERROR', logger=app_backup.logger.name)
+
+        _run_recorded_restore(monkeypatch, tmp_path, node_stop=False, node_start=False)
+
+        loud = [r.getMessage() for r in caplog.records if 'P2P node' in r.getMessage()]
+        assert len(loud) == 2
 
 
 class TestRestoreWorkerStopSafety:

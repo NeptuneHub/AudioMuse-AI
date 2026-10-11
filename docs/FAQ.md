@@ -103,6 +103,15 @@ Learn how to use AudioMuse-AI effectively, from basic features to advanced funct
 </details>
 
 <details>
+<summary>Does P2P sharing upload my music?</summary>
+
+> No. P2P Sharing is off by default, and even when you turn it on in the Setup Wizard no audio ever leaves your server. It only exchanges analysis results (DCLAP, lyrics and neural fingerprint numbers, plus the AudioMuse-AI version that computed them) with other AudioMuse-AI servers, so new songs can skip slow analysis steps.
+>
+> File names, titles, artists, lyrics text, play history and account details are never sent. Your server is a Tor onion service and talks to the other servers only through the Tor network, so it needs no open port and no public IP address, nobody learns its IP address, and no server run by the project is involved. The other servers see your onion address, your AudioMuse-AI version, a short audio signature and the length of each song you look up, and whether your library has a song they ask about; the onion address, the version and the models in use are listed in a public directory on Nostr relays. See [P2P](P2P.md) for the details.
+
+</details>
+
+<details>
 <summary>Clustering returns empty playlists, or playlists with only a few songs. How can I fix this?</summary>
 
 > First check that **Automatic Parameter Discovery** is enabled. It is the recommended setting: a few quick probe runs tune the cluster count and the sampling percentile for each of your servers before the real run, which is what usually fixes empty or tiny playlists on its own.

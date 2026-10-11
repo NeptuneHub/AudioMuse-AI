@@ -9,8 +9,8 @@
 """Flask blueprint for database backup and restore.
 
 Serves the `/backup` UI and drives `pg_dump`/`psql` against the configured
-Postgres instance, coordinating with `restart_manager` to bounce the app and
-workers around a restore.
+Postgres instance, coordinating with `restart_manager` to bounce the app, the
+P2P node and the workers around a restore.
 
 Main Features:
 * Routes: `/backup` page, `/api/backup/create`, `/api/backup/download/<filename>`,
@@ -37,6 +37,8 @@ Main Features:
   window, not the ack-wait budget: the workers must be provably down before psql
   replaces the database under them, and reporting "they did not confirm" while
   they are still legitimately stopping aborts a restore that was going fine.
+* The P2P node stops with Flask before psql and starts after Flask is back; a
+  node that does not answer is logged loudly and never aborts the restore.
 * Backups are compressed to .zip; restore accepts .sql or .zip uploads
   (zip detected by magic bytes and extracted before psql).
 """
@@ -403,6 +405,23 @@ def _publish_worker_start(log=None):
     return bool(started)
 
 
+def _drive_p2p_node(log, operation, verb):
+    try:
+        done = bool(operation())
+    except Exception:
+        logger.exception("Could not %s the P2P node around the restore", verb)
+        done = False
+    if done:
+        log.write(f"P2P node {verb} request completed.\n")
+    else:
+        logger.error("The P2P node did not confirm the %s request; the restore continues", verb)
+        log.write(
+            f"WARNING: the P2P node did not confirm the {verb} request; the restore continues.\n"
+        )
+    log.flush()
+    return done
+
+
 def _write_restore_result(log, result, message):
     try:
         log.write(f"{RESTORE_RESULT_MARKER} {result} {message}\n")
@@ -490,6 +509,8 @@ def _run_restore_steps(dump_file, log_file):
             )
             _release_restore_lock()
             return 1
+
+        _drive_p2p_node(log, restart_manager.stop_p2p_node, 'stop')
 
         restore_cmd = _pg_cmd(
             'psql',
@@ -622,6 +643,8 @@ def _run_restore_steps(dump_file, log_file):
                         f"{_flask_ready_timeout():.0f}s; starting the workers anyway.\n"
                     )
                 log.flush()
+
+            _drive_p2p_node(log, restart_manager.start_p2p_node, 'start')
 
             try:
                 workers_started = _publish_worker_start(log)

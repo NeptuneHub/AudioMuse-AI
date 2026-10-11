@@ -40,6 +40,8 @@ Main Features:
 * force outranks a SERVICE_TYPE that says otherwise
 * Flask's role survives importing a queue module that carries the conditional shim
 * config reads back the exact environment variable the shim writes
+* p2p/node.py imports only service_roles and the stdlib, then forces the worker
+  role, all above its config import; the p2p package never imports config
 """
 
 import ast
@@ -53,6 +55,8 @@ REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file
 QUEUE_DIR = os.path.join(REPO_ROOT, 'taskqueue')
 WORKER_MODULE_PATH = os.path.join(QUEUE_DIR, 'worker.py')
 CONFIG_PATH = os.path.join(REPO_ROOT, 'config.py')
+P2P_DIR = os.path.join(REPO_ROOT, 'p2p')
+P2P_NODE_PATH = os.path.join(P2P_DIR, 'node.py')
 
 DECLARATION_MARKERS = ('declare_worker_role', service_roles.ROLE_ENV)
 
@@ -148,6 +152,34 @@ def _queue_entrypoints():
 QUEUE_ENTRYPOINTS = _queue_entrypoints()
 
 
+def _is_repo_module(name):
+    top = name.split('.')[0]
+    return (
+        os.path.isfile(os.path.join(REPO_ROOT, top + '.py'))
+        or os.path.isdir(os.path.join(REPO_ROOT, top))
+    )
+
+
+def _imported_names(stmt):
+    if isinstance(stmt, ast.Import):
+        return [alias.name for alias in stmt.names]
+    if isinstance(stmt, ast.ImportFrom):
+        return ['.' if stmt.level else (stmt.module or '')]
+    return []
+
+
+def _forced_declaration_index(body):
+    for index, stmt in enumerate(body):
+        if (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Call)
+            and _called_name(stmt.value.func) == 'declare_worker_role'
+            and _is_forced(stmt.value)
+        ):
+            return index
+    return None
+
+
 @pytest.fixture
 def env(monkeypatch):
     fake = {}
@@ -227,6 +259,58 @@ class TestQueueEntrypointsDeclareTheirRoleBeforeConfigIsImported:
             "`python -m taskqueue.worker` runs the package before the worker body, so "
             "config would load before the worker declares its role and caps its "
             "threads: BLAS pools start uncapped and config takes the Flask branch"
+        )
+
+
+class TestTheP2PNodeDeclaresTheWorkerRoleBeforeConfig:
+    def test_the_node_forces_the_worker_role_as_a_module_statement(self):
+        body, _lines = _statements(P2P_NODE_PATH)
+
+        assert _forced_declaration_index(body) is not None, (
+            "p2p/node.py never calls service_roles.declare_worker_role(force=True) at "
+            "module level; the node runs under SERVICE_TYPE=flask in the Flask "
+            "container and would run Flask's schema DDL when it imports config"
+        )
+
+    def test_that_declaration_is_above_the_config_import(self):
+        body, _lines = _statements(P2P_NODE_PATH)
+        config_line = _config_import_line(body)
+        index = _forced_declaration_index(body)
+
+        assert config_line is not None
+        assert index is not None
+        assert body[index].lineno < config_line
+
+    def test_only_service_roles_and_the_stdlib_are_imported_above_it(self):
+        body, _lines = _statements(P2P_NODE_PATH)
+        index = _forced_declaration_index(body)
+        assert index is not None
+
+        above = body[:index]
+        assert above, 'p2p/node.py must import service_roles before declaring its role'
+        assert all(isinstance(stmt, (ast.Import, ast.ImportFrom)) for stmt in above)
+        names = [name for stmt in above for name in _imported_names(stmt)]
+        assert 'service_roles' in names
+        repo_imports = [
+            name for name in names
+            if name != 'service_roles' and (name == '.' or _is_repo_module(name))
+        ]
+        assert not repo_imports, (
+            f"p2p/node.py imports {repo_imports} before it declares the worker role; "
+            "any repository module may import config on the way in"
+        )
+
+    def test_the_p2p_package_run_before_the_node_never_imports_config(self):
+        body, _lines = _statements(os.path.join(P2P_DIR, '__init__.py'))
+        eager = [
+            stmt.lineno for stmt in body
+            if any(name.split('.')[0] in ('config', 'database')
+                   for name in _imported_names(stmt))
+        ]
+
+        assert not eager, (
+            f"p2p/__init__.py imports config at module level (line(s) {eager}); "
+            "`python -m p2p.node` runs the package before the node declares its role"
         )
 
 

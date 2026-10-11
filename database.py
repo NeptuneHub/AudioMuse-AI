@@ -182,6 +182,19 @@ _ADVISORY_UNLOCK_SQL = "SELECT pg_advisory_unlock(%s)"
 
 GLOBAL_CANCEL_EPOCH_KEY = 'global_cancel_epoch'
 
+OUTPUT_MUSICNN = 'm'
+OUTPUT_CLAP = 'c'
+OUTPUT_LYRICS = 'l'
+OUTPUT_NEURAL = 'n'
+_STAMP_LOCAL_OUTPUT_SQL = (
+    "UPDATE embedding SET output_origin = COALESCE(output_origin, '{}'::jsonb) || "
+    "jsonb_build_object(%s, jsonb_build_object('v', %s)) WHERE item_id = %s"
+)
+_STAMP_PEER_OUTPUT_SQL = (
+    "UPDATE embedding SET output_origin = COALESCE(output_origin, '{}'::jsonb) || "
+    "jsonb_build_object(%s, jsonb_build_object('v', %s, 'p', %s)) WHERE item_id = %s"
+)
+
 SELF_MANAGED_TASK_TYPES = task_types.SELF_MANAGED_TASK_TYPES
 
 SELF_MANAGED_TASK_TYPE_PREFIXES = task_types.SELF_MANAGED_TASK_TYPE_PREFIXES
@@ -956,6 +969,14 @@ def _persist_hyperbolic_inline(item_id, embedding_vector, cur):
         )
 
 
+def _stamp_output(cur, item_id, key, origin=None):
+    if origin is None:
+        cur.execute(_STAMP_LOCAL_OUTPUT_SQL, (key, config.APP_VERSION, item_id))
+        return
+    version, peer_id = origin
+    cur.execute(_STAMP_PEER_OUTPUT_SQL, (key, str(version), str(peer_id), item_id))
+
+
 def save_track_analysis_and_embedding(
     item_id,
     title,
@@ -1035,6 +1056,7 @@ def save_track_analysis_and_embedding(
             """,
                 (item_id, psycopg2.Binary(embedding_blob)),
             )
+            _stamp_output(cur, item_id, OUTPUT_MUSICNN)
             _persist_hyperbolic_inline(item_id, embedding_vector, cur)
 
         conn.commit()
@@ -1046,7 +1068,7 @@ def save_track_analysis_and_embedding(
         cur.close()
 
 
-def save_clap_embedding(item_id, clap_embedding_vector):
+def save_clap_embedding(item_id, clap_embedding_vector, origin=None):
     if clap_embedding_vector is None or (
         isinstance(clap_embedding_vector, np.ndarray) and clap_embedding_vector.size == 0
     ):
@@ -1063,6 +1085,7 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         """,
             (item_id, psycopg2.Binary(embedding_blob)),
         )
+        _stamp_output(cur, item_id, OUTPUT_CLAP, origin)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1072,7 +1095,7 @@ def save_clap_embedding(item_id, clap_embedding_vector):
         cur.close()
 
 
-def save_neural_fingerprint(item_id, blob):
+def save_neural_fingerprint(item_id, blob, origin=None):
     if not blob:
         return False
     conn = get_db()
@@ -1083,6 +1106,8 @@ def save_neural_fingerprint(item_id, blob):
             (psycopg2.Binary(bytes(blob)), item_id),
         )
         saved = cur.rowcount > 0
+        if saved:
+            _stamp_output(cur, item_id, OUTPUT_NEURAL, origin)
         conn.commit()
         return saved
     except Exception:
@@ -1417,7 +1442,7 @@ def get_lyrics_axis_vectors(item_ids):
         cur.close()
 
 
-def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
+def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None, origin=None):
     if lyrics_embedding_vector is None or (
         isinstance(lyrics_embedding_vector, np.ndarray) and lyrics_embedding_vector.size == 0
     ):
@@ -1451,6 +1476,7 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
                 psycopg2.Binary(axis_blob) if axis_blob is not None else None,
             ),
         )
+        _stamp_output(cur, item_id, OUTPUT_LYRICS, origin)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1862,6 +1888,7 @@ def init_db():
             )
             _ensure_column(cur, 'clap_embedding', 'embedding', 'embedding BYTEA')
             cur.execute("ALTER TABLE embedding ADD COLUMN IF NOT EXISTS neural_fingerprint BYTEA")
+            _ensure_column(cur, 'embedding', 'output_origin', 'output_origin JSONB')
             cur.execute("DROP TABLE IF EXISTS voyager_index_data")
             cur.execute("DROP TABLE IF EXISTS clap_index_data")
             cur.execute("DROP TABLE IF EXISTS lyrics_index_data")

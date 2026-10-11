@@ -38,3 +38,15 @@ gunicorn==25.3.0
 cryptography==50.0.0
 zstandard==0.25.0
 wn==0.13.0
+
+# P2P Sharing (p2p/ node, opt-in in the setup wizard): stem, the Tor Project's
+# Python controller library, drives the Tor program the image installs; trio,
+# trio-websocket and coincurve run the node and its Nostr directory client.
+# Every one ships a wheel or is pure Python: nothing is compiled.
+coincurve==21.0.0
+outcome==1.3.0.post0
+sortedcontainers==2.4.0
+stem==1.8.2
+trio==0.34.0
+trio-websocket==0.12.2
+wsproto==1.3.2

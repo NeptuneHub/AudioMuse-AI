@@ -185,6 +185,11 @@ APP_CONFIG_RUNTIME_KEYS = {
     # planner compares it before and after its claim lock. A live counter, not a
     # setting, so the startup prune must keep the row.
     'global_cancel_epoch',
+    # P2P node state (p2p/ipc.py): the onion service key, the live status and the
+    # AudioMuse-AI servers met so far. Runtime state, never setup fields.
+    'p2p_onion_key',
+    'p2p_status',
+    'p2p_peers',
 }
 
 SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
@@ -291,6 +296,12 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'AUDIOMUSE_CONTROL_HOST',
     'AUDIOMUSE_CONTROL_PORT',
     'ALCHEMY_ANCHOR_MAX_STORED_POINTS',
+    # P2P plumbing, not settings: the Tor program is found per install (like
+    # FPCALC_BINARY), and the directory relays are part of the release, so a
+    # persisted row would pin an install to a relay list the project has since
+    # changed. Excluded so the shipped value (or the environment) always wins.
+    'TOR_BINARY',
+    'P2P_DIRECTORY_RELAYS',
     # Per-endpoint result-count defaults. These DO reach the UI: each search page
     # renders one of them into its count input's value= attribute, so they are the
     # number the box starts on as well as the fallback for a direct API caller that
@@ -1550,6 +1561,34 @@ PLUGIN_CATALOG_REFRESH_INTERVAL = int(os.environ.get("PLUGIN_CATALOG_REFRESH_INT
 # transient 'connection refused' would otherwise disable plugins until restart).
 PLUGIN_BOOT_DB_WAIT_SECONDS = int(os.environ.get("PLUGIN_BOOT_DB_WAIT_SECONDS", "60"))
 PLUGIN_BOOT_DB_WAIT_INTERVAL = float(os.environ.get("PLUGIN_BOOT_DB_WAIT_INTERVAL", "2"))
+
+# --- P2P Sharing ---
+# Single switch: when on, analysis asks other AudioMuse-AI servers for CLAP, lyrics and
+# neural fingerprint results of new songs AND this server shares its own results with them.
+# Off means no upload and no download at all.
+P2P_ENABLED = os.environ.get("P2P_ENABLED", "false").lower() == "true"
+# How many transfers run at the same time, in each direction.
+P2P_MAX_PARALLEL_DOWNLOADS = int(os.environ.get("P2P_MAX_PARALLEL_DOWNLOADS", "4"))
+P2P_MAX_PARALLEL_UPLOADS = int(os.environ.get("P2P_MAX_PARALLEL_UPLOADS", "4"))
+# Bandwidth caps in KiB/s for the sharing protocol (0 = unlimited). Network housekeeping
+# (peer discovery, gossip) is small and not counted.
+P2P_MAX_DOWNLOAD_KIBPS = int(os.environ.get("P2P_MAX_DOWNLOAD_KIBPS", "1024"))
+P2P_MAX_UPLOAD_KIBPS = int(os.environ.get("P2P_MAX_UPLOAD_KIBPS", "256"))
+# The Tor program the P2P node starts: every AudioMuse-AI server is a Tor onion service, so it
+# needs no open port and no public IP address. A name looked up on the PATH or a full path; the
+# image ships the Ubuntu "tor" package. Per-install plumbing, never stored in the database.
+TOR_BINARY = os.environ.get("TOR_BINARY", "tor")
+# Public Nostr relays used as the directory where AudioMuse-AI servers find each other's onion
+# addresses (comma separated host names, reached through Tor). Empty = no directory, only the
+# servers already known. Part of the release, never stored in the database.
+P2P_DIRECTORY_RELAYS = os.environ.get(
+    "P2P_DIRECTORY_RELAYS",
+    "relay.damus.io,relay.primal.net,nostr.mom,relay.snort.social,relay.nostr.net,nostr.bitcoiner.social",
+)
+# Most AudioMuse-AI servers asked about each song.
+P2P_MAX_PEERS = int(os.environ.get("P2P_MAX_PEERS", "32"))
+# How long analysis waits for peers for one song before computing it locally.
+P2P_LOOKUP_TIMEOUT_SECONDS = float(os.environ.get("P2P_LOOKUP_TIMEOUT_SECONDS", "15"))
 
 # --- Tempo Normalization Range (BPM) ---
 TEMPO_MIN_BPM = float(os.getenv("TEMPO_MIN_BPM", "40.0"))

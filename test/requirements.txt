@@ -73,6 +73,17 @@ pytest-timeout==2.4.0
 playwright==1.63.0
 pytest-playwright==0.9.0
 
+# P2P Sharing (p2p/ node): the same pins as requirements/common.txt (identical
+# versions, enforced by test_requirements_alignment). The Tor program itself
+# is the "tor" system package the CI jobs install.
+coincurve==21.0.0
+outcome==1.3.0.post0
+sortedcontainers==2.4.0
+stem==1.8.2
+trio==0.34.0
+trio-websocket==0.12.2
+wsproto==1.3.2
+
 # Notes:
 # - ffmpeg (system binary) is NOT included here - keep pydub/ffmpeg calls stubbed or
 #   install ffmpeg separately on your machine if you want full fallback behavior.

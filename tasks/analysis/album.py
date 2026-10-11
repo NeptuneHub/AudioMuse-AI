@@ -31,9 +31,16 @@ Main Features:
   union catalogue (same audio on N servers = ONE catalogue row).
 * Per-track map flush and temp-file cleanup in `finally`, so a Stop or a killed
   worker cannot strand a committed track without its mapping.
+* P2P sharing, only when enabled: a content-id track still missing CLAP,
+  lyrics or the neural fingerprint asks peers first (before the download of a
+  catalogued row, after MusiCNN for a new song or a matched row) and saves
+  what they supply through the same save functions, each save stamping the
+  peer's version and id in its own transaction; only the missing rest is
+  computed locally.
 """
 
 import logging
+import math
 import os
 import uuid
 
@@ -49,6 +56,7 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     CHROMAPRINT_COLLECTION_ENABLED,
+    P2P_ENABLED,
     TASK_STATUS_RUNNING,
     TASK_STATUS_SUCCESS,
     TASK_STATUS_FAILURE,
@@ -66,8 +74,11 @@ from error import error_manager
 from error.error_dictionary import (
     ERR_ALBUM_ANALYSIS_FAILED,
     ERR_DB_CONNECTION,
+    ERR_P2P_REQUEST_FAILED,
     ERR_TRACK_NOT_ANALYZABLE,
 )
+from p2p import client as p2p_client
+from p2p.ipc import OUT_AXIS, OUT_CLAP, OUT_LYRICS, OUT_NEURAL
 
 from ..mediaserver import get_tracks_from_album, download_track, registry
 from ..memory_utils import (
@@ -75,12 +86,14 @@ from ..memory_utils import (
     SessionRecycler,
     comprehensive_memory_cleanup,
 )
-from .. import chromaprint, neural_fingerprint
+from .. import chromaprint, neural_fingerprint, simhash
 from database import (
     persist_chromaprint,
     get_chromaprint,
     record_analysis_exclusion,
+    save_clap_embedding,
     save_neural_fingerprint,
+    save_lyrics_embedding,
 )
 from . import helper as _ah
 from .helper import make_task_reporter, _bind_server_context
@@ -314,10 +327,105 @@ def _stage_lyrics(item, path, track_audio, track_sr, track_name_full, top_moods,
     return bool(saved)
 
 
+_PEER_STAGES = (('clap', OUT_CLAP), ('lyrics', OUT_LYRICS), ('neural', OUT_NEURAL))
+_PEER_OUTPUT_NAMES = {OUT_CLAP: 'CLAP', OUT_LYRICS: 'lyrics', OUT_NEURAL: 'neural fingerprint'}
+
+
+def _peer_wants(plan):
+    return [key for stage, key in _PEER_STAGES if getattr(plan, stage)]
+
+
+def _describe_outputs(keys):
+    return ', '.join(_PEER_OUTPUT_NAMES[key] for _, key in _PEER_STAGES if key in keys)
+
+
+def _peer_candidate(p2p, plan, track_id_str):
+    return p2p is not None and bool(_peer_wants(plan)) and simhash.is_signature_id(track_id_str)
+
+
+def _known_duration(value):
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
+
+
+def _ask_peers(p2p, item, plan, track_id_str, track_name_full):
+    if not p2p.live or p2p.skipping:
+        error_manager.record(
+            ERR_P2P_REQUEST_FAILED,
+            f"P2P sharing is on but {p2p.reason}; '{track_name_full}' is analyzed locally",
+            logger=logger, level=logging.WARNING,
+        )
+        return None
+    server_id, _ = _ah.analysis_server_identity()
+    return p2p.ask(track_id_str, server_id, _ah.provider_item_id(item), _peer_wants(plan))
+
+
+def _save_peer_output(supply, key, track_name_full, save, *args):
+    try:
+        return save(*args, origin=(supply.versions[key], supply.peer)) is not False
+    except (OperationalError, InterfaceError):
+        raise
+    except Exception:
+        logger.exception(
+            "  - Could not save the %s supplied by peer %s for '%s'; it is computed locally",
+            _PEER_OUTPUT_NAMES[key], supply.peer, track_name_full,
+        )
+        return False
+
+
+def _save_peer_supply(supply, plan, track_id_str, track_name_full, clap_label_embeddings):
+    saved = []
+    clap_embedding = None
+    clap = supply.outputs.get(OUT_CLAP)
+    if plan.clap and clap is not None and _save_peer_output(
+        supply, OUT_CLAP, track_name_full, save_clap_embedding, track_id_str, clap,
+    ):
+        other_features = _ah.compute_other_features_str(
+            clap, clap_label_embeddings, OTHER_FEATURE_LABELS
+        )
+        logger.info(f"  - Other Features: {other_features}")
+        _ah.refresh_other_features(track_id_str, other_features)
+        clap_embedding = clap
+        saved.append(OUT_CLAP)
+    lyrics = supply.outputs.get(OUT_LYRICS)
+    if plan.lyrics and lyrics is not None and _save_peer_output(
+        supply, OUT_LYRICS, track_name_full, save_lyrics_embedding,
+        track_id_str, lyrics, supply.outputs.get(OUT_AXIS),
+    ):
+        saved.append(OUT_LYRICS)
+    blob = supply.outputs.get(OUT_NEURAL)
+    if plan.neural and blob is not None and _save_peer_output(
+        supply, OUT_NEURAL, track_name_full, save_neural_fingerprint, track_id_str, blob,
+    ):
+        saved.append(OUT_NEURAL)
+    if not saved:
+        return plan, None, False
+    logger.info(
+        "  - Peer %s supplied %s for '%s' (computed by AudioMuse-AI %s); those stages are skipped",
+        supply.peer, _describe_outputs(saved), track_name_full,
+        ', '.join(sorted({supply.versions[key] for key in saved})),
+    )
+    plan = plan._replace(**{stage: False for stage, key in _PEER_STAGES if key in saved})
+    return plan, clap_embedding, True
+
+
+def _take_peer_supply(p2p, item, plan, track_id_str, duration, track_name_full,
+                      clap_label_embeddings):
+    if _known_duration(duration) is None:
+        return plan, None, False
+    supply = _ask_peers(p2p, item, plan, track_id_str, track_name_full)
+    if supply is None:
+        return plan, None, False
+    return _save_peer_supply(supply, plan, track_id_str, track_name_full, clap_label_embeddings)
+
+
 def _analyze_single_track(
     item, plan, track_name_full, album_id, album_name, parent_task_id, top_n_moods,
     model_paths, session_recycler, onnx_sessions, fingerprint_index,
-    clap_label_embeddings, existing_top_moods_by_id, pending_track_maps,
+    clap_label_embeddings, existing_top_moods_by_id, pending_track_maps, p2p=None,
 ):
     track_id_str = _ah.catalog_item_id(item)
     path = None
@@ -330,6 +438,12 @@ def _analyze_single_track(
     produced = False
     audio_undecodable = False
     try:
+        if not plan.musicnn and _peer_candidate(p2p, plan, track_id_str):
+            plan, clap_embedding, produced = _take_peer_supply(
+                p2p, item, plan, track_id_str, _ah._fetch_row_duration(track_id_str),
+                track_name_full, clap_label_embeddings,
+            )
+
         if plan.needs_audio:
             path = _stage_download(item, track_name_full)
 
@@ -375,6 +489,11 @@ def _analyze_single_track(
                 musicnn_analysis = musicnn_embedding = None
             if not plan.any_stage:
                 return onnx_sessions, fingerprint_index
+            if not keep_analysis and _peer_candidate(p2p, plan, track_id_str):
+                plan, clap_embedding, _ = _take_peer_supply(
+                    p2p, item, plan, track_id_str, _ah._fetch_row_duration(track_id_str),
+                    track_name_full, clap_label_embeddings,
+                )
         else:
             top_moods = existing_top_moods_by_id.get(track_id_str) or None
             logger.info(
@@ -387,6 +506,11 @@ def _analyze_single_track(
                 item, track_name_full, track_id_str, musicnn_analysis,
                 top_moods, musicnn_embedding,
             )
+            if _peer_candidate(p2p, plan, track_id_str):
+                plan, clap_embedding, _ = _take_peer_supply(
+                    p2p, item, plan, track_id_str, musicnn_analysis.get('duration_seconds'),
+                    track_name_full, clap_label_embeddings,
+                )
 
         if plan.base:
             produced = _stage_base(
@@ -520,6 +644,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
         )
         pending_track_maps = {}
         map_flush_errors = []
+        p2p = None
         try:
             log_and_update_album_task(f"Fetching tracks for album: {album_name}", 5)
             tracks = get_tracks_from_album(album_id)
@@ -543,6 +668,9 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             analysis_exclusions = _ah.load_album_analysis_exclusions(tracks)
 
             _ah.upsert_artist_mappings_for_tracks(tracks, album_name=album_name)
+
+            if P2P_ENABLED and (missing_clap_ids_set or missing_lyrics_ids_set or missing_neural_ids_set):
+                p2p = p2p_client.Session.open(cancel)
 
             fingerprint_index = None
             failed_tracks = []
@@ -598,10 +726,10 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                         item, plan, track_name_full, album_id, album_name,
                         parent_task_id, top_n_moods, model_paths, session_recycler,
                         onnx_sessions, fingerprint_index, clap_label_embeddings,
-                        existing_top_moods_by_id, pending_track_maps,
+                        existing_top_moods_by_id, pending_track_maps, p2p=p2p,
                     )
                     tracks_analyzed_count += 1
-                except (OperationalError, InterfaceError):
+                except (OperationalError, InterfaceError, TaskCancelled):
                     raise
                 except TrackNotAnalyzable as e:
                     error_manager.record(
@@ -698,6 +826,8 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             raise
         finally:
             close_cancel()
+            if p2p is not None:
+                p2p.close()
             cleanup_musicnn_sessions(onnx_sessions, context="finally")
             onnx_sessions = None
             try:

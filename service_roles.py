@@ -16,16 +16,18 @@ build_child_env and includes it so a maintenance child never runs Flask's schema
 bootstrap. run_role is the single dispatcher, and declare_worker_role the one
 SERVICE_TYPE to AUDIOMUSE_ROLE shim - ordering, not configuration: it runs before
 import config, stays conditional so Flask keeps its own role, and queue
-entrypoints pass force=True. Lives at the repository root so restart_manager can
-import it.
+entrypoints pass force=True. The P2P node (P2P_SERVICES) is its own supervised
+program in the Flask container and is in none of the worker or Flask lists: it
+restarts with Flask, and a restore stops and starts it next to Flask. Lives at
+the repository root so restart_manager can import it.
 
 Main Features:
 * ROLE_OF and QUEUE_OF_ROLE map a supervised SERVICE to its ROLE and, for
   workers, the queue it drains
 * declare_worker_role sets AUDIOMUSE_ROLE before config is imported so a
   maintenance or worker child never runs Flask's schema bootstrap
-* run_role dispatches a role to Flask, a queue worker, maintenance, or the
-  restart listener
+* run_role dispatches a role to Flask, a queue worker, maintenance, the
+  restart listener, or the P2P node (p2p.node)
 * role_from_argv/command_from_argv/serve_flask are what all three native
   launchers used to keep as their own identical copies
 """
@@ -41,12 +43,14 @@ ROLE_WORKER_HIGH = 'worker-high'
 ROLE_WORKER_DEFAULT = 'worker-default'
 ROLE_MAINTENANCE = 'maintenance'
 ROLE_RESTART_LISTENER = 'restart-listener'
+ROLE_P2P = 'p2p-node'
 
 SERVICE_FLASK = 'flask'
 SERVICE_WORKER_HIGH = 'queue-worker-high'
 SERVICE_WORKER_DEFAULT = 'queue-worker-default'
 SERVICE_MAINTENANCE = 'queue-maintenance'
 SERVICE_RESTART_LISTENER = 'config-restart-listener'
+SERVICE_P2P = 'p2p-node'
 
 ROLE_OF = {
     SERVICE_FLASK: ROLE_FLASK,
@@ -54,6 +58,7 @@ ROLE_OF = {
     SERVICE_WORKER_DEFAULT: ROLE_WORKER_DEFAULT,
     SERVICE_MAINTENANCE: ROLE_MAINTENANCE,
     SERVICE_RESTART_LISTENER: ROLE_RESTART_LISTENER,
+    SERVICE_P2P: ROLE_P2P,
 }
 
 BOOT_ORDER = [
@@ -62,9 +67,12 @@ BOOT_ORDER = [
     SERVICE_WORKER_DEFAULT,
     SERVICE_MAINTENANCE,
     SERVICE_RESTART_LISTENER,
+    SERVICE_P2P,
 ]
 
 FLASK_SERVICES = [SERVICE_FLASK]
+
+P2P_SERVICES = [SERVICE_P2P]
 
 WORKER_SERVICES = [SERVICE_WORKER_DEFAULT, SERVICE_WORKER_HIGH, SERVICE_MAINTENANCE]
 
@@ -82,6 +90,7 @@ QUEUE_OF_ROLE = {
 
 WORKER_MODULE = 'taskqueue.worker'
 MAINTENANCE_MODULE = 'taskqueue.maintenance'
+P2P_MODULE = 'p2p.node'
 
 ROLE_FLAG_PREFIX = '--role='
 
@@ -152,5 +161,8 @@ def run_role(role, run_flask):
         from taskqueue import control
 
         control.main()
+        return
+    if role == ROLE_P2P:
+        runpy.run_module(P2P_MODULE, run_name='__main__')
         return
     raise SystemExit(f"Unknown role: {role}")

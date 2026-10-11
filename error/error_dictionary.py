@@ -83,6 +83,11 @@ ERR_TASK_CANCEL_FAILED = 6009
 ERR_PLUGIN_DOWNLOAD_FAILED = 6010
 ERR_ALBUM_CREATION_FAILED = 6011
 
+ERR_P2P_UNAVAILABLE = 7001
+ERR_P2P_REQUEST_FAILED = 7002
+ERR_P2P_PEER_REJECTED = 7003
+ERR_P2P_NODE_FAILED = 7005
+
 ERR_TASK_IN_PROGRESS = 1201
 
 ERR_WORKER_LOST = 9001
@@ -365,6 +370,30 @@ ERROR_REGISTRY = {
     ERR_ALBUM_CREATION_FAILED: {
         "error_class": "Album Creation Error",
         "default_message": "The album could not be created.",
+    },
+    ERR_P2P_UNAVAILABLE: {
+        "error_class": "P2P Unavailable",
+        "default_message": (
+            "P2P sharing is not available: the Tor program or the P2P libraries are not installed in "
+            "this build."
+        ),
+    },
+    ERR_P2P_REQUEST_FAILED: {
+        "error_class": "P2P Request Error",
+        "default_message": (
+            "Peers could not supply this song's results in time; it is analyzed locally instead."
+        ),
+    },
+    ERR_P2P_PEER_REJECTED: {
+        "error_class": "P2P Peer Result Rejected",
+        "default_message": (
+            "Peer results were dropped: they did not decode or came from a release older than "
+            "v3.0.0."
+        ),
+    },
+    ERR_P2P_NODE_FAILED: {
+        "error_class": "P2P Node Error",
+        "default_message": "The P2P node could not start or stopped unexpectedly.",
     },
     ERR_TASK_IN_PROGRESS: {
         "error_class": "Task In Progress",

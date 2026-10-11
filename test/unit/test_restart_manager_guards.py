@@ -16,20 +16,17 @@ self-restart belongs to the Flask process and nothing else, and the
 control-result poll runs for up to fifteen minutes, so it may not open a
 connection per column.
 
-The floor is pinned WITHOUT reloading config: importing it runs
-``_apply_db_overrides``, which outside an explicit worker calls ``ensure_table()``
-and bootstraps schema into whatever DATABASE_URL resolves to. The floor is
-instead lifted out of config.py with ``ast`` and that one assignment expression
-evaluated against a patched environment.
+The floor is pinned WITHOUT reloading config (importing it bootstraps schema
+into whatever DATABASE_URL resolves to): that one assignment is lifted out of
+config.py with ``ast`` and evaluated against a patched environment.
 
 Both NUMBERS are pinned exactly, not merely bounded below by the fleet stop they
 cover: a floor of 60 and a default of 60 satisfy every "at least a three-worker
-shutdown" assertion here while quietly halving the action window derived from
-them, and the floor was already raised once after a real incident.
+shutdown" assertion while quietly halving the action window derived from them.
 
 ``_supervisorctl_already_satisfied`` is the container-side half: supervisord
 exits non-zero when a start finds the program running or a stop finds it down,
-and both ARE the requested end state. It is per-action and per-line on purpose.
+and both ARE the requested end state. It is per-action and per-line.
 
 Main Features:
 * The control IPC budget covers three sequential worker shutdowns, floor included
@@ -39,6 +36,8 @@ Main Features:
 * The socket really receives that budget before it connects
 * Only a Flask process arms the delayed self-restart timer
 * DISABLE_FLASK_RESTART suppresses the restart without raising
+* The Flask self-restart also restarts the P2P node; stop/start_p2p_node
+  name only p2p-node (supervisorctl or control socket); worker actions never do
 * An already-running start and an already-stopped stop are successes, not failures
 * Neither one answers the OTHER action, and a mixed result is still a failure
 * A legacy JSONB details column still identifies the recorded action, and a
@@ -50,6 +49,7 @@ Main Features:
 """
 
 import ast
+import json
 import re
 import socket
 from pathlib import Path
@@ -331,6 +331,117 @@ class TestTheDisableFlaskRestartEscapeHatchSuppressesTheRestart:
 
         monkeypatch.setattr(config, 'DISABLE_FLASK_RESTART', False)
         assert restart_manager.schedule_flask_restart() is True
+
+
+def _capture_supervisorctl(monkeypatch):
+    commands = []
+    monkeypatch.setattr(restart_manager, '_use_control_ipc', lambda: False)
+    monkeypatch.setattr(
+        restart_manager.subprocess, 'run',
+        lambda cmd, **_k: commands.append(cmd) or MagicMock(returncode=0, stdout='ok', stderr=''),
+    )
+    monkeypatch.setattr(
+        restart_manager.subprocess, 'Popen',
+        lambda cmd, **_k: commands.append(cmd) or MagicMock(),
+    )
+    return commands
+
+
+def _capture_control_socket(monkeypatch):
+    payloads = []
+
+    class _Socket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+        def connect(self, _address):
+            return None
+
+        def sendall(self, payload):
+            payloads.append(json.loads(payload.decode('utf-8')))
+
+        def recv(self, _size):
+            return b'ok'
+
+    monkeypatch.setattr(
+        restart_manager,
+        '_control_endpoint',
+        lambda: (socket.AF_INET, ('127.0.0.1', 12345), 'test-control'),
+    )
+    monkeypatch.setattr(restart_manager.socket, 'socket', lambda *_a: _Socket())
+    return payloads
+
+
+def _supervisorctl(*arguments):
+    return [restart_manager.SUPERVISORCTL_CMD, '-c', restart_manager.SUPERVISOR_CONF, *arguments]
+
+
+class TestTheP2PNodeIsDrivenWithFlaskAndOnItsOwn:
+    def test_the_flask_self_restart_restarts_the_p2p_node_in_the_same_command(
+        self, monkeypatch
+    ):
+        commands = _capture_supervisorctl(monkeypatch)
+
+        assert restart_manager._restart_flask_program() is True
+        assert commands == [_supervisorctl('restart', 'flask', 'p2p-node')]
+
+    def test_the_native_flask_self_restart_names_both_services(self, monkeypatch):
+        payloads = _capture_control_socket(monkeypatch)
+
+        assert restart_manager._restart_flask_program() is True
+        assert payloads == [{'action': 'restart', 'services': ['flask', 'p2p-node']}]
+
+    @pytest.mark.parametrize('function_name, action', [
+        ('stop_p2p_node', 'stop'),
+        ('start_p2p_node', 'start'),
+    ])
+    def test_each_p2p_action_names_only_the_node_over_supervisorctl(
+        self, monkeypatch, function_name, action
+    ):
+        commands = _capture_supervisorctl(monkeypatch)
+
+        assert getattr(restart_manager, function_name)() is True
+        assert commands == [_supervisorctl(action, 'p2p-node')]
+
+    @pytest.mark.parametrize('function_name, action', [
+        ('stop_p2p_node', 'stop'),
+        ('start_p2p_node', 'start'),
+    ])
+    def test_each_p2p_action_names_only_the_node_over_the_control_socket(
+        self, monkeypatch, function_name, action
+    ):
+        payloads = _capture_control_socket(monkeypatch)
+
+        assert getattr(restart_manager, function_name)() is True
+        assert payloads == [{'action': action, 'services': ['p2p-node']}]
+
+    def test_a_failed_p2p_action_answers_false_instead_of_raising(self, monkeypatch):
+        monkeypatch.setattr(restart_manager, '_use_control_ipc', lambda: False)
+        monkeypatch.setattr(
+            restart_manager.subprocess, 'run',
+            lambda *_a, **_k: MagicMock(
+                returncode=4, stdout='', stderr='p2p-node: ERROR (no such process)'
+            ),
+        )
+
+        assert restart_manager.stop_p2p_node() is False
+
+    def test_the_worker_actions_never_touch_the_p2p_node(self, monkeypatch):
+        commands = _capture_supervisorctl(monkeypatch)
+        monkeypatch.setenv('SERVICE_TYPE', 'worker')
+
+        restart_manager.stop_supervisor_workers()
+        restart_manager.start_supervisor_workers()
+        restart_manager.restart_supervisor_workers()
+
+        assert commands
+        assert not [cmd for cmd in commands if 'p2p-node' in cmd]
 
 
 class TestPerContainerPlumbingNeverBecomesADatabaseWideGlobal:

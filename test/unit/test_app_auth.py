@@ -401,6 +401,16 @@ class TestAdminPathEnforcement:
         assert result is not None
         assert result.status_code == 302
 
+    def test_non_admin_gets_403_on_the_p2p_status_route(self, app, monkeypatch):
+        import config
+
+        monkeypatch.setattr(config, 'AUTH_ENABLED', True)
+        with app.test_request_context('/api/setup/p2p/status'):
+            g.auth_role = 'user'
+            result = app_auth.check_admin_needed()
+        assert result is not None
+        assert result[1] == 403
+
     def test_users_path_not_admin_gated(self, app, monkeypatch):
         import config
 
@@ -415,6 +425,7 @@ class TestAdminPathEnforcement:
         [
             ('/setup', True),
             ('/api/setup', True),
+            ('/api/setup/p2p/status', True),
             ('/api/migration/session/start', True),
             ('/api/analysis', True),
             ('/api/clustering', True),
@@ -449,6 +460,7 @@ class TestSetupBarrierAllowsSetupApiSubtree:
             ('/api/setup/plex/pin/12345', True),
             ('/api/setup/providers/libraries', True),
             ('/api/setup/lyrics-api/analyze', True),
+            ('/api/setup/p2p/status', True),
             ('/api/servers', True),
             ('/api/servers/test', True),
             ('/api/servers/libraries', True),

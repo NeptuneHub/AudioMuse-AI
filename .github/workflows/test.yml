@@ -47,9 +47,11 @@ jobs:
         python-version: '3.12'
 
     - name: Install system dependencies
+      # tor: the P2P Sharing integration test runs two real nodes that reach
+      # each other as Tor onion services over the live Tor network.
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg
+        sudo apt-get install -y ffmpeg tor
 
     - name: Install Python dependencies
       run: |

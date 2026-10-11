@@ -22,17 +22,24 @@ Main Features:
 * Hands the Machine Learning Models section, on every open, the band (0 to 4)
   of the library each model's index can find right now: two indexed counts plus
   one directory-header read per index, never an index load, and never a number.
+* Serves the P2P Sharing section: validates its settings (refusing to turn it
+  on where the Tor program or the node's libraries are missing) and answers the
+  node's status as one word.
 """
 
+import math
 import re
 import types
 import requests
 from flask import request, jsonify, render_template, make_response
 import config
+import database
 from flask_app import app
 from tasks.setup_manager import setup_manager
 from tasks import naming_preview
 from tasks.ai import prompts as ai_prompts
+from p2p import available as p2p_available
+from p2p import ipc as p2p_ipc
 from app_auth import check_setup_needed
 from ssrf_guard import validate_outbound_url
 import restart_manager
@@ -125,6 +132,32 @@ AI_PROMPT_EXAMPLE_SONGS = (
     ('', 'Song 1', 'Artist A'),
     ('', 'Song 2', 'Artist B'),
     ('', 'Song 3', 'Artist C'),
+)
+
+P2P_CONFIG_FIELDS = [
+    'P2P_ENABLED',
+    'P2P_MAX_PARALLEL_DOWNLOADS',
+    'P2P_MAX_PARALLEL_UPLOADS',
+    'P2P_MAX_DOWNLOAD_KIBPS',
+    'P2P_MAX_UPLOAD_KIBPS',
+]
+P2P_SWITCH_LABELS = {
+    'P2P_ENABLED': 'P2P Sharing',
+}
+P2P_PARALLEL_MIN = 1
+P2P_PARALLEL_MAX = 64
+P2P_KIBPS_MIN = 0
+P2P_NUMBER_RULES = {
+    'P2P_MAX_PARALLEL_DOWNLOADS': (P2P_PARALLEL_MIN, P2P_PARALLEL_MAX, 'Parallel downloads'),
+    'P2P_MAX_PARALLEL_UPLOADS': (P2P_PARALLEL_MIN, P2P_PARALLEL_MAX, 'Parallel uploads'),
+    'P2P_MAX_DOWNLOAD_KIBPS': (P2P_KIBPS_MIN, None, 'The download limit (KiB/s)'),
+    'P2P_MAX_UPLOAD_KIBPS': (P2P_KIBPS_MIN, None, 'The upload limit (KiB/s)'),
+}
+P2P_LOOKUP_TIMEOUT_KEY = 'P2P_LOOKUP_TIMEOUT_SECONDS'
+P2P_UNAVAILABLE_MESSAGE = (
+    'P2P Sharing cannot be turned on: it needs the Tor program and the P2P libraries, and '
+    '%s. Install Tor (for example the "tor" package) or use the standard image. The noavx2 '
+    'image does not support P2P Sharing.'
 )
 
 # Advanced fields whose value must be one of a fixed set. The wizard renders
@@ -358,6 +391,9 @@ HIDDEN_ADVANCED_FIELDS = {
     'LYRICS_API_2_APIKEY_PARAM',
     'LYRICS_API_2_APIKEY_VALUE',
     'LYRICS_API_2_TIMEOUT',
+    'TOR_BINARY',
+    'P2P_DIRECTORY_RELAYS',
+    *P2P_CONFIG_FIELDS,
 }
 
 TEST_CONFIG_KEYS = set(BASIC_SERVER_FIELDS + ['MUSIC_LIBRARIES'])
@@ -536,6 +572,99 @@ def _validate_ai_prompt_values(filtered_values):
     return None
 
 
+def _p2p_unavailable_reason():
+    try:
+        return p2p_available.unavailable_reason()
+    except Exception:
+        app.logger.exception('Could not check whether P2P Sharing can run in this build')
+        return 'the check for Tor failed'
+
+
+def _p2p_available():
+    return _p2p_unavailable_reason() is None
+
+
+def _p2p_int(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = value.strip() if isinstance(value, str) else ''
+    return int(text) if re.fullmatch(r'[+-]?\d{1,9}', text) else None
+
+
+def _p2p_float(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _p2p_number_problem(filtered_values):
+    for key, (low, high, label) in P2P_NUMBER_RULES.items():
+        if key not in filtered_values:
+            continue
+        number = _p2p_int(filtered_values[key])
+        if high is None and (number is None or number < low):
+            return '%s must be a whole number, %d or more (0 means unlimited).' % (label, low)
+        if high is not None and (number is None or not low <= number <= high):
+            return '%s must be a whole number from %d to %d.' % (label, low, high)
+        filtered_values[key] = number
+    if P2P_LOOKUP_TIMEOUT_KEY in filtered_values:
+        seconds = _p2p_float(filtered_values[P2P_LOOKUP_TIMEOUT_KEY])
+        low, high = p2p_ipc.MIN_REQUEST_TTL_SECONDS, p2p_ipc.MAX_REQUEST_TTL_SECONDS
+        if seconds is None or not low <= seconds <= high:
+            return 'The P2P lookup timeout must be a number of seconds from %g to %g.' % (low, high)
+        filtered_values[P2P_LOOKUP_TIMEOUT_KEY] = seconds
+    return None
+
+
+def _validate_p2p_values(filtered_values):
+    for key, label in P2P_SWITCH_LABELS.items():
+        if key in filtered_values and not isinstance(filtered_values[key], bool):
+            return '%s must be true or false.' % label
+    problem = _p2p_number_problem(filtered_values)
+    if problem:
+        return problem
+    if filtered_values.get('P2P_ENABLED') is True:
+        reason = _p2p_unavailable_reason()
+        if reason:
+            return P2P_UNAVAILABLE_MESSAGE % reason
+    return None
+
+
+def _p2p_display_value(value):
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    return str(value)
+
+
+def _build_p2p_payload():
+    payload = {key: _p2p_display_value(getattr(config, key)) for key in P2P_CONFIG_FIELDS}
+    payload['available'] = _p2p_available()
+    return payload
+
+
+def _p2p_state():
+    if not config.P2P_ENABLED:
+        return p2p_ipc.STATE_OFF
+    if not _p2p_available():
+        return p2p_ipc.STATE_UNAVAILABLE
+    db = database.get_db()
+    try:
+        with db.cursor() as cur:
+            status = p2p_ipc.read_status(cur)
+    finally:
+        db.rollback()
+    state = status.get('state')
+    if isinstance(state, str) and state in p2p_ipc.STATE_LABELS:
+        return state
+    return p2p_ipc.STATE_NOT_RUNNING
+
+
 def _get_allowed_setup_keys():
     allowed_keys = set()
     for f in setup_manager.get_all_fields(config):
@@ -545,6 +674,7 @@ def _get_allowed_setup_keys():
     # but still user-editable via the dedicated Lyrics API section).
     allowed_keys.update(LYRICS_API_CONFIG_FIELDS)
     allowed_keys.update(AI_PROMPT_CONFIG_FIELDS)
+    allowed_keys.update(P2P_CONFIG_FIELDS)
     return allowed_keys
 
 
@@ -637,7 +767,9 @@ def setup_api():
       hides values for inactive media-server types, and masks any field whose
       name is in SECRET_FIELDS or ends with `_API_KEY`. `model_coverage` maps
       each model to the band (0 to 4) of the library its index can find right
-      now, computed on every request; it never carries a count.
+      now, computed on every request; it never carries a count. `p2p_fields`
+      maps each P2P Sharing setting to its current value and adds `available`,
+      false when the Tor program or the P2P libraries are missing.
 
       The POST body should contain `{key: value}` pairs for the keys returned
       by GET. Empty strings on secret fields keep the previously stored value;
@@ -724,6 +856,7 @@ def setup_api():
                 'music_libraries': music_libraries_value,
                 'lyrics_api_fields': lyrics_api_data,
                 'ai_prompt_fields': _build_ai_prompt_payload(),
+                'p2p_fields': _build_p2p_payload(),
                 'setup_saved': not check_setup_needed(),
                 'has_admin_user': _has_admin_user(),
                 'model_coverage': model_coverage_levels(),
@@ -770,6 +903,10 @@ def setup_api():
         prompt_problem = _validate_ai_prompt_values(filtered_values)
         if prompt_problem:
             return json_error(ERR_INVALID_REQUEST, prompt_problem)
+
+        p2p_problem = _validate_p2p_values(filtered_values)
+        if p2p_problem:
+            return json_error(ERR_INVALID_REQUEST, p2p_problem)
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):
@@ -1265,6 +1402,46 @@ def setup_ai_prompt_preview():
         )
     return jsonify({'status': 'running', 'task_id': task_id, 'message': naming_preview.PREVIEW_WAITING_MESSAGE,
                     'titles': [], 'done': 0, 'total': 0}), 202
+
+
+@app.route('/api/setup/p2p/status', methods=['GET'])
+def setup_p2p_status():
+    """
+    P2P Sharing status word.
+    ---
+    tags:
+      - Setup
+    summary: One word describing the P2P node, for the P2P Sharing section of the setup wizard.
+    description: |
+      Always answers 200. `state` is one of off, unavailable, starting,
+      connected, no_peers, not_running or error, and `label` is the word the
+      wizard shows (Off, Unavailable, Starting, Connected, No peers found,
+      Not running, Error). The node rewrites its status row every 15 seconds,
+      so a row older than a minute reads as not running. Peer ids, addresses
+      and counters are never returned.
+    responses:
+      200:
+        description: Current state of the P2P node.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state:
+                  type: string
+                  example: connected
+                label:
+                  type: string
+                  example: Connected
+    """
+    try:
+        state = _p2p_state()
+    except Exception:
+        app.logger.exception('Could not read the P2P node status for the setup wizard')
+        state = p2p_ipc.STATE_ERROR
+    response = jsonify({'state': state, 'label': p2p_ipc.status_label(state)})
+    response.headers['Cache-Control'] = 'no-store'
+    return response, 200
 
 
 @app.route('/api/setup/lyrics-api/analyze', methods=['POST'])

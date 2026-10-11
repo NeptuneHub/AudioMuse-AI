@@ -20,7 +20,8 @@ listener (python -m taskqueue.control) can acknowledge it in the database.
 Main Features:
 * ControlServer listens on a unix socket and answers "ok" or "error: ..."
 * stop / start / restart on flask, queue-worker-high, queue-worker-default,
-  queue-maintenance (accepted, nothing to run) and config-restart-listener
+  queue-maintenance and p2p-node (both accepted, nothing to run) and
+  config-restart-listener
 * actions are serialized so two overlapping requests cannot interleave
 """
 
@@ -36,8 +37,10 @@ SERVICE_WORKER_HIGH = 'queue-worker-high'
 SERVICE_WORKER_DEFAULT = 'queue-worker-default'
 SERVICE_MAINTENANCE = 'queue-maintenance'
 SERVICE_LISTENER = 'config-restart-listener'
+SERVICE_P2P = 'p2p-node'
 KNOWN_SERVICES = (
     SERVICE_FLASK, SERVICE_WORKER_HIGH, SERVICE_WORKER_DEFAULT, SERVICE_MAINTENANCE, SERVICE_LISTENER,
+    SERVICE_P2P,
 )
 ACTIONS = ('stop', 'start', 'restart')
 

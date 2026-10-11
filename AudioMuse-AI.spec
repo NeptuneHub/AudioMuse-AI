@@ -53,7 +53,7 @@ datas += collect_data_files("transformers", include_py_files=False)
 
 binaries = [
 ]
-for _pkg in ("av", "psycopg2"):
+for _pkg in ("av", "psycopg2", "coincurve"):
     binaries += collect_dynamic_libs(_pkg)
 
 # Chromaprint's fpcalc: bundled only if vendored. Absent, the standalone build still
@@ -90,13 +90,16 @@ hiddenimports = [
     "taskqueue.worker",
     "taskqueue.maintenance",
     "taskqueue.control",
+    "p2p.node",
+    "p2p.runtime",
     "waitress",
     "flasgger",
     "numkong",
     "numkong._numkong",
 ]
 hiddenimports += cfg["extra_hiddenimports"]
-for _mod in ("tasks", "lyrics", "sklearn", "joblib", *cfg["collect_submodules"]):
+for _mod in ("tasks", "lyrics", "sklearn", "joblib", "p2p", "stem", "trio", "trio_websocket",
+             *cfg["collect_submodules"]):
     hiddenimports += collect_submodules(_mod)
 hiddenimports = list(dict.fromkeys(hiddenimports))
 

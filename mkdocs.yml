@@ -16,6 +16,7 @@ nav:
   - Parameters: PARAMETERS.md
   - Authentication: AUTH.md
   - Plugins: PLUGIN.md
+  - P2P Sharing: P2P.md
   - Error Codes: ERROR_CODES.md
   - FAQ: FAQ.md
 

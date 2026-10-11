@@ -132,13 +132,15 @@
     }
     #advanced-config summary,
     #lyrics-api-config summary,
-    #ai-prompt-config summary {
+    #ai-prompt-config summary,
+    #p2p-config summary {
         cursor: pointer;
     }
     #lyrics-api-config {
         margin-top: 1.5rem;
     }
-    #ai-prompt-config {
+    #ai-prompt-config,
+    #p2p-config {
         margin-top: 1.5rem;
     }
     .ai-prompt-toolbar {
@@ -148,7 +150,8 @@
         flex-wrap: wrap;
         margin: 0.25rem 0 0.5rem;
     }
-    #ai-prompt-config .ai-prompt-toolbar button {
+    #ai-prompt-config .ai-prompt-toolbar button,
+    #p2p-config .ai-prompt-toolbar button {
         width: auto;
         padding: 0.45rem 0.95rem;
         font-size: 0.85rem;
@@ -392,7 +395,8 @@
         }
         #advanced-config > summary,
         #lyrics-api-config > summary,
-        #ai-prompt-config > summary {
+        #ai-prompt-config > summary,
+        #p2p-config > summary {
             padding: 0.55rem 0;
         }
         .ml-model-state,
@@ -921,6 +925,64 @@
                     </div>
                     <p id="ai-prompt-preview-status" class="inline-feedback" style="display:none; margin:0 0 0.75rem;"></p>
                     <ol id="ai-prompt-preview-titles" class="ai-prompt-titles" style="display:none;"></ol>
+                </div>
+            </details>
+
+            <details id="p2p-config">
+                <summary>P2P Sharing</summary>
+                <div class="notice" style="margin-top: 1rem;">
+                    P2P Sharing is off until you turn it on. When on, this server swaps analysis results with other
+                    AudioMuse-AI servers through the Tor network, so new songs can skip slow analysis steps. No open
+                    port or public IP address is needed and no server run by the project is involved. Other servers
+                    never see this server's IP address: they see its onion address, its AudioMuse-AI version, a short
+                    audio signature and the length of each song it looks up, and whether this library has a song they
+                    ask about. The onion address, the AudioMuse-AI version and the models in use are listed in a public
+                    directory on Nostr relays. Audio, file names, titles, artists, lyrics text, play history and
+                    account details are never sent. Only results from AudioMuse-AI v3.0.0 or newer are exchanged, and
+                    only when the song matches.
+                </div>
+                <p id="p2p-unavailable-note" class="inline-feedback status-pending" style="display:none; margin:0 0 1rem;">
+                    P2P Sharing is not available in this build: the Tor program or the P2P libraries it needs are not
+                    installed. Install Tor or use the standard image. The noavx2 image does not support it.
+                </p>
+
+                <div class="ai-prompt-toolbar">
+                    <label class="toggle-switch" style="margin-bottom:0;">
+                        <input type="checkbox" id="p2p-enabled-switch">
+                        <span class="toggle-slider"></span>
+                        <span class="sr-only">P2P Sharing on or off</span>
+                    </label>
+                    <label for="p2p-enabled-switch" style="margin-bottom:0;">Share analysis results with other AudioMuse-AI servers</label>
+                    <input type="hidden" id="P2P_ENABLED" name="P2P_ENABLED" value="false">
+                </div>
+                <div class="ai-prompt-toolbar">
+                    <span>Status: <strong id="p2p-status-word" aria-live="polite">Unknown</strong></span>
+                    <button type="button" id="p2p-status-refresh">Refresh</button>
+                </div>
+                <p class="ai-prompt-help">Saving the configuration restarts the P2P node with the new settings.</p>
+
+                <div class="section" style="margin-top: 1.5rem;">
+                    <h3 style="margin-bottom: 1rem;">Transfers</h3>
+                    <div class="field-row">
+                        <label for="P2P_MAX_PARALLEL_DOWNLOADS">Parallel downloads</label>
+                        <input id="P2P_MAX_PARALLEL_DOWNLOADS" name="P2P_MAX_PARALLEL_DOWNLOADS" type="number" min="1" max="64" step="1">
+                        <small>How many results this server fetches from other servers at the same time.</small>
+                    </div>
+                    <div class="field-row">
+                        <label for="P2P_MAX_PARALLEL_UPLOADS">Parallel uploads</label>
+                        <input id="P2P_MAX_PARALLEL_UPLOADS" name="P2P_MAX_PARALLEL_UPLOADS" type="number" min="1" max="64" step="1">
+                        <small>How many requests from other servers this server answers at the same time. Extra requests are asked to try again later.</small>
+                    </div>
+                    <div class="field-row">
+                        <label for="P2P_MAX_DOWNLOAD_KIBPS">Download limit (KiB/s)</label>
+                        <input id="P2P_MAX_DOWNLOAD_KIBPS" name="P2P_MAX_DOWNLOAD_KIBPS" type="number" min="0" step="1">
+                        <small>Most bandwidth used to receive results. 0 means unlimited.</small>
+                    </div>
+                    <div class="field-row">
+                        <label for="P2P_MAX_UPLOAD_KIBPS">Upload limit (KiB/s)</label>
+                        <input id="P2P_MAX_UPLOAD_KIBPS" name="P2P_MAX_UPLOAD_KIBPS" type="number" min="0" step="1">
+                        <small>Most bandwidth used to send results to other servers. 0 means unlimited.</small>
+                    </div>
                 </div>
             </details>
 

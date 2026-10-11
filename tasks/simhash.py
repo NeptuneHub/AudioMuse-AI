@@ -20,6 +20,12 @@ than merges - a false split is a harmless duplicate row, a false merge deletes.
 Main Features:
 * embedding_signature / signature_batch (vectorized) compute the 200-bit code.
 * SignatureIndex banded Hamming-tolerant candidate lookup (pigeonhole guarantee).
+* PackedSignatureIndex: the same bands and Hamming/duration rule held as sorted
+  numpy arrays (searchsorted per band, one XOR popcount), compact enough to keep
+  a whole library resident; rows without a known duration are never indexed.
+* p2p_same_recording: a peer's offer is the same recording only when the
+  signatures are within Hamming tolerance AND duration, cosine and (when the
+  gate is on) chromaprint agree; signature_to_bytes / signature_from_bytes.
 * CatalogResolver.resolve: signature proposes, cosine plus duration confirm.
 * confirm_pairs / merge_pairs: vectorized whole-catalogue confirm and merge.
 * is_fingerprint_id recognizes any fp_-prefixed catalogue id.
@@ -421,6 +427,40 @@ def cosine_distance(embedding_a, embedding_b):
     return float(np.clip(1.0 - similarity, 0.0, 2.0))
 
 
+def signature_hamming(signature_a, signature_b):
+    return bin((signature_a ^ signature_b) & _SIGNATURE_MASK).count('1')
+
+
+def p2p_same_recording(embedding_a, embedding_b, duration_a, duration_b,
+                       fingerprint_a=None, fingerprint_b=None):
+    signature_a = embedding_signature(embedding_a)
+    signature_b = embedding_signature(embedding_b)
+    if signature_a is None or signature_b is None:
+        return False
+    if signature_hamming(signature_a, signature_b) > SIGNATURE_MATCH_MAX_HAMMING:
+        return False
+    if not durations_compatible(duration_a, duration_b):
+        return False
+    if cosine_distance(embedding_a, embedding_b) > DUPLICATE_DISTANCE_THRESHOLD_COSINE:
+        return False
+    if CHROMAPRINT_GATE_ENABLED and chromaprints_agree(fingerprint_a, fingerprint_b) is False:
+        return False
+    return True
+
+
+def signature_to_bytes(signature):
+    return int(signature & _SIGNATURE_MASK).to_bytes(SIGNATURE_BYTES, "big")
+
+
+def signature_from_bytes(raw):
+    if not isinstance(raw, (bytes, bytearray, memoryview)):
+        return None
+    raw = bytes(raw)
+    if len(raw) != SIGNATURE_BYTES:
+        return None
+    return int.from_bytes(raw, "big") & _SIGNATURE_MASK
+
+
 def _band_key(signature, band):
     low, high = _BAND_BITS[band]
     shift = SIGNATURE_BITS - high
@@ -552,6 +592,140 @@ class SignatureIndex:
         candidates = candidates[keep]
         order = np.argsort(distances[keep], kind="stable")
         return [self._ids[row] for row in candidates[order]]
+
+
+_PACKED_KEY_CHUNK = 16384
+
+
+def _packed_band_keys(packed):
+    count = packed.shape[0]
+    keys = np.empty((count, _BAND_COUNT), dtype=np.uint32)
+    for start in range(0, count, _PACKED_KEY_CHUNK):
+        bits = np.unpackbits(packed[start:start + _PACKED_KEY_CHUNK], axis=1)
+        for band, (low, high) in enumerate(_BAND_BITS):
+            weights = np.left_shift(
+                np.uint32(1), np.arange(high - low - 1, -1, -1, dtype=np.uint32)
+            )
+            keys[start:start + bits.shape[0], band] = bits[:, low:high].astype(np.uint32) @ weights
+    return keys
+
+
+def _packed_signatures(signatures):
+    if isinstance(signatures, np.ndarray) and signatures.ndim == 2:
+        if signatures.shape[1] != SIGNATURE_BYTES:
+            raise ValueError(
+                f"Packed signatures must have {SIGNATURE_BYTES} bytes per row, got {signatures.shape[1]}"
+            )
+        packed = np.ascontiguousarray(signatures, dtype=np.uint8)
+        return packed, np.ones(packed.shape[0], dtype=bool)
+    signatures = list(signatures)
+    packed = np.zeros((len(signatures), SIGNATURE_BYTES), dtype=np.uint8)
+    valid = np.zeros(len(signatures), dtype=bool)
+    for row, signature in enumerate(signatures):
+        if isinstance(signature, (bytes, bytearray, memoryview)):
+            signature = signature_from_bytes(signature)
+        if signature is None:
+            continue
+        packed[row] = _pack_signature(int(signature))
+        valid[row] = True
+    return packed, valid
+
+
+def _duration_array(durations):
+    values = np.full(len(durations), np.nan, dtype=np.float64)
+    for row, duration in enumerate(durations):
+        if duration is None:
+            continue
+        try:
+            values[row] = float(duration)
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+class PackedSignatureIndex:
+    def __init__(self, max_hamming=SIGNATURE_MATCH_MAX_HAMMING):
+        self._max_hamming = min(int(max_hamming), _BAND_COUNT - 1)
+        self._clear()
+
+    def _clear(self):
+        self._ids = []
+        self._packed = np.empty((0, SIGNATURE_BYTES), dtype=np.uint8)
+        self._durations = np.empty(0, dtype=np.float64)
+        self._band_keys = [np.empty(0, dtype=np.uint32) for _ in range(_BAND_COUNT)]
+        self._band_rows = [np.empty(0, dtype=np.int32) for _ in range(_BAND_COUNT)]
+
+    def __len__(self):
+        return len(self._ids)
+
+    def extend(self, item_ids, signatures, durations):
+        item_ids = [str(item_id) for item_id in item_ids]
+        packed, valid = _packed_signatures(signatures)
+        lengths = _duration_array(list(durations))
+        if not len(item_ids) == packed.shape[0] == lengths.shape[0]:
+            raise ValueError(
+                f"extend needs one signature and one duration per id: {len(item_ids)} ids, "
+                f"{packed.shape[0]} signatures, {lengths.shape[0]} durations"
+            )
+        with np.errstate(invalid='ignore'):
+            keep = valid & np.isfinite(lengths) & (lengths > 0)
+        if not keep.any():
+            return 0
+        rows = np.flatnonzero(keep)
+        first_row = len(self._ids)
+        new_packed = packed[rows]
+        self._ids.extend(item_ids[row] for row in rows)
+        self._packed = np.concatenate([self._packed, new_packed])
+        self._durations = np.concatenate([self._durations, lengths[rows]])
+        new_keys = _packed_band_keys(new_packed)
+        new_rows = np.arange(first_row, first_row + rows.size, dtype=np.int32)
+        for band in range(_BAND_COUNT):
+            merged_keys = np.concatenate([self._band_keys[band], new_keys[:, band]])
+            merged_rows = np.concatenate([self._band_rows[band], new_rows])
+            order = np.argsort(merged_keys, kind="stable")
+            self._band_keys[band] = merged_keys[order]
+            self._band_rows[band] = merged_rows[order]
+        return int(rows.size)
+
+    def find(self, signature, duration=None, limit=2):
+        if isinstance(signature, (bytes, bytearray, memoryview)):
+            signature = signature_from_bytes(signature)
+        if signature is None or not self._ids:
+            return []
+        signature = int(signature) & _SIGNATURE_MASK
+        chunks = []
+        for band in range(_BAND_COUNT):
+            keys = self._band_keys[band]
+            key = np.uint32(_band_key(signature, band))
+            low = int(np.searchsorted(keys, key, side="left"))
+            high = int(np.searchsorted(keys, key, side="right"))
+            if high > low:
+                chunks.append(self._band_rows[band][low:high])
+        if not chunks:
+            return []
+        candidates = np.unique(np.concatenate(chunks)).astype(np.int64)
+        if duration is not None:
+            with np.errstate(invalid='ignore'):
+                length_ok = (
+                    np.abs(self._durations[candidates] - float(duration))
+                    <= DURATION_TOLERANCE_SECONDS
+                )
+            candidates = candidates[length_ok]
+            if not candidates.size:
+                return []
+        distances = _POPCOUNT[self._packed[candidates] ^ _pack_signature(signature)].sum(
+            axis=1, dtype=np.int16
+        )
+        keep = distances <= self._max_hamming
+        if not keep.any():
+            return []
+        candidates = candidates[keep]
+        distances = distances[keep]
+        order = np.argsort(distances, kind="stable")
+        if limit is not None:
+            order = order[:max(0, int(limit))]
+        return [(self._ids[candidates[index]], int(distances[index])) for index in order]
+
 
 class CatalogResolver:
     """Identity resolver: the signature proposes, embedding + duration confirm.

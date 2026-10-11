@@ -65,6 +65,8 @@ AudioMuse-AI provides two Docker Compose examples:
 
 Both files start the whole stack: Flask, one worker and PostgreSQL.
 
+**P2P Sharing:** the optional P2P Sharing (off by default, turned on in the Setup Wizard) needs no open port and no public IP address: the node runs as a Tor onion service and reaches the other servers only through the Tor network, and the image already ships Tor. There is nothing to publish or forward in the compose files, the Kubernetes manifest or the Podman pod; see [P2P](P2P.md).
+
 **Note on CPU limits:**
 If you cap the stack with `--cpus`, `--cpuset-cpus`, `deploy.resources.limits.cpus` or a systemd `CPUQuota`, the worker and ONNX analysis thread caps are sized from that limit (keeping a small bare minimum) instead of the host's core count. Without any limit they keep using the full host CPU, so behavior on native Linux, macOS and Windows installs is unchanged.
 

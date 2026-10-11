@@ -599,6 +599,12 @@ var ADVANCED_SECTIONS = [
             'PLUGIN_CATALOG_REFRESH_INTERVAL', 'PLUGIN_BOOT_DB_WAIT_SECONDS',
             'PLUGIN_BOOT_DB_WAIT_INTERVAL'
         ]
+    },
+    {
+        title: 'P2P Sharing internals',
+        items: [
+            'P2P_MAX_PEERS', 'P2P_LOOKUP_TIMEOUT_SECONDS'
+        ]
     }
 ];
 var ADVANCED_OTHER_TITLE = 'Other parameters';
@@ -910,6 +916,7 @@ function loadSetupData() {
         renderModelCoverage(data.model_coverage);
         populateLyricsApiFields(data.lyrics_api_fields);
         populateAiPromptFields(data.ai_prompt_fields);
+        populateP2pFields(data.p2p_fields);
         updateAuthVisibility();
         // If the provider is already configured (server returned `has_value`
         // for the credential fields), auto-fetch the library list so the
@@ -1241,6 +1248,9 @@ function collectConfigFromForm(testMode) {
             return;
         }
         if (!aiPromptState.loaded && AI_PROMPT_FORM_FIELDS.has(key)) {
+            return;
+        }
+        if (!p2pState.loaded && P2P_FORM_FIELDS.has(key)) {
             return;
         }
         var original = input.dataset.originalValue;
@@ -1697,6 +1707,106 @@ if (_aiPromptPreviewStart) {
 var _aiPromptPreviewStop = document.getElementById('ai-prompt-preview-stop');
 if (_aiPromptPreviewStop) {
     _aiPromptPreviewStop.addEventListener('click', stopAiPromptPreview);
+}
+
+var P2P_FORM_FIELDS = new Set([
+    'P2P_ENABLED', 'P2P_MAX_PARALLEL_DOWNLOADS', 'P2P_MAX_PARALLEL_UPLOADS',
+    'P2P_MAX_DOWNLOAD_KIBPS', 'P2P_MAX_UPLOAD_KIBPS'
+]);
+var P2P_SWITCH_FIELDS = new Set(['P2P_ENABLED']);
+var p2pState = {loaded: false, available: true, statusBusy: false};
+
+function widenP2pNumberBounds(input, value) {
+    var number = Number(value);
+    if (input.type !== 'number' || value === '' || !Number.isFinite(number)) {
+        return;
+    }
+    if (input.min !== '' && number < Number(input.min)) {
+        input.min = String(number);
+    }
+    if (input.max !== '' && number > Number(input.max)) {
+        input.max = String(number);
+    }
+}
+
+function updateP2pSwitchLock() {
+    var toggle = document.getElementById('p2p-enabled-switch');
+    if (toggle) {
+        toggle.disabled = !p2pState.available && !toggle.checked;
+    }
+}
+
+function populateP2pFields(p2pData) {
+    if (!p2pData) { return; }
+    P2P_FORM_FIELDS.forEach(function(name) {
+        var input = document.getElementById(name);
+        var raw = p2pData[name];
+        if (!input || raw === undefined || raw === null) {
+            return;
+        }
+        var value = P2P_SWITCH_FIELDS.has(name) ? normalizeFlagValue(raw, 'false') : String(raw);
+        widenP2pNumberBounds(input, value);
+        input.value = value;
+        input.dataset.originalValue = input.value;
+    });
+    var toggle = document.getElementById('p2p-enabled-switch');
+    var hidden = document.getElementById('P2P_ENABLED');
+    if (toggle && hidden) {
+        toggle.checked = hidden.value === 'true';
+    }
+    p2pState.available = p2pData.available !== false;
+    var note = document.getElementById('p2p-unavailable-note');
+    if (note) {
+        note.style.display = p2pState.available ? 'none' : 'block';
+    }
+    updateP2pSwitchLock();
+    p2pState.loaded = true;
+}
+
+function refreshP2pStatus() {
+    var word = document.getElementById('p2p-status-word');
+    var button = document.getElementById('p2p-status-refresh');
+    if (!word || p2pState.statusBusy) {
+        return;
+    }
+    p2pState.statusBusy = true;
+    if (button) { button.disabled = true; }
+    word.textContent = 'Checking...';
+    fetch('/api/setup/p2p/status', {cache: 'no-store'})
+        .then(readAiPromptResponse)
+        .then(function(result) {
+            word.textContent = result.ok && result.body.label ? result.body.label : 'Unknown';
+        })
+        .catch(function() {
+            word.textContent = 'Unknown';
+        })
+        .finally(function() {
+            p2pState.statusBusy = false;
+            if (button) { button.disabled = false; }
+        });
+}
+
+var _p2pSwitch = document.getElementById('p2p-enabled-switch');
+if (_p2pSwitch) {
+    _p2pSwitch.addEventListener('change', function() {
+        var hidden = document.getElementById('P2P_ENABLED');
+        if (hidden) {
+            hidden.value = _p2pSwitch.checked ? 'true' : 'false';
+        }
+        updateP2pSwitchLock();
+    });
+}
+var _p2pDetails = document.getElementById('p2p-config');
+if (_p2pDetails) {
+    _p2pDetails.addEventListener('toggle', function() {
+        if (_p2pDetails.open) {
+            refreshP2pStatus();
+        }
+    });
+}
+var _p2pStatusRefresh = document.getElementById('p2p-status-refresh');
+if (_p2pStatusRefresh) {
+    _p2pStatusRefresh.addEventListener('click', refreshP2pStatus);
 }
 
 // ---------------------------------------------------------------------------

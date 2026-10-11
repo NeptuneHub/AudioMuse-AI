@@ -47,17 +47,29 @@ Main Features:
 
 import logging
 import os
-import struct
 import threading
-import zlib
 
 import numpy as np
 import librosa
 from numpy.lib.stride_tricks import sliding_window_view
 
 import config
+from tasks import nfp_format
+from tasks.nfp_format import (
+    BLOB_MAGIC,
+    DIM,
+    HEADER as _HEADER,
+    PQ_CENTROIDS,
+    PQ_SUBDIM,
+    PQ_SUBSPACES,
+    codebook_id,
+    load_codebook,
+)
 
 logger = logging.getLogger(__name__)
+
+CODE_BYTES = nfp_format.CODE_BYTES
+HEADER_BYTES = nfp_format.HEADER_BYTES
 
 SAMPLE_RATE = 8000
 N_FFT = 1024
@@ -69,17 +81,9 @@ SEGMENT_SAMPLES = 8000
 SEGMENT_FRAMES = 33
 HOP_SAMPLES = 4000
 HOP_SECONDS = HOP_SAMPLES / SAMPLE_RATE
-DIM = 128
 DYNAMIC_RANGE_DB = 80.0
 LABEL = 'neural fingerprint'
-PQ_SUBSPACES = 32
-PQ_CENTROIDS = 256
-PQ_SUBDIM = DIM // PQ_SUBSPACES
-CODE_BYTES = PQ_SUBSPACES
-BLOB_MAGIC = b'NFP2'
 _AMIN = 1e-5
-_HEADER = struct.Struct('<4sHIBI')
-HEADER_BYTES = _HEADER.size
 _BATCH = 128
 _ENCODE_BATCH = 2048
 _LOCK = threading.Lock()
@@ -216,19 +220,6 @@ def fingerprint_audio(audio, sr, hop=HOP_SAMPLES):
     return np.concatenate([
         embed_patches(_patches_at(padded, starts[block:block + _BATCH])) for block in range(0, starts.size, _BATCH)
     ])
-
-
-def codebook_id(book):
-    return zlib.crc32(np.ascontiguousarray(book, dtype=np.float32).tobytes()) & 0xFFFFFFFF
-
-
-def load_codebook(path):
-    with np.load(path, allow_pickle=False) as data:
-        book = np.ascontiguousarray(data['codebook'], dtype=np.float32)
-    expected = (PQ_SUBSPACES, PQ_CENTROIDS, PQ_SUBDIM)
-    if book.shape != expected:
-        raise ValueError(f'The codebook {path} has shape {book.shape}, expected {expected}')
-    return book
 
 
 def _codebook_bias(book):

@@ -22,6 +22,8 @@ Main Features:
 * docker-entrypoint.sh starts exactly the shared worker and flask service lists
 * restart_manager and all three native supervisors read the shared objects
 * Every role in the table is dispatchable, and the listener survives a stop
+* The P2P node is its own autostarted program running p2p.node, in no worker
+  or Flask list, and the entrypoint never starts it by name
 """
 
 import importlib.util
@@ -48,14 +50,24 @@ def _read(path):
         return handle.read()
 
 
-def _load_supervisor(platform_name):
+def _program_block(service):
+    block = re.search(
+        r'^\[program:' + re.escape(service) + r'\](.*?)(?=^\[|\Z)',
+        _read(SUPERVISORD_CONF),
+        re.MULTILINE | re.DOTALL,
+    )
+    assert block is not None, f'supervisord.conf has no [program:{service}] block'
+    return [line.strip() for line in block.group(1).splitlines() if line.strip()]
+
+
+def _load_supervisor(platform_name, file_name='supervisor.py'):
     for entry in (REPO_ROOT, NATIVE_BUILD):
         if entry not in sys.path:
             sys.path.insert(0, entry)
-    mod_name = 'service_roles_supervisor_' + platform_name
+    mod_name = 'service_roles_' + file_name[:-3] + '_' + platform_name
     if mod_name in sys.modules:
         return sys.modules[mod_name]
-    path = os.path.join(NATIVE_BUILD, platform_name, 'supervisor.py')
+    path = os.path.join(NATIVE_BUILD, platform_name, file_name)
     spec = importlib.util.spec_from_file_location(mod_name, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
@@ -63,7 +75,7 @@ def _load_supervisor(platform_name):
         spec.loader.exec_module(mod)
     except Exception as exc:
         sys.modules.pop(mod_name, None)
-        pytest.skip(f"{platform_name} supervisor does not import here: {exc!r}")
+        pytest.skip(f"{platform_name} {file_name} does not import here: {exc!r}")
     return mod
 
 
@@ -93,6 +105,22 @@ class TestSupervisordConfMatchesTheSharedTable:
     def test_the_worker_programs_run_the_shared_worker_module(self):
         assert f'-m {service_roles.WORKER_MODULE}' in _read(SUPERVISORD_CONF)
 
+    def test_the_p2p_program_block_is_exactly_the_confirmed_one(self):
+        assert _program_block(service_roles.SERVICE_P2P) == [
+            f'command=/usr/bin/python3 -u -m {service_roles.P2P_MODULE}',
+            'autostart=true',
+            'autorestart=true',
+            'stopsignal=TERM',
+            'stopasgroup=true',
+            'killasgroup=true',
+            'stopwaitsecs=5',
+            'environment=PYTHONUNBUFFERED=1',
+            'stdout_logfile=/dev/stdout',
+            'stdout_logfile_maxbytes=0',
+            'stderr_logfile=/dev/stderr',
+            'stderr_logfile_maxbytes=0',
+        ]
+
 
 class TestTheEntrypointStartsTheSharedServices:
     def test_the_worker_branch_starts_exactly_the_shared_worker_services(self):
@@ -112,6 +140,13 @@ class TestTheEntrypointStartsTheSharedServices:
 
         assert flask_lines
 
+    def test_the_entrypoint_never_starts_the_p2p_node_by_name(self):
+        started = re.findall(r'^\s*run_supervisorctl_checked start (.*)$',
+                             _read(ENTRYPOINT), re.MULTILINE)
+
+        assert started
+        assert not [line for line in started if service_roles.SERVICE_P2P in line.split()]
+
 
 class TestThePythonConsumersReadTheSharedTable:
     def test_restart_manager_uses_the_shared_worker_services(self):
@@ -119,6 +154,9 @@ class TestThePythonConsumersReadTheSharedTable:
 
     def test_restart_manager_uses_the_shared_flask_services(self):
         assert restart_manager.FLASK_SERVICE is service_roles.FLASK_SERVICES
+
+    def test_restart_manager_uses_the_shared_p2p_services(self):
+        assert restart_manager.P2P_SERVICES is service_roles.P2P_SERVICES
 
     @pytest.mark.parametrize('platform_name', PLATFORMS)
     def test_each_native_supervisor_uses_the_shared_role_map(self, platform_name):
@@ -159,6 +197,7 @@ class TestTheTableIsInternallyConsistent:
         assert 'flask' in dispatched
         assert dispatched.count(service_roles.WORKER_MODULE) == 2
         assert service_roles.MAINTENANCE_MODULE in dispatched
+        assert service_roles.P2P_MODULE in dispatched
 
     def test_an_unknown_role_is_refused_rather_than_ignored(self, monkeypatch):
         monkeypatch.setattr(service_roles.sys, 'argv', ['launcher'])
@@ -177,3 +216,39 @@ class TestTheTableIsInternallyConsistent:
         service_roles.run_role(service_roles.ROLE_WORKER_HIGH, lambda: None)
 
         assert seen['argv'][1:] == ['--queue', service_roles.QUEUE_OF_ROLE['worker-high']]
+
+
+class TestTheP2PNodeIsItsOwnService:
+    def test_the_service_and_the_role_share_one_name(self):
+        assert service_roles.SERVICE_P2P == 'p2p-node'
+        assert service_roles.ROLE_P2P == 'p2p-node'
+        assert service_roles.ROLE_OF[service_roles.SERVICE_P2P] == service_roles.ROLE_P2P
+
+    def test_it_boots_last_and_is_its_own_service_list(self):
+        assert service_roles.BOOT_ORDER[-1] == service_roles.SERVICE_P2P
+        assert service_roles.P2P_SERVICES == [service_roles.SERVICE_P2P]
+        assert service_roles.P2P_MODULE == 'p2p.node'
+
+    def test_it_is_in_no_worker_or_flask_list(self):
+        assert service_roles.SERVICE_P2P not in service_roles.WORKER_SERVICES
+        assert service_roles.SERVICE_P2P not in service_roles.FLASK_SERVICES
+        assert service_roles.ROLE_P2P not in service_roles.WORKER_ROLES
+        assert service_roles.ROLE_P2P not in service_roles.QUEUE_OF_ROLE
+
+    def test_the_role_runs_the_node_module_as_main(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            service_roles.runpy, 'run_module',
+            lambda module, **kwargs: seen.append((module, kwargs)),
+        )
+        monkeypatch.setattr(service_roles.sys, 'argv', ['launcher', '--role=p2p-node'])
+
+        service_roles.run_role(service_roles.ROLE_P2P, lambda: seen.append('flask'))
+
+        assert seen == [(service_roles.P2P_MODULE, {'run_name': '__main__'})]
+        assert service_roles.sys.argv == ['launcher']
+
+    def test_the_macos_launcher_skips_the_longdouble_warmup_for_it(self):
+        mod = _load_supervisor('macos', 'launcher.py')
+
+        assert service_roles.ROLE_P2P in mod._NO_LONGDOUBLE_WARMUP_ROLES

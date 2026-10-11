@@ -20,7 +20,7 @@ Main Features:
 * Runs Flask via waitress or launches a named queue role in-process.
 * Quit waits until the supervisor has really stopped, so no child outlives it.
 * Pins the numeric locale early and warms up scipy longdouble for every role
-  except maintenance and restart-listener (macOS newlocale crash fix).
+  except maintenance, restart-listener and p2p-node (macOS newlocale crash fix).
 * Hands multiprocessing/loky spawn payloads to ``native_common.frozen_children``
   and rejects any other unknown argv rather than starting a second menu bar.
 """
@@ -37,6 +37,7 @@ from native_common import crash_log, frozen_children
 _NO_LONGDOUBLE_WARMUP_ROLES = {
     service_roles.ROLE_MAINTENANCE,
     service_roles.ROLE_RESTART_LISTENER,
+    service_roles.ROLE_P2P,
 }
 
 

@@ -18,6 +18,7 @@ Main Features:
   only, and http_status_for_code maps error classes to HTTP statuses
 * request_code_for_status reads the request code for a status from the registry,
   lowest code first; detail_text caps a huge detail before folding it
+* every P2P code (7001-7005) is registered and has a row in docs/ERROR_CODES.md
 """
 
 import os
@@ -702,3 +703,27 @@ class TestUnknownServerIsItsOwnCode:
         assert em.classify(unknown("Unknown server 'kitchen'"), ed.ERR_INVALID_REQUEST) == ed.ERR_UNKNOWN_SERVER
         assert ed.ERR_UNKNOWN_SERVER == 1010, 'static/server_selector.js drops a stale selection on 1010'
         assert em.classify(ValueError('bad'), ed.ERR_INVALID_REQUEST) == ed.ERR_INVALID_REQUEST
+
+
+P2P_CODES = (7001, 7002, 7003, 7005)
+
+
+class TestP2PCodes:
+    def test_the_p2p_band_is_registered_and_answers_500(self):
+        codes = [ed.ERR_P2P_UNAVAILABLE, ed.ERR_P2P_REQUEST_FAILED, ed.ERR_P2P_PEER_REJECTED,
+                 ed.ERR_P2P_NODE_FAILED]
+        assert codes == list(P2P_CODES)
+        assert sorted(code for code in ed.ERROR_REGISTRY if 7000 <= code < 7100) == codes
+        for code in codes:
+            record = em.build(code)
+            assert record['error_code'] == code
+            assert record['error_class'].startswith('P2P')
+            assert em.http_status_for_code(code) == 500
+
+    def test_every_p2p_code_is_documented_and_nothing_else(self):
+        with open(os.path.join(REPO_ROOT, 'docs', 'ERROR_CODES.md'), encoding='utf-8') as handle:
+            doc = handle.read()
+        assert '| 7000-7099 | P2P Sharing |' in doc
+        for code in P2P_CODES:
+            row = f'| {code} | {ed.get_error_class(code)} |'
+            assert row in doc, row

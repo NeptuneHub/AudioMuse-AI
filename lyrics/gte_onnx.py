@@ -30,11 +30,11 @@ from typing import Optional, Tuple
 import numpy as np
 
 from cpu_budget import usable_cpu_count
+from tasks.lyrics_constants import GTE_DEFAULT_ONNX_PATH as _DEFAULT_ONNX_PATH
+from tasks.lyrics_constants import GTE_DEFAULT_TOKENIZER_DIR as _DEFAULT_TOKENIZER_DIR
+from tasks.lyrics_constants import GTE_ONNX_PATH_ENV, GTE_TOKENIZER_DIR_ENV, GTE_TOKENIZER_FILE
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_ONNX_PATH = '/app/model/gte-multilingual-base-int8.onnx'
-_DEFAULT_TOKENIZER_DIR = '/app/model/gte-multilingual-base'
 
 _session = None
 _tokenizer = None
@@ -45,11 +45,11 @@ _load_lock = threading.Lock()
 
 
 def _resolve_onnx_path() -> str:
-    return os.environ.get('LYRICS_GTE_ONNX_PATH', _DEFAULT_ONNX_PATH)
+    return os.environ.get(GTE_ONNX_PATH_ENV, _DEFAULT_ONNX_PATH)
 
 
 def _resolve_tokenizer_dir() -> str:
-    return os.environ.get('LYRICS_GTE_TOKENIZER_DIR', _DEFAULT_TOKENIZER_DIR)
+    return os.environ.get(GTE_TOKENIZER_DIR_ENV, _DEFAULT_TOKENIZER_DIR)
 
 
 def load_gte_model():
@@ -72,7 +72,7 @@ def load_gte_model():
                 'override with LYRICS_GTE_ONNX_PATH.'
             )
 
-        tokenizer_path = os.path.join(tokenizer_dir, 'tokenizer.json')
+        tokenizer_path = os.path.join(tokenizer_dir, GTE_TOKENIZER_FILE)
         if not os.path.isfile(tokenizer_path):
             raise RuntimeError(
                 f'gte tokenizer.json not found at {tokenizer_path}. '

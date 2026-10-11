@@ -27,7 +27,9 @@ Main Features:
   RUNNING one, because a give-up victim may never have been claimed. It clears
   the job columns like finish_task does, so a terminal child is never runnable
 * hold / try_hold / release are the advisory-lock liveness primitives
-* reap_children deletes finished children; notify_* publish to workers/Flask
+* reap_children deletes finished children; notify_* publish to workers/Flask;
+  notify_p2p is the only way onto the P2P node channel and the per-session
+  reply channels, refusing any other channel and any payload over 7900 bytes
 * blob_tables_autovacuum_cannot_reach / vacuum_table sweep the tables whose dead
   rows autovacuum will not collect, because its threshold counts ROWS and these
   hold a few enormous TOASTed blobs; begin_reclaim_session caps that sweep with
@@ -37,6 +39,7 @@ Main Features:
 import hashlib
 import json
 import logging
+import re
 import socket
 import zlib
 
@@ -55,6 +58,13 @@ CHANNEL_CANCEL = 'audiomuse_cancel'
 CHANNEL_EVENT = 'audiomuse_event'
 CHANNEL_CONTROL = 'audiomuse_control'
 CHANNEL_RECLAIM = 'audiomuse_reclaim'
+CHANNEL_P2P = 'audiomuse_p2p'
+P2P_REPLY_CHANNEL_PREFIX = 'audiomuse_p2p_r_'
+P2P_MAX_PAYLOAD_BYTES = 7900
+_P2P_CHANNEL_RE = re.compile(
+    '^' + re.escape(CHANNEL_P2P)
+    + '(' + re.escape(P2P_REPLY_CHANNEL_PREFIX[len(CHANNEL_P2P):]) + '[0-9a-f]{16})?$'
+)
 
 _NOTIFY = "SELECT pg_notify(%s, %s)"
 
@@ -408,6 +418,18 @@ def notify_event(cur, event):
 
 def notify_control(cur, payload):
     cur.execute(_NOTIFY, (CHANNEL_CONTROL, json.dumps(payload)))
+
+
+def notify_p2p(cur, channel, payload):
+    if not isinstance(channel, str) or not _P2P_CHANNEL_RE.fullmatch(channel):
+        raise ValueError(f"Refusing a P2P NOTIFY on channel {channel!r}")
+    text = payload if isinstance(payload, str) else json.dumps(payload, separators=(',', ':'))
+    size = len(text.encode('utf-8'))
+    if size > P2P_MAX_PAYLOAD_BYTES:
+        raise ValueError(
+            f"Refusing a {size}-byte P2P NOTIFY payload (limit {P2P_MAX_PAYLOAD_BYTES} bytes)"
+        )
+    cur.execute(_NOTIFY, (channel, text))
 
 
 _CLAIM = f"""

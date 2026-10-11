@@ -1171,3 +1171,26 @@ def test_the_global_cancel_epoch_row_survives_the_startup_prune():
     import database
 
     assert database.GLOBAL_CANCEL_EPOCH_KEY in config.APP_CONFIG_RUNTIME_KEYS
+
+
+def test_the_p2p_runtime_rows_survive_the_startup_prune():
+    import config
+
+    p2p_keys = ('p2p_onion_key', 'p2p_peers', 'p2p_status')
+    mgr = _mgr()
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    cursor = MagicMock()
+    connection.cursor.return_value.__enter__.return_value = cursor
+    cursor.fetchall.return_value = []
+    mgr.ensure_table = MagicMock()
+    mgr.get_connection = MagicMock(return_value=connection)
+
+    mgr.prune_obsolete_config_values(config)
+
+    sql, params = cursor.execute.call_args_list[0].args
+    assert "DELETE FROM app_config" in sql
+    for key in p2p_keys:
+        assert key in config.APP_CONFIG_RUNTIME_KEYS
+        assert key in params[0]
+    assert sorted(key for key in config.APP_CONFIG_RUNTIME_KEYS if key.startswith('p2p_')) == sorted(p2p_keys)

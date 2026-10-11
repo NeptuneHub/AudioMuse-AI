@@ -288,6 +288,14 @@ These are the default parameters used when launching analysis or clustering task
 | `PLUGIN_CATALOG_REFRESH_INTERVAL`           | Seconds between the web process's own background catalog refreshes, so update buttons appear even when nobody opens the Catalog tab. | `3600`               |
 | `PLUGIN_BOOT_DB_WAIT_SECONDS`               | How long plugin boot waits for the database to accept connections before giving up.       | `60`                                   |
 | `PLUGIN_BOOT_DB_WAIT_INTERVAL`              | Seconds between those database-readiness retries at plugin boot.                          | `2`                                    |
+| **P2P Sharing** |  |  |
+| `P2P_ENABLED`                               | The single P2P Sharing switch (setup wizard, P2P Sharing section). When on, analysis asks other AudioMuse-AI servers for the CLAP, lyrics and neural fingerprint results of new songs, and this server shares its own results with them. Off means no upload and no download at all. See [P2P](P2P.md). | `false` |
+| `P2P_MAX_PARALLEL_DOWNLOADS`                | How many results this server fetches from other servers at the same time (1 to 64).      | `4`                                    |
+| `P2P_MAX_PARALLEL_UPLOADS`                  | How many requests from other servers this server answers at the same time (1 to 64). Extra requests are asked to try again later. | `4`  |
+| `P2P_MAX_DOWNLOAD_KIBPS`                    | Download bandwidth cap for the sharing protocol, in KiB/s. `0` means unlimited. Peer discovery and gossip are small and not counted. | `1024` |
+| `P2P_MAX_UPLOAD_KIBPS`                      | Upload bandwidth cap for the sharing protocol, in KiB/s. `0` means unlimited.            | `256`                                  |
+| `P2P_MAX_PEERS`                             | Most AudioMuse-AI servers asked about each song (advanced, P2P Sharing internals).       | `32`                                   |
+| `P2P_LOOKUP_TIMEOUT_SECONDS`                | How long analysis waits for peers for one song before computing it locally (1 to 120).   | `15`                                   |
 
 
 > ⚠️ **The only officially supported model is `qwen3.5:9b` or `qwen3.5:4b` for faster one**. Compatibility testing is done exclusively against it. Other models below were tested and may work, but **use them at your own risk** - issues opened for untested or arbitrary models could be closed. Different models behave differently and outputs vary between runs.
