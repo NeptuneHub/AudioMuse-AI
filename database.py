@@ -339,6 +339,9 @@ def _build_task_note(task_type, details_obj):
         details_obj = {}
     t = (task_type or '').lower()
 
+    if task_types.matches(t, prefixes=task_types.PREFIXES):
+        return ''
+
     try:
         if 'analysis' in t:
             songs = details_obj.get('tracks_analyzed')
