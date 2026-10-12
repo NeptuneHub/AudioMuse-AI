@@ -83,7 +83,6 @@ from config import (
 
 _TERMINAL_STATUSES = list(TASK_STATUS_TERMINAL)
 
-TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
 TEXT_SEARCH_QUERIES_DDL = """
@@ -410,11 +409,24 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             cur.execute(
                 """
                 DELETE FROM task_history
-                WHERE id NOT IN (
-                    SELECT id FROM task_history ORDER BY recorded_at DESC, id DESC LIMIT %s
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   ORDER BY recorded_at DESC, id DESC
+                               ) AS overall_rank,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY task_type ORDER BY recorded_at DESC, id DESC
+                               ) AS type_rank
+                        FROM task_history
+                    ) AS ranked
+                    WHERE overall_rank > %s OR type_rank > %s
                 )
                 """,
-                (TASK_HISTORY_MAX_ROWS,),
+                (
+                    max(1, config.TASK_HISTORY_MAX_ROWS),
+                    max(1, config.TASK_HISTORY_MAX_ROWS_PER_TYPE),
+                ),
             )
         db.commit()
     except Exception as e:

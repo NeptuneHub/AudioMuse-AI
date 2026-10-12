@@ -43,6 +43,8 @@ import config
 _DEFAULTS = (
     ('RADIUS_INSTRUMENTATION', False, 'RADIUS_INSTRUMENTATION', 'True', True),
     ('FLASK_BUILTIN_HTTPS', True, 'FLASK_BUILTIN_HTTPS', 'false', False),
+    ('TASK_HISTORY_MAX_ROWS', 1000, 'TASK_HISTORY_MAX_ROWS', '50', 50),
+    ('TASK_HISTORY_MAX_ROWS_PER_TYPE', 100, 'TASK_HISTORY_MAX_ROWS_PER_TYPE', '5', 5),
 )
 
 
@@ -232,6 +234,7 @@ _IMPORTERS = {
     'tasks/ivf_manager.py': ('RADIUS_INSTRUMENTATION',),
     'taskqueue/worker.py': ('QUEUE_MAX_JOBS', 'QUEUE_MAX_JOBS_HIGH'),
     'taskqueue/maintenance.py': ('QUEUE_ORPHAN_SCAN_SECONDS', 'QUEUE_RETENTION_SCAN_SECONDS'),
+    'database.py': ('TASK_HISTORY_MAX_ROWS', 'TASK_HISTORY_MAX_ROWS_PER_TYPE'),
 }
 
 

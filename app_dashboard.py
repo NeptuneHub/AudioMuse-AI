@@ -22,12 +22,14 @@ Every number the dashboard publishes is classified on two axes:
   cheap FAST metrics every 60s, and the heavier distribution charts hourly.
 
 Main Features:
-* Routes: `/` dashboard page and `/api/dashboard/summary`.
+* Routes: `/` dashboard page, `/api/dashboard/summary` and
+  `/api/dashboard/task_history` (one task type's recent runs).
 * SNAPSHOT tier: the FAST block (CATALOG counts, per-SERVER counts) via
   ``refresh_dashboard_stats()`` every 60s; the CHARTS block (Genres, Moods
   Coverage, Tempo) via ``refresh_dashboard_charts_stats()`` hourly, carrying its
   own ``charts_updated_at`` stamp so the UI can label it honestly.
-* LIVE tier: workers (pg_stat_activity), recent tasks and cron (tiny tables) only.
+* LIVE tier: workers (pg_stat_activity), recent tasks (one line per task type)
+  and cron (tiny tables) only.
 * Both distribution pies count each song ONCE under its winning label. Summing
   the raw per-song scores instead makes every slice converge on the same value
   as the library grows, because the CLAP-derived mood scores share a large
@@ -415,36 +417,86 @@ def _collect_queue_backlog():
         return []
 
 
+def _history_run(r):
+    return {
+        'task_id': r['task_id'],
+        'status': r['status'],
+        'duration_seconds': float(r['duration_seconds'])
+        if r['duration_seconds'] is not None
+        else None,
+        'note': r['note'] or '',
+        'timestamp': to_local_str(r['recorded_at']),
+    }
+
+
 def _collect_task_metrics(cur):
+    # One line per task type: its newest run, its newest failure still in the
+    # history, and how many runs the history holds. A task scheduled every minute
+    # takes one line instead of the whole list, so it cannot hide a daily
+    # analysis. A cancelled run (REVOKED) is not a failure.
     recent = []
     if _table_exists(cur, 'task_history'):
         try:
             cur.execute("""
-                SELECT task_id, task_type, status, duration_seconds, note, recorded_at
-                FROM task_history
-                WHERE task_type IS NOT NULL
-                  AND task_type <> ''
-                  AND task_type <> 'unknown'
-                ORDER BY recorded_at DESC, id DESC
-                LIMIT 10
-            """)
-            for r in cur.fetchall():
-                recent.append(
-                    {
-                        'task_id': r['task_id'],
-                        'task_type': r['task_type'],
-                        'status': r['status'],
-                        'duration_seconds': float(r['duration_seconds'])
-                        if r['duration_seconds'] is not None
-                        else None,
-                        'note': r['note'] or '',
-                        'timestamp': to_local_str(r['recorded_at']),
-                    }
+                WITH shown AS (
+                    SELECT id, task_id, task_type, status, duration_seconds, note, recorded_at
+                    FROM task_history
+                    WHERE task_type IS NOT NULL
+                      AND task_type <> ''
+                      AND task_type <> 'unknown'
+                ), last_run AS (
+                    SELECT DISTINCT ON (task_type) *
+                    FROM shown
+                    ORDER BY task_type, recorded_at DESC, id DESC
+                ), last_failure AS (
+                    SELECT DISTINCT ON (task_type) task_type, task_id, note, recorded_at
+                    FROM shown
+                    WHERE status = %s
+                    ORDER BY task_type, recorded_at DESC, id DESC
+                ), runs AS (
+                    SELECT task_type, COUNT(*) AS runs FROM shown GROUP BY task_type
                 )
+                SELECT l.task_id, l.task_type, l.status, l.duration_seconds, l.note,
+                       l.recorded_at, r.runs,
+                       f.task_id AS failure_task_id, f.note AS failure_note,
+                       f.recorded_at AS failure_recorded_at
+                FROM last_run l
+                JOIN runs r ON r.task_type = l.task_type
+                LEFT JOIN last_failure f ON f.task_type = l.task_type
+                ORDER BY l.recorded_at DESC, l.id DESC
+            """, (config.TASK_STATUS_FAILURE,))
+            for r in cur.fetchall():
+                line = _history_run(r)
+                line['task_type'] = r['task_type']
+                line['runs'] = int(r['runs'])
+                line['last_failure'] = (
+                    {
+                        'task_id': r['failure_task_id'],
+                        'note': r['failure_note'] or '',
+                        'timestamp': to_local_str(r['failure_recorded_at']),
+                    }
+                    if r['failure_task_id'] is not None
+                    else None
+                )
+                recent.append(line)
         except Exception as e:
             logger.debug(f"dashboard: task_history query failed: {e}")
             _safe_rollback(cur)
     return recent
+
+
+def _task_type_runs(cur, task_type):
+    cur.execute(
+        """
+        SELECT task_id, status, duration_seconds, note, recorded_at
+        FROM task_history
+        WHERE task_type = %s
+        ORDER BY recorded_at DESC, id DESC
+        LIMIT %s
+        """,
+        (task_type, max(1, config.TASK_HISTORY_MAX_ROWS_PER_TYPE)),
+    )
+    return [_history_run(r) for r in cur.fetchall()]
 
 
 def _collect_music_server_metrics(cur, total_songs=None):
@@ -825,6 +877,11 @@ def dashboard_summary():
                   type: object
                 recent_tasks:
                   type: array
+                  description: |
+                    One line per task type, the type that ran last first: the
+                    last run (task_id, status, duration_seconds, note,
+                    timestamp), runs (how many the history holds) and
+                    last_failure (task_id, note, timestamp, or null).
                   items:
                     type: object
                 cron:
@@ -860,6 +917,59 @@ def dashboard_summary():
             'cron': cron_rows,
         }
     )
+
+
+@dashboard_bp.route('/api/dashboard/task_history', methods=['GET'])
+def task_history_api():
+    """
+    One task type's recent runs.
+    ---
+    tags:
+      - Dashboard
+    summary: The runs of one task type that the task history still holds, newest first.
+    description: |
+      Opened from a line of the dashboard's Recent tasks. The history keeps at
+      most TASK_HISTORY_MAX_ROWS_PER_TYPE runs of each type, so that is also
+      the most this returns.
+    parameters:
+      - name: task_type
+        in: query
+        required: true
+        schema:
+          type: string
+    responses:
+      200:
+        description: The task type and its runs.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_type:
+                  type: string
+                runs:
+                  type: array
+                  items:
+                    type: object
+      400:
+        description: No task_type was given.
+    """
+    task_type = (request.args.get('task_type') or '').strip()
+    if not task_type:
+        return json_error(ERR_INVALID_REQUEST, 'A task_type is required.')
+    db = get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        runs = _task_type_runs(cur, task_type) if _table_exists(cur, 'task_history') else []
+    except Exception as exc:
+        _safe_rollback(cur)
+        logger.exception("dashboard: task_history query failed")
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, 'Task history query failed; check the container logs.'
+        )
+    finally:
+        cur.close()
+    return jsonify({'task_type': task_type, 'runs': runs})
 
 
 def _load_dashboard_stats(cur):
