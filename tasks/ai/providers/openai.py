@@ -399,9 +399,6 @@ def call_with_tools(
                     payload.pop("temperature", None)
                     payload.pop("max_tokens", None)
                     payload.pop("reasoning_effort", None)
-                    payload.pop("top_p",None)
-                    payload.pop("top_k",None)
-                    payload.pop("min_p",None)
                     payload["reasoning_effort"] = "none"
                     payload["max_completion_tokens"] = 1024
                     try:
@@ -420,9 +417,6 @@ def call_with_tools(
                     payload.pop("temperature", None)
                     payload.pop("max_tokens", None)
                     payload.pop("reasoning_effort", None)
-                    payload.pop("top_p",None)
-                    payload.pop("top_k",None)
-                    payload.pop("min_p",None)
                     payload["reasoning_effort"] = "none"
                     payload.pop("max_completion_tokens", None)
                     try:
