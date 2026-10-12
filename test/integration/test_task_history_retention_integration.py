@@ -184,4 +184,5 @@ class TestTheTaskHistoryEndpointQuery:
         assert [run['task_id'] for run in runs] == ['analysis-2', 'analysis-1'], (
             'one type only, newest first, at most the per-type cap'
         )
-        assert runs[0]['status'] == 'SUCCESS' and runs[0]['note'] == 'analysis-2 note'
+        assert runs[0]['status'] == 'SUCCESS'
+        assert runs[0]['note'] == 'analysis-2 note'

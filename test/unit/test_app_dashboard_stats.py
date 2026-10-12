@@ -380,7 +380,8 @@ class TestRecentTasksShowOneLinePerTaskType:
 
         assert [line['task_type'] for line in recent] == ['plugin.demo.sync', 'main_analysis']
         plugin, analysis = recent
-        assert plugin['task_id'] == 'plugin-9' and plugin['status'] == 'SUCCESS'
+        assert plugin['task_id'] == 'plugin-9'
+        assert plugin['status'] == 'SUCCESS'
         assert plugin['runs'] == 100
         assert plugin['timestamp'] == dash.to_local_str(datetime(2026, 10, 12, 10, 59))
         assert plugin['last_failure'] == {
@@ -388,7 +389,8 @@ class TestRecentTasksShowOneLinePerTaskType:
             'timestamp': dash.to_local_str(datetime(2026, 10, 12, 10, 54)),
         }
         assert analysis['last_failure'] is None
-        assert analysis['status'] == 'REVOKED' and analysis['runs'] == 3
+        assert analysis['status'] == 'REVOKED'
+        assert analysis['runs'] == 3
 
 
 class TestTheTaskHistoryEndpoint:
