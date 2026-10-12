@@ -803,7 +803,7 @@ def get_tracks_by_ids(item_ids_list):
     for row in rows:
         row_dict = dict(row)
         if row_dict.get('embedding'):
-            row_dict['embedding_vector'] = np.frombuffer(row_dict['embedding'], dtype=np.float32)
+            row_dict['embedding_vector'] = np.nan_to_num(np.frombuffer(row_dict['embedding'], dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         else:
             row_dict['embedding_vector'] = np.array([])
         processed_rows.append(row_dict)

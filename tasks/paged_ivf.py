@@ -1006,7 +1006,7 @@ class PagedIvfIndex:
             return [self._cell_distances(qp, v) for v in vecs_list]
 
     def query(self, vector, k: int):
-        q = np.asarray(vector, dtype=np.float32).reshape(-1)
+        q = np.nan_to_num(np.asarray(vector, dtype=np.float32).reshape(-1), nan=0.0, posinf=0.0, neginf=0.0)
         order = self._rank_cells(q)
         cache = self._cache()
         probe = order[: max(1, self._nprobe)]

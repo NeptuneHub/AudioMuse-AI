@@ -161,7 +161,7 @@ def stream_embeddings_to_buffer(
                 dim,
             )
 
-        return buf, item_ids
+        return np.nan_to_num(buf, copy=False, nan=0.0, posinf=0.0, neginf=0.0), item_ids
     finally:
         try:
             side_conn.close()
@@ -209,7 +209,7 @@ def iter_embedding_batches(
                 if len(blob) != dim * 4:
                     total_skipped_dim += 1
                     continue
-                vec = np.frombuffer(blob, dtype=np.float32)
+                vec = np.nan_to_num(np.frombuffer(blob, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
                 batch_buf[write_idx] = vec
                 batch_ids.append(item_id)
                 write_idx += 1
