@@ -292,7 +292,7 @@ def _artist_jobs(cur, batch, artist_tracks, artist_track_hashes):
         (wanted,),
     )
     vectors = {
-        str(item_id): np.frombuffer(blob, dtype=np.float32)
+        str(item_id): np.nan_to_num(np.frombuffer(blob, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         for item_id, blob in cur.fetchall()
         if blob
     }
