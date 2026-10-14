@@ -21,7 +21,6 @@ Main Features:
 
 import logging
 import os
-import re
 from importlib import import_module
 
 import config
@@ -77,6 +76,14 @@ def resolve_emby_jellyfin_user(identifier, token=None):
     return _provider(stype).resolve_user(identifier, creds.get('token') or fallback)
 
 
+def _strip_chunk_suffix(name: str) -> str:
+    if name.endswith(')'):
+        idx = name.rfind('(')
+        if idx >= 0 and name[idx + 1:-1].isdigit():
+            return name[:idx].rstrip()
+    return name
+
+
 def _matches_automatic_naming(name, prefix="", suffix=""):
     if not isinstance(name, str) or not name:
         return False
@@ -92,9 +99,10 @@ def _matches_automatic_naming(name, prefix="", suffix=""):
             return False
         name = name[len(prefix):]
 
+    name = _strip_chunk_suffix(name)
+
     if suffix:
-        escaped_suffix = re.escape(suffix)
-        if not re.search(rf"{escaped_suffix}(\s*\(\d+\))?$", name):
+        if not name.endswith(suffix):
             return False
 
     return True
