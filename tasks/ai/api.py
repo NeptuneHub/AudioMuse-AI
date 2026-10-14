@@ -329,14 +329,11 @@ def clean_playlist_name(name: str) -> str:
         return ""
     name = ftfy.fix_text(name)
     name = unicodedata.normalize("NFKC", name)
-    prefix = getattr(config, 'CLUSTERING_PLAYLIST_PREFIX', '')
-    if not isinstance(prefix, str):
-        prefix = ''
-    suffix = getattr(config, 'CLUSTERING_PLAYLIST_SUFFIX', '_automatic')
-    if not isinstance(suffix, str):
-        suffix = '_automatic'
-    if prefix and name.startswith(prefix):
-        name = name[len(prefix):]
+    suffix = (
+        config.CLUSTERING_PLAYLIST_SUFFIX.rstrip()
+        if isinstance(config.CLUSTERING_PLAYLIST_SUFFIX, str)
+        else "_automatic"
+    )
     if suffix:
         escaped_suffix = re.escape(suffix)
         name = re.sub(rf"{escaped_suffix}(\s*\(\d+\))?$", "", name, flags=re.IGNORECASE)
