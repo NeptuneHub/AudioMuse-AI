@@ -1737,8 +1737,8 @@ def _name_and_prepare_playlists(
         assigned_names.add(final_name)
         used_playlist_names.append(final_name)
 
-        playlist_prefix = CLUSTERING_PLAYLIST_PREFIX if isinstance(CLUSTERING_PLAYLIST_PREFIX, str) else ""
-        playlist_suffix = CLUSTERING_PLAYLIST_SUFFIX if isinstance(CLUSTERING_PLAYLIST_SUFFIX, str) else "_automatic"
+        playlist_prefix = CLUSTERING_PLAYLIST_PREFIX.lstrip() if isinstance(CLUSTERING_PLAYLIST_PREFIX, str) else ""
+        playlist_suffix = CLUSTERING_PLAYLIST_SUFFIX.rstrip() if isinstance(CLUSTERING_PLAYLIST_SUFFIX, str) else "_automatic"
         base_name = f"{playlist_prefix}{final_name}{playlist_suffix}"
         shuffled = _shuffle_playlist_songs(songs, base_name)
         _assign_playlist_chunks(shuffled, max_songs, base_name, final_playlists)
