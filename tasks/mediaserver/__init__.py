@@ -101,9 +101,8 @@ def _matches_automatic_naming(name, prefix="", suffix=""):
 
     name = _strip_chunk_suffix(name)
 
-    if suffix:
-        if not name.endswith(suffix):
-            return False
+    if suffix and not name.endswith(suffix):
+        return False
 
     return True
 
