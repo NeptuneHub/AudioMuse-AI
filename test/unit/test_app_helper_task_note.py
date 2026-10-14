@@ -19,12 +19,16 @@ Main Features:
 * Clustering: sampled/cluster counts from best_params with graceful fallbacks;
   unknown task types and non-dict details yield an empty string
 * The signature is pinned so a database lookup cannot creep back in
+* A plugin task type gets no built-in note, whatever its name contains, so its
+  Recent-tasks note is the plugin's own status_message or message
 """
 
 import inspect
+from unittest.mock import MagicMock
 
 import pytest
 
+import database
 from database import _build_task_note
 
 
@@ -141,3 +145,48 @@ class TestAnalysisNoteReadsTheParentsOwnTally:
 
     def test_a_float_tally_is_truncated(self):
         assert _build_task_note('main_analysis', {'tracks_analyzed': 9.9}) == 'Songs analyzed: 9'
+
+
+class TestAPluginTaskGetsItsOwnNote:
+
+    @pytest.mark.parametrize('task_type, details', [
+        ('plugin.lumae_analysis.catalog_reconcile', {'tracks_analyzed': 3}),
+        ('plugin.demo.clean_orphans', {'tracks_deleted': 4}),
+        ('plugin.demo.cluster_sync', {'num_clusters': 5, 'sampled_songs': 50}),
+    ])
+    def test_a_plugin_type_gets_no_built_in_note(self, task_type, details):
+        assert _build_task_note(task_type, details) == '', (
+            'the built-in notes match analysis, clean and cluster anywhere in the '
+            'name, so a plugin id such as lumae_analysis read "Songs analyzed: 0" '
+            'on every row, whatever the run did (#944)'
+        )
+
+    @staticmethod
+    def _recorded_note(task_type, details):
+        cur = MagicMock()
+        cur.__enter__.return_value = cur
+        cur.fetchone.return_value = None
+        db = MagicMock()
+        db.cursor.return_value = cur
+
+        database.record_task_history('task-1', task_type, 'SUCCESS', details=details, conn=db)
+
+        insert = next(
+            call for call in cur.execute.call_args_list
+            if 'INSERT INTO task_history' in call.args[0]
+        )
+        return insert.args[1][4]
+
+    @pytest.mark.parametrize('details, note', [
+        ({'status_message': 'Reconciled 12 albums.', 'message': 'older text',
+          'tracks_analyzed': 3}, 'Reconciled 12 albums.'),
+        ({'message': 'Plugin task completed successfully.'},
+         'Plugin task completed successfully.'),
+    ], ids=['status_message', 'message-only'])
+    def test_a_plugin_tasks_history_note_is_its_own_message(self, details, note):
+        assert self._recorded_note('plugin.lumae_analysis.catalog_reconcile', details) == note
+
+    def test_a_host_task_keeps_its_built_in_note_over_its_message(self):
+        details = {'status_message': 'Task completed successfully.', 'tracks_analyzed': 7}
+
+        assert self._recorded_note('main_analysis', details) == 'Songs analyzed: 7'
