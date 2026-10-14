@@ -603,6 +603,11 @@ var ADVANCED_SECTIONS = [
     }
 ];
 var ADVANCED_OTHER_TITLE = 'Other parameters';
+var ADVANCED_TOOLTIPS = {
+    CLUSTERING_PLAYLIST_PREFIX: 'Optional prefix prepended to generated playlists (e.g. "Audiomuse/"). When cleaning is enabled, playlists matching this prefix and suffix are deleted.',
+    CLUSTERING_PLAYLIST_SUFFIX: 'Optional suffix appended to generated playlists (default "_automatic"). When cleaning is enabled, playlists matching this prefix and suffix are deleted. WARNING: If both prefix and suffix are empty, automatic cleanup is skipped to prevent deleting all media server playlists.',
+    CLUSTERING_CLEANING: 'When true, existing automatic playlists matching the configured prefix and suffix are deleted before new ones are created. Set to false to preserve all existing playlists.'
+};
 
 var ML_MODEL_FLAGS = ['CLAP_ENABLED', 'LYRICS_ENABLED', 'LYRICS_ASR_ENABLE', 'NEURAL_FINGERPRINT_ENABLED'];
 
@@ -736,6 +741,7 @@ function buildAdvancedFieldRow(field) {
         name: field.name,
         label: field.name,
         placeholder: field.default ? field.default : '',
+        tooltip: ADVANCED_TOOLTIPS[field.name] || field.tooltip || null,
         type: field.type === 'bool' ? 'boolean' : field.type,
         inputType: 'text',
         secret: secret,
