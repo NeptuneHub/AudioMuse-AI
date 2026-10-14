@@ -604,7 +604,7 @@ var ADVANCED_SECTIONS = [
 ];
 var ADVANCED_OTHER_TITLE = 'Other parameters';
 var ADVANCED_TOOLTIPS = {
-    CLUSTERING_PLAYLIST_PREFIX: 'Optional prefix prepended to generated playlists (e.g. "Audiomuse/"). Some media players and clients use a prefix to mimic a folder hierarchy. When cleaning is enabled, playlists matching this prefix and suffix are deleted.',
+    CLUSTERING_PLAYLIST_PREFIX: 'Optional prefix prepended to generated playlists (e.g. "[Auto] " or "AudioMuse - "). Some players/clients can mimic a folder hierarchy using a slash (e.g. "AudioMuse/"), but note that file-based servers like Lyrion may require the directory to already exist on disk.',
     CLUSTERING_PLAYLIST_SUFFIX: 'Optional suffix appended to generated playlists (default "_automatic"). When cleaning is enabled, playlists matching this prefix and suffix are deleted. WARNING: If neither prefix nor suffix has at least 2 non-whitespace characters, automatic cleanup is safely skipped to prevent unintended playlist deletion.',
     CLUSTERING_CLEANING: 'When true, existing automatic playlists matching the configured prefix and suffix are deleted before new ones are created. Set to false to preserve all existing playlists.'
 };
