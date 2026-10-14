@@ -441,3 +441,21 @@ def test_tag_name_evidence_ignores_the_numbered_chunk_suffix():
 def test_tag_name_evidence_is_empty_when_nothing_is_recognisable():
     assert evidence_from_cluster_name('Old_Cluster_Name') == ''
     assert evidence_from_cluster_name(None) == ''
+
+
+def test_tag_name_evidence_with_configured_prefix_and_empty_suffix(monkeypatch):
+    import tasks.ai.playlist_namer as pn
+    monkeypatch.setattr(pn, 'CLUSTERING_PLAYLIST_PREFIX', 'Audiomuse/')
+    monkeypatch.setattr(pn, 'CLUSTERING_PLAYLIST_SUFFIX', '')
+    assert pn.evidence_from_cluster_name('Audiomuse/Folk_Acoustic_Slow_Sad') == (
+        'slow-tempo, somber music'
+    )
+
+
+def test_tag_name_evidence_with_configured_prefix_and_suffix(monkeypatch):
+    import tasks.ai.playlist_namer as pn
+    monkeypatch.setattr(pn, 'CLUSTERING_PLAYLIST_PREFIX', '[AI] ')
+    monkeypatch.setattr(pn, 'CLUSTERING_PLAYLIST_SUFFIX', ' [Mix]')
+    assert pn.evidence_from_cluster_name('[AI] Folk_Acoustic_Slow_Sad [Mix]') == (
+        'slow-tempo, somber music'
+    )
