@@ -31,9 +31,14 @@ Main Features:
 * _touch_cron_last_run never aborts the retry tick on a DB failure
 * An expired retry's visible-skip row uses the queue type, not the cron name
 * queue_busy_response carries the centralized error code and message
+* A cron tick runs the retry pass BEFORE the minute pass, so a plugin row due
+  every minute cannot refill the queue ahead of a blocked schedule's retry; a
+  failed retry pass never skips the minute pass and is attempted again next
+  minute
 """
 
 import inspect
+import pathlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -531,3 +536,157 @@ def test_cron_retry_interval_is_clamped_when_not_below_the_window():
         patch('app_cron.CRON_RETRY_INTERVAL_MINUTES', 60),
     ):
         assert cron_retry_interval_seconds() == 4 * 60
+
+
+class _FreeQueue:
+    """A queue that starts empty: every enqueue leaves a live NEW row, and the
+    admission guard answers with the first live row, as get_queue_blocking_task
+    does for a main task or a plugin.% task."""
+
+    def __init__(self):
+        self.live = []
+
+    def blocking_task(self, conn=None):
+        return self.live[0] if self.live else None
+
+    def enqueue(self, *args, task_id=None, task_type=None, **kwargs):
+        self.live.append({'task_id': task_id, 'task_type': task_type, 'status': 'NEW'})
+
+
+def _tick_with_a_minute_plugin_row_and_a_pending_analysis_retry(now, last_retry_ts):
+    """One cron_tick with an 'analysis' schedule waiting in cron_retry and a
+    plugin cron row due every minute, against a queue that is free at the start
+    of the tick. Returns the queue and the retry-table mocks."""
+    import app_cron
+
+    plugin_row = {
+        'id': 2, 'name': 'Plugin watchdog', 'task_type': 'plugin.demo.sync',
+        'cron_expr': '* * * * *', 'enabled': True, 'last_run': 0, 'options': None,
+    }
+    analysis_row = {
+        'id': 1, 'name': 'Analysis', 'task_type': 'analysis',
+        'cron_expr': '0 2 * * *', 'enabled': True, 'last_run': 0, 'options': None,
+    }
+    cur = MagicMock()
+    cur.fetchall.return_value = [plugin_row]
+    cur.rowcount = 1
+    db = MagicMock()
+    db.closed = 0
+    db.cursor.return_value = cur
+
+    plugin_manager = MagicMock()
+    plugin_manager.get_cron_task.return_value = {
+        'dotted': 'audiomuse_plugins.demo.tasks.sync', 'queue': 'default',
+    }
+    fake_plugin_module = MagicMock()
+    fake_plugin_module.plugin_manager = plugin_manager
+
+    queue = _FreeQueue()
+    with (
+        patch.dict('sys.modules', {'plugin.manager': fake_plugin_module}),
+        patch('app_cron.get_db', return_value=db),
+        patch.object(app_cron.time, 'time', return_value=now),
+        patch('app_cron.get_queue_blocking_task', side_effect=queue.blocking_task),
+        patch('app_cron.taskqueue.enqueue', side_effect=queue.enqueue),
+        patch('app_cron.clean_up_previous_main_tasks'),
+        patch('app_cron.save_task_status'),
+        patch(
+            'app_cron.list_pending_cron_retries',
+            return_value=[_pending_entry(task_type='analysis')],
+        ),
+        patch('app_cron._cron_row_for_retry', return_value=analysis_row),
+        patch('app_cron.cron_retry_task_already_done', return_value=False),
+        patch('app_cron._touch_cron_last_run'),
+        patch('app_cron.clear_cron_retry') as clear,
+        patch('app_cron.bump_cron_retry') as bump,
+        patch('app_cron.record_cron_retry') as record,
+    ):
+        returned_ts = app_cron.cron_tick(last_retry_ts)
+
+    return queue, clear, bump, record, returned_ts
+
+
+class TestTheRetryPassRunsBeforeTheMinutePass:
+    NOW = 1_900_000_020.0
+
+    def test_a_blocked_schedule_starts_ahead_of_a_plugin_row_due_every_minute(self):
+        interval = config.CRON_RETRY_INTERVAL_MINUTES * 60
+        queue, clear, bump, record, _ts = (
+            _tick_with_a_minute_plugin_row_and_a_pending_analysis_retry(
+                self.NOW, self.NOW - interval,
+            )
+        )
+
+        assert [row['task_type'] for row in queue.live] == ['main_analysis'], (
+            'the retry pass must see the queue before the minute pass refills it: '
+            'run after it, the plugin row due every minute is queued first and its '
+            'NEW row refuses the retry, so the schedule can never start (#944)'
+        )
+        assert [call.args[0] for call in clear.call_args_list] == ['analysis']
+        bump.assert_not_called()
+        record.assert_called_once()
+        assert record.call_args.args[0] == 'plugin.demo.sync'
+        assert record.call_args.kwargs['blocker_task_type'] == 'main_analysis', (
+            'the plugin row refused in the same minute goes into cron_retry like '
+            'any other row'
+        )
+
+    def test_a_tick_before_the_retry_interval_runs_only_the_minute_pass(self):
+        import app_cron
+
+        with (
+            patch.object(app_cron.time, 'time', return_value=self.NOW),
+            patch('app_cron.retry_due_cron_jobs') as retry,
+            patch('app_cron.run_due_cron_jobs') as minute,
+        ):
+            app_cron.cron_tick(self.NOW - 30)
+
+        retry.assert_not_called()
+        minute.assert_called_once_with()
+
+    def test_the_retry_timestamp_advances_only_when_the_retry_pass_ran(self):
+        import app_cron
+
+        interval = app_cron.cron_retry_interval_seconds()
+        with (
+            patch.object(app_cron.time, 'time', return_value=self.NOW),
+            patch('app_cron.retry_due_cron_jobs') as retry,
+            patch('app_cron.run_due_cron_jobs'),
+        ):
+            assert app_cron.cron_tick(self.NOW - 30) == self.NOW - 30
+            assert retry.call_count == 0
+            assert app_cron.cron_tick(self.NOW - interval) == self.NOW
+            assert retry.call_count == 1
+
+    def test_a_failed_retry_pass_still_runs_the_minute_pass(self, caplog):
+        import app_cron
+
+        interval = app_cron.cron_retry_interval_seconds()
+        last_retry_ts = self.NOW - interval
+        with (
+            patch.object(app_cron.time, 'time', return_value=self.NOW),
+            patch(
+                'app_cron.retry_due_cron_jobs',
+                side_effect=RuntimeError('cron_retry is unreadable'),
+            ),
+            patch('app_cron.run_due_cron_jobs') as minute,
+        ):
+            assert app_cron.cron_tick(last_retry_ts) == last_retry_ts, (
+                'a retry pass that raised did not run: the next minute tries it '
+                'again, as before'
+            )
+
+        minute.assert_called_once_with()
+        assert 'cron_retry is unreadable' in caplog.text
+
+    def test_the_cron_thread_runs_the_tick_and_not_the_two_passes_itself(self):
+        source = (
+            pathlib.Path(__file__).resolve().parents[2] / 'app.py'
+        ).read_text(encoding='utf-8')
+        loop = source.split('def _cron_manager_loop', 1)[1].split('cron_thread =', 1)[0]
+
+        assert 'cron_tick(last_retry_ts)' in loop
+        assert 'run_due_cron_jobs()' not in loop
+        assert 'retry_due_cron_jobs()' not in loop, (
+            'the order of the two passes lives in app_cron.cron_tick only'
+        )
