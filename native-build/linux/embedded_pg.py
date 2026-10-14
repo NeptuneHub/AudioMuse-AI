@@ -102,7 +102,8 @@ def start(data_dir):
             pg_data_dir.reset_data_dir(data_dir)
             _init_cluster(data_dir, env)
         if not _is_running(data_dir, env):
-            _run_checked([_bin("pg_ctl"), "-D", data_dir, "-w", "start"], env)
+            pg_log = os.path.join(paths.logs_dir(), "postgres.log")
+            _run_checked([_bin("pg_ctl"), "-D", data_dir, "-w", "-l", pg_log, "start"], env)
         _data_dir = data_dir
         return _dsn(data_dir)
 
