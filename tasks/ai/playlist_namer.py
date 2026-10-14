@@ -38,7 +38,13 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from config import MOOD_SCORE_MATCH_THRESHOLD, OTHER_FEATURE_LABELS, STRATIFIED_GENRES
+from config import (
+    CLUSTERING_PLAYLIST_PREFIX,
+    CLUSTERING_PLAYLIST_SUFFIX,
+    MOOD_SCORE_MATCH_THRESHOLD,
+    OTHER_FEATURE_LABELS,
+    STRATIFIED_GENRES,
+)
 
 
 _INSTRUMENTAL_MUSIC = 'instrumental music'
@@ -534,7 +540,17 @@ def build_naming_context(
 
 
 def evidence_from_cluster_name(cluster_name: Optional[str]) -> str:
-    stem = (cluster_name or '').partition('_automatic')[0]
+    name = cluster_name or ''
+    prefix = CLUSTERING_PLAYLIST_PREFIX if isinstance(CLUSTERING_PLAYLIST_PREFIX, str) else ''
+    suffix = CLUSTERING_PLAYLIST_SUFFIX if isinstance(CLUSTERING_PLAYLIST_SUFFIX, str) else '_automatic'
+    if prefix and name.startswith(prefix):
+        name = name[len(prefix):]
+    if suffix and suffix in name:
+        stem = name.partition(suffix)[0]
+    elif '_automatic' in name:
+        stem = name.partition('_automatic')[0]
+    else:
+        stem = name
     parts = []
     for token in re.split(r"[_\s]+", stem):
         key = token.casefold()

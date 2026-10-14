@@ -188,6 +188,23 @@ class TestCleanPlaylistName:
             == "Rock Pop Medium Happy"
         )
 
+    def test_strips_configured_prefix_and_empty_suffix(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "CLUSTERING_PLAYLIST_PREFIX", "Audiomuse/")
+        monkeypatch.setattr(config, "CLUSTERING_PLAYLIST_SUFFIX", "")
+
+        assert clean_playlist_name("Audiomuse/Pop Love") == "Pop Love"
+        assert clean_playlist_name("Audiomuse/Pop Love (2)") == "Pop Love"
+        assert clean_playlist_name("Pop Love_automatic") == "Pop Love"
+
+    def test_strips_both_configured_prefix_and_suffix(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "CLUSTERING_PLAYLIST_PREFIX", "[AI] ")
+        monkeypatch.setattr(config, "CLUSTERING_PLAYLIST_SUFFIX", " [Mix]")
+
+        assert clean_playlist_name("[AI] Pop Love [Mix]") == "Pop Love"
+        assert clean_playlist_name("[AI] Pop Love [Mix] (3)") == "Pop Love"
+
     def test_handles_non_string_input(self):
         assert clean_playlist_name(None) == ""
         assert clean_playlist_name(123) == ""
