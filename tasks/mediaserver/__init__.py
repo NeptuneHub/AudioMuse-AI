@@ -38,6 +38,7 @@ _TRACK_IDS_REQUIRED = "Track IDs are required."
 
 _PUBLIC_SERVER_API = (
     'resolve_emby_jellyfin_user', 'delete_playlists_by_suffix', 'delete_automatic_playlists',
+    'delete_playlists_by_prefix_suffix',
     'get_recent_albums', 'get_tracks_from_album', 'download_track', 'get_all_songs',
     'list_libraries', 'search_albums', 'test_connection', 'get_playlist_by_name',
     'get_all_playlists', 'get_playlist_track_ids', 'create_playlist', 'create_instant_playlist',
@@ -75,12 +76,23 @@ def resolve_emby_jellyfin_user(identifier, token=None):
     return _provider(stype).resolve_user(identifier, creds.get('token') or fallback)
 
 
-def _delete_matching_playlists(playlists_to_check, delete_function, suffix):
+def _matches_automatic_naming(name, prefix="", suffix=""):
+    if not prefix and not suffix:
+        return False
+    if prefix and not name.startswith(prefix):
+        return False
+    if suffix and not name.endswith(suffix):
+        return False
+    return True
+
+
+def _delete_matching_playlists(playlists_to_check, delete_function, suffix="", prefix=""):
     deleted_count = 0
     for p in playlists_to_check:
         playlist_id = p.get('Id') or p.get('id')
+        name = p.get('Name', '')
         try:
-            if p.get('Name', '').endswith(suffix) and delete_function(playlist_id):
+            if _matches_automatic_naming(name, prefix=prefix, suffix=suffix) and delete_function(playlist_id):
                 deleted_count += 1
         except Exception:
             logger.exception(
@@ -89,21 +101,43 @@ def _delete_matching_playlists(playlists_to_check, delete_function, suffix):
     return deleted_count
 
 
-def delete_playlists_by_suffix(suffix):
-    logger.info(f"Starting deletion of all '{suffix}' playlists.")
+def delete_playlists_by_prefix_suffix(prefix="", suffix=""):
+    if not prefix and not suffix:
+        logger.warning(
+            "Neither prefix nor suffix specified for playlist deletion; skipping to prevent unintended deletion."
+        )
+        return 0
+
+    desc = []
+    if prefix:
+        desc.append(f"prefix '{prefix}'")
+    if suffix:
+        desc.append(f"suffix '{suffix}'")
+    logger.info(f"Starting deletion of all playlists with {' and '.join(desc)}.")
     deleted_count = 0
 
     provider = _provider()
     if provider is not None:
         deleted_count = _delete_matching_playlists(
-            provider.get_all_playlists(), provider.delete_playlist, suffix
+            provider.get_all_playlists(), provider.delete_playlist, suffix=suffix, prefix=prefix
         )
 
     logger.info(f"Finished deletion. Deleted {deleted_count} playlists.")
+    return deleted_count
+
+
+def delete_playlists_by_suffix(suffix):
+    return delete_playlists_by_prefix_suffix(suffix=suffix)
 
 
 def delete_automatic_playlists():
-    delete_playlists_by_suffix('_automatic')
+    prefix = getattr(config, 'CLUSTERING_PLAYLIST_PREFIX', '')
+    if not isinstance(prefix, str):
+        prefix = ''
+    suffix = getattr(config, 'CLUSTERING_PLAYLIST_SUFFIX', '_automatic')
+    if not isinstance(suffix, str):
+        suffix = '_automatic'
+    return delete_playlists_by_prefix_suffix(prefix=prefix, suffix=suffix)
 
 
 def get_recent_albums(limit):

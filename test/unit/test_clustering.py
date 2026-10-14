@@ -1331,6 +1331,60 @@ class TestSelectDiversePlaylists:
         assert result['Happy Pop_automatic'] == [('song-1', 'Song 1', 'Artist')]
         assert result['Happy Pop (2)_automatic'] == [('song-2', 'Song 2', 'Artist')]
 
+    def test_custom_prefix_and_empty_suffix_in_playlist_naming(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        monkeypatch.setattr(
+            clustering, '_try_ai_name_playlist', lambda *args, **kwargs: 'Happy Pop'
+        )
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_PREFIX', 'Audiomuse/')
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_SUFFIX', '')
+        result = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster_a': [('song-1', 'Song 1', 'Artist')],
+                    'cluster_b': [('song-2', 'Song 2', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+        )
+
+        assert 'Audiomuse/Happy Pop' in result
+        assert 'Audiomuse/Happy Pop (2)' in result
+        assert result['Audiomuse/Happy Pop'] == [('song-1', 'Song 1', 'Artist')]
+        assert result['Audiomuse/Happy Pop (2)'] == [('song-2', 'Song 2', 'Artist')]
+
+    def test_custom_prefix_and_suffix_in_playlist_naming(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        monkeypatch.setattr(
+            clustering, '_try_ai_name_playlist', lambda *args, **kwargs: 'Happy Pop'
+        )
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_PREFIX', '[Auto] ')
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_SUFFIX', ' [Mix]')
+        result = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster_a': [('song-1', 'Song 1', 'Artist')],
+                    'cluster_b': [('song-2', 'Song 2', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+        )
+
+        assert '[Auto] Happy Pop [Mix]' in result
+        assert '[Auto] Happy Pop (2) [Mix]' in result
+        assert result['[Auto] Happy Pop [Mix]'] == [('song-1', 'Song 1', 'Artist')]
+        assert result['[Auto] Happy Pop (2) [Mix]'] == [('song-2', 'Song 2', 'Artist')]
+
     def test_limit_zero_returns_the_original_result(self):
         from tasks.clustering_postprocessing import select_diverse_playlists_with_genre_coverage
 
