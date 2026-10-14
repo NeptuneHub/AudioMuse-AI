@@ -28,7 +28,6 @@ Main Features:
 import json
 import logging
 import random
-import re
 import time
 import numpy as np
 from collections import Counter, defaultdict
@@ -212,20 +211,27 @@ def _naming_lyric_axes(item_ids):
         return [], {}
 
 
+def _strip_chunk_suffix(name: str) -> str:
+    if name.endswith(')'):
+        idx = name.rfind('(')
+        if idx >= 0 and name[idx + 1:-1].isdigit():
+            return name[:idx].rstrip()
+    return name
+
+
 def _strip_playlist_affixes(name: str) -> str:
     if not isinstance(name, str):
         return ""
+    name = _strip_chunk_suffix(name)
     prefix = CLUSTERING_PLAYLIST_PREFIX.lstrip() if isinstance(CLUSTERING_PLAYLIST_PREFIX, str) else ""
     suffix = CLUSTERING_PLAYLIST_SUFFIX.rstrip() if isinstance(CLUSTERING_PLAYLIST_SUFFIX, str) else "_automatic"
     if prefix and name.startswith(prefix):
         name = name[len(prefix):]
-    if suffix:
-        escaped_suffix = re.escape(suffix)
-        name = re.sub(rf"{escaped_suffix}(\s*\(\d+\))?$", "", name, flags=re.IGNORECASE)
-    if suffix != "_automatic":
-        name = re.sub(r"_automatic(\s*\(\d+\))?$", "", name, flags=re.IGNORECASE)
-    name = re.sub(r"\s*\(\d+\)$", "", name)
-    return name
+    if suffix and name.casefold().endswith(suffix.casefold()):
+        name = name[:-len(suffix)]
+    if suffix.casefold() != "_automatic" and name.casefold().endswith("_automatic"):
+        name = name[:-len("_automatic")]
+    return _strip_chunk_suffix(name)
 
 
 def _name_playlist_with_ai_config(
