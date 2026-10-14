@@ -21,6 +21,7 @@ Main Features:
 
 import logging
 import os
+import re
 from importlib import import_module
 
 import config
@@ -77,12 +78,25 @@ def resolve_emby_jellyfin_user(identifier, token=None):
 
 
 def _matches_automatic_naming(name, prefix="", suffix=""):
-    if not prefix and not suffix:
+    if not isinstance(name, str) or not name:
         return False
-    if prefix and not name.startswith(prefix):
+
+    prefix = prefix.lstrip() if isinstance(prefix, str) else ""
+    suffix = suffix.rstrip() if isinstance(suffix, str) else ""
+
+    if len(prefix.strip() + suffix.strip()) < 2:
         return False
-    if suffix and not name.endswith(suffix):
-        return False
+
+    if prefix:
+        if not name.startswith(prefix):
+            return False
+        name = name[len(prefix):]
+
+    if suffix:
+        escaped_suffix = re.escape(suffix)
+        if not re.search(rf"{escaped_suffix}(\s*\(\d+\))?$", name):
+            return False
+
     return True
 
 
@@ -90,7 +104,7 @@ def _delete_matching_playlists(playlists_to_check, delete_function, suffix="", p
     deleted_count = 0
     for p in playlists_to_check:
         playlist_id = p.get('Id') or p.get('id')
-        name = p.get('Name', '')
+        name = p.get('Name') or p.get('name') or ''
         try:
             if _matches_automatic_naming(name, prefix=prefix, suffix=suffix) and delete_function(playlist_id):
                 deleted_count += 1
@@ -102,11 +116,16 @@ def _delete_matching_playlists(playlists_to_check, delete_function, suffix="", p
 
 
 def delete_playlists_by_prefix_suffix(prefix="", suffix=""):
-    if not prefix and not suffix:
+    prefix = prefix.lstrip() if isinstance(prefix, str) else ""
+    suffix = suffix.rstrip() if isinstance(suffix, str) else ""
+
+    if len(prefix.strip() + suffix.strip()) < 2:
         logger.warning(
-            "Neither prefix nor suffix specified for automatic playlist deletion "
-            "(CLUSTERING_PLAYLIST_PREFIX and CLUSTERING_PLAYLIST_SUFFIX are both empty); "
-            "skipping deletion to prevent unintended deletion of all media server playlists."
+            "Neither prefix nor suffix has sufficient non-whitespace characters (at least 2 required) "
+            "for safe automatic playlist deletion (prefix: %r, suffix: %r); "
+            "skipping deletion to prevent unintended deletion of all media server playlists.",
+            prefix,
+            suffix,
         )
         return 0
 
@@ -133,12 +152,16 @@ def delete_playlists_by_suffix(suffix):
 
 
 def delete_automatic_playlists():
-    prefix = getattr(config, 'CLUSTERING_PLAYLIST_PREFIX', '')
-    if not isinstance(prefix, str):
-        prefix = ''
-    suffix = getattr(config, 'CLUSTERING_PLAYLIST_SUFFIX', '_automatic')
-    if not isinstance(suffix, str):
-        suffix = '_automatic'
+    prefix = (
+        config.CLUSTERING_PLAYLIST_PREFIX
+        if isinstance(config.CLUSTERING_PLAYLIST_PREFIX, str)
+        else ""
+    )
+    suffix = (
+        config.CLUSTERING_PLAYLIST_SUFFIX
+        if isinstance(config.CLUSTERING_PLAYLIST_SUFFIX, str)
+        else "_automatic"
+    )
     return delete_playlists_by_prefix_suffix(prefix=prefix, suffix=suffix)
 
 

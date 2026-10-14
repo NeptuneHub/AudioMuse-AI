@@ -1902,9 +1902,78 @@ class TestDispatcherAutomaticPlaylistDeletion:
         ]
         mock_delete.return_value = True
 
+        assert mock_delete.call_count == 0
+
+    @patch('tasks.mediaserver.config')
+    @patch('tasks.mediaserver.jellyfin.get_all_playlists')
+    @patch('tasks.mediaserver.jellyfin.delete_playlist')
+    def test_aborts_deletion_safely_when_affixes_are_under_two_non_whitespace_characters(
+        self, mock_delete, mock_get, mock_config
+    ):
+        from tasks.mediaserver import delete_automatic_playlists
+
+        mock_config.MEDIASERVER_TYPE = 'jellyfin'
+        mock_delete.return_value = True
+
+        for prefix, suffix in [('s', ''), ('', 'x'), ('   ', ''), ('', '   '), (' ', ' ')]:
+            mock_config.CLUSTERING_PLAYLIST_PREFIX = prefix
+            mock_config.CLUSTERING_PLAYLIST_SUFFIX = suffix
+            mock_get.return_value = [
+                {'Id': '1', 'Name': 'sRock'},
+                {'Id': '2', 'Name': 'Popx'},
+            ]
+            deleted = delete_automatic_playlists()
+            assert deleted == 0
+            assert mock_delete.call_count == 0
+
+    @patch('tasks.mediaserver.config')
+    @patch('tasks.mediaserver.jellyfin.get_all_playlists')
+    @patch('tasks.mediaserver.jellyfin.delete_playlist')
+    def test_deletes_numbered_chunk_playlists(self, mock_delete, mock_get, mock_config):
+        from tasks.mediaserver import delete_automatic_playlists
+
+        mock_config.MEDIASERVER_TYPE = 'jellyfin'
+        mock_config.CLUSTERING_PLAYLIST_PREFIX = '[Auto] '
+        mock_config.CLUSTERING_PLAYLIST_SUFFIX = ' [Mix]'
+        mock_get.return_value = [
+            {'Id': '1', 'Name': '[Auto] Rock [Mix]'},
+            {'Id': '2', 'Name': '[Auto] Rock [Mix] (2)'},
+            {'Id': '3', 'Name': '[Auto] Rock [Mix] (15)'},
+            {'Id': '4', 'Name': '[Auto] Rock'},
+            {'Id': '5', 'Name': 'Rock [Mix] (2)'},
+            {'Id': '6', 'Name': 'Other'},
+        ]
+        mock_delete.return_value = True
+
+        deleted = delete_automatic_playlists()
+
+        assert deleted == 3
+        deleted_ids = [call[0][0] for call in mock_delete.call_args_list]
+        assert deleted_ids == ['1', '2', '3']
+
+    @patch('tasks.mediaserver.config')
+    @patch('tasks.mediaserver.jellyfin.get_all_playlists')
+    @patch('tasks.mediaserver.jellyfin.delete_playlist')
+    def test_whitespace_handling_preserves_trailing_prefix_and_leading_suffix_space(
+        self, mock_delete, mock_get, mock_config
+    ):
+        from tasks.mediaserver import delete_automatic_playlists
+
+        mock_config.MEDIASERVER_TYPE = 'jellyfin'
+        mock_config.CLUSTERING_PLAYLIST_PREFIX = '   Auto '
+        mock_config.CLUSTERING_PLAYLIST_SUFFIX = ' [Mix]   '
+        mock_get.return_value = [
+            {'Id': '1', 'Name': 'Auto Rock [Mix]'},
+            {'Id': '2', 'Name': 'Auto Rock [Mix] (2)'},
+            {'Id': '3', 'Name': 'Automated Rock [Mix]'},
+            {'Id': '4', 'Name': 'Auto Rock[Mix]'},
+        ]
+        mock_delete.return_value = True
+
         delete_automatic_playlists()
 
-        assert mock_delete.call_count == 0
+        deleted_ids = [call[0][0] for call in mock_delete.call_args_list]
+        assert deleted_ids == ['1', '2']
 
 
 class TestLyrionJsonRpcRequest:

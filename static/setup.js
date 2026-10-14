@@ -446,6 +446,7 @@ var ADVANCED_SECTIONS = [
             'ENABLE_CLUSTERING_EMBEDDINGS', 'CLUSTER_ALGORITHM', 'MAX_SONGS_PER_CLUSTER',
             'MAX_SONGS_PER_ARTIST', 'MAX_DISTANCE', 'CLUSTERING_RUNS', 'TOP_N_CLUSTERING_PLAYLIST',
             'MIN_PLAYLIST_SIZE_FOR_TOP_N', 'USE_GPU_CLUSTERING', 'CLUSTERING_CLEANING',
+            'CLUSTERING_PLAYLIST_PREFIX', 'CLUSTERING_PLAYLIST_SUFFIX',
             'CLUSTERING_SUBSET_SONGS', 'CLUSTERING_EARLY_STOP_BATCHES',
             'CLUSTERING_STALL_TIMEOUT_MINUTES', 'CLUSTERING_MAX_STALL_GIVE_UPS'
         ]
@@ -568,7 +569,6 @@ var ADVANCED_SECTIONS = [
         title: 'AI Provider & Playlist Naming',
         items: [
             'AI_MODEL_PROVIDER', 'AI_REQUEST_TIMEOUT_SECONDS', 'MAX_SONGS_IN_AI_PROMPT',
-            'CLUSTERING_PLAYLIST_PREFIX', 'CLUSTERING_PLAYLIST_SUFFIX',
             'OLLAMA_SERVER_URL', 'OLLAMA_MODEL_NAME', 'OPENAI_SERVER_URL', 'OPENAI_MODEL_NAME',
             'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_MODEL_NAME', 'MISTRAL_API_KEY',
             'MISTRAL_MODEL_NAME', 'CLUSTER_NAMING_AI_HISTORY', 'PLAYLIST_NAME_HISTORY_ROUNDS'
@@ -604,8 +604,8 @@ var ADVANCED_SECTIONS = [
 ];
 var ADVANCED_OTHER_TITLE = 'Other parameters';
 var ADVANCED_TOOLTIPS = {
-    CLUSTERING_PLAYLIST_PREFIX: 'Optional prefix prepended to generated playlists (e.g. "Audiomuse/"). When cleaning is enabled, playlists matching this prefix and suffix are deleted.',
-    CLUSTERING_PLAYLIST_SUFFIX: 'Optional suffix appended to generated playlists (default "_automatic"). When cleaning is enabled, playlists matching this prefix and suffix are deleted. WARNING: If both prefix and suffix are empty, automatic cleanup is skipped to prevent deleting all media server playlists.',
+    CLUSTERING_PLAYLIST_PREFIX: 'Optional prefix prepended to generated playlists (e.g. "Audiomuse/"). Some media players and clients use a prefix to mimic a folder hierarchy. When cleaning is enabled, playlists matching this prefix and suffix are deleted.',
+    CLUSTERING_PLAYLIST_SUFFIX: 'Optional suffix appended to generated playlists (default "_automatic"). When cleaning is enabled, playlists matching this prefix and suffix are deleted. WARNING: If neither prefix nor suffix has at least 2 non-whitespace characters, automatic cleanup is safely skipped to prevent unintended playlist deletion.',
     CLUSTERING_CLEANING: 'When true, existing automatic playlists matching the configured prefix and suffix are deleted before new ones are created. Set to false to preserve all existing playlists.'
 };
 
