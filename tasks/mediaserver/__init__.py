@@ -104,7 +104,9 @@ def _delete_matching_playlists(playlists_to_check, delete_function, suffix="", p
 def delete_playlists_by_prefix_suffix(prefix="", suffix=""):
     if not prefix and not suffix:
         logger.warning(
-            "Neither prefix nor suffix specified for playlist deletion; skipping to prevent unintended deletion."
+            "Neither prefix nor suffix specified for automatic playlist deletion "
+            "(CLUSTERING_PLAYLIST_PREFIX and CLUSTERING_PLAYLIST_SUFFIX are both empty); "
+            "skipping deletion to prevent unintended deletion of all media server playlists."
         )
         return 0
 
