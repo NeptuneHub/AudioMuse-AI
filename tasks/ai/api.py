@@ -329,10 +329,25 @@ def clean_playlist_name(name: str) -> str:
         return ""
     name = ftfy.fix_text(name)
     name = unicodedata.normalize("NFKC", name)
-    name = re.sub(r"_automatic(\s*\(\d+\))?$", "", name, flags=re.IGNORECASE)
+    suffix = (
+        config.CLUSTERING_PLAYLIST_SUFFIX.rstrip()
+        if isinstance(config.CLUSTERING_PLAYLIST_SUFFIX, str)
+        else "_automatic"
+    )
+    if name.endswith(')'):
+        idx = name.rfind('(')
+        if idx >= 0 and name[idx + 1:-1].isdigit():
+            name = name[:idx].rstrip()
+    if suffix and name.casefold().endswith(suffix.casefold()):
+        name = name[:-len(suffix)]
+    if suffix.casefold() != "_automatic" and name.casefold().endswith("_automatic"):
+        name = name[:-len("_automatic")]
     name = name.replace("_", " ")
     cleaned_name = re.sub(r"[^a-zA-Z0-9\s\-\&\'!\.\,\?\(\)\[\]]", "", name)
-    cleaned_name = re.sub(r"\s\(\d+\)$", "", cleaned_name)
+    if cleaned_name.endswith(')'):
+        idx = cleaned_name.rfind('(')
+        if idx >= 0 and cleaned_name[idx + 1:-1].isdigit():
+            cleaned_name = cleaned_name[:idx].rstrip()
     cleaned_name = re.sub(r"\s+", " ", cleaned_name).strip()
     return cleaned_name
 
