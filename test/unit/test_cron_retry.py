@@ -35,6 +35,12 @@ Main Features:
   every minute cannot refill the queue ahead of a blocked schedule's retry; a
   failed retry pass never skips the minute pass and is attempted again next
   minute
+* Between two full passes every tick re-attempts only the entries whose blocker
+  ended, so a schedule starts the minute after the run that refused it; a live
+  or unknown blocker is left alone and an entry still expires on time
+* The full pass runs every CRON_RETRY_INTERVAL_MINUTES, not a minute later
+* The minute pass queues a core row before a plugin row due the same minute
+* task_is_live only counts a queued or running row
 """
 
 import inspect
@@ -409,6 +415,101 @@ def test_cron_retry_task_already_done_resolves_a_plugin_type_to_itself():
     assert params[0] == 'plugin.demo.sync'
 
 
+def test_task_is_live_counts_only_a_queued_or_running_row():
+    cur = MagicMock()
+    cur.fetchone.return_value = [True]
+    db = MagicMock()
+    db.cursor.return_value = cur
+
+    assert database.task_is_live('plugin-run-1', conn=db) is True
+
+    sql, params = cur.execute.call_args[0]
+    assert 'task_id = %s' in sql
+    assert params[0] == 'plugin-run-1'
+    assert set(params[1]) == {config.TASK_STATUS_NEW, config.TASK_STATUS_RUNNING}, (
+        'an ended row is not live, so the retry it refused may start'
+    )
+
+
+@pytest.mark.parametrize('blocker_task_id, live, retried', [
+    ('plugin-run-1', False, True),
+    ('plugin-run-1', True, False),
+    (None, None, False),
+], ids=['blocker-ended', 'blocker-still-live', 'blocker-unknown'])
+@patch('app_cron.get_db')
+def test_the_every_minute_pass_retries_only_an_entry_whose_blocker_ended(
+    mock_get_db, blocker_task_id, live, retried,
+):
+    from app_cron import retry_due_cron_jobs
+
+    db = MagicMock()
+    mock_get_db.return_value = db
+    entry = {**_pending_entry(), 'blocker_task_id': blocker_task_id}
+    with (
+        patch('app_cron.list_pending_cron_retries', return_value=[entry]),
+        patch('app_cron.task_is_live', return_value=live) as is_live,
+        patch('app_cron._cron_row_for_retry', return_value={'id': 7, 'task_type': 'clustering'}),
+        patch('app_cron.cron_retry_task_already_done', return_value=False),
+        patch('app_cron._dispatch_cron_row', return_value='enqueued') as dispatch,
+        patch('app_cron.clear_cron_retry') as clear,
+        patch('app_cron.bump_cron_retry') as bump,
+        patch('app_cron._touch_cron_last_run'),
+    ):
+        retry_due_cron_jobs(only_cleared=True)
+
+    assert dispatch.called is retried, (
+        'between two full passes only an entry whose blocker ended is retried: a '
+        'live blocker would refuse it again, and an unknown one waits for the '
+        'full pass'
+    )
+    assert clear.called is retried
+    assert not bump.called, 'an entry left alone is not an attempt'
+    if blocker_task_id is None:
+        assert not is_live.called
+
+
+@patch('app_cron.get_db')
+def test_the_every_minute_pass_still_expires_an_entry_on_time(mock_get_db):
+    from app_cron import retry_due_cron_jobs
+
+    db = MagicMock()
+    mock_get_db.return_value = db
+    entry = {**_pending_entry(retry_until=1000), 'blocker_task_id': 'live-1'}
+    with (
+        patch('app_cron.list_pending_cron_retries', return_value=[entry]),
+        patch('app_cron.task_is_live', return_value=True),
+        patch('app_cron._dispatch_cron_row') as dispatch,
+        patch('app_cron.clear_cron_retry') as clear,
+        patch('app_cron._record_retry_expired') as expired,
+    ):
+        retry_due_cron_jobs(only_cleared=True)
+
+    clear.assert_called_once_with('clustering', conn=db)
+    expired.assert_called_once_with('clustering', entry)
+    assert not dispatch.called
+
+
+@patch('app_cron.get_db')
+def test_the_full_pass_retries_whatever_its_recorded_blocker_says(mock_get_db):
+    from app_cron import retry_due_cron_jobs
+
+    mock_get_db.return_value = MagicMock()
+    entry = {**_pending_entry(), 'blocker_task_id': 'live-1'}
+    with (
+        patch('app_cron.list_pending_cron_retries', return_value=[entry]),
+        patch('app_cron.task_is_live', return_value=True) as is_live,
+        patch('app_cron._cron_row_for_retry', return_value={'id': 7, 'task_type': 'clustering'}),
+        patch('app_cron.cron_retry_task_already_done', return_value=False),
+        patch('app_cron._dispatch_cron_row', return_value='enqueued') as dispatch,
+        patch('app_cron.clear_cron_retry'),
+        patch('app_cron._touch_cron_last_run'),
+    ):
+        retry_due_cron_jobs()
+
+    assert dispatch.called, 'the full pass asks the queue guard itself, never the stored blocker'
+    assert not is_live.called
+
+
 def test_touch_cron_last_run_writes_the_current_time():
     from app_cron import _touch_cron_last_run
 
@@ -553,22 +654,33 @@ class _FreeQueue:
         self.live.append({'task_id': task_id, 'task_type': task_type, 'status': 'NEW'})
 
 
+_PLUGIN_ROW = {
+    'id': 2, 'name': 'Plugin watchdog', 'task_type': 'plugin.demo.sync',
+    'cron_expr': '* * * * *', 'enabled': True, 'last_run': 0, 'options': None,
+}
+_ANALYSIS_ROW = {
+    'id': 1, 'name': 'Analysis', 'task_type': 'analysis',
+    'cron_expr': '0 2 * * *', 'enabled': True, 'last_run': 0, 'options': None,
+}
+
+
 def _tick_with_a_minute_plugin_row_and_a_pending_analysis_retry(now, last_retry_ts):
     """One cron_tick with an 'analysis' schedule waiting in cron_retry and a
     plugin cron row due every minute, against a queue that is free at the start
     of the tick. Returns the queue and the retry-table mocks."""
+    return _tick(
+        now, last_retry_ts, [_PLUGIN_ROW], [_pending_entry(task_type='analysis')],
+    )
+
+
+def _tick(now, last_retry_ts, rows, pending, live_task_ids=()):
+    """One cron_tick over the cron `rows` with `pending` waiting in cron_retry,
+    against a queue that is free at the start of the tick; `live_task_ids` are
+    the tasks task_is_live still reports as queued or running."""
     import app_cron
 
-    plugin_row = {
-        'id': 2, 'name': 'Plugin watchdog', 'task_type': 'plugin.demo.sync',
-        'cron_expr': '* * * * *', 'enabled': True, 'last_run': 0, 'options': None,
-    }
-    analysis_row = {
-        'id': 1, 'name': 'Analysis', 'task_type': 'analysis',
-        'cron_expr': '0 2 * * *', 'enabled': True, 'last_run': 0, 'options': None,
-    }
     cur = MagicMock()
-    cur.fetchall.return_value = [plugin_row]
+    cur.fetchall.return_value = rows
     cur.rowcount = 1
     db = MagicMock()
     db.closed = 0
@@ -590,11 +702,17 @@ def _tick_with_a_minute_plugin_row_and_a_pending_analysis_retry(now, last_retry_
         patch('app_cron.taskqueue.enqueue', side_effect=queue.enqueue),
         patch('app_cron.clean_up_previous_main_tasks'),
         patch('app_cron.save_task_status'),
+        patch('app_cron.list_pending_cron_retries', return_value=pending),
         patch(
-            'app_cron.list_pending_cron_retries',
-            return_value=[_pending_entry(task_type='analysis')],
+            'app_cron._cron_row_for_retry',
+            side_effect=lambda _db, task_type: {
+                row['task_type']: row for row in (_ANALYSIS_ROW, _PLUGIN_ROW)
+            }.get(task_type),
         ),
-        patch('app_cron._cron_row_for_retry', return_value=analysis_row),
+        patch(
+            'app_cron.task_is_live',
+            side_effect=lambda task_id, conn=None: task_id in live_task_ids,
+        ),
         patch('app_cron.cron_retry_task_already_done', return_value=False),
         patch('app_cron._touch_cron_last_run'),
         patch('app_cron.clear_cron_retry') as clear,
@@ -631,7 +749,7 @@ class TestTheRetryPassRunsBeforeTheMinutePass:
             'any other row'
         )
 
-    def test_a_tick_before_the_retry_interval_runs_only_the_minute_pass(self):
+    def test_a_tick_before_the_retry_interval_retries_only_ended_blockers(self):
         import app_cron
 
         with (
@@ -641,8 +759,70 @@ class TestTheRetryPassRunsBeforeTheMinutePass:
         ):
             app_cron.cron_tick(self.NOW - 30)
 
-        retry.assert_not_called()
+        retry.assert_called_once_with(only_cleared=True)
         minute.assert_called_once_with()
+
+    def test_a_schedule_starts_the_minute_after_its_blocker_ends(self):
+        entry = {**_pending_entry(task_type='analysis'), 'blocker_task_id': 'plugin-run-1'}
+        queue, clear, _bump, _record, returned_ts = _tick(
+            self.NOW, self.NOW - 60, [_PLUGIN_ROW], [entry],
+        )
+
+        assert [row['task_type'] for row in queue.live] == ['main_analysis'], (
+            'the plugin run that refused the analysis has ended: the analysis must '
+            'start this minute, not wait for the next full retry pass'
+        )
+        assert [call.args[0] for call in clear.call_args_list] == ['analysis']
+        assert returned_ts == self.NOW - 60, 'only the full pass moves the timestamp'
+
+    def test_a_schedule_whose_blocker_is_still_live_waits_without_an_attempt(self):
+        entry = {**_pending_entry(task_type='analysis'), 'blocker_task_id': 'plugin-run-1'}
+        queue, clear, bump, _record, _ts = _tick(
+            self.NOW, self.NOW - 60, [], [entry], live_task_ids={'plugin-run-1'},
+        )
+
+        assert queue.live == []
+        assert not clear.called and not bump.called
+
+    def test_the_minute_pass_queues_a_core_row_before_a_plugin_row_due_the_same_minute(self):
+        plugin_row = {**_PLUGIN_ROW, 'id': 20}
+        analysis_row = {**_ANALYSIS_ROW, 'id': 410, 'cron_expr': '* * * * *'}
+        queue, _clear, _bump, record, _ts = _tick(
+            self.NOW, self.NOW - 60, [plugin_row, analysis_row], [],
+        )
+
+        assert [row['task_type'] for row in queue.live] == ['main_analysis'], (
+            'a plugin row earlier in the table (it is created when the plugin '
+            'installs) was queued first and refused the analysis due the same '
+            'minute, which then waited for a retry while the plugin task yielded'
+        )
+        record.assert_called_once()
+        assert record.call_args.args[0] == 'plugin.demo.sync'
+
+    def test_the_full_pass_runs_every_interval_not_a_minute_later(self):
+        import app_cron
+
+        interval = app_cron.cron_retry_interval_seconds()
+        first_tick = self.NOW + 0.25
+        with (
+            patch.object(app_cron.time, 'time', return_value=first_tick),
+            patch('app_cron.retry_due_cron_jobs'),
+            patch('app_cron.run_due_cron_jobs'),
+        ):
+            last_retry_ts = app_cron.cron_tick(first_tick - interval)
+
+        with (
+            patch.object(app_cron.time, 'time', return_value=self.NOW + interval + 0.2),
+            patch('app_cron.retry_due_cron_jobs') as retry,
+            patch('app_cron.run_due_cron_jobs'),
+        ):
+            app_cron.cron_tick(last_retry_ts)
+
+        assert retry.call_args.kwargs == {'only_cleared': False}, (
+            'ticks land just after each minute boundary; timed from the moment the '
+            'last pass ended, the next one fell a hair short of the interval and ran '
+            'a minute late, every 11 minutes instead of 10'
+        )
 
     def test_the_retry_timestamp_advances_only_when_the_retry_pass_ran(self):
         import app_cron
@@ -654,9 +834,9 @@ class TestTheRetryPassRunsBeforeTheMinutePass:
             patch('app_cron.run_due_cron_jobs'),
         ):
             assert app_cron.cron_tick(self.NOW - 30) == self.NOW - 30
-            assert retry.call_count == 0
-            assert app_cron.cron_tick(self.NOW - interval) == self.NOW
-            assert retry.call_count == 1
+            assert retry.call_args_list[-1].kwargs == {'only_cleared': True}
+            assert app_cron.cron_tick(self.NOW - interval) == self.NOW - self.NOW % 60
+            assert retry.call_args_list[-1].kwargs == {'only_cleared': False}
 
     def test_a_failed_retry_pass_still_runs_the_minute_pass(self, caplog):
         import app_cron

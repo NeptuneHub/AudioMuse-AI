@@ -2283,7 +2283,9 @@ same as when they are started from the page.
    the same classified error a queue job records) and so stays visible in the
    task panel; the cost is that the poll thread waits for the run, which is the
    accepted trade for a schedule that fires once a day or once a week. Within
-   one tick the batch rows are dispatched first, since they only enqueue; then
+   one tick the batch rows are dispatched first, since they only enqueue, the
+   core rows (analysis, clustering) before the plugin rows so a plugin task
+   due the same minute cannot hold a core schedule back; then
    at most ONE online row runs, in a fixed order: any other online row due in
    the same minute is skipped with a warning and is not claimed, so the page
    keeps showing it did not run, and it waits for its next occurrence. One
@@ -2302,10 +2304,12 @@ same as when they are started from the page.
    other. The online inline runs are outside the guard.
 6. **Retry on conflict.** A skipped scheduled batch run (analysis, clustering or
    a plugin task) is recorded in a `cron_retry` list instead of being dropped
-   silently. The cron thread re-attempts it every
-   `CRON_RETRY_INTERVAL_MINUTES` (clamped below `CRON_RETRY_MAX_MINUTES`), up to
+   silently. The cron thread re-attempts it on the first tick after the task
+   that blocked it ends, and every `CRON_RETRY_INTERVAL_MINUTES` (clamped below
+   `CRON_RETRY_MAX_MINUTES`) re-attempts every pending run, up to
    `CRON_RETRY_MAX_MINUTES` after the first block; once the guard clears it
-   starts. Past the window it is recorded as a visible failed run and is not
+   starts. Each tick runs the retry before the minute's own schedules, so a
+   row due every minute cannot refill the queue ahead of it. Past the window it is recorded as a visible failed run and is not
    started, not even once more (fail-safe). The window is never extended: a
    scheduled run waits at most `CRON_RETRY_MAX_MINUTES`, never forever. A SUCCESS of the same task type
    that started after the first block counts as the scheduled run having
@@ -2335,8 +2339,9 @@ Cron reuses the defaults of the tasks it starts:
   scheduled album of the week.
 - `CRON_RETRY_MAX_MINUTES`: how long a scheduled run blocked by the queue guard
   waits in the retry list before it is recorded as skipped.
-- `CRON_RETRY_INTERVAL_MINUTES`: how often the cron thread re-attempts blocked
-  scheduled runs.
+- `CRON_RETRY_INTERVAL_MINUTES`: how often the cron thread re-attempts every
+  blocked scheduled run (a run whose blocker ended is re-attempted the next
+  minute regardless).
 - `TZ`: the timezone the expressions are evaluated in.
 
 ---
