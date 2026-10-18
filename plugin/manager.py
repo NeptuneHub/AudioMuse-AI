@@ -213,6 +213,12 @@ def _role_target(role):
     return 'worker' if role == 'worker' else 'flask'
 
 
+def _cron_task_description(loaded, persisted, name):
+    task = loaded[name] if name in loaded else persisted.get(name)
+    description = task.get('description') if isinstance(task, dict) else None
+    return description if isinstance(description, str) and description else None
+
+
 def _download_url(url, max_bytes):
     return net.download(url, max_bytes)
 
@@ -791,9 +797,8 @@ class PluginManager:
                     'plugin': plugin_id,
                     'task': name,
                 }
-                task = loaded[name] if name in loaded else persisted.get(name)
-                description = task.get('description') if isinstance(task, dict) else None
-                if isinstance(description, str) and description:
+                description = _cron_task_description(loaded, persisted, name)
+                if description:
                     item['description'] = description
                 items.append(item)
         return sorted(items, key=lambda e: e['task_type'])
