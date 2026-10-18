@@ -600,7 +600,7 @@ class CatalogResolver:
         if duration is not None:
             self._durations[item_id] = duration
         if fingerprint:
-            self._fingerprints[item_id] = fingerprint
+            self._fingerprints[item_id] = [fingerprint]
         self._record_path(item_id, path)
         if signature is None:
             signature = signature_from_canonical_id(item_id)
@@ -644,20 +644,24 @@ class CatalogResolver:
         self._durations[item_id] = fetched
         return fetched
 
-    def _fingerprint_for(self, item_id):
+    def _fingerprints_for(self, item_id):
         cached = self._fingerprints.get(item_id)
         if cached is not None:
             return cached
         if self._fingerprint_fetcher is None:
-            return None
+            return []
         try:
-            fetched = self._fingerprint_fetcher(item_id)
+            fetched = [fp for fp in (self._fingerprint_fetcher(item_id) or []) if fp]
         except Exception:
             logger.exception("Fingerprint fetch failed for %s", item_id)
-            return None
+            return []
         if fetched:
             self._fingerprints[item_id] = fetched
-        return fetched or None
+        return fetched
+
+    def _record_fingerprint(self, item_id, fingerprint):
+        if fingerprint:
+            self._fingerprints[item_id] = self._fingerprints_for(item_id) + [fingerprint]
 
     def _paths_for(self, item_id):
         cached = self._paths.get(item_id)
@@ -712,8 +716,9 @@ class CatalogResolver:
         if cosine_distance(embedding, candidate_embedding) > DUPLICATE_DISTANCE_THRESHOLD_COSINE:
             return False
         if CHROMAPRINT_GATE_ENABLED and fingerprint:
-            if chromaprints_agree(fingerprint, self._fingerprint_for(candidate_id)) is False:
-                return False
+            for other in self._fingerprints_for(candidate_id):
+                if chromaprints_agree(fingerprint, other) is False:
+                    return False
         return True
 
     _confirms = confirms
@@ -735,6 +740,7 @@ class CatalogResolver:
             if self._confirms(embedding, candidate_id, duration=duration, path=path,
                               fingerprint=fingerprint):
                 self._record_path(candidate_id, path)
+                self._record_fingerprint(candidate_id, fingerprint)
                 return ('existing', candidate_id)
         new_id = mint_canonical_id(signature, self._taken)
         self.register(
