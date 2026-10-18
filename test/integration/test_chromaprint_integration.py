@@ -9,15 +9,15 @@
 """Drive the Chromaprint DB path against a real PostgreSQL.
 
 Proves the SQL the unit tests mock: persist_chromaprint upserts the compressed
-blob and the NULL retry-stop sentinel, _fetch_row_fingerprint maps a canonical
-id back to any file's fingerprint via track_server_map, and upsert_track_maps
+blob and the NULL retry-stop sentinel, _fetch_row_fingerprints maps a canonical
+id back to every file's fingerprint via track_server_map, and upsert_track_maps
 hands a swept mapping the Chromaprint already stored for its canonical track in
 the same transaction.
 
 Main Features:
 * persist_chromaprint / get_chromaprint round-trip and the NULL retry-stop
   sentinel reading back as abstain.
-* _fetch_row_fingerprint JOIN from a canonical id to any mapped file's blob.
+* _fetch_row_fingerprints JOIN from a canonical id to every mapped file's blob.
 * A sweep match carries the fingerprint with the mapping in the SAME transaction
   that writes it.
 * The inherit rides a SAVEPOINT, so a chromaprint table that is missing or
@@ -162,7 +162,7 @@ def _blob(seed):
 class TestChromaprintDbPath:
     def test_persist_and_fetch_round_trip(self, db, use_test_db):
         from database import persist_chromaprint
-        from tasks.analysis.helper import _fetch_row_fingerprint
+        from tasks.analysis.helper import _fetch_row_fingerprints
 
         with db.cursor() as cur:
             _seed(cur, 'fp_x', 'p1', 'Alb', '/m/p1.flac')
@@ -170,7 +170,22 @@ class TestChromaprintDbPath:
 
         blob = _blob(1)
         persist_chromaprint('srv', 'p1', blob)
-        assert _fetch_row_fingerprint('fp_x') == blob
+        assert _fetch_row_fingerprints('fp_x') == [blob]
+
+    def test_fetch_returns_every_mapped_file_fingerprint(self, db, use_test_db):
+        from database import persist_chromaprint
+        from tasks.analysis.helper import _fetch_row_fingerprints
+
+        with db.cursor() as cur:
+            _seed(cur, 'fp_m', 'pm1', 'Alb', '/m/a/pm1.flac')
+            _seed(cur, 'fp_m', 'pm2', 'Alb2', '/m/b/pm2.flac')
+            _seed(cur, 'fp_m', 'pm3', 'Alb3', '/m/c/pm3.flac')
+        db.commit()
+
+        persist_chromaprint('srv', 'pm1', _blob(1))
+        persist_chromaprint('srv', 'pm2', _blob(5))
+        persist_chromaprint('srv', 'pm3', None)
+        assert sorted(_fetch_row_fingerprints('fp_m')) == sorted([_blob(1), _blob(5)])
 
     def test_get_chromaprint_returns_blob_or_none(self, db, use_test_db):
         from database import persist_chromaprint, get_chromaprint
@@ -189,18 +204,18 @@ class TestChromaprintDbPath:
 
     def test_null_sentinel_reads_as_abstain(self, db, use_test_db):
         from database import persist_chromaprint
-        from tasks.analysis.helper import _fetch_row_fingerprint
+        from tasks.analysis.helper import _fetch_row_fingerprints
 
         with db.cursor() as cur:
             _seed(cur, 'fp_y', 'p2', 'Alb', '/m/p2.flac')
         db.commit()
 
         persist_chromaprint('srv', 'p2', None)
-        assert _fetch_row_fingerprint('fp_y') is None
+        assert _fetch_row_fingerprints('fp_y') == []
 
     def test_upsert_overwrites_prior_fingerprint(self, db, use_test_db):
         from database import persist_chromaprint
-        from tasks.analysis.helper import _fetch_row_fingerprint
+        from tasks.analysis.helper import _fetch_row_fingerprints
 
         with db.cursor() as cur:
             _seed(cur, 'fp_z', 'p3', 'Alb', '/m/p3.flac')
@@ -208,7 +223,7 @@ class TestChromaprintDbPath:
 
         persist_chromaprint('srv', 'p3', _blob(1))
         persist_chromaprint('srv', 'p3', _blob(9))
-        assert _fetch_row_fingerprint('fp_z') == _blob(9)
+        assert _fetch_row_fingerprints('fp_z') == [_blob(9)]
 
     def test_a_sweep_match_carries_the_fingerprint_with_the_mapping(
         self, db, use_test_db
