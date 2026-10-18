@@ -778,18 +778,24 @@ class PluginManager:
         for plugin_id, record in self.records.items():
             if not record.get('enabled'):
                 continue
-            names = set(record.get('cron_tasks') or {})
+            loaded = record.get('cron_tasks') or {}
+            names = set(loaded)
             persisted = (record.get('manifest') or {}).get('cron_tasks') or {}
             names.update(
                 name for name, task in persisted.items()
                 if isinstance(task, dict) and task.get('dotted')
             )
             for name in sorted(names):
-                items.append({
+                item = {
                     'task_type': f'plugin.{plugin_id}.{name}',
                     'plugin': plugin_id,
                     'task': name,
-                })
+                }
+                task = loaded[name] if name in loaded else persisted.get(name)
+                description = task.get('description') if isinstance(task, dict) else None
+                if isinstance(description, str) and description:
+                    item['description'] = description
+                items.append(item)
         return sorted(items, key=lambda e: e['task_type'])
 
     def get_settings_endpoint(self, plugin_id):

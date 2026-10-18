@@ -366,6 +366,21 @@
                     const label = document.createElement('label');
                     label.style.cssText = 'display:block;margin-bottom:.5rem;';
                     label.textContent = t.plugin + ' - ' + t.task + ' (' + t.task_type + ')';
+                    if (t.description) {
+                        label.classList.add('label-with-tooltip');
+                        const tip = document.createElement('span');
+                        tip.className = 'info-tooltip';
+                        tip.tabIndex = 0;
+                        const icon = document.createElement('span');
+                        icon.className = 'info-icon';
+                        const text = document.createElement('span');
+                        text.className = 'tooltip-text';
+                        text.textContent = t.description;
+                        tip.appendChild(icon);
+                        tip.appendChild(text);
+                        label.appendChild(document.createTextNode(' '));
+                        label.appendChild(tip);
+                    }
                     const input = document.createElement('input');
                     input.type = 'text';
                     input.style.width = '100%';

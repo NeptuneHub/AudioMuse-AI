@@ -366,6 +366,9 @@ def get_plugin_cron_tasks():
                     type: string
                   task:
                     type: string
+                  description:
+                    type: string
+                    description: Optional text the plugin gave add_cron_task, shown as an info tooltip.
     """
     try:
         from plugin.manager import plugin_manager

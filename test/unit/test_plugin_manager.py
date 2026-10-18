@@ -139,6 +139,44 @@ class TestCronTaskFallback:
         assert mgr.get_cron_task('plugin.jobber.daily') is None
 
 
+class TestCronTaskDescription:
+    def _task(self):
+        def daily():
+            pass
+        daily.__module__ = 'audiomuse_plugins.jobber.tasks'
+        return daily
+
+    def test_add_cron_task_keeps_a_trimmed_bounded_description(self):
+        ctx = api.PluginContext('jobber', 'web')
+        ctx.add_cron_task('daily', self._task(), description='  Nightly cleanup.  ')
+        ctx.add_cron_task('long', self._task(), description='x' * 400)
+        ctx.add_cron_task('plain', self._task())
+        ctx.add_cron_task('blank', self._task(), description='   ')
+
+        assert ctx.cron_tasks['daily']['description'] == 'Nightly cleanup.'
+        assert len(ctx.cron_tasks['long']['description']) == api.CRON_DESCRIPTION_MAX
+        assert 'description' not in ctx.cron_tasks['plain']
+        assert 'description' not in ctx.cron_tasks['blank']
+
+    def test_listing_carries_loaded_then_persisted_descriptions(self):
+        mgr = manager.PluginManager()
+        record = _record('jobber', manifest={'cron_tasks': {
+            'daily': {'dotted': 'a.b.daily', 'queue': 'default', 'description': 'stale'},
+            'weekly': {'dotted': 'a.b.weekly', 'queue': 'default', 'description': 'Weekly report.'},
+            'bare': {'dotted': 'a.b.bare', 'queue': 'default'},
+        }})
+        record['cron_tasks'] = {
+            'daily': {'dotted': 'a.b.daily', 'queue': 'default', 'description': 'Nightly cleanup.'},
+        }
+        mgr.records = {'jobber': record}
+
+        items = {item['task']: item for item in mgr.available_cron_tasks()}
+
+        assert items['daily']['description'] == 'Nightly cleanup.'
+        assert items['weekly']['description'] == 'Weekly report.'
+        assert 'description' not in items['bare']
+
+
 def test_dequeued_cron_plugin_with_wiped_claim_does_not_import_plugin(monkeypatch):
     import taskqueue
     from taskqueue import TaskCancelled

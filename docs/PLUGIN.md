@@ -233,10 +233,12 @@ def daily_job():
     logger.info("my plugin ran")
 
 def register(ctx):
-    ctx.add_cron_task("daily", daily_job)
+    ctx.add_cron_task("daily", daily_job, description="Saves an hourly snapshot of the index log.")
 ```
 
-Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). The optional `description` (plain text, up to 300 characters) is shown as an info tooltip next to the task, so say what the task does and whether the admin should enable it. Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+
+Every `add_task` name is listed there too. A job you only start with `enqueue` needs no `add_task`: `enqueue` runs a function by its import path.
 
 ### Scheduled tasks and multiple music servers
 
