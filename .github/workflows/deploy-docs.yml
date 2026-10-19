@@ -45,11 +45,24 @@ jobs:
           cp -r docs/* web/ # Copy all documentation files from docs/ to web/
           cp -r screenshot web/ # Copy screenshot directory with images/logo
 
+      - name: Rewrite repository links for the site
+        run: |
+          sed -i 's#](docs)#](https://github.com/NeptuneHub/AudioMuse-AI/tree/main/docs)#g' web/index.md
+          sed -i 's#](docs/#](#g' web/index.md
+          sed -i 's#](\.\./README\.md#](index.md#g' web/*.md
+          sed -i 's#](\.\./\([^)]*/\))#](https://github.com/NeptuneHub/AudioMuse-AI/tree/main/\1)#g' web/*.md
+          sed -i 's#](\.\./#](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/#g' web/*.md
+
       - name: Build MkDocs documentation
         # This command builds your site into the './site' directory by default.
         # It will now use 'web/index.md' (which is your copied README.md) as the homepage.
         # Ensure your mkdocs.yml file has 'docs_dir: web' if your source markdown files are in 'web'.
         run: mkdocs build
+
+      - name: Point the edit links of files outside docs at their real path
+        run: |
+          sed -i 's#/edit/main/docs/index\.md#/edit/main/README.md#g' site/index.html
+          find site -name '*.html' -exec sed -i 's#/edit/main/docs/screenshot/#/edit/main/screenshot/#g' {} +
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5 # Action to set up GitHub Pages for deployment
