@@ -17,6 +17,9 @@ are the platform-specific siblings.
 Main Features:
 * ``resource_root`` plus ``~/Library`` data and ``~/Library/Logs`` directories.
 * Control-socket and model paths shared across the macOS supervisor children.
+* The CoreML compile cache folder macOS keeps under ``~/Library/Caches`` for
+  the app bundle. The bundle id is fixed here, not read at runtime, so a run
+  from source never points at the cache Python shares with other programs.
 """
 
 import os
@@ -24,6 +27,7 @@ import platform
 import sys
 
 APP_NAME = "AudioMuse-AI"
+BUNDLE_IDENTIFIER = "ai.audiomuse.standalone"
 
 
 def resource_root():
@@ -67,6 +71,16 @@ def numba_cache_dir():
 
 def backup_dir():
     return _ensure(os.path.join(app_support_dir(), "backup"))
+
+
+def coreml_cache_dir():
+    return os.path.join(
+        os.path.expanduser("~"),
+        "Library",
+        "Caches",
+        BUNDLE_IDENTIFIER,
+        "com.apple.e5rt.e5bundlecache",
+    )
 
 
 def control_socket_path():
