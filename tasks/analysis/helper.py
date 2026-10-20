@@ -642,18 +642,16 @@ def _fetch_row_duration(item_id):
     return float(row[0]) if row and row[0] is not None else None
 
 
-def _fetch_row_fingerprint(item_id):
+def _fetch_row_fingerprints(item_id):
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT c.fingerprint FROM chromaprint c "
             "JOIN track_server_map m "
             "ON m.server_id = c.server_id AND m.provider_track_id = c.provider_track_id "
-            "WHERE m.item_id = %s AND c.fingerprint IS NOT NULL "
-            "LIMIT 1",
+            "WHERE m.item_id = %s AND c.fingerprint IS NOT NULL",
             (str(item_id),),
         )
-        row = cur.fetchone()
-    return bytes(row[0]) if row and row[0] is not None else None
+        return [bytes(row[0]) for row in cur.fetchall()]
 
 
 def _fetch_row_paths(item_id):
@@ -728,7 +726,7 @@ def load_fingerprint_index():
         embedding_fetcher=_fetch_embedding_blob,
         duration_fetcher=_fetch_row_duration,
         path_fetcher=_fetch_row_paths,
-        fingerprint_fetcher=_fetch_row_fingerprint,
+        fingerprint_fetcher=_fetch_row_fingerprints,
     )
     with get_db() as conn, conn.cursor() as cur:
         cur.execute("SELECT now()")
@@ -769,8 +767,8 @@ def _is_same_recording(embedding, other, duration=None, other_duration_fn=None,
     if not durations_compatible(duration, other_duration):
         return False
     if CHROMAPRINT_GATE_ENABLED and fingerprint:
-        other_fp = other_fingerprint_fn() if other_fingerprint_fn is not None else None
-        if chromaprints_agree(fingerprint, other_fp) is False:
+        other_fps = other_fingerprint_fn() if other_fingerprint_fn is not None else []
+        if any(chromaprints_agree(fingerprint, other_fp) is False for other_fp in other_fps):
             return False
     return True
 
@@ -800,7 +798,7 @@ def claim_new_canonical_id(resolver, minted_id, embedding, duration=None, finger
             embedding, stored, duration=duration,
             other_duration_fn=lambda candidate=candidate: _fetch_row_duration(candidate),
             fingerprint=fingerprint,
-            other_fingerprint_fn=lambda candidate=candidate: _fetch_row_fingerprint(candidate),
+            other_fingerprint_fn=lambda candidate=candidate: _fetch_row_fingerprints(candidate),
         ):
             logger.info(
                 "Canonical id %s was minted concurrently by another worker for the "

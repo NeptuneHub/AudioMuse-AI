@@ -22,6 +22,9 @@ Main Features:
 * fpcalc compute fail-soft and the raw-int parse / encode / decode round-trip.
 * CatalogResolver + confirm_pairs gate: disagree splits, agree merges, a missing
   fingerprint abstains (byte-identical to the pre-Chromaprint decision).
+* A file joins a song only if it agrees with EVERY file already in it, the same
+  pairwise rule the cleaning split applies, so a non-transitive group (A~B, A~C,
+  B not ~C) is never rebuilt after a split (issue #949).
 * The staged hand-over costs no more than the rows it is handed. The analysis
   flushes track maps once per TRACK, so anything the hand-over does per call it
   does a million times on a million-track library: the keyset index on the
@@ -155,7 +158,7 @@ class TestResolverChromaprintGate:
         resolver = simhash.CatalogResolver(
             embedding_fetcher=lambda _id: emb.tobytes(),
             duration_fetcher=lambda _id: 200.0,
-            fingerprint_fetcher=lambda _id: FP_A,
+            fingerprint_fetcher=lambda _id: [FP_A],
         )
         resolver.register(cid)
         return resolver, cid
@@ -178,6 +181,48 @@ class TestResolverChromaprintGate:
         resolver, cid = self._resolver_with_candidate(emb)
         kind, resolved = resolver.resolve(emb, duration=200.0, fingerprint=None)
         assert (kind, resolved) == ('existing', cid)
+
+
+class TestResolverChecksEveryFileOfTheSong:
+    @pytest.fixture
+    def non_transitive(self, monkeypatch):
+        monkeypatch.setattr(chromaprint, "CHROMAPRINT_MATCH_THRESHOLD", 0.95)
+        base = np.random.default_rng(7).integers(0, 2 ** 32, 200, dtype=np.uint32)
+        fp_a = _fp_blob(base)
+        fp_b = _fp_blob(base ^ np.uint32(1))
+        fp_c = _fp_blob(base ^ np.uint32(2))
+        assert chromaprint.chromaprints_agree(fp_a, fp_b) is True
+        assert chromaprint.chromaprints_agree(fp_a, fp_c) is True
+        assert chromaprint.chromaprints_agree(fp_b, fp_c) is False
+        return fp_a, fp_b, fp_c
+
+    def _resolver(self, emb, stored_fingerprints):
+        cid = simhash.canonical_id_str(simhash.embedding_signature(emb))
+        resolver = simhash.CatalogResolver(
+            embedding_fetcher=lambda _id: emb.tobytes(),
+            duration_fetcher=lambda _id: 200.0,
+            fingerprint_fetcher=lambda _id: list(stored_fingerprints),
+        )
+        resolver.register(cid)
+        return resolver, cid
+
+    def test_a_split_song_is_not_rebuilt_by_the_next_analysis(self, gate_on, non_transitive):
+        fp_a, fp_b, fp_c = non_transitive
+        emb = _embedding(41)
+        resolver, cid = self._resolver(emb, [])
+        assert resolver.resolve(emb, duration=200.0, fingerprint=fp_a) == ('existing', cid)
+        assert resolver.resolve(emb, duration=200.0, fingerprint=fp_b) == ('existing', cid)
+        kind, resolved = resolver.resolve(emb, duration=200.0, fingerprint=fp_c)
+        assert kind == 'new'
+        assert resolved != cid
+
+    def test_every_stored_file_of_the_candidate_is_checked(self, gate_on, non_transitive):
+        fp_a, fp_b, fp_c = non_transitive
+        emb = _embedding(42)
+        resolver, cid = self._resolver(emb, [fp_a, fp_b])
+        kind, resolved = resolver.resolve(emb, duration=200.0, fingerprint=fp_c)
+        assert kind == 'new'
+        assert resolved != cid
 
 
 class TestConfirmPairsChromaprintGate:
