@@ -34,8 +34,8 @@ Main Features:
   re-attempted every `CRON_RETRY_INTERVAL_MINUTES` up to
   `CRON_RETRY_MAX_MINUTES`, then recorded as a visible skip and never started
   (fail-safe); the window is never extended. `cron_tick` runs the retry pass
-  before the minute pass, so a row due every minute cannot refill the queue
-  ahead of a retry.
+  before the minute pass, so a minute row cannot jump the queue, and no
+  plugin task starts while analysis or clustering waits there.
 * An inline run never gates batch work: its task type is self-managed (no Start
   ever 409s behind it and it never waits for a batch), it has no queue func so
   the maintenance reclaim cannot mistake it for a dead worker's orphan, its
@@ -54,6 +54,7 @@ from database import (
     get_task_info_from_db,
     save_task_status,
     get_queue_blocking_task,
+    get_waiting_core_cron_retry,
     clean_up_previous_main_tasks,
     main_task_start_lock,
     record_cron_retry,
@@ -704,6 +705,19 @@ def _admit_and_enqueue_cron_job(job_id, task_type, enqueue, *, conn):
             task_type, active['task_id'], active['status'],
         )
         return 'blocked'
+
+    # AudioMuse-AI first: a scheduled analysis or clustering waiting in
+    # cron_retry keeps every plugin task out of the queue, so it starts at the
+    # next retry pass instead of losing the queue to a plugin row due every
+    # minute. A plugin task already running just finishes.
+    if task_types.matches(task_type, prefixes=task_types.PREFIXES):
+        waiting = get_waiting_core_cron_retry(conn=conn)
+        if waiting:
+            logger.info(
+                "Cron: skipping %s, scheduled %s is waiting to retry and goes first",
+                task_type, waiting['task_type'],
+            )
+            return 'blocked'
 
     if task_type in ('main_analysis', 'main_clustering'):
         try:

@@ -2312,7 +2312,11 @@ same as when they are started from the page.
    happened and drops the retry. `GET /api/cron` exposes the pending state
    (`retry_pending`, `retry_attempts`, `retry_blocker_task_type`) so the
    Scheduled Tasks page can show that a schedule is waiting instead of looking
-   like it fired normally.
+   like it fired normally. AudioMuse-AI goes first: while a scheduled analysis
+   or clustering waits in the list, no plugin task starts, neither a plugin
+   schedule nor a plugin's own `enqueue`. A plugin task already running just
+   finishes, the waiting run starts at the next retry pass, and plugins resume
+   after it.
 7. **Error isolation.** An exception on one row is logged and the loop continues
    with the others. A failed enqueue is recorded as a failed task so it is
    visible in the UI.

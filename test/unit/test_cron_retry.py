@@ -35,6 +35,9 @@ Main Features:
   every minute cannot refill the queue ahead of a blocked schedule's retry; a
   failed retry pass never skips the minute pass and is attempted again next
   minute
+* AudioMuse-AI first: while a scheduled analysis or clustering waits in
+  cron_retry no plugin row is queued; a core row never checks the list, and an
+  expired or plugin entry holds nothing back
 """
 
 import inspect
@@ -690,3 +693,70 @@ class TestTheRetryPassRunsBeforeTheMinutePass:
         assert 'retry_due_cron_jobs()' not in loop, (
             'the order of the two passes lives in app_cron.cron_tick only'
         )
+
+
+class TestAudioMuseFirst:
+    NOW = 1_900_000_020.0
+    WAITING = {'task_type': 'analysis', 'retry_until': 10**12}
+
+    def test_a_plugin_row_waits_while_an_analysis_waits_to_retry(self):
+        with patch('app_cron.get_waiting_core_cron_retry', return_value=self.WAITING):
+            queue, _clear, _bump, record, _ts = (
+                _tick_with_a_minute_plugin_row_and_a_pending_analysis_retry(
+                    self.NOW, self.NOW - 30,
+                )
+            )
+
+        assert queue.live == [], (
+            'the queue is free between two retry passes, but a scheduled analysis '
+            'waits in cron_retry: no plugin task may start before it'
+        )
+        record.assert_called_once()
+        assert record.call_args.args[0] == 'plugin.demo.sync'
+
+    def test_a_plugin_row_runs_when_no_audiomuse_task_waits(self):
+        with patch('app_cron.get_waiting_core_cron_retry', return_value=None):
+            queue, _clear, _bump, record, _ts = (
+                _tick_with_a_minute_plugin_row_and_a_pending_analysis_retry(
+                    self.NOW, self.NOW - 30,
+                )
+            )
+
+        assert [row['task_type'] for row in queue.live] == ['plugin.demo.sync']
+        record.assert_not_called()
+
+    def test_a_core_row_never_waits_for_the_retry_list(self):
+        import app_cron
+
+        enqueue = MagicMock()
+        with (
+            patch('app_cron.get_queue_blocking_task', return_value=None),
+            patch('app_cron.clean_up_previous_main_tasks'),
+            patch(
+                'app_cron.get_waiting_core_cron_retry',
+                side_effect=AssertionError('only a plugin start checks the retry list'),
+            ),
+        ):
+            result = app_cron._admit_and_enqueue_cron_job(
+                'job-1', 'main_clustering', enqueue, conn=MagicMock(),
+            )
+
+        assert result == 'enqueued'
+        enqueue.assert_called_once_with()
+
+    def test_the_waiting_query_skips_plugin_entries_and_expired_ones(self):
+        cur = MagicMock()
+        cur.fetchone.return_value = None
+        db = MagicMock()
+        db.cursor.return_value = cur
+
+        with patch.object(database.time, 'time', return_value=self.NOW):
+            assert database.get_waiting_core_cron_retry(conn=db) is None
+
+        sql, params = cur.execute.call_args[0]
+        assert 'NOT (task_type LIKE ANY(%s))' in sql
+        assert params[0] == [prefix + '%' for prefix in task_types.PREFIXES], (
+            'a plugin row waiting in cron_retry holds nothing back'
+        )
+        assert 'retry_until > %s' in sql
+        assert params[1] == self.NOW, 'an expired entry no longer holds plugins back'
