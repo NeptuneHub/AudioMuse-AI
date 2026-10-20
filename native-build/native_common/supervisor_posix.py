@@ -28,6 +28,9 @@ Main Features:
   behind, restarted ones included, not only the pids of the last pid file
 * Orphan reaping from the pid file left by a previous run, plus any server still
   holding our data directory
+* A per-platform cache-clearing hook that runs after the orphan reap and before
+  anything boots, so no child of ours is alive to be using that cache; it does
+  nothing here and macOS overrides it
 """
 
 import json
@@ -81,6 +84,7 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
         self._log.info("=== AudioMuse-AI starting ===")
         try:
             self._reap_orphans()
+            self._clear_platform_caches()
             self._control.start()
             if self._stop_requested.is_set():
                 return
@@ -270,6 +274,9 @@ class PosixSupervisor(SupervisorCommonMixin, HealthLoopMixin):
             self._log.info("Embedded PostgreSQL restarted")
         except Exception:
             self._log.exception("Failed to restart embedded PostgreSQL")
+
+    def _clear_platform_caches(self):
+        return None
 
     def _is_ours(self, cmdline):
         return (
