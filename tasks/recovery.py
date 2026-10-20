@@ -363,9 +363,8 @@ OUTSIDE_THE_QUEUE = {
     'cron_retry': (
         'database.record_cron_retry / app_cron.retry_due_cron_jobs retry a cron '
         'START that the queue guard refused because another catalogue task was '
-        'live. Nothing failed: the run never began. It is re-attempted the minute '
-        'after that task ends and by a full pass every CRON_RETRY_INTERVAL_MINUTES, '
-        'up to CRON_RETRY_MAX_MINUTES, and then recorded '
+        'live. Nothing failed: the run never began. It is re-attempted every '
+        'CRON_RETRY_INTERVAL_MINUTES up to CRON_RETRY_MAX_MINUTES and then recorded '
         'as a visible skip, never started after that. It never re-runs an inline '
         'online row that executed. A failure retry would be the wrong tool: there '
         'is no row, no attempt and no worker to charge'

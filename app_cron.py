@@ -24,18 +24,17 @@ Main Features:
   second web process cannot double-fire it. A tick evaluates the current minute
   only: a minute that passed while an inline run held the thread is simply
   skipped, never replayed.
-* In one tick the batch rows are dispatched first (they only enqueue), core
-  before plugin; then at most ONE online row runs. Any other online row due in
-  the same minute is skipped with a warning and waits for its next occurrence:
-  one online run at a time, never several together (the page warns when
-  schedules share a minute).
+* In one tick the batch rows are dispatched first (they only enqueue); then at
+  most ONE online row runs. Any other online row due in the same minute is
+  skipped with a warning and waits for its next occurrence: one online run at a
+  time, never several together (the page warns when schedules share a minute).
 * A central queue guard makes analysis, clustering, plugin tasks (and the
   manual cleaning / provider migration starts) mutually exclusive; a scheduled
   run blocked by a live queue-guard task is recorded in `cron_retry` and
-  re-attempted once its blocker ends and every `CRON_RETRY_INTERVAL_MINUTES`
-  up to `CRON_RETRY_MAX_MINUTES`, then recorded as a visible skip and never
-  started (fail-safe); the window is never extended. `cron_tick` runs the
-  retry pass before the minute pass, so a minute row cannot refill the queue
+  re-attempted every `CRON_RETRY_INTERVAL_MINUTES` up to
+  `CRON_RETRY_MAX_MINUTES`, then recorded as a visible skip and never started
+  (fail-safe); the window is never extended. `cron_tick` runs the retry pass
+  before the minute pass, so a row due every minute cannot refill the queue
   ahead of a retry.
 * An inline run never gates batch work: its task type is self-managed (no Start
   ever 409s behind it and it never waits for a batch), it has no queue func so
@@ -55,7 +54,6 @@ from database import (
     get_task_info_from_db,
     save_task_status,
     get_queue_blocking_task,
-    task_is_live,
     clean_up_previous_main_tasks,
     main_task_start_lock,
     record_cron_retry,
@@ -981,21 +979,7 @@ def _retry_deadline(entry):
     return 0
 
 
-def _retry_blocker_ended(entry, db):
-    # An entry without a recorded blocker cannot tell, so it is left to the full
-    # pass rather than retried every minute.
-    blocker_task_id = entry.get('blocker_task_id')
-    if not blocker_task_id:
-        return False
-    return not task_is_live(blocker_task_id, conn=db)
-
-
-def retry_due_cron_jobs(only_cleared=False):
-    # only_cleared is the pass cron_tick runs every minute between two full
-    # passes: it re-attempts only an entry whose recorded blocker has ended, so a
-    # schedule starts the minute after the run that refused it instead of up to
-    # CRON_RETRY_INTERVAL_MINUTES later, and an entry whose blocker is still live
-    # is left alone (no attempt, no log line every minute).
+def retry_due_cron_jobs():
     pending = list_pending_cron_retries()
     if not pending:
         return 0
@@ -1010,8 +994,6 @@ def retry_due_cron_jobs(only_cleared=False):
             # window is never extended, so nothing waits forever.
             clear_cron_retry(task_type, conn=db)
             _record_retry_expired(task_type, entry)
-            continue
-        if only_cleared and not _retry_blocker_ended(entry, db):
             continue
         row = _cron_row_for_retry(db, task_type)
         if row is None:
@@ -1104,20 +1086,12 @@ def run_due_cron_jobs():
     rows = cur.fetchall()
     cur.close()
     due = _due_cron_rows(rows, now_ts)
-    # Batch rows only enqueue, so they go first and never wait behind an online
-    # run. The core rows (analysis, clustering) go before the plugin rows: the
-    # queue guard admits one batch run, and a plugin row earlier in the table was
-    # queued first and refused an analysis due the same minute, which then waited
-    # for a retry while the plugin task yielded to it at once. Within each group
-    # row order decides (the sort is stable over ORDER BY id), so which of two
-    # schedules sharing a minute is queued and which waits is not left to the
-    # table scan.
-    batch = sorted(
-        (r for r in due if r['task_type'] not in INLINE_FLASK_TASK_TYPES),
-        key=lambda r: task_types.matches(r['task_type'], prefixes=task_types.PREFIXES),
-    )
-    for r in batch:
-        _fire_cron_row(db, r, minute_start)
+    # Batch rows only enqueue, so they go first (in row order, so which of two
+    # batch schedules sharing a minute is queued and which waits is not left to
+    # the table scan) and never wait behind an online run.
+    for r in due:
+        if r['task_type'] not in INLINE_FLASK_TASK_TYPES:
+            _fire_cron_row(db, r, minute_start)
     # Of the online rows due together at most ONE runs, in a fixed order. The
     # others are not claimed (the page keeps showing they did not run) and wait
     # for their next occurrence: one online run at a time, never several
@@ -1159,22 +1133,14 @@ def cron_tick(last_retry_ts):
     # milliseconds later, so a blocked schedule could never start until its
     # window expired. Here the retry sees the queue before this minute refills
     # it, and a row the minute pass then finds blocked goes into cron_retry like
-    # any other. Every tick re-attempts the entries whose blocker has ended; the
-    # full pass, which re-attempts every entry, runs every
-    # CRON_RETRY_INTERVAL_MINUTES.
-    now_ts = time.time()
-    full = now_ts - last_retry_ts >= cron_retry_interval_seconds()
-    # A failed retry pass must not cost this minute its schedules. The timestamp
-    # is not advanced, so a failed full pass is attempted again next minute.
-    try:
-        retry_due_cron_jobs(only_cleared=not full)
-        if full:
-            # The minute the pass ran, not the moment it ended. Ticks land just
-            # after each minute boundary, so a timestamp taken a few milliseconds
-            # into the minute put the next full pass a hair short of the interval
-            # and pushed it a whole minute later: every 11 minutes, not 10.
-            last_retry_ts = now_ts - (now_ts % 60)
-    except Exception:
-        logger.exception("Cron: retry pass failed; it runs again next minute")
+    # any other.
+    if time.time() - last_retry_ts >= cron_retry_interval_seconds():
+        # A failed retry pass must not cost this minute its schedules. The
+        # timestamp is not advanced, so the retry is attempted again next minute.
+        try:
+            retry_due_cron_jobs()
+            last_retry_ts = time.time()
+        except Exception:
+            logger.exception("Cron: retry pass failed; it runs again next minute")
     run_due_cron_jobs()
     return last_retry_ts

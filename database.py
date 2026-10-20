@@ -2850,20 +2850,6 @@ def get_queue_blocking_task(conn=None):
     return dict(active_task) if active_task else None
 
 
-def task_is_live(task_id, conn=None):
-    db = conn or get_db()
-    cur = db.cursor()
-    non_terminal_statuses = (TASK_STATUS_PENDING, TASK_STATUS_STARTED, TASK_STATUS_PROGRESS)
-    try:
-        cur.execute(
-            "SELECT EXISTS (SELECT 1 FROM task_status WHERE task_id = %s AND status IN %s)",
-            (task_id, non_terminal_statuses),
-        )
-        return bool(cur.fetchone()[0])
-    finally:
-        cur.close()
-
-
 def record_cron_retry(task_type, retry_until, first_blocked_at, blocker_task_id=None, blocker_task_type=None, conn=None):
     db = conn or get_db()
     with db.cursor() as cur:

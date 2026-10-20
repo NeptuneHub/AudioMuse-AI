@@ -1615,12 +1615,11 @@ ALBUM_OF_THE_WEEK_PLAYLIST_NAME = os.environ.get(
 )
 
 # --- Cron Scheduler Retry ---
-# A scheduled run that is blocked by a live queue-guard task is retried the
-# minute after that task ends, and by a full pass every
-# CRON_RETRY_INTERVAL_MINUTES, up to CRON_RETRY_MAX_MINUTES after the first
+# A scheduled run that is blocked by a live queue-guard task is retried every
+# CRON_RETRY_INTERVAL_MINUTES up to CRON_RETRY_MAX_MINUTES after the first
 # block, then recorded as skipped (fail-safe: never run on expiry).
 CRON_RETRY_MAX_MINUTES = int(os.environ.get("CRON_RETRY_MAX_MINUTES", "240")) # Max minutes a blocked scheduled run waits in the retry list
-CRON_RETRY_INTERVAL_MINUTES = int(os.environ.get("CRON_RETRY_INTERVAL_MINUTES", "10")) # Minutes between full re-attempts of every blocked scheduled run
+CRON_RETRY_INTERVAL_MINUTES = int(os.environ.get("CRON_RETRY_INTERVAL_MINUTES", "10")) # Minutes between re-attempts of blocked scheduled runs
 
 # --- Database Cleaning Safety ---
 CLEANING_SAFETY_LIMIT = int(os.environ.get("CLEANING_SAFETY_LIMIT", "100"))  # Max orphaned albums (on no server) deleted from the catalogue in one cleaning run; the next run deletes the next ones
