@@ -25,6 +25,7 @@ import pytest
 from unittest.mock import patch
 
 import plugin.api
+from error import AudioMuseError
 
 
 def _patches(mapping):
@@ -60,9 +61,8 @@ def test_enqueue_refuses_while_a_scheduled_audiomuse_task_waits_to_retry():
             lambda *a, **k: {'task_type': 'analysis', 'retry_until': 10**12}
         ),
     }):
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(AudioMuseError, match='scheduled AudioMuse-AI task analysis'):
             plugin.api.enqueue(lambda: None)
-    assert 'analysis' in str(exc.value)
     assert calls == [], 'the queue is free, but the waiting analysis goes first'
 
 
