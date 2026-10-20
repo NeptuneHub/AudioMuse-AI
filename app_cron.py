@@ -1013,37 +1013,33 @@ def retry_due_cron_jobs(only_cleared=False):
             continue
         if only_cleared and not _retry_blocker_ended(entry, db):
             continue
-        _retry_entry(db, task_type, entry)
+        row = _cron_row_for_retry(db, task_type)
+        if row is None:
+            clear_cron_retry(task_type, conn=db)
+            continue
+        if cron_retry_task_already_done(task_type, entry.get('first_blocked_at'), conn=db):
+            clear_cron_retry(task_type, conn=db)
+            continue
+        result = _dispatch_cron_row(db, row)
+        if result in _DISPATCH_DONE:
+            clear_cron_retry(task_type, conn=db)
+            # The claim earlier stamped last_run for the blocked attempt; a
+            # retried run actually happening now must move it forward too, or
+            # the Scheduled Tasks page keeps showing the old blocked timestamp.
+            _touch_cron_last_run(db, row['id'])
+        elif result == 'blocked':
+            blocker = get_queue_blocking_task(conn=db)
+            bump_cron_retry(
+                task_type,
+                blocker_task_id=blocker['task_id'] if blocker else None,
+                blocker_task_type=blocker['task_type'] if blocker else None,
+                conn=db,
+            )
+        elif result == 'no_handler':
+            clear_cron_retry(task_type, conn=db)
+        else:
+            bump_cron_retry(task_type, conn=db)
     return len(pending)
-
-
-def _retry_entry(db, task_type, entry):
-    row = _cron_row_for_retry(db, task_type)
-    if row is None:
-        clear_cron_retry(task_type, conn=db)
-        return
-    if cron_retry_task_already_done(task_type, entry.get('first_blocked_at'), conn=db):
-        clear_cron_retry(task_type, conn=db)
-        return
-    result = _dispatch_cron_row(db, row)
-    if result in _DISPATCH_DONE:
-        clear_cron_retry(task_type, conn=db)
-        # The claim earlier stamped last_run for the blocked attempt; a
-        # retried run actually happening now must move it forward too, or
-        # the Scheduled Tasks page keeps showing the old blocked timestamp.
-        _touch_cron_last_run(db, row['id'])
-    elif result == 'blocked':
-        blocker = get_queue_blocking_task(conn=db)
-        bump_cron_retry(
-            task_type,
-            blocker_task_id=blocker['task_id'] if blocker else None,
-            blocker_task_type=blocker['task_type'] if blocker else None,
-            conn=db,
-        )
-    elif result == 'no_handler':
-        clear_cron_retry(task_type, conn=db)
-    else:
-        bump_cron_retry(task_type, conn=db)
 
 
 def _fire_cron_row(db, r, minute_start):

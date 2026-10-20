@@ -782,8 +782,7 @@ class TestTheRetryPassRunsBeforeTheMinutePass:
         )
 
         assert queue.live == []
-        assert not clear.called
-        assert not bump.called
+        assert not clear.called and not bump.called
 
     def test_the_minute_pass_queues_a_core_row_before_a_plugin_row_due_the_same_minute(self):
         plugin_row = {**_PLUGIN_ROW, 'id': 20}
