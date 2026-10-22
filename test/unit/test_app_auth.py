@@ -429,6 +429,7 @@ class TestAdminPathEnforcement:
             ('/api/anchors', False),
             ('/api/anchors/5', False),
             ('/api/clap/search', False),
+            ('/api/clap/search_by_song', False),
             ('/api/clap/warmup', False),
             ('/chat/api/create_playlist', False),
             ('/dashboard', False),

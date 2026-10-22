@@ -16,6 +16,8 @@ Main Features:
   million songs would be shipped on every keystroke) and answers an empty
   list while that index is not loaded, never falling back to every song
 * index=sem_grove filters on the SemGrove index's id set
+* index=clap restricts the search to songs with a DCLAP embedding the same
+  database-side way, and answers nothing while the DCLAP index is not loaded
 * A filter that fails to load answers an empty list, not an error
 """
 
@@ -68,6 +70,29 @@ def test_index_neural_answers_nothing_while_the_neural_index_is_not_loaded(clien
     monkeypatch.setattr(neural_fingerprint_index, 'picker_where', lambda: None)
     backend = {}
     response = _search(client, backend, index='neural')
+    assert response.status_code == 200
+    assert response.get_json() == []
+    assert backend['called'] is False
+
+
+def test_index_clap_filters_in_the_database_on_the_dclap_embeddings(client, monkeypatch):
+    from tasks import clap_text_search
+
+    monkeypatch.setattr(clap_text_search, 'picker_where', lambda: clap_text_search.PICKER_WHERE)
+    backend = {}
+    response = _search(client, backend, index='clap')
+    assert response.status_code == 200
+    assert backend['kwargs']['item_id_filter'] is None
+    assert backend['kwargs']['extra_where'] == clap_text_search.PICKER_WHERE
+    assert 'clap_embedding' in backend['kwargs']['extra_where'][0]
+
+
+def test_index_clap_answers_nothing_while_the_dclap_index_is_not_loaded(client, monkeypatch):
+    from tasks import clap_text_search
+
+    monkeypatch.setattr(clap_text_search, 'picker_where', lambda: None)
+    backend = {}
+    response = _search(client, backend, index='clap')
     assert response.status_code == 200
     assert response.get_json() == []
     assert backend['called'] is False

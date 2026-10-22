@@ -18,6 +18,8 @@ the name filter is applied everywhere regardless of the distance setting.
 Main Features:
 * build_capped_results drops a second track with the same title and author
 * build_capped_results drops a vector-space near duplicate inside the lookback
+* A song-to-song seed is pre-claimed like the MusiCNN target: never returned,
+  never using an artist slot, and a copy of it is dropped by name or by distance
 * A zero threshold or a zero lookback leaves every neighbour in place
 * The distance pass never consults the index when it is disabled
 * The lyrics text search passes its own threshold, the axis search passes its
@@ -128,6 +130,52 @@ class TestNameFilterOnTheLyricsStyleResultBuilder:
         )
 
         assert [r['item_id'] for r in results] == ['a', 'b']
+
+
+class TestTheSeedIsPreClaimedLikeTheMusicnnTarget:
+    def _seed(self, vector=(1.0, 0.0, 0.0)):
+        return {'item_id': 's', 'title': 'Seed Song', 'author': 'Artist A', 'vector': np.array(vector)}
+
+    def test_the_seed_is_never_returned_and_never_uses_an_artist_slot(self):
+        idx = _index({0: [1.0, 0.0, 0.0], 1: [0.0, 1.0, 0.0], 2: [0.0, 0.0, 1.0], 3: [0.6, 0.8, 0.0]})
+        results = build_capped_results(
+            idx, {0: 's', 1: 'b', 2: 'c', 3: 'd'},
+            _meta([('s', 'Seed Song', 'Artist A'), ('b', 'B', 'Artist A'), ('c', 'C', 'Artist A'), ('d', 'D', 'Artist A')]),
+            [0, 1, 2, 3], [0.0, 0.1, 0.2, 0.3], 10, 3, dedup_names=True, seed=self._seed(),
+        )
+
+        assert [r['item_id'] for r in results] == ['b', 'c', 'd'], 'the seed must leave all 3 artist slots free'
+
+    def test_a_copy_of_the_seed_under_another_id_is_dropped_by_name(self):
+        idx = _index({0: [0.0, 1.0, 0.0], 1: [0.0, 0.0, 1.0]})
+        results = build_capped_results(
+            idx, {0: 'copy', 1: 'b'},
+            _meta([('copy', ' seed song ', 'artist a'), ('b', 'B', 'Artist B')]),
+            [0, 1], [0.0, 0.1], 10, 0, dedup_names=True, seed=self._seed(),
+        )
+
+        assert [r['item_id'] for r in results] == ['b']
+
+    def test_a_near_identical_copy_of_the_seed_with_another_name_is_dropped_by_distance(self):
+        idx = _index({0: [1.0, 0.001, 0.0], 1: [0.0, 1.0, 0.0]})
+        results = build_capped_results(
+            idx, {0: 'remaster', 1: 'b'},
+            _meta([('remaster', 'Seed Song (Remastered)', 'Artist A'), ('b', 'B', 'Artist B')]),
+            [0, 1], [0.0, 0.1], 10, 0, dedup_names=True, dup_threshold=0.01, lookback=1,
+            seed=self._seed(),
+        )
+
+        assert [r['item_id'] for r in results] == ['b']
+
+    def test_without_a_seed_the_same_neighbours_are_all_returned(self):
+        idx = _index({0: [1.0, 0.001, 0.0], 1: [0.0, 1.0, 0.0]})
+        results = build_capped_results(
+            idx, {0: 'remaster', 1: 'b'},
+            _meta([('remaster', 'Seed Song (Remastered)', 'Artist A'), ('b', 'B', 'Artist B')]),
+            [0, 1], [0.0, 0.1], 10, 0, dedup_names=True, dup_threshold=0.01, lookback=1,
+        )
+
+        assert [r['item_id'] for r in results] == ['remaster', 'b']
 
 
 class TestDistanceFilterOnTheLyricsStyleResultBuilder:
@@ -411,7 +459,7 @@ class TestClapTextSearchGetsTheSameTreatment:
 
         from tasks import clap_text_search
 
-        source = inspect.getsource(clap_text_search._query_clap_index)
+        source = inspect.getsource(clap_text_search._capped_neighbours)
         assert 'dedup_names=True' in source
         assert 'DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP' in source
         assert 'DUPLICATE_DISTANCE_CHECK_LOOKBACK' in source
