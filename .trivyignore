@@ -38,6 +38,13 @@ GHSA-fgcw-684q-jj6r
 # pip-audit allowlist; fixed only in 5.10.0 (breaking bump from the pinned 4.57.6).
 CVE-2026-9856
 GHSA-xrqw-3rrv-vx5w
+# transformers custom-generation code downloaded before trust consent -- unreachable:
+# AudioMuse never calls generate() and never loads custom generation code from a
+# Hub repo; the only transformers use is AutoTokenizer (roberta-base) with
+# local_files_only=True against the app-bundled model. Mirrors PYSEC-2026-4174 in
+# the pip-audit allowlist; affected up to 5.8.1, no fix in the 4.x line.
+CVE-2026-80047
+GHSA-x9r9-c232-4q39
 
 # The onnx model-loading CVEs are intentionally NOT excluded here because they
 # are already fixed by onnx==1.21.0 in requirements/common.txt (the version Trivy

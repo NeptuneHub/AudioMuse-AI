@@ -82,6 +82,7 @@ def test_read_endpoints_answer_empty(api):
         assert not stats.get('loaded'), (path, stats)
         assert int(stats.get('song_count', 0)) == 0, (path, stats)
     assert api.post('/api/clap/search', json={'query': 'piano'}).status_code == 503
+    assert api.post('/api/clap/search_by_song', json={'item_id': 'nope'}).status_code == 503
     assert api.json('GET', '/api/cron') == []
     playlists = api.json('GET', '/api/playlists')
     assert all(not server.get('playlists') for server in playlists.get('servers', [])), playlists

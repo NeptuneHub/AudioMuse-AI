@@ -8,8 +8,8 @@
 
 """CLAP text-to-audio search over the cached IVF index in clap_text_search.
 
-Covers cache stats/state reporting and search_by_text ranking against a dummy
-IVF index, using cosine similarity of the text embedding.
+Covers cache stats/state reporting, search_by_text ranking and search_by_song
+against a dummy IVF index, using cosine similarity of the query vector.
 
 Main Features:
 * get_cache_stats and is_clap_cache_loaded reflect loaded/unloaded state
@@ -17,9 +17,20 @@ Main Features:
   required item_id/title/author/similarity fields
 * Edge cases: CLAP disabled, cache unloaded, failed text embedding, zero limit
   all return an empty list
+* search_by_song seeds the index with the seed's stored embedding row and
+  follows the MusiCNN similar-song rules: the seed and any copy of it (same
+  name or identical vector) are never returned, the seed uses no artist slot,
+  and the artist limit follows eliminate_duplicates. A starved pool is read
+  deeper once, an exhausted one is not, the index snapshot survives a refresh,
+  and a missing seed or an unloaded index raise distinct errors
+* The radius walk (default SIMILARITY_RADIUS_DEFAULT) walks a MusiCNN-sized
+  deduplicated pool through the shared helper with the artist limit, never
+  sees the seed or its copies, and falls back to the plain order if it fails
+* The song picker filter offers only songs with a DCLAP embedding
 """
 
 import numpy as np
+import pytest
 from unittest.mock import patch
 
 
@@ -464,3 +475,328 @@ class TestSearchEdgeCases:
         _CLAP_CACHE['embeddings'] = None
         _CLAP_CACHE['metadata'] = None
         _CLAP_CACHE['item_ids'] = None
+
+
+def _fan_embeddings(n, dim=512):
+    out = np.zeros((n, dim), dtype=np.float32)
+    out[0, 0] = 1.0
+    for i, closeness in enumerate(np.linspace(0.95, 0.3, n - 1), start=1):
+        out[i, 0] = closeness
+        out[i, i] = np.sqrt(1.0 - closeness * closeness)
+    return out
+
+
+class _SongIndex(DummyIVFIndex):
+    def __init__(self, embeddings, probe_limit=None):
+        super().__init__(embeddings)
+        self.probe_limit = probe_limit
+        self.query_ks = []
+
+    def get_vectors(self, vec_ids):
+        return {int(v): self.embeddings[int(v)] for v in vec_ids}
+
+    def query(self, query_vector, k):
+        self.query_ks.append(k)
+        if self.probe_limit is not None:
+            k = min(k, self.probe_limit)
+        return super().query(query_vector, k)
+
+
+class _FakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self.row = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params):
+        self.conn.seen.append(params[0])
+        blob = self.conn.store.get(params[0])
+        self.row = None if blob is None else (memoryview(blob),)
+
+    def fetchone(self):
+        return self.row
+
+
+class _FakeConn:
+    def __init__(self, store):
+        self.store = store
+        self.seen = []
+
+    def cursor(self, *args, **kwargs):
+        return _FakeCursor(self)
+
+
+@pytest.fixture
+def song_index(monkeypatch):
+    import database
+    from tasks import clap_text_search
+
+    def install(embeddings, authors=None, titles=None, probe_limit=None):
+        item_ids = [f'song{i}' for i in range(len(embeddings))]
+        setup_dummy_clap_index_cache(clap_text_search._CLAP_INDEX_CACHE, embeddings, item_ids)
+        index = _SongIndex(embeddings, probe_limit)
+        clap_text_search._CLAP_INDEX_CACHE['index'] = index
+        conn = _FakeConn({iid: embeddings[i].tobytes() for i, iid in enumerate(item_ids)})
+        monkeypatch.setattr(database, 'get_db', lambda: conn)
+        meta = {
+            iid: {
+                'title': titles[i] if titles else f'Song {i}',
+                'author': authors[i] if authors else f'Artist {i}',
+                'album': '',
+            }
+            for i, iid in enumerate(item_ids)
+        }
+        monkeypatch.setattr(
+            clap_text_search, '_fetch_clap_metadata', lambda ids: {i: meta[i] for i in ids if i in meta}
+        )
+        return conn, index
+
+    monkeypatch.setattr('config.CLAP_ENABLED', True)
+    monkeypatch.setattr('config.MAX_SONGS_PER_ARTIST', 3)
+    monkeypatch.setattr('config.SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT', True)
+    monkeypatch.setattr('config.SIMILARITY_RADIUS_DEFAULT', False)
+    monkeypatch.setattr('config.DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP', 0.01)
+    monkeypatch.setattr('config.DUPLICATE_DISTANCE_CHECK_LOOKBACK', 1)
+    yield install
+    teardown_dummy_clap_index_cache(clap_text_search._CLAP_INDEX_CACHE)
+
+
+class TestSearchBySong:
+    def test_the_seed_is_never_returned_and_neighbours_come_closest_first(self, song_index):
+        from tasks.clap_text_search import search_by_song
+
+        song_index(_fan_embeddings(8))
+        results = search_by_song('song0', limit=5)
+
+        assert [r['item_id'] for r in results] == ['song1', 'song2', 'song3', 'song4', 'song5']
+        similarities = [r['similarity'] for r in results]
+        assert similarities == sorted(similarities, reverse=True)
+
+    def test_the_seed_vector_is_its_stored_clap_embedding_row(self, song_index):
+        from tasks.clap_text_search import search_by_song
+
+        conn, _ = song_index(_fan_embeddings(7))
+        results = search_by_song('song3', limit=2)
+
+        assert conn.seen == ['song3']
+        assert [r['item_id'] for r in results][0] == 'song0'
+        assert 'song3' not in [r['item_id'] for r in results]
+
+    def test_the_seed_uses_no_artist_slot_and_a_shortfall_reads_a_deeper_pool(self, song_index):
+        from tasks.clap_text_search import search_by_song
+
+        authors = ['Artist A'] * 40 + [f'Artist {i}' for i in range(40, 60)]
+        _, index = song_index(_fan_embeddings(60), authors)
+        results = search_by_song('song0', limit=5)
+
+        assert len(results) == 5
+        assert 'song0' not in [r['item_id'] for r in results]
+        assert sum(1 for r in results if r['author'] == 'Artist A') == 3, (
+            'the seed is by Artist A too, but like the MusiCNN path it must leave all 3 slots to other songs'
+        )
+        assert index.query_ks == [26, 60], 'the first pool of 26 holds one artist only, so one deeper pool is read'
+
+    def test_an_exhausted_pool_is_not_queried_a_second_time(self, song_index):
+        from tasks.clap_text_search import search_by_song
+
+        _, index = song_index(_fan_embeddings(40), ['Artist A'] * 40, probe_limit=10)
+        results = search_by_song('song0', limit=5)
+
+        assert len(results) == 3
+        assert index.query_ks == [26], 'the probed cells returned fewer rows than asked, a bigger k returns the same rows'
+
+    def test_with_the_artist_limit_off_one_artist_can_fill_the_list(self, song_index):
+        from tasks.clap_text_search import search_by_song
+
+        song_index(_fan_embeddings(12), ['Artist A'] * 12)
+        results = search_by_song('song0', limit=5, eliminate_duplicates=False)
+
+        assert [r['item_id'] for r in results] == ['song1', 'song2', 'song3', 'song4', 'song5']
+
+    @pytest.mark.parametrize('default, expected', [(True, 3), (False, 5)])
+    def test_the_artist_limit_defaults_to_the_musicnn_setting(self, song_index, monkeypatch, default, expected):
+        from tasks.clap_text_search import search_by_song
+
+        monkeypatch.setattr('config.SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT', default)
+        song_index(_fan_embeddings(12), ['Artist A'] * 12)
+
+        assert len(search_by_song('song0', limit=5)) == expected
+
+    def test_a_copy_of_the_seed_with_the_same_title_and_artist_is_not_returned(self, song_index):
+        from tasks.clap_text_search import search_by_song
+
+        titles = [f'Song {i}' for i in range(8)]
+        authors = [f'Artist {i}' for i in range(8)]
+        titles[2], authors[2] = ' song 0 ', 'ARTIST 0'
+        song_index(_fan_embeddings(8), authors, titles)
+        results = search_by_song('song0', limit=5)
+
+        assert 'song2' not in [r['item_id'] for r in results]
+        assert len(results) == 5
+
+    def test_a_near_identical_copy_of_the_seed_is_not_returned(self, song_index):
+        from tasks.clap_text_search import search_by_song
+
+        embeddings = _fan_embeddings(8)
+        embeddings[4] = embeddings[0]
+        song_index(embeddings)
+        results = search_by_song('song0', limit=5)
+
+        assert 'song4' not in [r['item_id'] for r in results], 'an identical vector under another id is the seed again'
+        assert len(results) == 5
+
+    def test_the_search_keeps_its_index_snapshot_when_a_refresh_unloads_it(self, song_index, monkeypatch):
+        from tasks import clap_text_search
+
+        song_index(_fan_embeddings(8))
+        original = clap_text_search._seed_clap_vector
+
+        def read_then_unload(item_id):
+            vector = original(item_id)
+            clap_text_search._CLAP_INDEX_CACHE['index'] = None
+            clap_text_search._CLAP_INDEX_CACHE['loaded'] = False
+            return vector
+
+        monkeypatch.setattr(clap_text_search, '_seed_clap_vector', read_then_unload)
+        assert len(clap_text_search.search_by_song('song0', limit=5)) == 5
+
+    def test_a_song_without_a_clap_embedding_is_reported_as_not_found(self, song_index):
+        from tasks.clap_text_search import SongSeedNotFound, search_by_song
+
+        song_index(_fan_embeddings(4))
+        with pytest.raises(SongSeedNotFound):
+            search_by_song('not-analysed', limit=3)
+
+    @pytest.mark.parametrize(
+        'blob',
+        [bytes(16), np.zeros(512, dtype=np.float32).tobytes(), np.full(512, np.nan, dtype=np.float32).tobytes()],
+        ids=['wrong-length', 'all-zero', 'not-finite'],
+    )
+    def test_a_corrupt_stored_embedding_is_reported_as_not_found(self, song_index, blob):
+        from tasks.clap_text_search import SongSeedNotFound, search_by_song
+
+        conn, _ = song_index(_fan_embeddings(4))
+        conn.store['song0'] = blob
+        with pytest.raises(SongSeedNotFound):
+            search_by_song('song0', limit=3)
+
+    def test_an_unloaded_index_is_reported_as_unavailable(self, song_index):
+        from tasks.clap_text_search import ClapIndexUnavailable, search_by_song, _CLAP_INDEX_CACHE
+
+        song_index(_fan_embeddings(4))
+        _CLAP_INDEX_CACHE['loaded'] = False
+        with pytest.raises(ClapIndexUnavailable):
+            search_by_song('song0', limit=3)
+
+    def test_disabled_or_zero_limit_returns_nothing(self, song_index, monkeypatch):
+        from tasks.clap_text_search import search_by_song
+
+        song_index(_fan_embeddings(4))
+        assert search_by_song('song0', limit=0) == []
+
+        monkeypatch.setattr('config.CLAP_ENABLED', False)
+        assert search_by_song('song0', limit=3) == []
+
+
+@pytest.fixture
+def walk_spy(monkeypatch):
+    from tasks import clap_text_search
+
+    calls = []
+    real = clap_text_search.execute_radius_walk
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(clap_text_search, 'execute_radius_walk', spy)
+    return calls
+
+
+class TestSearchBySongRadiusWalk:
+    def test_the_radius_walk_picks_the_songs_from_a_musicnn_sized_pool(self, song_index, walk_spy):
+        from tasks.clap_text_search import search_by_song
+
+        _, index = song_index(_fan_embeddings(60))
+        results = search_by_song('song0', limit=5, radius_similarity=True)
+
+        assert len(results) == 5
+        assert 'song0' not in [r['item_id'] for r in results]
+        assert index.query_ks == [5 + max(20, 15) + 1], 'the pool is limit + max(20, 3 * limit) + 1, as MusiCNN asks'
+        assert len(walk_spy) == 1
+        assert walk_spy[0]['n'] == 5
+        assert walk_spy[0]['eliminate_duplicates'] is True
+        assert walk_spy[0]['max_songs_per_artist'] == 3
+        assert 'song0' not in [c['item_id'] for c in walk_spy[0]['candidate_data']], 'the seed never enters the walk'
+
+    def test_the_radius_walk_keeps_the_artist_limit(self, song_index, walk_spy):
+        from tasks.clap_text_search import search_by_song
+
+        authors = ['Artist A'] * 40 + [f'Artist {i}' for i in range(40, 60)]
+        song_index(_fan_embeddings(60), authors)
+        results = search_by_song('song0', limit=10, radius_similarity=True)
+
+        assert sum(1 for r in results if r['author'] == 'Artist A') <= 3
+        assert 'song0' not in [r['item_id'] for r in results]
+
+    def test_with_the_artist_limit_off_the_walk_gets_no_cap(self, song_index, walk_spy):
+        from tasks.clap_text_search import search_by_song
+
+        song_index(_fan_embeddings(20), ['Artist A'] * 20)
+        results = search_by_song('song0', limit=5, radius_similarity=True, eliminate_duplicates=False)
+
+        assert walk_spy[0]['eliminate_duplicates'] is False
+        assert len(results) == 5
+
+    def test_a_copy_of_the_seed_never_reaches_the_walk(self, song_index, walk_spy):
+        from tasks.clap_text_search import search_by_song
+
+        embeddings = _fan_embeddings(12)
+        embeddings[4] = embeddings[0]
+        titles = [f'Song {i}' for i in range(12)]
+        authors = [f'Artist {i}' for i in range(12)]
+        titles[6], authors[6] = 'Song 0', 'Artist 0'
+        song_index(embeddings, authors, titles)
+        search_by_song('song0', limit=5, radius_similarity=True)
+
+        walked = [c['item_id'] for c in walk_spy[0]['candidate_data']]
+        assert 'song4' not in walked, 'an identical vector under another id is the seed again'
+        assert 'song6' not in walked, 'the same title and artist under another id is the seed again'
+
+    @pytest.mark.parametrize('default, walks', [(True, 1), (False, 0)])
+    def test_the_radius_walk_defaults_to_the_musicnn_setting(self, song_index, walk_spy, monkeypatch, default, walks):
+        from tasks.clap_text_search import search_by_song
+
+        monkeypatch.setattr('config.SIMILARITY_RADIUS_DEFAULT', default)
+        song_index(_fan_embeddings(12))
+        assert len(search_by_song('song0', limit=5)) == 5
+        assert len(walk_spy) == walks
+
+    def test_a_failing_walk_answers_with_the_plain_order(self, song_index, monkeypatch):
+        from tasks import clap_text_search
+
+        song_index(_fan_embeddings(12))
+        plain = clap_text_search.search_by_song('song0', limit=5, radius_similarity=False)
+
+        def broken(**kwargs):
+            raise RuntimeError('walk failed')
+
+        monkeypatch.setattr(clap_text_search, 'execute_radius_walk', broken)
+        assert clap_text_search.search_by_song('song0', limit=5, radius_similarity=True) == plain
+
+
+class TestSongPickerFilter:
+    def test_the_picker_offers_only_songs_with_a_clap_embedding_while_the_index_is_loaded(self, monkeypatch):
+        from tasks import clap_text_search
+
+        monkeypatch.setitem(clap_text_search._CLAP_CACHE, 'loaded', True)
+        assert clap_text_search.picker_where() == clap_text_search.PICKER_WHERE
+        assert 'clap_embedding' in clap_text_search.PICKER_WHERE[0]
+
+        monkeypatch.setitem(clap_text_search._CLAP_CACHE, 'loaded', False)
+        assert clap_text_search.picker_where() is None

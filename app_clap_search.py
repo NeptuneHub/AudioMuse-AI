@@ -10,12 +10,13 @@
 
 Serves the `/clap_search` UI and its API, delegating to
 `tasks.clap_text_search` which matches a text query against tracks via CLAP
-audio<->text embeddings and caches results.
+audio<->text embeddings and caches results. The page has two tabs: By Text and
+By Song, the latter seeding the same DCLAP index with a library song.
 
 Main Features:
-* Routes: `/clap_search` page, `/api/clap/search`, warmup (`/api/clap/warmup`
-  and its `/status`), `/api/clap/cache/refresh`, `/api/clap/stats`,
-  `/api/clap/top_queries`.
+* Routes: `/clap_search` page, `/api/clap/search`, `/api/clap/search_by_song`,
+  warmup (`/api/clap/warmup` and its `/status`), `/api/clap/cache/refresh`,
+  `/api/clap/stats`, `/api/clap/top_queries`.
 * Task imports are deferred into the handlers so the blueprint loads even when
   CLAP is disabled.
 """
@@ -28,6 +29,7 @@ from error.error_dictionary import (
     ERR_CACHE_REFRESH_FAILED,
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
+    ERR_NOT_FOUND,
     ERR_SEARCH_FAILED,
 )
 from error.responses import json_error, json_exception
@@ -49,7 +51,12 @@ def clap_search_page():
       200:
         description: HTML page rendered.
     """
-    from config import CLAP_ENABLED, APP_VERSION, CLAP_SEARCH_DEFAULT_LIMIT
+    from config import (
+        APP_VERSION,
+        CLAP_ENABLED,
+        CLAP_SEARCH_DEFAULT_LIMIT,
+        SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
+    )
     from tasks.clap_text_search import get_cache_stats
 
     cache_stats = get_cache_stats()
@@ -62,6 +69,7 @@ def clap_search_page():
         clap_enabled=CLAP_ENABLED,
         cache_stats=cache_stats,
         clap_search_limit_default=CLAP_SEARCH_DEFAULT_LIMIT,
+        eliminate_duplicates_default=SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT,
     )
 
 
@@ -246,6 +254,184 @@ def clap_search_api():
         logger.exception("DCLAP search API error")
         return json_exception(
             exc, ERR_SEARCH_FAILED, 'An internal server error occurred during DCLAP search.'
+        )
+
+
+_SONG_SEARCH_NOT_LOADED = 'CLAP cache not loaded. Please run song analysis first.'
+
+
+def _optional_flag(value):
+    if isinstance(value, str) and value.strip().lower() in ('true', 'false'):
+        return value.strip().lower() == 'true'
+    return value
+
+
+def _parse_song_search(data, default_limit):
+    item_id = data.get('item_id')
+    item_id = item_id.strip() if isinstance(item_id, str) else ''
+    if not item_id:
+        return None, 'Missing "item_id" in request body'
+
+    limit = data.get('limit')
+    if limit is None:
+        limit = default_limit
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError, OverflowError):
+        return None, '"limit" must be a whole number'
+
+    parsed = {'item_id': item_id, 'limit': limit}
+    for key in ('eliminate_duplicates', 'radius_similarity'):
+        parsed[key] = _optional_flag(data.get(key))
+        if parsed[key] is not None and not isinstance(parsed[key], bool):
+            return None, f'"{key}" must be true or false'
+    return parsed, None
+
+
+@clap_search_bp.route('/api/clap/search_by_song', methods=['POST'])
+def clap_search_by_song_api():
+    """
+    Run a DCLAP song-to-song similarity search.
+    ---
+    tags:
+      - CLAP Search
+    summary: Return the top-N tracks whose DCLAP audio embedding is closest to a seed song.
+    description: >
+      Uses the same DCLAP index as /api/clap/search, seeded with the stored
+      audio embedding of a library song instead of a text query, so the text
+      model is never loaded. Duplicates are removed like the MusiCNN similar
+      song search: the seed, and any copy of it with the same title and artist
+      or a near-identical sound, are not part of the results, and the seed does
+      not count against its artist's limit.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [item_id]
+            properties:
+              item_id:
+                type: string
+                description: Media server item id of the seed song.
+              limit:
+                type: integer
+                minimum: 1
+                default: 50
+                description: >-
+                  Number of tracks to return. Not capped - ask for as many
+                  as the index holds.
+              eliminate_duplicates:
+                type: boolean
+                description: >-
+                  If true, at most MAX_SONGS_PER_ARTIST songs per artist are
+                  returned. If omitted, SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+                  decides, exactly like /api/similar_tracks.
+              radius_similarity:
+                type: boolean
+                description: >-
+                  If true, the songs are picked and ordered by the radius walk
+                  (distance buckets, smoother listening flow), as on
+                  /api/similar_tracks. If omitted, SIMILARITY_RADIUS_DEFAULT
+                  decides.
+    responses:
+      200:
+        description: Similar tracks sorted by descending similarity.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count:
+                  type: integer
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                      title:
+                        type: string
+                      author:
+                        type: string
+                      album:
+                        type: string
+                      similarity:
+                        type: number
+                        format: float
+      400:
+        description: CLAP disabled, a body that is not a JSON object, missing item_id, or invalid limit, eliminate_duplicates or radius_similarity.
+      404:
+        description: The seed song has no DCLAP embedding, or no similar song is left on the selected server.
+      500:
+        description: Internal error during search.
+      503:
+        description: CLAP cache not loaded yet (run analysis first).
+    """
+    from config import CLAP_ENABLED, CLAP_SEARCH_DEFAULT_LIMIT
+    from tasks.clap_text_search import (
+        ClapIndexUnavailable,
+        SongSeedNotFound,
+        is_clap_cache_loaded,
+        search_by_song,
+    )
+    from app_helper import attach_song_features
+
+    if not CLAP_ENABLED:
+        return json_error(
+            ERR_INVALID_REQUEST,
+            'CLAP search is disabled. Set CLAP_ENABLED=true in config.',
+            results=[],
+        )
+
+    try:
+        app_server_context.resolve_request_server_id()
+    except ValueError:
+        logger.warning("Invalid server selection.", exc_info=True)
+        return json_error(ERR_INVALID_REQUEST, 'Invalid server selection.')
+
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return json_error(ERR_INVALID_REQUEST, 'Invalid JSON payload')
+
+    parsed, problem = _parse_song_search(data, CLAP_SEARCH_DEFAULT_LIMIT)
+    if problem:
+        return json_error(ERR_INVALID_REQUEST, problem)
+
+    if not is_clap_cache_loaded():
+        return json_error(ERR_INDEX_EMPTY, _SONG_SEARCH_NOT_LOADED, results=[])
+
+    try:
+        seed_id = app_server_context.resolve_input_item_id(parsed['item_id'], data)
+        results = search_by_song(
+            seed_id,
+            limit=parsed['limit'],
+            eliminate_duplicates=parsed['eliminate_duplicates'],
+            radius_similarity=parsed['radius_similarity'],
+        )
+        attach_song_features(results)
+        results = app_server_context.scope_results(results, parsed['limit'], id_key='item_id')
+        if not results:
+            return json_error(ERR_NOT_FOUND, 'No similar songs found for this song.', results=[])
+        return jsonify({'results': results, 'count': len(results)})
+
+    except SongSeedNotFound as exc:
+        logger.warning("DCLAP song search: %s", exc)
+        return json_error(
+            ERR_NOT_FOUND,
+            'This song has no DCLAP embedding yet. Run analysis with CLAP enabled.',
+            results=[],
+        )
+    except ClapIndexUnavailable as exc:
+        logger.warning("DCLAP song search: %s", exc)
+        return json_error(ERR_INDEX_EMPTY, _SONG_SEARCH_NOT_LOADED, results=[])
+    except Exception as exc:
+        logger.exception("DCLAP song search API error")
+        return json_exception(
+            exc, ERR_SEARCH_FAILED, 'An internal server error occurred during DCLAP song search.'
         )
 
 

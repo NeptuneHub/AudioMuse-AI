@@ -36,7 +36,10 @@ Main Features:
   lookup per candidate, and one loud log if the index cannot serve it.
 * build_capped_results: walk IVF neighbours and assemble the final capped list. Every
   rejection test runs before any counter is written, so a candidate dropped by the
-  distance filter never consumes an artist slot or claims a name.
+  distance filter never consumes an artist slot or claims a name. An optional seed
+  (song-to-song search) is pre-claimed like the MusiCNN target: its id, its name key
+  and its vector are taken up front, so neither the seed nor a copy of it under
+  another id is returned, and it never uses one of its own artist's slots.
 """
 
 import logging
@@ -185,6 +188,7 @@ def build_capped_results(
     dedup_names=False,
     dup_threshold=0.0,
     lookback=0,
+    seed=None,
 ) -> List[Dict]:
     results: List[Dict] = []
     artist_counts: Dict[str, int] = {}
@@ -198,6 +202,13 @@ def build_capped_results(
         if unit_vectors is None:
             unit_vectors = {}
             window = cosine_duplicate_window(0.0, 0)
+
+    if seed is not None:
+        seen.add(seed['item_id'])
+        seed_name = name_key_for(seed.get('title'), seed.get('author')) if dedup_names else None
+        if seed_name is not None:
+            seen_names.add(seed_name)
+        window.remember(to_unit_vector(seed.get('vector')))
 
     for vid, dist in zip(neighbor_ids, distances):
         if len(results) >= limit:
