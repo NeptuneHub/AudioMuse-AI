@@ -17,7 +17,9 @@ Main Features:
 * enqueue from a request context (no running task) refuses when the guard is busy
 * enqueue from a request context refuses while a scheduled AudioMuse-AI task
   waits in cron_retry: AudioMuse-AI goes first
-* enqueue from inside a running task skips the guard and the waiting check
+* enqueue from inside a running task skips the guard but still refuses while a
+  scheduled AudioMuse-AI task waits in cron_retry, so a plugin task cannot chain
+  its next task ahead of it
 * enqueue with a clear guard and nothing waiting proceeds and queues
 """
 
@@ -75,11 +77,27 @@ def test_enqueue_from_inside_a_running_task_skips_the_guard():
         'plugin.api.get_queue_blocking_task': (
             lambda *a, **k: (_ for _ in ()).throw(AssertionError('guard skipped'))
         ),
-        'plugin.api.get_waiting_core_cron_retry': (
-            lambda *a, **k: (_ for _ in ()).throw(AssertionError('waiting check skipped'))
-        ),
+        'plugin.api.get_waiting_core_cron_retry': lambda *a, **k: None,
     }):
         plugin.api.enqueue(lambda: None)
+
+
+def test_enqueue_from_inside_a_running_task_refuses_while_a_scheduled_audiomuse_task_waits():
+    calls = []
+    with _patches({
+        'plugin.api.dotted_path': lambda f: 'demo.sync',
+        'taskqueue.current_task_id': lambda: 'plugin-run-1',
+        'taskqueue.enqueue': lambda *a, **k: calls.append(k['task_id']),
+        'plugin.api.get_queue_blocking_task': (
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError('guard skipped'))
+        ),
+        'plugin.api.get_waiting_core_cron_retry': (
+            lambda *a, **k: {'task_type': 'analysis', 'retry_until': 10**12}
+        ),
+    }):
+        with pytest.raises(AudioMuseError, match='scheduled AudioMuse-AI task analysis'):
+            plugin.api.enqueue(lambda: None)
+    assert calls == [], 'a running plugin task cannot chain its next task ahead of the waiting analysis'
 
 
 def test_enqueue_proceeds_when_the_guard_is_clear():

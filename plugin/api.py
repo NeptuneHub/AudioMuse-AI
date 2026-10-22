@@ -186,10 +186,10 @@ def enqueue(func, *args, queue='default', **kwargs):
             "Task arguments must be JSON-serializable (str, int, float, bool, None, "
             "list, dict); pass an ISO string instead of a datetime, a list instead of a set."
         ) from exc
-    if taskqueue.current_task_id() is None:
-        from error import AudioMuseError
-        from error.error_dictionary import ERR_TASK_IN_PROGRESS
+    from error import AudioMuseError
+    from error.error_dictionary import ERR_TASK_IN_PROGRESS
 
+    if taskqueue.current_task_id() is None:
         blocking = get_queue_blocking_task()
         if blocking:
             raise AudioMuseError(
@@ -197,13 +197,13 @@ def enqueue(func, *args, queue='default', **kwargs):
                 f"Another queue job ({blocking['task_type']}) is still running. "
                 f"Wait for it to finish before starting plugin task {dotted}.",
             )
-        waiting = get_waiting_core_cron_retry()
-        if waiting:
-            raise AudioMuseError(
-                ERR_TASK_IN_PROGRESS,
-                f"The scheduled AudioMuse-AI task {waiting['task_type']} is waiting to "
-                f"start and goes first. Wait for it to run before starting plugin task {dotted}.",
-            )
+    waiting = get_waiting_core_cron_retry()
+    if waiting:
+        raise AudioMuseError(
+            ERR_TASK_IN_PROGRESS,
+            f"The scheduled AudioMuse-AI task {waiting['task_type']} is waiting to "
+            f"start and goes first. Wait for it to run before starting plugin task {dotted}.",
+        )
     taskqueue.enqueue(
         'plugin.manager.run_plugin_task',
         args=(dotted,) + tuple(args),
