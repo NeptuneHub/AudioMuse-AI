@@ -79,7 +79,7 @@ def resolve_emby_jellyfin_user(identifier, token=None):
 def _strip_chunk_suffix(name: str) -> str:
     if name.endswith(')'):
         idx = name.rfind('(')
-        if idx >= 0 and name[idx + 1:-1].isdigit():
+        if idx > 0 and name[idx - 1].isspace() and name[idx + 1:-1].isdigit():
             return name[:idx].rstrip()
     return name
 
@@ -101,10 +101,12 @@ def _matches_automatic_naming(name, prefix="", suffix=""):
 
     name = _strip_chunk_suffix(name)
 
-    if suffix and not name.endswith(suffix):
-        return False
+    if suffix:
+        if not name.endswith(suffix):
+            return False
+        name = name[:-len(suffix)]
 
-    return True
+    return bool(name.strip())
 
 
 def _delete_matching_playlists(playlists_to_check, delete_function, suffix="", prefix=""):

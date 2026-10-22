@@ -1169,7 +1169,7 @@ recorded in the `playlist` table.
 Clustering is idempotent at the output level. Every run starts by deleting the
 existing automatic playlists and ends by recreating them, so re-running simply
 replaces the previous set. There are no clustering tables to drop. It only
-reads the analysis tables, so a new clustering never requires re-analyzing
+**reads** the analysis tables, so a new clustering never requires re-analyzing
 audio or lyrics.
 
 ### 5.3. Environment Variable Configuration
@@ -1188,6 +1188,9 @@ audio or lyrics.
 - `MAX_SONGS_PER_CLUSTER`: maximum songs per playlist, 0 for unlimited.
 - `MAX_SONGS_PER_ARTIST`: maximum songs from one artist in one playlist.
 - `CLUSTERING_CLEANING`: run the duplicate cleanup during post-processing.
+- `CLUSTERING_PLAYLIST_PREFIX`, `CLUSTERING_PLAYLIST_SUFFIX`: optional prefix
+  and suffix applied to generated cluster playlist names (default suffix
+  `_automatic`) and matched when deleting previous automatic playlists.
 - `USE_GPU_CLUSTERING`: use RAPIDS cuML models when available, see [GPU](GPU.md).
 
 **Automatic calibration**

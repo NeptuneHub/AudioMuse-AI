@@ -370,6 +370,8 @@ USE_GPU_CLUSTERING = os.environ.get("USE_GPU_CLUSTERING", "False").lower() == "t
 # When True (default), existing automatic playlists are deleted before new clusters are created.
 # Set to False to preserve old automatic playlists when running clustering.
 CLUSTERING_CLEANING = os.environ.get("CLUSTERING_CLEANING", "True").lower() == "true"
+# Optional prefix and suffix wrapped around generated cluster playlist names and
+# matched during automatic playlist cleanup (default suffix '_automatic').
 CLUSTERING_PLAYLIST_PREFIX = os.environ.get("CLUSTERING_PLAYLIST_PREFIX", "")
 CLUSTERING_PLAYLIST_SUFFIX = os.environ.get("CLUSTERING_PLAYLIST_SUFFIX", "_automatic")
 
