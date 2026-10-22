@@ -618,6 +618,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const topQueriesContainer = document.getElementById('top-queries-container');
     
     let currentResults = [];
+    let currentSeedId = null;
     
     // Warmup model on page load for instant searches
     warmupModel();
@@ -903,9 +904,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (!response.ok || data === null) {
                     throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
                 }
+                currentSeedId = itemId;
                 currentResults = data.results || [];
                 displayResults(currentResults, songLabel, null);
+                document.getElementById('playlist_name').value = 'Similar to ' + songLabel;
             } catch (error) {
+                currentSeedId = null;
                 currentResults = [];
                 resultsList.innerHTML = `<div class="error-message">${escapeHtml(error.message)}</div>`;
             }
@@ -930,6 +934,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         // Show loading
+        currentSeedId = null;
         resultsContainer.classList.remove('hidden');
         resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
         playlistCreator.classList.add('hidden');
@@ -1089,7 +1094,8 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
-        const trackIds = currentResults.map(r => r.item_id);
+        const resultIds = currentResults.map(r => r.item_id);
+        const trackIds = currentSeedId ? [currentSeedId, ...resultIds] : resultIds;
         playlistStatusDiv.textContent = 'Creating playlist...';
         
         try {
