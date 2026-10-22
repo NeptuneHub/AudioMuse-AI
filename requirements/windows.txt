@@ -20,7 +20,7 @@ pywin32==310
 # Windows tray (notification-area) menu app -- the counterpart to the macOS
 # menu-bar agent. pystray needs Pillow to load the .ico.
 pystray==0.19.5
-Pillow==12.3.0
+Pillow==13.0.0
 
 # Build tooling.
 pyinstaller==6.22.2

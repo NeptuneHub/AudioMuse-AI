@@ -32,7 +32,7 @@ huggingface-hub==0.36.2
 tokenizers==0.22.2
 stopwords==1.0.2
 langdetect==1.0.9
-PyJWT==2.13.0
+PyJWT==2.15.1
 argon2-cffi==25.1.0
 gunicorn==25.3.0
 cryptography==50.0.0
