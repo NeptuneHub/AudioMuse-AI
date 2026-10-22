@@ -534,17 +534,17 @@
                 <div class="param-group">
                     <label for="clap-song-query" class="label-with-tooltip">
                         Seed Song:
-                        <span class="info-tooltip" tabindex="0">
+                        <button type="button" class="info-tooltip info-tooltip-button" aria-label="About the seed song">
                             <span class="info-icon"></span>
                             <span class="tooltip-text">Type to find a song in your library and select it. The search returns the songs whose DCLAP sound is closest to it, using the same index as the text search.</span>
-                        </span>
+                        </button>
                     </label>
                     <div class="autocomplete-container">
                         <input type="text" id="clap-song-query" class="search-box"
                                placeholder="Start typing a song or artist..."
                                autocomplete="off"
                                {% if not cache_stats.loaded %}disabled{% endif %}>
-                        <input type="hidden" id="clap-song-item-id" autocomplete="off">
+                        <input type="hidden" id="clap-song-item-id">
                         <div id="clap-song-picked" class="song-picked"></div>
                         <div id="clap-song-results" class="autocomplete-results hidden"></div>
                     </div>
@@ -552,10 +552,10 @@
                 <div class="param-group">
                     <label for="song-limit" class="label-with-tooltip">
                         Number of results:
-                        <span class="info-tooltip" tabindex="0">
+                        <button type="button" class="info-tooltip info-tooltip-button" aria-label="About the number of results">
                             <span class="info-icon"></span>
                             <span class="tooltip-text">Maximum number of similar songs to return (1-200).</span>
-                        </span>
+                        </button>
                     </label>
                     <input type="number" id="song-limit" name="limit" value="{{ clap_search_limit_default }}" min="{{ clap_search_limit_default|min_bound(1) }}" max="{{ clap_search_limit_default|max_bound(200) }}"
                            {% if not cache_stats.loaded %}disabled{% endif %}>
@@ -565,10 +565,10 @@
                         <input type="checkbox" id="song-eliminate-duplicates" name="eliminate_duplicates" {% if eliminate_duplicates_default %}checked{% endif %}>
                         <label for="song-eliminate-duplicates" class="label-with-tooltip">
                             Limit songs per artist in results
-                            <span class="info-tooltip" tabindex="0">
+                            <button type="button" class="info-tooltip info-tooltip-button" aria-label="About the artist limit">
                                 <span class="info-icon"></span>
                                 <span class="tooltip-text">Prevents the playlist from being dominated by one artist. When enabled, limits how many tracks from the same artist can appear in results.</span>
-                            </span>
+                            </button>
                         </label>
                     </div>
                 </div>

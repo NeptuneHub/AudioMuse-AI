@@ -765,7 +765,8 @@ class TestSearchBySongRadiusWalk:
         search_by_song('song0', limit=5, radius_similarity=True)
 
         walked = [c['item_id'] for c in walk_spy[0]['candidate_data']]
-        assert 'song4' not in walked and 'song6' not in walked
+        assert 'song4' not in walked, 'an identical vector under another id is the seed again'
+        assert 'song6' not in walked, 'the same title and artist under another id is the seed again'
 
     @pytest.mark.parametrize('default, walks', [(True, 1), (False, 0)])
     def test_the_radius_walk_defaults_to_the_musicnn_setting(self, song_index, walk_spy, monkeypatch, default, walks):

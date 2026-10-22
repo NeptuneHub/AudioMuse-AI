@@ -257,10 +257,35 @@ def clap_search_api():
         )
 
 
+_SONG_SEARCH_NOT_LOADED = 'CLAP cache not loaded. Please run song analysis first.'
+
+
 def _optional_flag(value):
     if isinstance(value, str) and value.strip().lower() in ('true', 'false'):
         return value.strip().lower() == 'true'
     return value
+
+
+def _parse_song_search(data, default_limit):
+    item_id = data.get('item_id')
+    item_id = item_id.strip() if isinstance(item_id, str) else ''
+    if not item_id:
+        return None, 'Missing "item_id" in request body'
+
+    limit = data.get('limit')
+    if limit is None:
+        limit = default_limit
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError, OverflowError):
+        return None, '"limit" must be a whole number'
+
+    parsed = {'item_id': item_id, 'limit': limit}
+    for key in ('eliminate_duplicates', 'radius_similarity'):
+        parsed[key] = _optional_flag(data.get(key))
+        if parsed[key] is not None and not isinstance(parsed[key], bool):
+            return None, f'"{key}" must be true or false'
+    return parsed, None
 
 
 @clap_search_bp.route('/api/clap/search_by_song', methods=['POST'])
@@ -372,42 +397,23 @@ def clap_search_by_song_api():
     if not isinstance(data, dict):
         return json_error(ERR_INVALID_REQUEST, 'Invalid JSON payload')
 
-    item_id = data.get('item_id')
-    item_id = item_id.strip() if isinstance(item_id, str) else ''
-    if not item_id:
-        return json_error(ERR_INVALID_REQUEST, 'Missing "item_id" in request body')
-
-    limit = data.get('limit')
-    if limit is None:
-        limit = CLAP_SEARCH_DEFAULT_LIMIT
-    try:
-        limit = max(1, int(limit))
-    except (TypeError, ValueError, OverflowError):
-        return json_error(ERR_INVALID_REQUEST, '"limit" must be a whole number')
-
-    flags = {}
-    for key in ('eliminate_duplicates', 'radius_similarity'):
-        flags[key] = _optional_flag(data.get(key))
-        if flags[key] is not None and not isinstance(flags[key], bool):
-            return json_error(ERR_INVALID_REQUEST, f'"{key}" must be true or false')
+    parsed, problem = _parse_song_search(data, CLAP_SEARCH_DEFAULT_LIMIT)
+    if problem:
+        return json_error(ERR_INVALID_REQUEST, problem)
 
     if not is_clap_cache_loaded():
-        return json_error(
-            ERR_INDEX_EMPTY,
-            'CLAP cache not loaded. Please run song analysis first.',
-            results=[],
-        )
+        return json_error(ERR_INDEX_EMPTY, _SONG_SEARCH_NOT_LOADED, results=[])
 
     try:
-        seed_id = app_server_context.resolve_input_item_id(item_id, data)
+        seed_id = app_server_context.resolve_input_item_id(parsed['item_id'], data)
         results = search_by_song(
             seed_id,
-            limit=limit,
-            eliminate_duplicates=flags['eliminate_duplicates'],
-            radius_similarity=flags['radius_similarity'],
+            limit=parsed['limit'],
+            eliminate_duplicates=parsed['eliminate_duplicates'],
+            radius_similarity=parsed['radius_similarity'],
         )
         attach_song_features(results)
-        results = app_server_context.scope_results(results, limit, id_key='item_id')
+        results = app_server_context.scope_results(results, parsed['limit'], id_key='item_id')
         if not results:
             return json_error(ERR_NOT_FOUND, 'No similar songs found for this song.', results=[])
         return jsonify({'results': results, 'count': len(results)})
@@ -421,9 +427,7 @@ def clap_search_by_song_api():
         )
     except ClapIndexUnavailable as exc:
         logger.warning("DCLAP song search: %s", exc)
-        return json_error(
-            ERR_INDEX_EMPTY, 'CLAP cache not loaded. Please run song analysis first.', results=[]
-        )
+        return json_error(ERR_INDEX_EMPTY, _SONG_SEARCH_NOT_LOADED, results=[])
     except Exception as exc:
         logger.exception("DCLAP song search API error")
         return json_exception(
