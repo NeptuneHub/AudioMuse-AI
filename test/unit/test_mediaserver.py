@@ -1877,6 +1877,7 @@ class TestDispatcherAutomaticPlaylistDeletion:
             {'Id': '2', 'Name': '[Auto] Rock'},
             {'Id': '3', 'Name': 'Rock [Mix]'},
             {'Id': '4', 'Name': 'Favorites'},
+            {'Id': '5', 'Name': '[Auto]  [Mix]'},
         ]
         mock_delete.return_value = True
 
@@ -1902,6 +1903,9 @@ class TestDispatcherAutomaticPlaylistDeletion:
         ]
         mock_delete.return_value = True
 
+        deleted = delete_automatic_playlists()
+
+        assert deleted == 0
         assert mock_delete.call_count == 0
 
     @patch('tasks.mediaserver.config')

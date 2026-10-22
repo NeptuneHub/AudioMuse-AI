@@ -26,8 +26,8 @@ Main Features:
 """
 
 import json
-import logging
 import random
+import logging
 import time
 import numpy as np
 from collections import Counter, defaultdict
@@ -214,7 +214,7 @@ def _naming_lyric_axes(item_ids):
 def _strip_chunk_suffix(name: str) -> str:
     if name.endswith(')'):
         idx = name.rfind('(')
-        if idx >= 0 and name[idx + 1:-1].isdigit():
+        if idx > 0 and name[idx - 1].isspace() and name[idx + 1:-1].isdigit():
             return name[:idx].rstrip()
     return name
 
