@@ -56,6 +56,8 @@ from config import (
     MAX_DISTANCE,
     MAX_SONGS_PER_ARTIST,
     MIN_PLAYLIST_SIZE_FOR_TOP_N,
+    CLUSTERING_PLAYLIST_PREFIX,
+    CLUSTERING_PLAYLIST_SUFFIX,
     CLUSTERING_MAX_PLAYLIST_SONGS,
     CLUSTERING_SUBSET_SONGS,
     TOP_K_MOODS_FOR_PURITY_CALCULATION,
@@ -209,6 +211,29 @@ def _naming_lyric_axes(item_ids):
         return [], {}
 
 
+def _strip_chunk_suffix(name: str) -> str:
+    if name.endswith(')'):
+        idx = name.rfind('(')
+        if idx > 0 and name[idx - 1].isspace() and name[idx + 1:-1].isdigit():
+            return name[:idx].rstrip()
+    return name
+
+
+def _strip_playlist_affixes(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    name = _strip_chunk_suffix(name)
+    prefix = CLUSTERING_PLAYLIST_PREFIX.lstrip() if isinstance(CLUSTERING_PLAYLIST_PREFIX, str) else ""
+    suffix = CLUSTERING_PLAYLIST_SUFFIX.rstrip() if isinstance(CLUSTERING_PLAYLIST_SUFFIX, str) else "_automatic"
+    if prefix and name.startswith(prefix):
+        name = name[len(prefix):]
+    if suffix and name.casefold().endswith(suffix.casefold()):
+        name = name[:-len(suffix)]
+    if suffix.casefold() != "_automatic" and name.casefold().endswith("_automatic"):
+        name = name[:-len("_automatic")]
+    return _strip_chunk_suffix(name)
+
+
 def _name_playlist_with_ai_config(
     original_name,
     songs,
@@ -227,7 +252,7 @@ def _name_playlist_with_ai_config(
     ai_avoid_names = [
         name
         for name in (avoid_names or [])
-        if '_' not in name.partition('_automatic')[0]
+        if '_' not in _strip_playlist_affixes(name)
     ]
     if mode == 'title':
         _end_read_transaction()

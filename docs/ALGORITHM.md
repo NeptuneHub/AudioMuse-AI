@@ -837,7 +837,7 @@ it into thematic playlists that are then created on the media server.
    cannot start while one is running.
 5. The Task Status panel shows live progress, for example
    "Progress: 100/1000 runs. Active batches: 10. Best score: 4.52".
-6. When it finishes, the old `_automatic` playlists are deleted and the new ones
+6. When it finishes, the old automatic playlists (matching the configured prefix/suffix, default `_automatic`) are deleted and the new ones
    are created on the media server, then listed in the Generated Playlists
    section.
 
@@ -886,7 +886,7 @@ is a set of media server playlists plus the `playlist` table.
 | 5 | Run iterations | Each iteration re-samples, picks parameters, clusters, filters and scores; the batch keeps its best |
 | 6 | Monitor and aggregate | Fold each finished batch into the global best and the elite pool, with timeout and staleness watchdogs |
 | 7 | Post-process the winner | Duplicate filter, minimum size filter, then the Top-N diverse selection |
-| 8 | Name and create | AI-name each surviving cluster, shuffle, split oversized playlists, delete the old `_automatic` playlists and create the new ones |
+| 8 | Name and create | AI-name each surviving cluster, shuffle, split oversized playlists, delete the old automatic playlists and create the new ones |
 
 #### The feature vector
 
@@ -1139,7 +1139,7 @@ provider set the flow is:
    as negative history, so a recurring concept is not accepted again.
 3. The returned text is repaired and cleaned in code: mojibake is fixed, Unicode
    is normalized to ASCII, a character whitelist is enforced, the length is
-   truncated and the `_automatic` suffix is appended.
+   truncated, and the configured prefix and suffix (default suffix `_automatic`) are applied.
 4. If the model declines or the output cannot be sanitized into a valid name, the
    deterministic feature-based name is kept.
 
@@ -1155,14 +1155,14 @@ K-Means on up to 10000 songs in a worker and shows the titles either style
 produces, without creating any playlist.
 
 Finally a Fisher-Yates shuffle randomizes the order, playlists larger than
-`MAX_SONGS_PER_CLUSTER` are split into numbered chunks, the existing `_automatic`
-playlists are deleted and the new ones are created on the media server and
+`MAX_SONGS_PER_CLUSTER` are split into numbered chunks, the existing automatic
+playlists (matching prefix and suffix) are deleted and the new ones are created on the media server and
 recorded in the `playlist` table.
 
 #### Re-running the clustering
 
 Clustering is idempotent at the output level. Every run starts by deleting the
-existing `_automatic` playlists and ends by recreating them, so re-running simply
+existing automatic playlists and ends by recreating them, so re-running simply
 replaces the previous set. There are no clustering tables to drop. It only
 **reads** the analysis tables, so a new clustering never requires re-analyzing
 audio or lyrics.
@@ -1183,6 +1183,9 @@ audio or lyrics.
 - `MAX_SONGS_PER_CLUSTER`: maximum songs per playlist, 0 for unlimited.
 - `MAX_SONGS_PER_ARTIST`: maximum songs from one artist in one playlist.
 - `CLUSTERING_CLEANING`: run the duplicate cleanup during post-processing.
+- `CLUSTERING_PLAYLIST_PREFIX`, `CLUSTERING_PLAYLIST_SUFFIX`: optional prefix
+  and suffix applied to generated cluster playlist names (default suffix
+  `_automatic`) and matched when deleting previous automatic playlists.
 - `USE_GPU_CLUSTERING`: use RAPIDS cuML models when available, see [GPU](GPU.md).
 
 **Automatic calibration**

@@ -324,15 +324,39 @@ def call_with_tools(
     return {"error": f"Unsupported provider {provider!r}"}
 
 
+def _strip_chunk_suffix(name: str) -> str:
+    if name.endswith(')'):
+        idx = name.rfind('(')
+        if idx > 0 and name[idx - 1].isspace() and name[idx + 1:-1].isdigit():
+            return name[:idx].rstrip()
+    return name
+
+
 def clean_playlist_name(name: str) -> str:
     if not isinstance(name, str):
         return ""
     name = ftfy.fix_text(name)
     name = unicodedata.normalize("NFKC", name)
-    name = re.sub(r"_automatic(\s*\(\d+\))?$", "", name, flags=re.IGNORECASE)
+    prefix = (
+        config.CLUSTERING_PLAYLIST_PREFIX.lstrip()
+        if isinstance(config.CLUSTERING_PLAYLIST_PREFIX, str)
+        else ""
+    )
+    suffix = (
+        config.CLUSTERING_PLAYLIST_SUFFIX.rstrip()
+        if isinstance(config.CLUSTERING_PLAYLIST_SUFFIX, str)
+        else "_automatic"
+    )
+    name = _strip_chunk_suffix(name)
+    if prefix and name.startswith(prefix):
+        name = name[len(prefix):]
+    if suffix and name.casefold().endswith(suffix.casefold()):
+        name = name[:-len(suffix)]
+    if suffix.casefold() != "_automatic" and name.casefold().endswith("_automatic"):
+        name = name[:-len("_automatic")]
     name = name.replace("_", " ")
     cleaned_name = re.sub(r"[^a-zA-Z0-9\s\-\&\'!\.\,\?\(\)\[\]]", "", name)
-    cleaned_name = re.sub(r"\s\(\d+\)$", "", cleaned_name)
+    cleaned_name = _strip_chunk_suffix(cleaned_name)
     cleaned_name = re.sub(r"\s+", " ", cleaned_name).strip()
     return cleaned_name
 

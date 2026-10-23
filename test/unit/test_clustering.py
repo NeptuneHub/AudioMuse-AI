@@ -1331,6 +1331,122 @@ class TestSelectDiversePlaylists:
         assert result['Happy Pop_automatic'] == [('song-1', 'Song 1', 'Artist')]
         assert result['Happy Pop (2)_automatic'] == [('song-2', 'Song 2', 'Artist')]
 
+    def test_custom_prefix_and_empty_suffix_in_playlist_naming(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        monkeypatch.setattr(
+            clustering, '_try_ai_name_playlist', lambda *args, **kwargs: 'Happy Pop'
+        )
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_PREFIX', 'Audiomuse/')
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_SUFFIX', '')
+        result = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster_a': [('song-1', 'Song 1', 'Artist')],
+                    'cluster_b': [('song-2', 'Song 2', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+        )
+
+        assert 'Audiomuse/Happy Pop' in result
+        assert 'Audiomuse/Happy Pop (2)' in result
+        assert result['Audiomuse/Happy Pop'] == [('song-1', 'Song 1', 'Artist')]
+        assert result['Audiomuse/Happy Pop (2)'] == [('song-2', 'Song 2', 'Artist')]
+
+    def test_custom_prefix_and_suffix_in_playlist_naming(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        monkeypatch.setattr(
+            clustering, '_try_ai_name_playlist', lambda *args, **kwargs: 'Happy Pop'
+        )
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_PREFIX', '[Auto] ')
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_SUFFIX', ' [Mix]')
+        result = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {
+                    'cluster_a': [('song-1', 'Song 1', 'Artist')],
+                    'cluster_b': [('song-2', 'Song 2', 'Artist')],
+                },
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+        )
+
+        assert '[Auto] Happy Pop [Mix]' in result
+        assert '[Auto] Happy Pop (2) [Mix]' in result
+        assert result['[Auto] Happy Pop [Mix]'] == [('song-1', 'Song 1', 'Artist')]
+        assert result['[Auto] Happy Pop (2) [Mix]'] == [('song-2', 'Song 2', 'Artist')]
+
+    def test_chunked_playlists_with_custom_prefix_and_suffix(
+        self, monkeypatch
+    ):
+        from tasks import clustering
+
+        monkeypatch.setattr(
+            clustering, '_try_ai_name_playlist', lambda *args, **kwargs: 'Chill Vibes'
+        )
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_PREFIX', '[Auto] ')
+        monkeypatch.setattr(clustering, 'CLUSTERING_PLAYLIST_SUFFIX', ' [Mix]')
+        monkeypatch.setattr(clustering, 'CLUSTERING_MAX_PLAYLIST_SONGS', 2)
+
+        songs = [
+            ('s1', 'Song 1', 'Artist'),
+            ('s2', 'Song 2', 'Artist'),
+            ('s3', 'Song 3', 'Artist'),
+        ]
+        result = clustering._name_and_prepare_playlists(
+            {
+                'named_playlists': {'cluster_a': songs},
+                'playlist_centroids': {},
+                'playlist_primary_genres': {},
+                'parameters': {'max_songs_per_cluster': 2},
+            },
+            'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
+        )
+
+        assert '[Auto] Chill Vibes [Mix] (1)' in result
+        assert '[Auto] Chill Vibes [Mix] (2)' in result
+
+    def test_strip_playlist_affixes_handles_custom_affixes_and_numbered_chunks(
+        self, monkeypatch
+    ):
+        import tasks.clustering_helper as ch
+
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_PREFIX', '')
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_SUFFIX', '_automatic')
+        assert ch._strip_playlist_affixes('Chill Vibes_automatic') == 'Chill Vibes'
+        assert ch._strip_playlist_affixes('Chill Vibes_automatic (2)') == 'Chill Vibes'
+        assert ch._strip_playlist_affixes('Rock_Pop_Fast_automatic (1)') == 'Rock_Pop_Fast'
+
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_PREFIX', '[Auto] ')
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_SUFFIX', ' [Mix]')
+        assert ch._strip_playlist_affixes('[Auto] Chill Vibes [Mix]') == 'Chill Vibes'
+        assert ch._strip_playlist_affixes('[Auto] Chill Vibes [Mix] (3)') == 'Chill Vibes'
+        assert ch._strip_playlist_affixes('[Auto] Chill Vibes (2) [Mix] (1)') == 'Chill Vibes'
+        assert ch._strip_playlist_affixes('[Auto] Rock_Pop_Fast [Mix] (2)') == 'Rock_Pop_Fast'
+
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_PREFIX', 'Audiomuse/')
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_SUFFIX', '')
+        assert ch._strip_playlist_affixes('Audiomuse/Chill Vibes') == 'Chill Vibes'
+        assert ch._strip_playlist_affixes('Audiomuse/Chill Vibes (2)') == 'Chill Vibes'
+        assert ch._strip_playlist_affixes('Audiomuse/Rock_Pop_Fast (1)') == 'Rock_Pop_Fast'
+        assert ch._strip_playlist_affixes('Chill Vibes_automatic (2)') == 'Chill Vibes'
+
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_PREFIX', '   [Auto] ')
+        monkeypatch.setattr(ch, 'CLUSTERING_PLAYLIST_SUFFIX', ' [Mix]   ')
+        assert ch._strip_playlist_affixes('[Auto] Chill Vibes [Mix] (2)') == 'Chill Vibes'
+
+        assert ch._strip_playlist_affixes(None) == ''
+        assert ch._strip_playlist_affixes(123) == ''
+
     def test_limit_zero_returns_the_original_result(self):
         from tasks.clustering_postprocessing import select_diverse_playlists_with_genre_coverage
 

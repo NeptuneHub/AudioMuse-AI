@@ -366,10 +366,14 @@ ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "T
 # --- GPU Acceleration for Clustering (Optional, requires NVIDIA GPU and RAPIDS cuML) ---
 USE_GPU_CLUSTERING = os.environ.get("USE_GPU_CLUSTERING", "False").lower() == "true"
 
-# --- Clustering Cleanup Behavior ---
-# When True (default), existing '_automatic' playlists are deleted before new clusters are created.
+# --- Clustering Cleanup Behavior & Playlist Naming ---
+# When True (default), existing automatic playlists are deleted before new clusters are created.
 # Set to False to preserve old automatic playlists when running clustering.
 CLUSTERING_CLEANING = os.environ.get("CLUSTERING_CLEANING", "True").lower() == "true"
+# Optional prefix and suffix wrapped around generated cluster playlist names and
+# matched during automatic playlist cleanup (default suffix '_automatic').
+CLUSTERING_PLAYLIST_PREFIX = os.environ.get("CLUSTERING_PLAYLIST_PREFIX", "")
+CLUSTERING_PLAYLIST_SUFFIX = os.environ.get("CLUSTERING_PLAYLIST_SUFFIX", "_automatic")
 
 # When True, AI playlist naming also avoids names used in previous clustering runs
 # (playlist_name_history + existing playlists on the server).
