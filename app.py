@@ -1462,12 +1462,7 @@ if not _is_worker:
     def _cron_manager_loop():
         try:
             import time as _time
-            from app_cron import (
-                run_due_cron_jobs,
-                retry_due_cron_jobs,
-                reap_interrupted_inline_runs,
-                cron_retry_interval_seconds,
-            )
+            from app_cron import cron_tick, reap_interrupted_inline_runs
 
             # Inline cron runs (alchemy radio, sonic fingerprint, album of the
             # week) live in THIS process and nothing
@@ -1484,10 +1479,7 @@ if not _is_worker:
             while True:
                 try:
                     with app.app_context():
-                        run_due_cron_jobs()
-                        if _time.time() - last_retry_ts >= cron_retry_interval_seconds():
-                            retry_due_cron_jobs()
-                            last_retry_ts = _time.time()
+                        last_retry_ts = cron_tick(last_retry_ts)
                 except Exception:
                     app.logger.exception('cron manager failed')
                 # Sleep to the next minute boundary, not a flat 60s. A flat sleep

@@ -2850,6 +2850,22 @@ def get_queue_blocking_task(conn=None):
     return dict(active_task) if active_task else None
 
 
+def get_waiting_core_cron_retry(conn=None):
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT task_type, retry_until FROM cron_retry "
+            "WHERE NOT (task_type LIKE ANY(%s)) AND retry_until > %s "
+            "ORDER BY first_blocked_at LIMIT 1",
+            ([prefix + '%' for prefix in task_types.PREFIXES], time.time()),
+        )
+        waiting = cur.fetchone()
+    finally:
+        cur.close()
+    return dict(waiting) if waiting else None
+
+
 def record_cron_retry(task_type, retry_until, first_blocked_at, blocker_task_id=None, blocker_task_type=None, conn=None):
     db = conn or get_db()
     with db.cursor() as cur:
