@@ -20,6 +20,8 @@ Main Features:
 * The global cancel epoch is incremented in that same transaction
 * An un-acknowledged provider-migration handshake is spared, as is a live control request
 * History keeps each row's real terminal status instead of restamping it
+* Stopping plugin runs (uninstall, restart) revokes and signals only the plugin
+  rows asked for, in one transaction; a restart is never blocked by a failed stop
 """
 
 import json
@@ -247,3 +249,72 @@ class TestCancelHistory:
         app_helper.cancel_job_and_children_recursive('live-1')
 
         db.commit.assert_called_once()
+
+
+@pytest.fixture
+def plugin_stop_env(cancel_env, monkeypatch):
+    recorder, db, history, _signalled = cancel_env
+    stopped = []
+    monkeypatch.setattr(
+        taskqueue, 'request_cancel', lambda task_id, conn=None: stopped.append((task_id, conn))
+    )
+    recorder.snapshot_rows = [
+        _row('gone-cron', 'plugin.gone.tick'),
+        _row('gone-queued', 'plugin.audiomuse_plugins.gone.tasks.step', config.TASK_STATUS_NEW),
+        _row('other-run', 'plugin.other.tick'),
+        _row('analysis-run', 'main_analysis'),
+    ]
+    return recorder, db, history, stopped
+
+
+def _revoked_task_ids(recorder):
+    return [
+        params[-1] for sql, params in recorder
+        if sql.startswith('UPDATE task_status SET status = %s')
+        and params[0] == config.TASK_STATUS_REVOKED
+    ]
+
+
+class TestStopPluginTasks:
+    def test_only_the_named_plugin_runs_are_stopped_and_signalled(self, plugin_stop_env):
+        recorder, db, history, stopped = plugin_stop_env
+
+        count = app_helper.stop_plugin_tasks(
+            ('plugin.gone.', 'plugin.audiomuse_plugins.gone.'), 'uninstalled'
+        )
+
+        assert count == 2
+        assert _revoked_task_ids(recorder) == ['gone-cron', 'gone-queued'], (
+            'another plugin and AudioMuse-AI\'s own task keep running'
+        )
+        assert stopped == [('gone-cron', db), ('gone-queued', db)], (
+            'each stop is signalled on the transaction that revokes it'
+        )
+        db.commit.assert_called_once()
+        assert [(task_id, status) for task_id, _type, status, _kw in history] == [
+            ('gone-cron', config.TASK_STATUS_REVOKED),
+            ('gone-queued', config.TASK_STATUS_REVOKED),
+        ]
+
+    def test_a_failed_stop_rolls_back_and_raises(self, plugin_stop_env):
+        _recorder, db, _history, _stopped = plugin_stop_env
+        db.commit.side_effect = RuntimeError('disk full')
+
+        with pytest.raises(RuntimeError):
+            app_helper.stop_plugin_tasks(('plugin.gone.',), 'uninstalled')
+
+        db.rollback.assert_called_once()
+
+    def test_a_restart_stops_every_plugin_run_and_nothing_else(self, plugin_stop_env):
+        recorder, _db, _history, stopped = plugin_stop_env
+
+        assert app_helper.stop_plugin_tasks_before_restart() == 3
+
+        assert _revoked_task_ids(recorder) == ['gone-cron', 'gone-queued', 'other-run']
+        assert [task_id for task_id, _conn in stopped] == ['gone-cron', 'gone-queued', 'other-run']
+
+    def test_a_failed_stop_never_blocks_the_restart(self, plugin_stop_env):
+        _recorder, db, _history, _stopped = plugin_stop_env
+        db.commit.side_effect = RuntimeError('disk full')
+
+        assert app_helper.stop_plugin_tasks_before_restart() == 0

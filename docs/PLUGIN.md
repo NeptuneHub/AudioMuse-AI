@@ -41,7 +41,7 @@ Go to the Catalog tab and click **Install**. You must confirm a warning first: p
 
 ### Apply your changes (restart)
 
-Install, update, enable, disable and uninstall all need a restart to take effect. After any of these actions a yellow banner appears: "A restart is required to apply your changes". The banner is remembered on the server, so it stays after a page reload and every admin sees it until the restart happens. You can do several changes in a row and then click **Apply now (restart)** once. AudioMuse-AI restarts and the page reloads by itself after about 20 seconds.
+Install, update, enable, disable and uninstall all need a restart to take effect. After any of these actions a yellow banner appears: "A restart is required to apply your changes". The banner is remembered on the server, so it stays after a page reload and every admin sees it until the restart happens. You can do several changes in a row and then click **Apply now (restart)** once. AudioMuse-AI restarts and the page reloads by itself after about 20 seconds. Every plugin task that is running or queued is stopped first (it shows as cancelled in Recent tasks), so no plugin can hold the restart up; scheduled plugin tasks start again at their next time.
 
 ### Update a plugin
 
@@ -57,7 +57,7 @@ Disable turns a plugin off without removing anything. Its pages, menu items and 
 
 ### Uninstall
 
-When you uninstall, AudioMuse-AI first asks you to confirm the uninstall itself. Then it asks one more question: do you also want to delete the plugin's data tables?
+When you uninstall, AudioMuse-AI first asks you to confirm the uninstall itself, and then stops every task of that plugin that is running or queued before removing anything. Then it asks one more question: do you also want to delete the plugin's data tables?
 
 * Choose **OK** to drop every table the plugin created. This cannot be undone.
 * Choose **Cancel** to keep the tables for later.

@@ -12,6 +12,7 @@ Main Features:
 * A save reports success only once the workers acknowledged the restart
 * A failed or unacknowledged WORKER restart is surfaced instead of swallowed
 * A deliberately declined Flask restart is an opt-out, not a failed save
+* Every running plugin run is stopped before the restart is published
 """
 
 from unittest.mock import MagicMock
@@ -20,7 +21,7 @@ import app_setup
 
 
 def _save_setup(
-    monkeypatch, *, worker_result=True, flask_result=True, worker_error=None
+    monkeypatch, *, worker_result=True, flask_result=True, worker_error=None, stop=None
 ):
     monkeypatch.setattr(app_setup, '_get_allowed_setup_keys', lambda: {'MEDIASERVER_TYPE'})
     monkeypatch.setattr(app_setup, '_has_admin_user', lambda: True)
@@ -47,6 +48,9 @@ def _save_setup(
     schedule = MagicMock(return_value=flask_result)
     monkeypatch.setattr(app_setup.restart_manager, 'publish_restart_request', publish)
     monkeypatch.setattr(app_setup.restart_manager, 'schedule_flask_restart', schedule)
+    import app_helper
+
+    monkeypatch.setattr(app_helper, 'stop_plugin_tasks_before_restart', stop or MagicMock())
 
     with app_setup.app.test_request_context(
         '/api/setup', method='POST', json={'config': {'MEDIASERVER_TYPE': 'jellyfin'}}
@@ -100,6 +104,24 @@ def test_a_declined_flask_restart_is_an_opt_out_not_a_failed_save(monkeypatch):
     assert payload['flask_restart_scheduled'] is False
     assert payload['worker_restart_acknowledged'] is True
     assert payload['status'] == 'ok'
+
+
+def test_the_save_stops_every_plugin_run_before_the_restart(monkeypatch):
+    published_before_stop = []
+    stop = MagicMock(
+        side_effect=lambda: published_before_stop.append(
+            app_setup.restart_manager.publish_restart_request.called
+        )
+    )
+
+    _response, publish, _schedule = _save_setup(monkeypatch, stop=stop)
+
+    stop.assert_called_once_with()
+    publish.assert_called_once()
+    assert published_before_stop == [False], (
+        'a running plugin run must be stopped before the restart, or the new Flask '
+        'waits for its database lock'
+    )
 
 
 def test_setup_publish_exception_is_a_partial_save_not_an_error_response(

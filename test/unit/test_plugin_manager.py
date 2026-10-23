@@ -1185,6 +1185,31 @@ class TestPluginTaskRunsPerServer:
         assert captured['args'] == ('x',)
         assert captured['kwargs'] == {'y': 1}
 
+    def test_the_runner_ends_its_read_transaction_before_the_plugin_runs(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from flask import Flask, g
+
+        from plugin.manager import _run_per_server
+
+        servers = [
+            {'server_id': 'd1', 'name': 'Main', 'server_type': 'jellyfin',
+             'creds': {}, 'music_libraries': '', 'is_default': True},
+        ]
+        self._servers(monkeypatch, servers)
+        order = []
+        db = MagicMock()
+        db.commit.side_effect = lambda: order.append('commit')
+
+        with Flask(__name__).app_context():
+            g.db = db
+            _run_per_server(lambda: order.append('plugin'), 'all', (), {})
+
+        assert order == ['commit', 'plugin'], (
+            'a long plugin run must not keep the music_servers read open: a restarting '
+            'Flask waits for that lock before it can serve a page'
+        )
+
 
 def test_a_plugin_whose_entry_point_is_gone_is_a_permanent_failure(monkeypatch):
     import types
