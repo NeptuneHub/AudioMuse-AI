@@ -10,13 +10,18 @@
 
 The CLAP text model embeds a free-text query and the audio index ranks the
 clips; on this library a "solo piano" query must rank a piano clip near the
-top. Warmup, concept steering and the top-queries list are exercised as well.
+top. Warmup, concept steering and the top-queries list are exercised as well,
+and so is the By Song search that seeds the same index with a library song.
 
 Main Features:
 * warmup loads the text model and reports it active
 * a semantic query ranks a piano clip in the top results, sorted by similarity
 * missing query and non-numeric limit are 400
 * concept steering answers or explains why it is unavailable
+* a piano seed song ranks another piano clip, never returns itself, and
+  answers with provider ids only, with the artist limit and the radius walk on
+  or off; a bad
+  request is 400, a song without a DCLAP embedding 404 saying so
 """
 
 import pytest
@@ -54,6 +59,42 @@ def test_validation(stack, api, analyzed_library):
     assert api.post('/api/clap/search', json={}).status_code == 400
     assert api.post('/api/clap/search', json={'query': '   '}).status_code == 400
     assert api.post('/api/clap/search', json={'query': 'piano', 'limit': 'x'}).status_code == 400
+
+
+def test_song_search_ranks_another_piano_clip_and_never_returns_the_seed(stack, api, library, analyzed_library):
+    seed = library.pid(PIANO_KEYS[0])
+    body = api.json('POST', '/api/clap/search_by_song', json={'item_id': seed, 'limit': 10})
+    assert_no_fp_ids(body)
+    results = body['results']
+    assert 1 <= len(results) <= 10
+    assert body['count'] == len(results)
+    ids = [r['item_id'] for r in results]
+    assert seed not in ids
+    similarities = [r['similarity'] for r in results]
+    assert similarities == sorted(similarities, reverse=True), similarities
+    other_piano = {library.pid(k) for k in PIANO_KEYS[1:]}
+    assert other_piano & set(ids), [r.get('title') for r in results]
+
+
+def test_song_search_validation(stack, api, library, analyzed_library):
+    assert api.post('/api/clap/search_by_song', json={}).status_code == 400
+    assert api.post('/api/clap/search_by_song', json=['x']).status_code == 400
+    assert api.post('/api/clap/search_by_song', json={'item_id': '   '}).status_code == 400
+    assert api.post('/api/clap/search_by_song', json={'item_id': 'x', 'limit': 'x'}).status_code == 400
+    assert api.post('/api/clap/search_by_song', json={'item_id': 'x', 'eliminate_duplicates': 'maybe'}).status_code == 400
+    missing = api.post('/api/clap/search_by_song', json={'item_id': 'no-such-song'})
+    assert missing.status_code == 404
+    assert 'no DCLAP embedding' in missing.json()['error'], missing.text
+    seed = library.pid(PIANO_KEYS[0])
+    assert api.post('/api/clap/search_by_song', json={'item_id': 'x', 'radius_similarity': 'maybe'}).status_code == 400
+    for limit_artists in (True, False):
+        for radius in (True, False):
+            body = api.json('POST', '/api/clap/search_by_song', json={
+                'item_id': seed, 'limit': 5, 'eliminate_duplicates': limit_artists, 'radius_similarity': radius,
+            })
+            assert_no_fp_ids(body)
+            assert 1 <= body['count'] <= 5
+            assert seed not in [r['item_id'] for r in body['results']]
 
 
 def test_concepts_and_top_queries(stack, api, db, analyzed_library):

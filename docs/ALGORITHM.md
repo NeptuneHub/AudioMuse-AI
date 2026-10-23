@@ -1776,6 +1776,12 @@ genre, an instrument and a mood, for example "energetic rock guitar" or "calm
 piano instrumental". Genre and instrument recognition is the strongest; mood is
 less precise.
 
+The page has a second tab, **By Song**. The user picks a song from the library
+with the standard song picker and gets the songs whose DCLAP sound is closest to
+it. It is the DCLAP counterpart of the Similar Song page, which uses the MusiCNN
+index. On a set of classical seeds DCLAP kept far more results in the seed's
+genre than MusiCNN, whose tag vocabulary has no classical label.
+
 ### 12.2. Technical Analysis (Algorithm-Level)
 
 #### Split models
@@ -1812,6 +1818,38 @@ stored in the `clap_embedding` table, keyed by the catalogue id.
    mapped back to titles and artists.
 4. **Scope and return.** Results are filtered to the selected server and returned
    with their similarity score.
+
+#### Search by song
+
+`POST /api/clap/search_by_song` takes the seed's `item_id`, a `limit` and the
+optional `eliminate_duplicates` and `radius_similarity` switches. It reads the seed's exact stored
+`clap_embedding` row, so the text model is never loaded and a song analysed after
+the last index build can still be a seed, and runs it through the same query and
+duplicate filters as a text search with the Similar Song rules:
+
+- The seed is claimed before any neighbour: its id, its title and artist and its
+  vector. Neither the seed nor a copy of it (same title and artist, or a
+  near-identical sound under another id) is returned.
+- The seed does not use one of its own artist's slots.
+- `eliminate_duplicates` turns the per-artist limit (`MAX_SONGS_PER_ARTIST`) on or
+  off. When it is omitted, `SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT` decides, as on
+  the Similar Song page, and the tab shows the same "Limit songs per artist"
+  checkbox.
+- `radius_similarity` runs the same radius walk as the Similar Song page: a pool of
+  `limit + max(20, 3 * limit) + 1` deduplicated neighbours goes through the shared
+  `radius_walk_helper`, which picks and orders the songs in distance buckets for a
+  smoother flow and applies `MAX_SONGS_PER_ARTIST` itself. When it is omitted,
+  `SIMILARITY_RADIUS_DEFAULT` decides (on by default). The By Song tab never sends
+  it, so the page always uses the default; only an API caller can turn the walk off
+  with `radius_similarity: false`. If the walk fails, the error is logged and the
+  plain nearest-neighbour order is returned. The mood filter of the Similar Song
+  page is not applied.
+
+When the filters leave fewer songs than asked, the candidate pool is fetched once
+more at four times the size, unless the first query already returned every song
+its probed cells hold. The song picker only offers songs with a DCLAP embedding
+(`/api/search_tracks` with `index=clap`). A song without a DCLAP embedding answers
+404, and so does a seed with no similar song left on the selected server.
 
 #### Suggested queries
 
@@ -2312,7 +2350,11 @@ same as when they are started from the page.
    happened and drops the retry. `GET /api/cron` exposes the pending state
    (`retry_pending`, `retry_attempts`, `retry_blocker_task_type`) so the
    Scheduled Tasks page can show that a schedule is waiting instead of looking
-   like it fired normally.
+   like it fired normally. AudioMuse-AI goes first: while a scheduled analysis
+   or clustering waits in the list, no plugin task starts, neither a plugin
+   schedule nor a plugin's own `enqueue`. A plugin task already running just
+   finishes, the waiting run starts at the next retry pass, and plugins resume
+   after it.
 7. **Error isolation.** An exception on one row is logged and the loop continues
    with the others. A failed enqueue is recorded as a failed task so it is
    visible in the UI.

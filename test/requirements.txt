@@ -51,7 +51,7 @@ flasgger==0.9.7.1
 umap-learn==0.5.12
 google-genai==1.57.0
 argon2-cffi==25.1.0
-PyJWT==2.13.0
+PyJWT==2.15.1
 
 # Lyrics integration test dependencies (versions aligned with requirements/common.txt).
 # The lyrics integration test does NOT use whisper or audio decoding: it feeds
