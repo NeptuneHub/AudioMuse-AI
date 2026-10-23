@@ -62,7 +62,7 @@ When you uninstall, AudioMuse-AI first asks you to confirm the uninstall itself.
 * Choose **OK** to drop every table the plugin created. This cannot be undone.
 * Choose **Cancel** to keep the tables for later.
 
-The plugin's settings and its entries in Scheduled Tasks are always removed. If you kept the data tables, reinstalling the plugin later finds them again.
+The plugin's settings and its entries in Scheduled Tasks are always removed. Its runs leave the dashboard's Recent tasks too, the next time a task shown there finishes. If you kept the data tables, reinstalling the plugin later finds them again.
 
 ## Working example
 

@@ -66,7 +66,6 @@ These parameters can be left as-is:
 | `ENABLE_PROXY_FIX` | Enable Proxy Fix for Flask when behind a reverse proxy. Example Nginx configuration: [config.py](https://github.com/NeptuneHub/AudioMuse-AI/blob/main/config.py#L918) | `false` |
 | `DASHBOARD_BROWSE_PAGE_SIZE` | Rows per page in the Song/Artist/Album browse view opened from the dashboard.                | `100` |
 | `DASHBOARD_BROWSE_MAX_OFFSET` | Deepest OFFSET a browse query may reach. Past this the API stops paging and asks you to refine with search/filters, so a 1M-row catalogue cannot be hit with a pathological deep-page scan. | `50000` |
-| `TASK_HISTORY_MAX_ROWS` | Most finished tasks the history behind the dashboard's Recent tasks keeps in total. When it is full, the oldest are removed first. | `1000` |
 | `TASK_HISTORY_MAX_ROWS_PER_TYPE` | Most finished tasks the history keeps for each task type, so a task that runs every minute (for example a plugin's) cannot push out the last analysis or clustering run. | `100` |
 | `TZ`     | Set the time zone of all containers (Flask, worker and PostgreSQL) | `UTC` |
 

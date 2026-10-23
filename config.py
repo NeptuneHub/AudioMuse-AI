@@ -1732,9 +1732,8 @@ DASHBOARD_BROWSE_MAX_OFFSET = int(os.environ.get("DASHBOARD_BROWSE_MAX_OFFSET", 
 # --- Dashboard "Recent tasks" history ---
 # The dashboard shows one line per task type from task_history. Each type keeps
 # its own newest runs, so a task scheduled every minute cannot push a daily
-# analysis out, and the table never grows past the total: the oldest rows go
-# first. A value below 1 is treated as 1.
-TASK_HISTORY_MAX_ROWS = int(os.environ.get("TASK_HISTORY_MAX_ROWS", "1000")) # Max rows task_history keeps in total
+# analysis out, and each type stays bounded: its oldest run goes first. A
+# value below 1 is treated as 1.
 TASK_HISTORY_MAX_ROWS_PER_TYPE = int(os.environ.get("TASK_HISTORY_MAX_ROWS_PER_TYPE", "100")) # Max rows task_history keeps per task type
 
 # --- Mood Similarity Filtering ---

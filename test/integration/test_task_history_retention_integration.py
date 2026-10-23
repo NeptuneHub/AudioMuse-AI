@@ -11,18 +11,23 @@
 A plugin task scheduled every minute used to fill the 10-row history in 10
 minutes, so AudioMuse's own last analysis, clustering or cleaning run, a FAIL
 included, dropped out of sight (#944). Each task type now keeps its own newest
-runs, the table never grows past its cap, and the dashboard shows one line per
-task type. Window functions and DISTINCT ON cannot be proved with a mocked
+runs, so the table stays bounded, and the dashboard shows one line per task
+type. Window functions and DISTINCT ON cannot be proved with a mocked
 cursor, so the cases run here.
 
 Main Features:
 * A task scheduled every minute keeps only its own newest runs; an earlier
   analysis run stays
-* The table never holds more than TASK_HISTORY_MAX_ROWS rows, oldest out first
+* Each type keeps at most TASK_HISTORY_MAX_ROWS_PER_TYPE rows, so the table
+  stays bounded however many runs are recorded
 * Without plugins a type keeps more than the old 10 runs
 * One line per task type, the type that ran last first, with its run count
   and its newest failure; a cancelled run is not a failure
 * The task_history endpoint's query lists one type's runs, newest first
+* Uninstalling a plugin removes its runs, scheduled or queued with enqueue, at
+  the next write; an installed or disabled plugin keeps them
+* The owner is read from the type's shape; a path outside the plugin namespace
+  is never purged, and a failing purge never loses the run just recorded
 """
 
 import os
@@ -58,7 +63,15 @@ _TASK_HISTORY_DDL = """
     )
 """
 
-PLUGIN = 'plugin.lumae_analysis.catalog_reconcile'
+_PLUGINS_DDL = """
+    CREATE TABLE plugins (
+        id TEXT PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE
+    )
+"""
+
+PLUGIN_ID = 'lumae_analysis'
+PLUGIN = f'plugin.{PLUGIN_ID}.catalog_reconcile'
 
 
 @pytest.fixture
@@ -67,7 +80,10 @@ def history_db(shared_pg_dsn):
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS task_history CASCADE")
+        cur.execute("DROP TABLE IF EXISTS plugins CASCADE")
         cur.execute(_TASK_HISTORY_DDL)
+        cur.execute(_PLUGINS_DDL)
+        cur.execute("INSERT INTO plugins (id) VALUES (%s)", (PLUGIN_ID,))
     conn.autocommit = False
     try:
         yield conn
@@ -77,8 +93,15 @@ def history_db(shared_pg_dsn):
             conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute("DROP TABLE IF EXISTS task_history CASCADE")
+                cur.execute("DROP TABLE IF EXISTS plugins CASCADE")
         finally:
             conn.close()
+
+
+def _plugins(conn, statement, params):
+    with conn.cursor() as cur:
+        cur.execute(statement, params)
+    conn.commit()
 
 
 def _record(conn, task_type, task_id, status='SUCCESS'):
@@ -112,8 +135,8 @@ class TestTheHistoryKeepsEachTypesOwnRuns:
             'the minute task cannot push the analysis run, a FAIL included, out'
         )
 
-    def test_the_table_never_holds_more_than_its_cap(self, history_db, monkeypatch):
-        monkeypatch.setattr(config, 'TASK_HISTORY_MAX_ROWS', 12)
+    def test_each_type_keeps_only_its_cap_so_the_table_stays_bounded(self, history_db, monkeypatch):
+        monkeypatch.setattr(config, 'TASK_HISTORY_MAX_ROWS_PER_TYPE', 4)
         types = ('main_analysis', 'main_clustering', PLUGIN)
         for n in range(30):
             _record(history_db, types[n % 3], f'run-{n}')
@@ -125,6 +148,62 @@ class TestTheHistoryKeepsEachTypesOwnRuns:
             _record(history_db, 'main_analysis', f'analysis-{n}')
 
         assert _kept(history_db) == [f'analysis-{n}' for n in range(29, -1, -1)]
+
+
+class TestAnUninstalledPluginsRunsAreRemoved:
+
+    def test_the_next_write_removes_them_and_keeps_the_others(self, history_db):
+        _plugins(history_db, "INSERT INTO plugins (id) VALUES (%s), (%s)", ('gone_plugin', 'off_plugin'))
+        _plugins(history_db, "UPDATE plugins SET enabled = FALSE WHERE id = %s", ('off_plugin',))
+        _record(history_db, 'plugin.gone_plugin.sync', 'gone-scheduled')
+        _record(history_db, 'plugin.audiomuse_plugins.gone_plugin.tasks.step', 'gone-enqueued')
+        _record(history_db, 'plugin.off_plugin.sync', 'disabled-scheduled')
+        _record(history_db, PLUGIN, 'installed-scheduled')
+        _record(history_db, f'plugin.audiomuse_plugins.{PLUGIN_ID}.tasks.step', 'installed-enqueued')
+        _record(history_db, 'main_analysis', 'analysis-1')
+        assert {'gone-scheduled', 'gone-enqueued'} <= set(_kept(history_db))
+
+        _plugins(history_db, "DELETE FROM plugins WHERE id = %s", ('gone_plugin',))
+        _record(history_db, 'main_clustering', 'clustering-1')
+
+        assert set(_kept(history_db)) == {
+            'disabled-scheduled', 'installed-scheduled', 'installed-enqueued',
+            'analysis-1', 'clustering-1',
+        }, 'only the uninstalled plugin loses its runs, scheduled and queued alike'
+
+    def test_a_run_queued_by_a_path_outside_the_plugin_namespace_is_kept(self, history_db):
+        _record(history_db, 'plugin.mylib.jobs.sync', 'library-run', 'FAIL')
+        _record(history_db, 'main_analysis', 'analysis-1')
+
+        assert set(_kept(history_db)) == {'library-run', 'analysis-1'}, (
+            'a path that does not name its plugin cannot be attributed, so it is never purged'
+        )
+
+    def test_the_owner_is_read_from_the_shape_of_the_type(self, history_db):
+        _plugins(history_db, "INSERT INTO plugins (id) VALUES (%s), (%s)", ('sync', 'audiomuse_plugins'))
+        _plugins(history_db, "INSERT INTO plugins (id) VALUES (%s)", ('gone_plugin',))
+        _record(history_db, 'plugin.gone_plugin.sync', 'gone-scheduled')
+        _record(history_db, 'plugin.audiomuse_plugins.gone_plugin.tasks.step', 'gone-enqueued')
+        _plugins(history_db, "DELETE FROM plugins WHERE id = %s", ('gone_plugin',))
+
+        _record(history_db, 'main_analysis', 'analysis-1')
+
+        assert set(_kept(history_db)) == {'analysis-1'}, (
+            'another installed plugin named like the task, or like the namespace, '
+            'must not keep an uninstalled plugin\'s runs'
+        )
+
+    def test_a_failing_purge_keeps_the_run_that_just_finished(self, history_db):
+        with history_db.cursor() as cur:
+            cur.execute("DROP TABLE plugins")
+            cur.execute("CREATE TABLE plugins (name TEXT)")
+        history_db.commit()
+
+        _record(history_db, 'main_analysis', 'analysis-1')
+
+        assert _kept(history_db) == ['analysis-1'], (
+            'the purge runs after the history row is committed'
+        )
 
 
 class TestOneLinePerTaskType:
