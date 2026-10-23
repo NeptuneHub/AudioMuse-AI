@@ -944,6 +944,9 @@ def setup_api():
         # Flask is restarted below either way so this process reloads its own
         # configuration; the response clearly distinguishes a fully applied save
         # from a durable save which still needs worker recovery.
+        from app_helper import stop_plugin_tasks_before_restart
+
+        stop_plugin_tasks_before_restart()
         try:
             worker_restart_acknowledged = bool(
                 restart_manager.publish_restart_request(

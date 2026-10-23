@@ -719,3 +719,43 @@ def _record_cancel_history(snapshots, protected_task_ids, now_ts, reason):
             _record_one_cancellation(row, now_ts, reason)
     except Exception:
         logger.exception("Could not record cancellation history; the cancel itself stands")
+
+
+def stop_plugin_tasks(prefixes, reason):
+    db = get_db()
+    now_ts = time.time()
+    details = json.dumps({"message": reason, "status_message": reason})
+    try:
+        taskqueue.take_start_lock(conn=db)
+        with db.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute(
+                "SELECT task_id, task_type, status, details, start_time, end_time "
+                "FROM task_status WHERE parent_task_id IS NULL AND status IN %s "
+                "AND task_type LIKE %s",
+                ((TASK_STATUS_NEW, TASK_STATUS_RUNNING), 'plugin.%'),
+            )
+            stopped = [
+                row for row in cur.fetchall() if row['task_type'].startswith(tuple(prefixes))
+            ]
+            for row in stopped:
+                cur.execute(
+                    "UPDATE task_status SET status = %s, progress = 100, details = %s, "
+                    "timestamp = NOW(), end_time = %s, func = NULL, payload = NULL "
+                    "WHERE task_id = %s",
+                    (TASK_STATUS_REVOKED, details, now_ts, row['task_id']),
+                )
+                taskqueue.request_cancel(row['task_id'], conn=db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    _record_cancel_history(stopped, set(), now_ts, reason)
+    return len(stopped)
+
+
+def stop_plugin_tasks_before_restart():
+    try:
+        return stop_plugin_tasks(('plugin.',), "Stopped so AudioMuse-AI could restart.")
+    except Exception:
+        logger.exception("Could not stop the running plugin tasks before the restart; restarting anyway")
+        return 0

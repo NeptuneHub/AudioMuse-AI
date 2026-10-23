@@ -139,6 +139,44 @@ class TestCronTaskFallback:
         assert mgr.get_cron_task('plugin.jobber.daily') is None
 
 
+class TestCronTaskDescription:
+    def _task(self):
+        def daily():
+            pass
+        daily.__module__ = 'audiomuse_plugins.jobber.tasks'
+        return daily
+
+    def test_add_cron_task_keeps_a_trimmed_bounded_description(self):
+        ctx = api.PluginContext('jobber', 'web')
+        ctx.add_cron_task('daily', self._task(), description='  Nightly cleanup.  ')
+        ctx.add_cron_task('long', self._task(), description='x' * 400)
+        ctx.add_cron_task('plain', self._task())
+        ctx.add_cron_task('blank', self._task(), description='   ')
+
+        assert ctx.cron_tasks['daily']['description'] == 'Nightly cleanup.'
+        assert len(ctx.cron_tasks['long']['description']) == api.CRON_DESCRIPTION_MAX
+        assert 'description' not in ctx.cron_tasks['plain']
+        assert 'description' not in ctx.cron_tasks['blank']
+
+    def test_listing_carries_loaded_then_persisted_descriptions(self):
+        mgr = manager.PluginManager()
+        record = _record('jobber', manifest={'cron_tasks': {
+            'daily': {'dotted': 'a.b.daily', 'queue': 'default', 'description': 'stale'},
+            'weekly': {'dotted': 'a.b.weekly', 'queue': 'default', 'description': 'Weekly report.'},
+            'bare': {'dotted': 'a.b.bare', 'queue': 'default'},
+        }})
+        record['cron_tasks'] = {
+            'daily': {'dotted': 'a.b.daily', 'queue': 'default', 'description': 'Nightly cleanup.'},
+        }
+        mgr.records = {'jobber': record}
+
+        items = {item['task']: item for item in mgr.available_cron_tasks()}
+
+        assert items['daily']['description'] == 'Nightly cleanup.'
+        assert items['weekly']['description'] == 'Weekly report.'
+        assert 'description' not in items['bare']
+
+
 def test_dequeued_cron_plugin_with_wiped_claim_does_not_import_plugin(monkeypatch):
     import taskqueue
     from taskqueue import TaskCancelled
@@ -1146,6 +1184,31 @@ class TestPluginTaskRunsPerServer:
         _run_per_server(plugin_task, 'all', ('x',), {'y': 1})
         assert captured['args'] == ('x',)
         assert captured['kwargs'] == {'y': 1}
+
+    def test_the_runner_ends_its_read_transaction_before_the_plugin_runs(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from flask import Flask, g
+
+        from plugin.manager import _run_per_server
+
+        servers = [
+            {'server_id': 'd1', 'name': 'Main', 'server_type': 'jellyfin',
+             'creds': {}, 'music_libraries': '', 'is_default': True},
+        ]
+        self._servers(monkeypatch, servers)
+        order = []
+        db = MagicMock()
+        db.commit.side_effect = lambda: order.append('commit')
+
+        with Flask(__name__).app_context():
+            g.db = db
+            _run_per_server(lambda: order.append('plugin'), 'all', (), {})
+
+        assert order == ['commit', 'plugin'], (
+            'a long plugin run must not keep the music_servers read open: a restarting '
+            'Flask waits for that lock before it can serve a page'
+        )
 
 
 def test_a_plugin_whose_entry_point_is_gone_is_a_permanent_failure(monkeypatch):

@@ -108,6 +108,39 @@
     }
     .dash-table .col-narrow { width: 70px; }
     .dash-table .col-medium { width: 110px; }
+    .task-type-toggle {
+        background: none;
+        border: none;
+        padding: 0;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+    .task-type-toggle::before {
+        content: '\25B8';
+        display: inline-block;
+        margin-right: 0.35rem;
+        transition: transform 0.15s;
+    }
+    .task-type-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
+    .task-run-row > td { font-size: 0.85rem; }
+    #recent-tasks-table .col-type { width: 22%; }
+    #recent-tasks-table .col-when { width: 5.75rem; }
+    .task-run-count { display: block; font-size: 0.78rem; }
+    #recent-tasks-table td:nth-child(4),
+    #recent-tasks-table td:nth-child(6) {
+        overflow-wrap: normal;
+        word-break: normal;
+    }
+    #recent-tasks-table td:nth-child(5) {
+        overflow-wrap: break-word;
+        word-break: normal;
+    }
+    .task-run-row > td:first-child { border-left: 3px solid var(--border-color); }
+    .last-failure { color: var(--status-failure-text); }
     /* The Orphan and "on multiple servers" rows are accounting lines, not real
        servers: mute them so they read as adjustments under the configured ones. */
     .dash-note-row td { color: var(--text-muted); font-style: italic; }
@@ -310,20 +343,21 @@
         <h2>Recent tasks
             <span class="info-tooltip" tabindex="0">
                 <span class="info-icon" aria-hidden="true"></span>
-                <span class="tooltip-text">The last 10 completed top-level tasks. This is the full history AudioMuse-AI keeps: only the newest 10 rows are retained.</span>
+                <span class="tooltip-text">One line per task type: its last run, when it last failed (hover for why) and how many runs the history holds. Click a task type to see its runs. The history keeps the newest runs of each type (TASK_HISTORY_MAX_ROWS_PER_TYPE); the oldest go first. A cancelled run is not a failure.</span>
             </span>
         </h2>
         <p class="muted dash-updated" id="recent-updated">Loading…</p>
         <div class="dash-table-wrap" style="margin-top:1rem;">
             <table class="dash-table" id="recent-tasks-table">
                 <thead><tr>
-                    <th>Type</th>
+                    <th class="col-type">Type</th>
                     <th class="col-narrow">Status</th>
-                    <th class="col-medium">Duration</th>
-                    <th>When</th>
+                    <th class="col-narrow">Duration</th>
+                    <th class="col-when">When</th>
                     <th>Note</th>
+                    <th class="col-when">Last failure</th>
                 </tr></thead>
-                <tbody><tr><td colspan="5" class="muted" data-placeholder>Loading…</td></tr></tbody>
+                <tbody><tr><td colspan="6" class="muted" data-placeholder>Loading…</td></tr></tbody>
             </table>
         </div>
     </section>
@@ -664,21 +698,138 @@
         });
     }
 
+    // Recent tasks: one line per task type. A line opens that type's earlier
+    // runs as rows under it, in the same columns, so the table keeps one header.
+    // Which types are open, and their last loaded runs, survive the 30s refresh,
+    // so an open line neither closes nor flickers back to "Loading".
+    const TASK_HISTORY_URL = "{{ url_for('dashboard_bp.task_history_api') }}";
+    const RECENT_TASK_COLUMNS = 6;
+    const openTaskTypes = new Set();
+    const taskRunsCache = new Map();
+
+    function failureCell(failure) {
+        if (!failure) return textCell('–');
+        const td = textCell(fmtTime(failure.timestamp));
+        td.className = 'last-failure';
+        if (failure.note) td.title = failure.note;
+        return td;
+    }
+
+    function noteRow(text, cls) {
+        const row = document.createElement('tr');
+        row.className = 'task-run-row';
+        const cell = document.createElement('td');
+        cell.colSpan = RECENT_TASK_COLUMNS;
+        cell.className = cls;
+        cell.textContent = text;
+        row.appendChild(cell);
+        return row;
+    }
+
+    function clearTaskRuns(line) {
+        while (line.nextElementSibling && line.nextElementSibling.classList.contains('task-run-row')) {
+            line.nextElementSibling.remove();
+        }
+    }
+
+    function fillTaskRuns(line, runs) {
+        clearTaskRuns(line);
+        const earlier = runs.filter(run => run.task_id !== line.dataset.taskId);
+        if (!earlier.length) {
+            line.after(noteRow('No earlier runs of this type are left in the history.', 'muted'));
+            return;
+        }
+        const rows = earlier.map(run => {
+            const tr = document.createElement('tr');
+            tr.className = 'task-run-row';
+            tr.appendChild(textCell(''));
+            tr.appendChild(badgeCell(run.status || '?', statusBadgeClass(run.status)));
+            tr.appendChild(textCell(fmtDuration(run.duration_seconds)));
+            tr.appendChild(textCell(fmtTime(run.timestamp)));
+            tr.appendChild(textCell(run.note || ''));
+            tr.appendChild(textCell(''));
+            return tr;
+        });
+        line.after(...rows);
+    }
+
+    async function loadTaskRuns(type, line) {
+        try {
+            const res = await fetch(TASK_HISTORY_URL + '?task_type=' + encodeURIComponent(type),
+                                    { credentials: 'same-origin' });
+            const body = await res.json().catch(() => null);
+            if (!res.ok) throw new Error(apiErrorText(body, 'HTTP ' + res.status));
+            const runs = (body && body.runs) || [];
+            taskRunsCache.set(type, runs);
+            if (line.isConnected && openTaskTypes.has(type)) fillTaskRuns(line, runs);
+        } catch (e) {
+            if (!line.isConnected || !openTaskTypes.has(type)) return;
+            clearTaskRuns(line);
+            line.after(noteRow('Could not load: ' + ((e && e.message) || 'check the container log.'),
+                               'status-failure'));
+        }
+    }
+
+    function openTaskRuns(line, type) {
+        if (taskRunsCache.has(type)) {
+            fillTaskRuns(line, taskRunsCache.get(type));
+        } else {
+            line.after(noteRow('Loading…', 'muted'));
+        }
+        loadTaskRuns(type, line);
+    }
+
+    function taskTypeCell(line, type, runs) {
+        const td = document.createElement('td');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'task-type-toggle';
+        // A break opportunity after every dot, so a long plugin type wraps
+        // between its parts instead of letter by letter in a narrow column.
+        type.split('.').forEach((part, index, parts) => {
+            const last = index === parts.length - 1;
+            button.appendChild(document.createTextNode(last ? part : part + '.'));
+            if (!last) button.appendChild(document.createElement('wbr'));
+        });
+        button.setAttribute('aria-expanded', openTaskTypes.has(type) ? 'true' : 'false');
+        button.addEventListener('click', () => {
+            if (openTaskTypes.has(type)) {
+                openTaskTypes.delete(type);
+                clearTaskRuns(line);
+                button.setAttribute('aria-expanded', 'false');
+            } else {
+                openTaskTypes.add(type);
+                openTaskRuns(line, type);
+                button.setAttribute('aria-expanded', 'true');
+            }
+        });
+        td.appendChild(button);
+        const count = document.createElement('span');
+        count.className = 'task-run-count muted';
+        count.textContent = runs === 1 ? '1 run' : runs.toLocaleString() + ' runs';
+        td.appendChild(count);
+        return td;
+    }
+
     function renderRecentTasks(tasks) {
         const tbody = document.querySelector('#recent-tasks-table tbody');
         tbody.innerHTML = '';
         if (!tasks || tasks.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="muted">No tasks yet.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="' + RECENT_TASK_COLUMNS + '" class="muted">No tasks yet.</td></tr>';
             return;
         }
         tasks.forEach(t => {
+            const type = t.task_type || '-';
             const tr = document.createElement('tr');
-            tr.appendChild(textCell(t.task_type || '-'));
+            tr.dataset.taskId = t.task_id || '';
+            tr.appendChild(taskTypeCell(tr, type, t.runs || 0));
             tr.appendChild(badgeCell(t.status || '?', statusBadgeClass(t.status)));
             tr.appendChild(textCell(fmtDuration(t.duration_seconds)));
             tr.appendChild(textCell(fmtTime(t.timestamp)));
             tr.appendChild(textCell(t.note || ''));
+            tr.appendChild(failureCell(t.last_failure));
             tbody.appendChild(tr);
+            if (openTaskTypes.has(type)) openTaskRuns(tr, type);
         });
     }
 

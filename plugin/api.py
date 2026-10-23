@@ -68,6 +68,8 @@ ONNX_POSITIONS = frozenset({'before_cuda', 'before_cpu'})
 
 RESERVED_TASK_PARAMS = frozenset({'server_scope', 'task_claim_required'})
 
+CRON_DESCRIPTION_MAX = 300
+
 __all__ = [
     'PluginContext', 'config', 'logger', 'get_db', 'save_task_status',
     'get_score_data_by_ids', 'get_tracks_by_ids', 'get_setting', 'set_setting',
@@ -275,10 +277,13 @@ class PluginContext:
         _reject_reserved_params(func, dotted)
         self.tasks[name] = {'dotted': dotted, 'queue': queue}
 
-    def add_cron_task(self, name, func, queue='default'):
+    def add_cron_task(self, name, func, queue='default', description=None):
         dotted = dotted_path(func)
         _reject_reserved_params(func, dotted)
-        self.cron_tasks[name] = {'dotted': dotted, 'queue': queue}
+        task = {'dotted': dotted, 'queue': queue}
+        if isinstance(description, str) and description.strip():
+            task['description'] = description.strip()[:CRON_DESCRIPTION_MAX]
+        self.cron_tasks[name] = task
 
     def register_onnx_provider(self, name, options=None, position='before_cpu',
                                only_models=None, exclude_models=None,
