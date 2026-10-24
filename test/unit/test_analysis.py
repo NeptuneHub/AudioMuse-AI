@@ -1991,6 +1991,71 @@ class TestPyAVSurvivesCorruptPackets:
         np.testing.assert_allclose(audio, reference, atol=1e-4)
 
 
+class TestPyAVSkipsFramesOfAnotherLayout:
+    """#968: a damaged AAC decodes into frames claiming 42 channels; to_ndarray segfaults on them."""
+
+    RATE = 44100
+
+    def _write_adts(self, path, layout, channels, seconds):
+        import av
+
+        with av.open(str(path), 'w', format='adts') as container:
+            stream = container.add_stream('aac', rate=self.RATE, layout=layout)
+            t = np.arange(int(self.RATE * seconds), dtype=np.float32) / self.RATE
+            data = np.stack(
+                [0.3 * np.sin(2 * np.pi * 220 * (i + 1) * t) for i in range(channels)]
+            ).astype(np.float32)
+            frame = av.AudioFrame.from_ndarray(data, format='fltp', layout=layout)
+            frame.sample_rate = self.RATE
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+
+    def _stereo_then_surround(self, tmp_path):
+        stereo = tmp_path / 'stereo.aac'
+        surround = tmp_path / 'surround.aac'
+        switched = tmp_path / 'switched.aac'
+        self._write_adts(stereo, 'stereo', 2, 6.0)
+        self._write_adts(surround, '5.1', 6, 3.0)
+        switched.write_bytes(stereo.read_bytes() + surround.read_bytes())
+        return switched
+
+    @pytest.mark.parametrize('target_sr', [None, 16000])
+    def test_frames_after_a_layout_switch_are_skipped_as_corrupt(self, tmp_path, caplog, target_sr):
+        from tasks.analysis import song as song_mod
+
+        path = self._stereo_then_surround(tmp_path)
+
+        with patch.object(song_mod, 'AUDIO_MIN_DECODED_FRACTION', 0.0), \
+                caplog.at_level(logging.WARNING, logger='tasks.analysis.song'):
+            audio, sr = _decode_audio_with_pyav(str(path), target_sr)
+
+        assert 'corrupt audio packet' in caplog.text
+        assert sr == (target_sr or self.RATE)
+        assert 5.9 < audio.size / sr < 6.2
+
+    def test_a_frame_whose_planes_disagree_with_its_channels_is_skipped(self):
+        from tasks.analysis import song as song_mod
+
+        def frame(channels, planes):
+            return Mock(
+                layout=Mock(channels=[Mock()] * channels),
+                planes=[Mock()] * planes,
+                format=Mock(is_planar=True),
+            )
+
+        good, torn = frame(2, 2), frame(2, 3)
+        packet = Mock(decode=Mock(return_value=[good, torn, good]))
+        container = Mock(demux=Mock(return_value=[packet]))
+        skipped = [0]
+
+        frames = list(song_mod._tolerant_frames(container, Mock(), skipped))
+
+        assert frames == [good, good]
+        assert skipped == [1]
+
+
 class TestPyAVDecodeDownmix:
     RATE = 16000
 
