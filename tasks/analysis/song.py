@@ -20,9 +20,9 @@ Main Features:
 * analyze_track / robust_load_audio_with_fallback: decode a file and produce the
   MusiCNN moods + embedding; a track that yields no audio at all returns None,
   while one whose packets are only partly corrupt returns however much decoded
-  cleanly. The PyAV fallback skips undecodable packets rather than abandoning the
-  whole track, and averages the channels itself rather than letting swresample
-  downmix, because swresample is power-preserving (1/sqrt(2) per channel) while librosa is
+  cleanly. The PyAV fallback skips undecodable packets and frames of another
+  layout rather than abandoning the whole track, and averages the channels
+  itself rather than letting swresample downmix, because swresample is power-preserving (1/sqrt(2) per channel) while librosa is
   amplitude-preserving ((L+R)/2); the two decoders must agree or the same file
   yields different embeddings depending on which one opened it.
 * duration_seconds is MEASURED on the audio that actually decoded, never read from
@@ -310,6 +310,7 @@ def _enough_survived(audio, sr, declared, name):
 def _tolerant_frames(container, stream, skipped):
     import av
 
+    channels = None
     for packet in container.demux(stream):
         try:
             frames = list(packet.decode())
@@ -317,6 +318,13 @@ def _tolerant_frames(container, stream, skipped):
             skipped[0] += 1
             continue
         for frame in frames:
+            count = len(frame.layout.channels)
+            if channels is None:
+                channels = count
+            planes = count if frame.format.is_planar else 1
+            if count != channels or len(frame.planes) != planes:
+                skipped[0] += 1
+                continue
             yield frame
 
 
