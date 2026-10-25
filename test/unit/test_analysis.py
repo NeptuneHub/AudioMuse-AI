@@ -1776,7 +1776,7 @@ class TestRobustLoadAudioWithFallback:
         mock_librosa_load.assert_called_once_with('test.wav', sr=22050, mono=True, duration=600)
 
     @patch('tasks.analysis.song.librosa.load')
-    @patch('tasks.analysis.song._decode_audio_with_pyav')
+    @patch('tasks.analysis.song._decode_audio_isolated')
     def test_fallback_on_librosa_failure(self, mock_pyav_decode, mock_librosa_load):
         mock_librosa_load.side_effect = Exception("Librosa failed")
         mock_pyav_decode.return_value = (np.random.rand(16000).astype(np.float32), 16000)
@@ -1788,8 +1788,10 @@ class TestRobustLoadAudioWithFallback:
         mock_pyav_decode.assert_called_once_with('corrupted.mp3', 16000)
 
     @patch('tasks.analysis.song.librosa.load')
-    def test_returns_none_on_empty_audio(self, mock_librosa_load):
+    @patch('tasks.analysis.song._decode_audio_isolated')
+    def test_returns_none_on_empty_audio(self, mock_pyav_decode, mock_librosa_load):
         mock_librosa_load.return_value = (np.array([]), 16000)
+        mock_pyav_decode.return_value = (np.array([], dtype=np.float32), None)
 
         audio, sr = robust_load_audio_with_fallback('empty.mp3')
 
@@ -1797,8 +1799,10 @@ class TestRobustLoadAudioWithFallback:
         assert sr is None
 
     @patch('tasks.analysis.song.librosa.load')
-    def test_returns_none_on_none_audio(self, mock_librosa_load):
+    @patch('tasks.analysis.song._decode_audio_isolated')
+    def test_returns_none_on_none_audio(self, mock_pyav_decode, mock_librosa_load):
         mock_librosa_load.return_value = (None, 16000)
+        mock_pyav_decode.return_value = (np.array([], dtype=np.float32), None)
 
         audio, sr = robust_load_audio_with_fallback('invalid.mp3')
 
@@ -1806,7 +1810,7 @@ class TestRobustLoadAudioWithFallback:
         assert sr is None
 
     @patch('tasks.analysis.song.librosa.load')
-    @patch('tasks.analysis.song._decode_audio_with_pyav')
+    @patch('tasks.analysis.song._decode_audio_isolated')
     def test_fallback_handles_silent_audio(self, mock_pyav_decode, mock_librosa_load):
         mock_librosa_load.side_effect = Exception("Librosa failed")
         mock_pyav_decode.return_value = (np.zeros(16000, dtype=np.float32), 16000)
@@ -1817,7 +1821,7 @@ class TestRobustLoadAudioWithFallback:
         assert sr is None
 
     @patch('tasks.analysis.song.librosa.load')
-    @patch('tasks.analysis.song._decode_audio_with_pyav')
+    @patch('tasks.analysis.song._decode_audio_isolated')
     def test_fallback_handles_decode_failure(self, mock_pyav_decode, mock_librosa_load):
         mock_librosa_load.side_effect = Exception("Librosa failed")
         mock_pyav_decode.side_effect = Exception("PyAV failed")
@@ -1826,6 +1830,19 @@ class TestRobustLoadAudioWithFallback:
 
         assert audio is None
         assert sr is None
+
+    @patch('tasks.analysis.song.librosa.load')
+    @patch('tasks.analysis.song._decode_audio_isolated')
+    def test_an_interrupted_decode_is_raised_instead_of_reported_unreadable(
+        self, mock_pyav_decode, mock_librosa_load
+    ):
+        from tasks.analysis.song import AudioDecodeInterrupted
+
+        mock_librosa_load.side_effect = Exception("Librosa failed")
+        mock_pyav_decode.side_effect = AudioDecodeInterrupted("killed")
+
+        with pytest.raises(AudioDecodeInterrupted):
+            robust_load_audio_with_fallback('corrupted.mp3')
 
     @patch('tasks.analysis.song.librosa.load')
     def test_uses_audio_load_timeout_config(self, mock_librosa_load):
@@ -1880,7 +1897,7 @@ class TestPyAVRejectsWhatIsMostlyLost:
         raw = good.read_bytes()
         stump.write_bytes(raw[: len(raw) // 4])
 
-        with caplog.at_level(logging.ERROR, logger='tasks.analysis.song'):
+        with caplog.at_level(logging.ERROR, logger='tasks.pyav_decode'):
             audio, _sr = _decode_audio_with_pyav(str(stump), None)
 
         assert audio.size == 0
@@ -1929,9 +1946,9 @@ class TestPyAVRejectsWhatIsMostlyLost:
         assert audio.size / sr <= 2.5
 
     def test_an_unknown_declared_duration_never_rejects(self):
-        from tasks.analysis import song as song_mod
+        from tasks import pyav_decode
 
-        assert song_mod._enough_survived(np.ones(10, dtype=np.float32), 10, None, 'x')
+        assert pyav_decode._enough_survived(np.ones(10, dtype=np.float32), 10, None, 'x', 0.5)
 
 
 class TestPyAVSurvivesCorruptPackets:
@@ -1969,7 +1986,7 @@ class TestPyAVSurvivesCorruptPackets:
         self._write_mp3(good, 10.0)
         self._corrupt_middle(good, bad)
 
-        with caplog.at_level(logging.WARNING, logger='tasks.analysis.song'):
+        with caplog.at_level(logging.WARNING, logger='tasks.pyav_decode'):
             audio, sr = _decode_audio_with_pyav(str(bad), None)
 
         assert 'corrupt audio packet' in caplog.text
@@ -1981,7 +1998,7 @@ class TestPyAVSurvivesCorruptPackets:
         good = tmp_path / 'clean.mp3'
         self._write_mp3(good, 2.0)
 
-        with caplog.at_level(logging.WARNING, logger='tasks.analysis.song'):
+        with caplog.at_level(logging.WARNING, logger='tasks.pyav_decode'):
             audio, sr = _decode_audio_with_pyav(str(good), None)
         reference, ref_sr = librosa.load(str(good), sr=None, mono=True)
 
@@ -1989,6 +2006,150 @@ class TestPyAVSurvivesCorruptPackets:
         assert sr == ref_sr
         assert audio.size == reference.size
         np.testing.assert_allclose(audio, reference, atol=1e-4)
+
+
+class TestPyAVSkipsFramesOfAnotherLayout:
+    RATE = 44100
+
+    def _write_adts(self, path, layout, channels, seconds, rate=RATE, bit_rate=None, noise=None):
+        import av
+
+        with av.open(str(path), 'w', format='adts') as container:
+            stream = container.add_stream('aac', rate=rate, layout=layout)
+            if bit_rate:
+                stream.bit_rate = bit_rate
+            t = np.arange(int(rate * seconds), dtype=np.float32) / rate
+            if noise is None:
+                data = np.stack(
+                    [0.3 * np.sin(2 * np.pi * 220 * (i + 1) * t) for i in range(channels)]
+                ).astype(np.float32)
+            else:
+                data = np.random.default_rng(7).uniform(
+                    -noise, noise, size=(channels, t.size)
+                ).astype(np.float32)
+            frame = av.AudioFrame.from_ndarray(
+                np.ascontiguousarray(data.T).reshape(1, -1), format='flt', layout=layout
+            )
+            frame.sample_rate = rate
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+
+    def _stereo_then_surround(self, tmp_path):
+        stereo = tmp_path / 'stereo.aac'
+        surround = tmp_path / 'surround.aac'
+        switched = tmp_path / 'switched.aac'
+        self._write_adts(stereo, 'stereo', 2, 6.0)
+        self._write_adts(surround, '5.1', 6, 3.0)
+        switched.write_bytes(stereo.read_bytes() + surround.read_bytes())
+        return switched
+
+    @pytest.mark.parametrize('target_sr', [None, 16000])
+    def test_frames_after_a_layout_switch_are_skipped_as_corrupt(self, tmp_path, caplog, target_sr):
+        from tasks.analysis import song as song_mod
+
+        path = self._stereo_then_surround(tmp_path)
+
+        with patch.object(song_mod, 'AUDIO_MIN_DECODED_FRACTION', 0.0), \
+                caplog.at_level(logging.WARNING, logger='tasks.pyav_decode'):
+            audio, sr = _decode_audio_with_pyav(str(path), target_sr)
+
+        assert 'corrupt audio packet' in caplog.text
+        assert sr == (target_sr or self.RATE)
+        assert 5.9 < audio.size / sr < 6.2
+
+    def test_a_frame_claiming_another_channel_count_is_skipped(self):
+        from tasks import pyav_decode
+
+        def frame(channels):
+            return Mock(layout=Mock(channels=[Mock()] * channels))
+
+        good, torn = frame(2), frame(42)
+        packet = Mock(decode=Mock(return_value=[good, torn, good]))
+        container = Mock(demux=Mock(return_value=[packet]))
+        stats = {'packets': 0, 'skipped': 0}
+
+        frames = list(pyav_decode._tolerant_frames(container, Mock(), stats))
+
+        assert frames == [good, good]
+        assert stats == {'packets': 1, 'skipped': 1}
+
+    def test_a_damaged_first_frame_does_not_become_the_reference(self):
+        from tasks import pyav_decode
+
+        torn = Mock(layout=Mock(channels=[Mock()] * 42))
+        goods = [Mock(layout=Mock(channels=[Mock()] * 2)) for _ in range(12)]
+        container = Mock(demux=Mock(return_value=[
+            Mock(decode=Mock(return_value=[item])) for item in [torn, *goods]
+        ]))
+        stats = {'packets': 0, 'skipped': 0}
+
+        frames = list(pyav_decode._tolerant_frames(container, Mock(), stats))
+
+        assert frames == goods
+        assert stats == {'packets': 13, 'skipped': 1}
+
+    def test_raw_adts_with_a_corrupt_packet_is_judged_by_its_packets(self, tmp_path, caplog):
+        import av
+
+        quiet, loud, joined = tmp_path / 'q.aac', tmp_path / 'l.aac', tmp_path / 'ql.aac'
+        self._write_adts(quiet, 'stereo', 2, 3.0, bit_rate=32000, noise=0.002)
+        self._write_adts(loud, 'stereo', 2, 9.0, bit_rate=256000, noise=0.5)
+        raw = bytearray(quiet.read_bytes() + loud.read_bytes())
+        middle = len(raw) * 3 // 4
+        raw[middle:middle + 400] = (bytes([0x0b, 0x4e, 0x88, 0xf9]) * 100)
+        joined.write_bytes(bytes(raw))
+        with av.open(str(joined)) as container:
+            declared = container.duration / av.time_base
+        if declared < 24.0:
+            pytest.skip(f'this FFmpeg estimates {declared:.1f}s, close enough to the real 12s')
+
+        with caplog.at_level(logging.WARNING, logger='tasks.pyav_decode'):
+            audio, sr = _decode_audio_with_pyav(str(joined), None)
+
+        assert 'corrupt audio packet' in caplog.text
+        assert 11.0 < audio.size / sr < 12.2
+
+    def test_a_valid_7_1_stream_decodes_instead_of_crashing(self, tmp_path):
+        from tasks.analysis import song as song_mod
+
+        path = tmp_path / 'surround71.aac'
+        self._write_adts(path, '7.1', 8, 3.0)
+
+        audio, sr = song_mod._decode_audio_isolated(str(path), None)
+
+        assert sr == self.RATE
+        assert 2.9 < audio.size / sr < 3.1
+        assert np.isfinite(audio).all()
+
+    @pytest.mark.parametrize('target_sr', [None, 16000])
+    def test_a_sample_rate_change_mid_stream_keeps_the_timeline(self, tmp_path, target_sr):
+        first, second, joined = tmp_path / 'a.aac', tmp_path / 'b.aac', tmp_path / 'ab.aac'
+        self._write_adts(first, 'stereo', 2, 3.0, rate=44100)
+        self._write_adts(second, 'stereo', 2, 3.0, rate=48000)
+        joined.write_bytes(first.read_bytes() + second.read_bytes())
+
+        audio, sr = _decode_audio_with_pyav(str(joined), target_sr)
+
+        assert sr == (target_sr or 44100)
+        assert 5.9 < audio.size / sr < 6.2
+
+    def test_a_clean_stream_with_a_far_too_long_declared_duration_is_kept(self, tmp_path):
+        import av
+
+        quiet, loud, joined = tmp_path / 'q.aac', tmp_path / 'l.aac', tmp_path / 'ql.aac'
+        self._write_adts(quiet, 'stereo', 2, 3.0, bit_rate=32000, noise=0.002)
+        self._write_adts(loud, 'stereo', 2, 9.0, bit_rate=256000, noise=0.5)
+        joined.write_bytes(quiet.read_bytes() + loud.read_bytes())
+        with av.open(str(joined)) as container:
+            declared = container.duration / av.time_base
+        if declared < 24.0:
+            pytest.skip(f'this FFmpeg estimates {declared:.1f}s, close enough to the real 12s')
+
+        audio, sr = _decode_audio_with_pyav(str(joined), None)
+
+        assert 11.8 < audio.size / sr < 12.2
 
 
 class TestPyAVDecodeDownmix:

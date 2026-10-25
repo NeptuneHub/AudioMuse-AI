@@ -296,7 +296,12 @@ is skipped as error 2007 and never fails the album.
 
 1. **Decode.** `robust_load_audio_with_fallback` loads the audio with librosa and
    falls back to PyAV. `AUDIO_LOAD_TIMEOUT` prevents a corrupt file from stalling
-   the worker.
+   the worker. The PyAV fallback runs in a separate short-lived process
+   (`tasks/pyav_decode.py`, the same on the container and the native apps), so a
+   damaged file that crashes FFmpeg ends only that process. A file PyAV rejects, or
+   one that crashes it twice in a row, is skipped as error 2007 and marked as not
+   analyzable; a killed or timed-out decode marks nothing and is retried on the
+   next run.
 2. **Basic features.** Tempo, energy and key/scale are extracted and normalized
    with `TEMPO_MIN_BPM`/`TEMPO_MAX_BPM` and `ENERGY_MIN`/`ENERGY_MAX`.
 3. **MusiCNN.** The audio is turned into mel-spectrogram patches. The embedding

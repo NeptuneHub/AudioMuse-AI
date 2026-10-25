@@ -23,8 +23,9 @@ stdlib spawn payloads, so loky's are handled here too.
 Main Features:
 * ``run_frozen_child`` runs the spawn payload named by argv and reports it.
 * ``dispatch_child_invocation`` is the one entry the three launchers share: a
-  spawn payload, a ``--run-restore`` runner or a ``--role=`` child, in that
-  order, so no platform can forget one of them.
+  spawn payload, a ``--run-restore`` runner, a ``--decode-audio`` child (the
+  analysis PyAV decode, kept out of the worker so a decoder crash cannot end
+  it) or a ``--role=`` child, in that order, so no platform can forget one.
 * Only ``multiprocessing`` and ``joblib.externals.loky`` targets are accepted.
 * The child sees the argv tail its parent passed, without the spawn switch.
 * ``-m`` payloads run with ``alter_sys=False`` so ``sys.modules["__main__"]``
@@ -161,6 +162,12 @@ def dispatch_child_invocation(run_role):
         from app_backup import _run_restore_runner
 
         sys.exit(_run_restore_runner(sys.argv[index + 1], sys.argv[index + 2]))
+
+    if "--decode-audio" in sys.argv:
+        index = sys.argv.index("--decode-audio")
+        from tasks.pyav_decode import run
+
+        sys.exit(run(sys.argv[index + 1:index + 5]))
 
     role = service_roles.role_from_argv()
     if role:

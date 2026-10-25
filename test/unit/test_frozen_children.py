@@ -17,6 +17,8 @@ Main Features:
 * Every spawn form loky and multiprocessing emit is recognised and dispatched
 * The dispatched child sees the argv tail its parent passed, minus the switch
 * Non-spawn argv, unlisted modules and unfrozen processes are left alone
+* The analysis decode flag (pyav_decode.CHILD_FLAG) runs the decode child with the
+  four values after it
 * The forms are also taken from the installed multiprocessing/loky themselves,
   so an upstream change to how a child is spawned fails here instead of in a bundle
 """
@@ -316,6 +318,24 @@ def test_dispatch_child_invocation_runs_the_restore_runner_for_restore_argv(
     with pytest.raises(SystemExit):
         frozen_children.dispatch_child_invocation(lambda role: None)
     assert calls == [('restore.log', 'backup.tar')]
+
+
+def test_dispatch_child_invocation_runs_the_decode_child_for_decode_argv(
+    frozen_children, monkeypatch
+):
+    from tasks import pyav_decode
+
+    monkeypatch.setattr(frozen_children, 'run_frozen_child', lambda: False)
+    monkeypatch.setattr(
+        sys, 'argv', [EXE, pyav_decode.CHILD_FLAG, '/tmp/a.m4a', '0', '600', '0.5'], raising=False
+    )
+    calls = []
+    monkeypatch.setattr(pyav_decode, 'run', lambda argv: calls.append(argv) or 0)
+    ran = []
+    with pytest.raises(SystemExit):
+        frozen_children.dispatch_child_invocation(lambda role: ran.append(role))
+    assert calls == [['/tmp/a.m4a', '0', '600', '0.5']]
+    assert ran == []
 
 
 def test_dispatch_child_invocation_returns_false_with_no_spawn_or_role(
