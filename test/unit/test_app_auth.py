@@ -417,6 +417,7 @@ class TestAdminPathEnforcement:
             ('/api/setup', True),
             ('/api/migration/session/start', True),
             ('/api/analysis', True),
+            ('/api/analysis/exclusions/clear', True),
             ('/api/clustering', True),
             ('/api/cron', True),
             ('/api/backup', True),

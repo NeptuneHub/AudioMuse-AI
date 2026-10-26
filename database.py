@@ -1428,6 +1428,26 @@ def delete_stale_analysis_exclusions(server_id, present_provider_item_ids, conn=
         cur.close()
 
 
+def clear_analysis_exclusions():
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute("DELETE FROM analysis_exclusions")
+            deleted = cur.rowcount
+            cur.execute(
+                "UPDATE dashboard_stats "
+                "SET content = jsonb_set(content, '{unanalyzable_tracks}', '0') WHERE id = 1"
+            )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Analysis-exclusion clear rollback failed", exc_info=True)
+        raise
+    return int(deleted if deleted is not None and deleted >= 0 else 0)
+
+
 def get_lyrics_axis_vectors(item_ids):
     if not item_ids:
         return {}

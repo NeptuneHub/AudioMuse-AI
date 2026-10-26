@@ -14,12 +14,14 @@ status routes in `app.py`.
 
 Main Features:
 * Routes: `/cleaning` page, `/api/analysis/start` (enqueues
-  `tasks.analysis.run_analysis_task`) and `/api/cleaning/start`.
+  `tasks.analysis.run_analysis_task`), `/api/cleaning/start` and
+  `/api/analysis/exclusions/clear` (empties the unanalyzable list after the
+  typed confirmation phrase).
 * Archives previously successful main tasks to REVOKED on a new start and
   guards against a second concurrent main task via `get_active_main_task`.
 """
 
-from flask import Blueprint, request, render_template
+from flask import Blueprint, jsonify, request, render_template
 import uuid
 import logging
 
@@ -36,9 +38,9 @@ import taskqueue
 # App helper functions
 import database
 
-from app_helper import admit_and_enqueue_main_task
-from error.error_dictionary import ERR_INVALID_REQUEST
-from error.responses import json_error
+from app_helper import CLEAR_EXCLUSIONS_PHRASE, admit_and_enqueue_main_task
+from error.error_dictionary import ERR_DB_QUERY, ERR_INVALID_REQUEST
+from error.responses import json_error, json_exception
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +158,52 @@ def start_analysis_endpoint():
             details={"message": "Task queued."},
         ),
     )
+
+
+@analysis_bp.route('/api/analysis/exclusions/clear', methods=['POST'])
+def clear_analysis_exclusions_endpoint():
+    """
+    Delete every unanalyzable mark so the next analysis retries those tracks.
+    ---
+    tags:
+      - Analysis
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              confirmation:
+                type: string
+                description: The exact confirmation phrase shown on the page.
+    responses:
+      200:
+        description: The list was cleaned.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                success:
+                  type: boolean
+                deleted:
+                  type: integer
+      400:
+        description: Confirmation phrase missing or wrong.
+      503:
+        description: Database error.
+    """
+    data = request.get_json(silent=True)
+    confirmation = data.get('confirmation') if isinstance(data, dict) else None
+    if not isinstance(confirmation, str) or confirmation.strip() != CLEAR_EXCLUSIONS_PHRASE:
+        return json_error(ERR_INVALID_REQUEST, 'Confirmation text does not match.')
+    try:
+        deleted = database.clear_analysis_exclusions()
+    except Exception as exc:
+        return json_exception(exc, ERR_DB_QUERY, 'Could not clean the unanalyzable list.')
+    logger.info("Unanalyzable list cleaned: %d marks removed.", deleted)
+    return jsonify({'success': True, 'deleted': deleted})
 
 
 @analysis_bp.route('/api/cleaning/start', methods=['POST'])

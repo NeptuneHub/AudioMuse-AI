@@ -20,11 +20,12 @@ Main Features:
 * analyze_track / robust_load_audio_with_fallback: decode a file and produce the
   MusiCNN moods + embedding; a track that yields no audio at all returns None,
   while one whose packets are only partly corrupt returns however much decoded
-  cleanly. The PyAV fallback skips undecodable packets rather than abandoning the
-  whole track, and averages the channels itself rather than letting swresample
-  downmix, because swresample is power-preserving (1/sqrt(2) per channel) while librosa is
-  amplitude-preserving ((L+R)/2); the two decoders must agree or the same file
-  yields different embeddings depending on which one opened it.
+  cleanly.
+* The PyAV fallback (tasks.pyav_decode) runs in a short-lived process, so a native
+  FFmpeg crash ends that process, never the worker or Flask. A PyAV error, or a crash
+  or hang repeated in a fresh process, comes back empty and the album marks the file
+  not analyzable, unless a clean test clip fails too (a broken decoder); a kill or a
+  temporary error raise AudioDecodeInterrupted: nothing marked, a later run retries.
 * duration_seconds is MEASURED on the audio that actually decoded, never read from
   the container header, and two consequences follow. AUDIO_LOAD_TIMEOUT caps the
   decode at 600s, so a track longer than that already stores a truncated duration
@@ -44,8 +45,14 @@ Main Features:
 
 import gc
 import importlib
+import json
 import logging
 import os
+import signal
+import subprocess
+import sys
+import tempfile
+import wave
 
 import numpy as np
 import librosa
@@ -76,6 +83,15 @@ from error.error_dictionary import (
     ERR_DB_QUERY,
     ERR_LYRICS_TRANSCRIPTION,
     ERR_MODEL_INFERENCE,
+)
+
+from ..pyav_decode import (
+    CHILD_FLAG,
+    STATUS_OK,
+    STATUS_TRANSIENT,
+    STATUS_UNREADABLE,
+    decode_with_pyav,
+    wall_seconds,
 )
 
 from ..memory_utils import cleanup_cuda_memory, cleanup_onnx_session, comprehensive_memory_cleanup
@@ -272,105 +288,180 @@ def prepare_spectrogram_patches(audio, sr):
     return np.array(patches).transpose(0, 2, 1).astype(np.float32)
 
 
-def _frame_to_mono_mean(rframe):
-    arr = rframe.to_ndarray()
-    if arr.ndim > 1:
-        arr = arr.mean(axis=0)
-    else:
-        arr = arr.reshape(-1)
-    return arr.astype(np.float32, copy=False)
-
-
-def _declared_seconds(container):
-    import av
-
-    if not container.duration:
-        return None
-    declared = float(container.duration) / av.time_base
-    if declared <= 0:
-        return None
-    return min(declared, AUDIO_LOAD_TIMEOUT) if AUDIO_LOAD_TIMEOUT else declared
-
-
-def _enough_survived(audio, sr, declared, name):
-    if not declared or not sr or not AUDIO_MIN_DECODED_FRACTION:
-        return True
-    recovered = audio.size / float(sr)
-    if recovered >= declared * AUDIO_MIN_DECODED_FRACTION:
-        return True
-    logger.error(
-        "Only %.1fs of the %.1fs %s declares survived the corrupt packets (%.0f%%, "
-        "minimum %.0f%%); treating it as not decodable.",
-        recovered, declared, name, 100.0 * recovered / declared,
-        100.0 * AUDIO_MIN_DECODED_FRACTION,
-    )
-    return False
-
-
-def _tolerant_frames(container, stream, skipped):
-    import av
-
-    for packet in container.demux(stream):
-        try:
-            frames = list(packet.decode())
-        except av.FFmpegError:
-            skipped[0] += 1
-            continue
-        for frame in frames:
-            yield frame
-
-
 def _decode_audio_with_pyav(file_path, target_sr):
-    import av
+    return decode_with_pyav(file_path, target_sr, AUDIO_LOAD_TIMEOUT, AUDIO_MIN_DECODED_FRACTION)
 
-    max_samples = int(AUDIO_LOAD_TIMEOUT * target_sr) if (AUDIO_LOAD_TIMEOUT and target_sr) else None
-    chunks = []
-    total = 0
-    actual_sr = target_sr
-    skipped = [0]
-    declared = None
-    with av.open(file_path) as container:
-        if not container.streams.audio:
-            return np.array([], dtype=np.float32), actual_sr
-        declared = _declared_seconds(container)
-        stream = container.streams.audio[0]
-        resampler = av.audio.resampler.AudioResampler(
-            format="fltp", layout=stream.layout, rate=target_sr
+
+class AudioDecodeInterrupted(RuntimeError):
+    pass
+
+
+_DECODE_ATTEMPTS = 2
+_CHILD_LOG_TAIL_CHARS = 4000
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_POSIX_CRASH_SIGNALS = frozenset(
+    getattr(signal, name) for name in ('SIGSEGV', 'SIGBUS', 'SIGABRT', 'SIGFPE', 'SIGTRAP')
+    if hasattr(signal, name)
+)
+_WINDOWS_CRASH_CODES = frozenset({
+    3, 0x80000003, 0xC0000005, 0xC0000094, 0xC00000FD, 0xC0000374, 0xC0000409,
+})
+_CHILD_LOG_LEVELS = (
+    ('[CRITICAL]', logging.ERROR), ('[ERROR]', logging.ERROR),
+    ('[WARNING]', logging.WARNING), ('[INFO]', logging.INFO),
+)
+_decoder_proven = False
+
+
+def _decode_command(file_path, target_sr):
+    args = [
+        os.path.abspath(file_path),
+        str(int(target_sr or 0)),
+        str(int(AUDIO_LOAD_TIMEOUT or 0)),
+        repr(float(AUDIO_MIN_DECODED_FRACTION)),
+    ]
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, CHILD_FLAG, *args], None
+    return [sys.executable, '-m', decode_with_pyav.__module__, *args], _PROJECT_ROOT
+
+
+def _exit_label(returncode):
+    if returncode < 0:
+        try:
+            return signal.Signals(-returncode).name
+        except ValueError:
+            return f"signal {-returncode}"
+    return f"exit code {returncode} (0x{returncode & 0xFFFFFFFF:08X})"
+
+
+def _relay_child_log(stderr, name):
+    text = (stderr or b'').decode('utf-8', 'replace').strip()
+    level = logging.WARNING
+    for line in text[-_CHILD_LOG_TAIL_CHARS:].splitlines():
+        level = next((lvl for tag, lvl in _CHILD_LOG_LEVELS if line.startswith(tag)), level)
+        logger.log(level, "PyAV decode process for %s: %s", name, line)
+
+
+def _decode_child_crashed(returncode):
+    if sys.platform == 'win32':
+        return (returncode & 0xFFFFFFFF) in _WINDOWS_CRASH_CODES
+    return returncode < 0 and -returncode in _POSIX_CRASH_SIGNALS
+
+
+def _decoded_reply(stdout, name):
+    start = stdout.find(b'\n') + 1
+    try:
+        reply = json.loads(stdout[:start])
+        status, sr, samples = reply['status'], reply['sr'], int(reply['samples'])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise AudioDecodeInterrupted(
+            f"The PyAV decode process for {name} sent an unreadable reply; the file is not "
+            "marked and is retried on the next run."
+        ) from exc
+    if status == STATUS_UNREADABLE:
+        return np.array([], dtype=np.float32), sr
+    if status != STATUS_OK:
+        state = 'a temporary error' if status == STATUS_TRANSIENT else f'status {status!r}'
+        raise AudioDecodeInterrupted(
+            f"The PyAV decode process reported {state} reading {name}; the file is not "
+            "marked and is retried on the next run."
         )
-        for frame in _tolerant_frames(container, stream, skipped):
-            for rframe in resampler.resample(frame):
-                if actual_sr is None:
-                    actual_sr = rframe.sample_rate
-                    if AUDIO_LOAD_TIMEOUT:
-                        max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
-                arr = _frame_to_mono_mean(rframe)
-                if arr.size:
-                    chunks.append(arr)
-                    total += arr.size
-            if max_samples and total >= max_samples:
-                break
-        for rframe in resampler.resample(None):
-            if actual_sr is None:
-                actual_sr = rframe.sample_rate
-                if AUDIO_LOAD_TIMEOUT:
-                    max_samples = int(AUDIO_LOAD_TIMEOUT * actual_sr)
-            arr = _frame_to_mono_mean(rframe)
-            if arr.size:
-                chunks.append(arr)
+    body = len(stdout) - start
+    if body != samples * np.dtype(np.float32).itemsize:
+        raise AudioDecodeInterrupted(
+            f"The PyAV decode process for {name} sent {body} bytes for {samples} samples; "
+            "the file is not marked and is retried on the next run."
+        )
+    return np.frombuffer(stdout, dtype=np.float32, count=samples, offset=start).copy(), sr
+
+
+def _run_child(command, cwd):
+    return subprocess.run(  # nosec B603
+        command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=wall_seconds(AUDIO_LOAD_TIMEOUT),
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+    )
+
+
+def _decoder_works(directory):
+    global _decoder_proven
+    if _decoder_proven:
+        return True
+    rate = 8000
+    tone = (np.sin(np.linspace(0, 440 * 2 * np.pi, rate)) * 12000).astype('<i2')
+    try:
+        handle, probe = tempfile.mkstemp(suffix='.wav', dir=directory)
+        os.close(handle)
+    except OSError:
+        logger.exception("Could not write the clean test clip for the PyAV decode process")
+        return False
+    try:
+        with wave.open(probe, 'wb') as clip:
+            clip.setnchannels(1)
+            clip.setsampwidth(2)
+            clip.setframerate(rate)
+            clip.writeframes(tone.tobytes())
+        child = _run_child(*_decode_command(probe, None))
+        _decoder_proven = (
+            child.returncode == 0 and _decoded_reply(child.stdout, 'probe.wav')[0].size > 0
+        )
+        if not _decoder_proven:
+            logger.error(
+                "The PyAV decode process failed on a clean test clip (%s).",
+                _exit_label(child.returncode),
+            )
+    except (OSError, subprocess.SubprocessError, AudioDecodeInterrupted):
+        logger.exception("The PyAV decode process could not decode a clean test clip")
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            logger.warning("Could not remove the clean test clip %s", probe, exc_info=True)
+    return _decoder_proven
+
+
+def _decode_audio_isolated(file_path, target_sr):
     name = os.path.basename(file_path)
-    if skipped[0]:
-        logger.warning(
-            "Skipped %d corrupt audio packet(s) while decoding %s; the recovered "
-            "audio is shorter than the file claims.", skipped[0], name
+    command, cwd = _decode_command(file_path, target_sr)
+    for attempt in range(1, _DECODE_ATTEMPTS + 1):
+        try:
+            child = _run_child(command, cwd)
+        except subprocess.TimeoutExpired as exc:
+            _relay_child_log(exc.stderr, name)
+            logger.exception(
+                "The PyAV decode process ran past %ss while reading %s (attempt %d of %d).",
+                exc.timeout, name, attempt, _DECODE_ATTEMPTS,
+            )
+            continue
+        except (OSError, subprocess.SubprocessError) as exc:
+            _relay_child_log(getattr(exc, 'stderr', None), name)
+            raise AudioDecodeInterrupted(
+                f"The PyAV decode process for {name} could not finish ({exc}); the file is "
+                "not marked and is retried on the next run."
+            ) from exc
+        _relay_child_log(child.stderr, name)
+        if child.returncode == 0:
+            return _decoded_reply(child.stdout, name)
+        label = _exit_label(child.returncode)
+        if not _decode_child_crashed(child.returncode):
+            raise AudioDecodeInterrupted(
+                f"The PyAV decode process for {name} ended with {label}, which is not a crash "
+                "the file causes; the file is not marked and is retried on the next run."
+            )
+        logger.error(
+            "The PyAV decode process crashed with %s while reading %s (attempt %d of %d).",
+            label, name, attempt, _DECODE_ATTEMPTS,
         )
-    if not chunks:
-        return np.array([], dtype=np.float32), actual_sr
-    audio = np.concatenate(chunks).astype(np.float32, copy=False)
-    if max_samples:
-        audio = audio[:max_samples]
-    if not _enough_survived(audio, actual_sr, declared, name):
-        return np.array([], dtype=np.float32), actual_sr
-    return audio, actual_sr
+    if not _decoder_works(os.path.dirname(os.path.abspath(file_path))):
+        raise AudioDecodeInterrupted(
+            f"The PyAV decode process also fails on a clean test clip, so the decoder is "
+            f"broken rather than {name}; the file is not marked and is retried on the next run."
+        )
+    logger.error(
+        "The PyAV decode process crashed or hung on every attempt for %s; it is treated as "
+        "not decodable.", name,
+    )
+    return np.array([], dtype=np.float32), None
 
 
 def robust_load_audio_with_fallback(file_path, target_sr=16000):
@@ -384,11 +475,14 @@ def robust_load_audio_with_fallback(file_path, target_sr=16000):
         logger.warning(f"Direct librosa load failed for {name}: {e}. Attempting PyAV fallback.")
 
     try:
-        audio, sr = _decode_audio_with_pyav(file_path, target_sr)
+        audio, sr = _decode_audio_isolated(file_path, target_sr)
         if audio is None or audio.size == 0 or not np.any(audio):
             logger.error(f"PyAV fallback resulted in empty/silent audio for {name}.")
             return None, None
         return audio, sr
+    except AudioDecodeInterrupted:
+        logger.exception(f"PyAV fallback for {name} was interrupted")
+        raise
     except Exception:
         logger.exception(f"PyAV fallback loading also failed for {name}")
         return None, None
