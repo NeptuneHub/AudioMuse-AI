@@ -413,7 +413,10 @@ def _decoder_works(directory):
     except (OSError, subprocess.SubprocessError, AudioDecodeInterrupted):
         logger.exception("The PyAV decode process could not decode a clean test clip")
     finally:
-        os.remove(probe)
+        try:
+            os.remove(probe)
+        except OSError:
+            logger.warning("Could not remove the clean test clip %s", probe, exc_info=True)
     return _decoder_proven
 
 
@@ -425,7 +428,7 @@ def _decode_audio_isolated(file_path, target_sr):
             child = _run_child(command, cwd)
         except subprocess.TimeoutExpired as exc:
             _relay_child_log(exc.stderr, name)
-            logger.error(
+            logger.exception(
                 "The PyAV decode process ran past %ss while reading %s (attempt %d of %d).",
                 exc.timeout, name, attempt, _DECODE_ATTEMPTS,
             )

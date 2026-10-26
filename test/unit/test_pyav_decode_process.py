@@ -160,6 +160,22 @@ def test_a_decoder_that_also_crashes_on_a_clean_clip_marks_nothing(tmp_path, mon
         song._decode_audio_isolated(str(tmp_path / 'any.m4a'), None)
 
 
+def test_a_clean_clip_that_cannot_be_removed_does_not_change_the_verdict(tmp_path, monkeypatch):
+    _child_runs(monkeypatch, CRASH, clean_clip_too=True)
+    real_remove = song.os.remove
+
+    def locked(path):
+        if str(path).endswith('.wav'):
+            real_remove(path)
+            raise PermissionError(32, 'The file is being used by another process')
+        real_remove(path)
+
+    monkeypatch.setattr(song.os, 'remove', locked)
+
+    with pytest.raises(song.AudioDecodeInterrupted, match='clean test clip'):
+        song._decode_audio_isolated(str(tmp_path / 'any.m4a'), None)
+
+
 def test_a_decode_that_hangs_twice_marks_the_file(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(song, 'wall_seconds', lambda load_timeout: 1)
     monkeypatch.setattr(song, '_decoder_proven', True)
