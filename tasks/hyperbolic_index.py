@@ -212,6 +212,7 @@ def build_and_store_hyperbolic_index(db_conn=None):
             db_conn.rollback()
         except Exception:
             pass
+        raise
 
 
 def _load_directory(db_conn, name):

@@ -969,11 +969,14 @@ def _persist_hyperbolic_inline(item_id, embedding_vector, cur):
         embedding_blob = np.asarray(proj, dtype=np.float32).tobytes()
         cur.execute(
             """
-            INSERT INTO embedding (item_id, poincare_embedding, hyperbolic_radius)
+            INSERT INTO embedding AS stored
+                (item_id, poincare_embedding, hyperbolic_radius)
             VALUES (%s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 poincare_embedding = EXCLUDED.poincare_embedding,
                 hyperbolic_radius = EXCLUDED.hyperbolic_radius
+            WHERE stored.poincare_embedding IS DISTINCT FROM EXCLUDED.poincare_embedding
+               OR stored.hyperbolic_radius IS DISTINCT FROM EXCLUDED.hyperbolic_radius
         """,
             (item_id, psycopg2.Binary(embedding_blob), float(radius)),
         )
@@ -1146,11 +1149,14 @@ def set_hyperbolic_projection(item_id, poincare_embedding, hyperbolic_radius):
         embedding_blob = np.asarray(poincare_embedding, dtype=np.float32).tobytes()
         cur.execute(
             """
-            INSERT INTO embedding (item_id, poincare_embedding, hyperbolic_radius)
+            INSERT INTO embedding AS stored
+                (item_id, poincare_embedding, hyperbolic_radius)
             VALUES (%s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 poincare_embedding = EXCLUDED.poincare_embedding,
                 hyperbolic_radius = EXCLUDED.hyperbolic_radius
+            WHERE stored.poincare_embedding IS DISTINCT FROM EXCLUDED.poincare_embedding
+               OR stored.hyperbolic_radius IS DISTINCT FROM EXCLUDED.hyperbolic_radius
         """,
             (item_id, psycopg2.Binary(embedding_blob), float(hyperbolic_radius)),
         )
@@ -1689,6 +1695,123 @@ def _ensure_column(cur, table, column, definition):
     return True
 
 
+_INDEX_INPUT_REVISION_SHARDS = 256
+
+
+def _ensure_index_input_revision_tracking(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS index_input_revision (
+            shard SMALLINT PRIMARY KEY,
+            revision BIGINT NOT NULL DEFAULT 0,
+            last_xid BIGINT
+        )
+    """)
+    cur.execute(
+        "INSERT INTO index_input_revision (shard) "
+        "SELECT generate_series(0, %s) ON CONFLICT (shard) DO NOTHING",
+        (_INDEX_INPUT_REVISION_SHARDS - 1,),
+    )
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS index_build_state (
+            singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+            input_revisions BIGINT[] NOT NULL,
+            build_signature TEXT NOT NULL,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE OR REPLACE FUNCTION mark_index_input_changed()
+        RETURNS trigger AS $$
+        DECLARE
+            shard_id INTEGER;
+            current_xid BIGINT;
+            ignored_columns TEXT[];
+        BEGIN
+            ignored_columns := string_to_array(TG_ARGV[0], ',');
+            IF TG_OP = 'UPDATE' THEN
+                IF (to_jsonb(OLD) - ignored_columns)
+                    IS NOT DISTINCT FROM (to_jsonb(NEW) - ignored_columns) THEN
+                    RETURN NULL;
+                END IF;
+            END IF;
+
+            current_xid := txid_current();
+            shard_id := mod(current_xid, %s)::INTEGER;
+            UPDATE index_input_revision
+            SET revision = revision + 1, last_xid = current_xid
+            WHERE shard = shard_id AND last_xid IS DISTINCT FROM current_xid;
+            RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql
+    """ % _INDEX_INPUT_REVISION_SHARDS)
+
+    trigger_specs = (
+        (
+            "score_index_input_revision",
+            "score",
+            "created_at",
+            "item_id, title, author, album, album_artist, tempo, key, scale, "
+            "mood_vector, energy, other_features, year, rating, duration, file_path",
+        ),
+        (
+            "embedding_index_input_revision",
+            "embedding",
+            "poincare_embedding,hyperbolic_radius",
+            "item_id, embedding, neural_fingerprint",
+        ),
+        (
+            "clap_embedding_index_input_revision",
+            "clap_embedding",
+            "updated_at",
+            "item_id, embedding",
+        ),
+        (
+            "lyrics_embedding_index_input_revision",
+            "lyrics_embedding",
+            "updated_at",
+            "item_id, embedding, axis_vector",
+        ),
+        (
+            "track_server_map_index_input_revision",
+            "track_server_map",
+            "updated_at",
+            "item_id, server_id, provider_track_id, match_tier, file_path",
+        ),
+        (
+            "artist_server_map_index_input_revision",
+            "artist_server_map",
+            "updated_at",
+            "artist_name, server_id, provider_artist_id",
+        ),
+        (
+            "music_servers_index_input_revision",
+            "music_servers",
+            "creds, music_libraries, track_count, created_at, updated_at",
+            "server_id, name, server_type, is_default",
+        ),
+        (
+            "app_config_index_input_revision",
+            "app_config",
+            "updated_at",
+            "key, value",
+        ),
+    )
+    for trigger_name, table_name, ignored_columns, update_columns in trigger_specs:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_trigger "
+            "WHERE tgrelid = %s::regclass AND tgname = %s AND NOT tgisinternal)",
+            (table_name, trigger_name),
+        )
+        if cur.fetchone()[0]:
+            continue
+        cur.execute(
+            f"CREATE TRIGGER {trigger_name} "
+            f"AFTER INSERT OR DELETE OR UPDATE OF {update_columns} ON {table_name} "
+            "FOR EACH ROW EXECUTE FUNCTION mark_index_input_changed "
+            f"('{ignored_columns}')"
+        )
+
+
 def init_db():
     db = get_db()
     with db.cursor() as cur:
@@ -2125,6 +2248,7 @@ def init_db():
                 )
 
             _create_plugins_table(cur)
+            _ensure_index_input_revision_tracking(cur)
 
             db.commit()
         finally:

@@ -312,17 +312,18 @@ def build_and_store_index_streaming(
         ok = build_and_store_paged_ivf(
             db_conn, index_name, buf, item_ids, dim, metric, consume_vectors=True
         )
-        if ok:
-            db_conn.commit()
-            logger.info("%s IVF index build successful.", label)
-        return ok
+        if not ok:
+            raise RuntimeError("%s IVF index builder returned no index" % label)
+        db_conn.commit()
+        logger.info("%s IVF index build successful.", label)
+        return True
     except Exception:
         logger.exception("Failed to build/store %s IVF index", label)
         try:
             db_conn.rollback()
         except Exception:
             pass
-        return False
+        raise
 
 
 def store_ivf_index_segmented(

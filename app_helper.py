@@ -410,7 +410,7 @@ def build_and_store_map_projection(index_name='main_map'):
         )
     except Exception:
         logger.exception("Failed to stream embeddings for map projection")
-        return False
+        raise
 
     if mat.shape[0] == 0:
         logger.info('No embeddings available to build map projection.')
@@ -433,7 +433,7 @@ def build_and_store_map_projection(index_name='main_map'):
         return True
     except Exception:
         logger.exception("Failed to build and store map projection")
-        return False
+        raise
 
 
 def build_and_store_artist_projection(index_name='artist_map'):
@@ -507,7 +507,7 @@ def build_and_store_artist_projection(index_name='artist_map'):
         return True
     except Exception:
         logger.exception("Failed to build and store artist projection")
-        return False
+        raise
 
 
 _INLINE_CANCEL_MESSAGE = (

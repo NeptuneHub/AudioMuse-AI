@@ -470,7 +470,7 @@ def _run_analysis_server_task_impl(
                     rebuild_task_id = str(uuid.uuid4())
                     taskqueue.enqueue(
                         'tasks.analysis.rebuild_all_indexes_task',
-                        args=(current_task_id,),
+                        args=(current_task_id, True),
                         task_id=rebuild_task_id,
                         task_type='index_rebuild',
                         queue=taskqueue.QUEUE_DEFAULT,
@@ -657,7 +657,8 @@ def _run_analysis_server_task_impl(
                 log_and_update_main("Performing final index rebuild...", 95)
                 try:
                     _run_all_index_builds(
-                        log_fn=log_and_update_main, task_id=current_task_id
+                        log_fn=log_and_update_main, task_id=current_task_id,
+                        skip_if_unchanged=True,
                     )
                 except (OperationalError, InterfaceError):
                     raise
@@ -842,7 +843,7 @@ def _finish_union_run(parent_id, servers, summaries, failed, permanent=()):
             prefix=f"MainAnalysisTask-{parent_id}", progress_base=92.0, progress_span=8.0,
         )
         try:
-            _run_all_index_builds(task_id=parent_id)
+            _run_all_index_builds(task_id=parent_id, skip_if_unchanged=True)
         except (OperationalError, InterfaceError) as e:
             error_manager.from_exception(e, code=ERR_DB_CONNECTION, logger=logger)
             raise

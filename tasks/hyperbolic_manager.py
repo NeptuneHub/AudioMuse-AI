@@ -231,11 +231,14 @@ def _bulk_upsert_hyperbolic(item_ids, proj_vectors, radii):
             execute_values(
                 cur,
                 """
-                INSERT INTO embedding (item_id, poincare_embedding, hyperbolic_radius)
+                INSERT INTO embedding AS stored
+                    (item_id, poincare_embedding, hyperbolic_radius)
                 VALUES %s
                 ON CONFLICT (item_id) DO UPDATE SET
                     poincare_embedding = EXCLUDED.poincare_embedding,
                     hyperbolic_radius = EXCLUDED.hyperbolic_radius
+                WHERE stored.poincare_embedding IS DISTINCT FROM EXCLUDED.poincare_embedding
+                   OR stored.hyperbolic_radius IS DISTINCT FROM EXCLUDED.hyperbolic_radius
                 """,
                 rows,
             )

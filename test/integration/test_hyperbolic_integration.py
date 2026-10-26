@@ -167,6 +167,56 @@ def _import_app_hyperbolic():
     return mod
 
 
+def test_backfill_does_not_rewrite_identical_hyperbolic_projection(
+    _point_get_db_to_test,
+):
+    manager = _load_hyperbolic_manager()
+    item_id = "item-000"
+    projection = np.full(_DIM, 0.125, dtype=np.float32)
+    radii = np.array([0.75], dtype=np.float32)
+
+    manager._bulk_upsert_hyperbolic([item_id], projection.reshape(1, -1), radii)
+    with _point_get_db_to_test.cursor() as cur:
+        cur.execute("SELECT ctid FROM embedding WHERE item_id = %s", (item_id,))
+        first_ctid = cur.fetchone()[0]
+
+    manager._bulk_upsert_hyperbolic([item_id], projection.reshape(1, -1), radii)
+    with _point_get_db_to_test.cursor() as cur:
+        cur.execute("SELECT ctid FROM embedding WHERE item_id = %s", (item_id,))
+        unchanged_ctid = cur.fetchone()[0]
+    assert unchanged_ctid == first_ctid
+
+    changed_projection = projection.copy()
+    changed_projection[0] = 0.25
+    manager._bulk_upsert_hyperbolic(
+        [item_id], changed_projection.reshape(1, -1), radii
+    )
+    with _point_get_db_to_test.cursor() as cur:
+        cur.execute("SELECT ctid FROM embedding WHERE item_id = %s", (item_id,))
+        changed_ctid = cur.fetchone()[0]
+    assert changed_ctid != unchanged_ctid
+
+
+def test_single_projection_write_does_not_rewrite_identical_values(
+    _point_get_db_to_test,
+):
+    from database import set_hyperbolic_projection
+
+    item_id = "item-001"
+    projection = np.full(_DIM, 0.25, dtype=np.float32)
+    set_hyperbolic_projection(item_id, projection, 0.6)
+    with _point_get_db_to_test.cursor() as cur:
+        cur.execute("SELECT ctid FROM embedding WHERE item_id = %s", (item_id,))
+        first_ctid = cur.fetchone()[0]
+
+    set_hyperbolic_projection(item_id, projection, 0.6)
+    with _point_get_db_to_test.cursor() as cur:
+        cur.execute("SELECT ctid FROM embedding WHERE item_id = %s", (item_id,))
+        unchanged_ctid = cur.fetchone()[0]
+
+    assert unchanged_ctid == first_ctid
+
+
 def _seed_poincare(conn):
     from tasks.hyperbolic_geometry import poincare_radius, project_to_poincare
 

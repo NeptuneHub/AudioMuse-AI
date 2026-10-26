@@ -45,7 +45,10 @@ Main Features:
 """
 
 import gc
+import hashlib
+import json
 import logging
+import os
 import uuid
 
 import taskqueue
@@ -56,6 +59,7 @@ from app_helper import (
     build_and_store_map_projection,
     build_and_store_artist_projection,
 )
+import config
 from database import close_db, get_db
 from config import QUEUE_WEDGED_MAIN_TASK_MINUTES
 
@@ -68,6 +72,119 @@ from .helper import make_task_reporter
 
 
 logger = logging.getLogger(__name__)
+
+_INDEX_BUILD_SIGNATURE_VERSION = 1
+_INDEX_BUILD_CONFIG_KEYS = (
+    "INDEX_NAME",
+    "EMBEDDING_DIMENSION",
+    "CLAP_EMBEDDING_DIMENSION",
+    "LYRICS_EMBEDDING_DIMENSION",
+    "LYRICS_ENABLED",
+    "IVF_METRIC",
+    "IVF_NLIST_MAX",
+    "IVF_TRAIN_POINTS_PER_CELL",
+    "IVF_MAX_CELL_MB",
+    "IVF_MAX_PART_SIZE_MB",
+    "IVF_STORAGE_DTYPE",
+    "GMM_N_COMPONENTS_MIN",
+    "GMM_N_COMPONENTS_MAX",
+    "GMM_COVARIANCE_TYPE",
+    "SEM_GROVE_WEIGHT_AUDIO",
+    "SEM_GROVE_WEIGHT_LYRICS",
+    "HYPERBOLIC_RADIUS_SCALE",
+    "HYPERBOLIC_RADIUS_PERCENTILE",
+    "HYPERBOLIC_MIN_CLUSTER_SIZE",
+    "HYPERBOLIC_RADIAL_SPREAD",
+    "HYPERBOLIC_TARGET_LEAF_SIZE",
+    "OTHER_FEATURE_LABELS",
+    "STRATIFIED_GENRES",
+    "VOICE_VOCAB",
+    "MOOD_CENTROIDS_FILE",
+    "GENRE_SUBGENRE_FILE",
+    "NEURAL_FINGERPRINT_ENABLED",
+    "NEURAL_FINGERPRINT_MODEL_PATH",
+    "NEURAL_FINGERPRINT_CODEBOOK_PATH",
+    "NEURAL_FINGERPRINT_INDEX_STRIDE",
+    "NEURAL_FINGERPRINT_TRAIN_ROWS",
+    "NEURAL_FINGERPRINT_RETRAIN_GROWTH",
+)
+
+
+def _index_build_signature():
+    settings = {
+        name: getattr(config, name, None) for name in _INDEX_BUILD_CONFIG_KEYS
+    }
+    settings["version"] = _INDEX_BUILD_SIGNATURE_VERSION
+    settings["asset_files"] = {}
+    for name in (
+        "MOOD_CENTROIDS_FILE",
+        "GENRE_SUBGENRE_FILE",
+        "NEURAL_FINGERPRINT_MODEL_PATH",
+        "NEURAL_FINGERPRINT_CODEBOOK_PATH",
+    ):
+        path = getattr(config, name, None)
+        if not path:
+            continue
+        try:
+            stat = os.stat(path)
+            settings["asset_files"][name] = (path, stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            settings["asset_files"][name] = (path, None, None)
+    payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_index_build_state():
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    (SELECT array_agg(revision ORDER BY shard)
+                     FROM index_input_revision),
+                    state.input_revisions,
+                    state.build_signature
+                FROM (VALUES (TRUE)) AS singleton(value)
+                LEFT JOIN index_build_state AS state
+                    ON state.singleton = singleton.value
+            """)
+            row = cur.fetchone()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Could not roll back index build state read", exc_info=True)
+        raise
+
+    revisions = row[0] if row else None
+    if revisions is None or len(revisions) != 256:
+        return None, None, None
+    if row[1] is None:
+        return tuple(revisions), None, None
+    return tuple(revisions), tuple(row[1]), row[2]
+
+
+def _record_index_build_state(revisions, build_signature):
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO index_build_state "
+                "(singleton, input_revisions, build_signature, updated_at) "
+                "VALUES (TRUE, %s, %s, CURRENT_TIMESTAMP) "
+                "ON CONFLICT (singleton) DO UPDATE SET "
+                "input_revisions = EXCLUDED.input_revisions, "
+                "build_signature = EXCLUDED.build_signature, "
+                "updated_at = EXCLUDED.updated_at",
+                (list(revisions), build_signature),
+            )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Could not roll back index build state update", exc_info=True)
+        raise
 
 
 def _recycle_db_connection():
@@ -90,7 +207,10 @@ def _checkpoint_postgres():
         logger.debug("Post-analysis Postgres CHECKPOINT failed", exc_info=True)
 
 
-def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_id=None):
+def _run_all_index_builds(
+    log_fn=None, progress_start=95, progress_end=98, task_id=None,
+    skip_if_unchanged=False,
+):
     from ..ivf_manager import build_and_store_ivf_index
     from ..clap_text_search import build_and_store_clap_index
     from ..lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
@@ -141,8 +261,29 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
         except Exception:
             logger.debug("Index-build progress callback failed", exc_info=True)
 
+    build_signature = _index_build_signature()
+    input_revisions = None
+    previous_revisions = None
+    previous_signature = None
+    try:
+        input_revisions, previous_revisions, previous_signature = _read_index_build_state()
+    except Exception:
+        logger.debug("Could not read index input revisions; running a full rebuild", exc_info=True)
+
+    if (
+        skip_if_unchanged
+        and input_revisions is not None
+        and input_revisions == previous_revisions
+        and build_signature == previous_signature
+    ):
+        logger.info("Index inputs and build settings are unchanged; skipping rebuild.")
+        safe_log("Index inputs are unchanged; skipping index rebuild.", progress_end)
+        release_memory_to_os()
+        return
+
     safe_log("Rebuilding similarity indexes...", progress_start)
     running = ['the index rebuild']
+    step_failed = False
     with row_heartbeat(
         task_id, lambda: running[0],
         stop_after_minutes=slow_step_budget_minutes(QUEUE_WEDGED_MAIN_TASK_MINUTES),
@@ -157,6 +298,7 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
                 build()
                 logger.info(f"OK {label}")
             except Exception as e:
+                step_failed = True
                 error_manager.record(
                     error_manager.classify(e, ERR_INDEX_BUILD),
                     f"{label}: {e}", exc=e, logger=logger, level=logging.WARNING,
@@ -169,6 +311,11 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
                 reset_hyperbolic_tree_cache()
                 _recycle_db_connection()
                 gc.collect()
+    if input_revisions is not None and not step_failed:
+        try:
+            _record_index_build_state(input_revisions, build_signature)
+        except Exception:
+            logger.warning("Could not record the completed index input revision", exc_info=True)
     try:
         taskqueue.publish_event('index-reload')
     except Exception as e:
@@ -178,7 +325,7 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98, task_
     release_memory_to_os()
 
 
-def rebuild_all_indexes_task(parent_task_id=None):
+def rebuild_all_indexes_task(parent_task_id=None, skip_if_unchanged=False):
     logger.info("Starting index rebuild task...")
     claimed_task_id = taskqueue.current_task_id()
     current_task_id = claimed_task_id or str(uuid.uuid4())
@@ -201,7 +348,7 @@ def rebuild_all_indexes_task(parent_task_id=None):
             try:
                 _run_all_index_builds(
                     log_fn=report_between_builds, progress_start=0, progress_end=99,
-                    task_id=current_task_id,
+                    task_id=current_task_id, skip_if_unchanged=skip_if_unchanged,
                 )
             except TaskCancelled:
                 raise

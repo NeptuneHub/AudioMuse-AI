@@ -223,7 +223,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
         )
         if not ok:
             db_conn.rollback()
-            return False
+            raise RuntimeError("SemGrove IVF index builder returned no index")
         db_conn.commit()
         logger.info("SemGrove IVF index build complete: %d songs, dim=%d.", w, merged_dim)
         return True
@@ -234,7 +234,7 @@ def build_and_store_sem_grove_index(db_conn=None) -> bool:
             db_conn.rollback()
         except Exception:
             pass
-        return False
+        raise
     finally:
         try:
             if 'merged' in locals():

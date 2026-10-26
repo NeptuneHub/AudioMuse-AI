@@ -341,7 +341,7 @@ def build_and_store_ivf_index(db_conn=None):
             db_conn = get_db()
         except Exception:
             logger.exception("build_and_store_ivf_index: no db_conn provided and get_db() failed.")
-            return
+            raise
 
     from .index_build_helpers import stream_embeddings_to_buffer
     from .paged_ivf import build_and_store_paged_ivf
@@ -357,18 +357,21 @@ def build_and_store_ivf_index(db_conn=None):
         if buf.shape[0] == 0:
             logger.warning("No valid audio embeddings found for IVF index build. Aborting.")
             return
-        if build_and_store_paged_ivf(
+        built = build_and_store_paged_ivf(
             db_conn, INDEX_NAME, buf, item_ids, EMBEDDING_DIMENSION, IVF_METRIC,
             consume_vectors=True,
-        ):
-            db_conn.commit()
-            logger.info("Audio IVF index build and database storage complete.")
+        )
+        if not built:
+            raise RuntimeError("Audio IVF index builder returned no index")
+        db_conn.commit()
+        logger.info("Audio IVF index build and database storage complete.")
     except Exception:
         logger.exception("An error occurred during audio IVF index build")
         try:
             db_conn.rollback()
         except Exception:
             pass
+        raise
 
 
 def get_vector_by_id(item_id: str) -> np.ndarray | None:

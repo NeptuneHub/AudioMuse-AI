@@ -248,3 +248,154 @@ class TestRunAllIndexBuilds:
         assert 95 in progresses
         assert any("CLAP" in m for m in messages)
         assert any("artist similarity" in m.lower() for m in messages)
+
+    def test_scheduled_rebuild_skips_when_inputs_and_settings_match(self):
+        revisions = tuple(0 for _ in range(256))
+        signature = analysis_mod._index_build_signature()
+        with (
+            self._patched() as mocks,
+            patch.object(
+                analysis_mod,
+                "_read_index_build_state",
+                return_value=(revisions, revisions, signature),
+            ),
+            patch.object(analysis_mod, "_record_index_build_state") as record,
+            patch.object(analysis_mod, "_checkpoint_postgres") as checkpoint,
+        ):
+            analysis_mod._run_all_index_builds(skip_if_unchanged=True)
+
+        for name in _BUILDER_NAMES:
+            assert not mocks[name].called, f"{name} ran despite unchanged inputs"
+        assert not mocks["publish_event"].called
+        assert mocks["release_memory_to_os"].called
+        record.assert_not_called()
+        checkpoint.assert_not_called()
+
+    def test_changed_inputs_rebuild_and_record_the_starting_revision(self):
+        revisions = tuple(range(256))
+        previous = tuple(value - 1 for value in revisions)
+        signature = analysis_mod._index_build_signature()
+        with (
+            self._patched() as mocks,
+            patch.object(
+                analysis_mod,
+                "_read_index_build_state",
+                return_value=(revisions, previous, signature),
+            ),
+            patch.object(analysis_mod, "_record_index_build_state") as record,
+            patch.object(analysis_mod, "_checkpoint_postgres") as checkpoint,
+        ):
+            analysis_mod._run_all_index_builds(skip_if_unchanged=True)
+
+        assert mocks["build_and_store_ivf_index"].called
+        record.assert_called_once_with(revisions, signature)
+        checkpoint.assert_called_once_with()
+
+    def test_a_failed_builder_leaves_the_input_revision_unrecorded(self):
+        revisions = tuple(range(256))
+        previous = tuple(value - 1 for value in revisions)
+        signature = analysis_mod._index_build_signature()
+        with (
+            self._patched() as mocks,
+            patch.object(
+                analysis_mod,
+                "_read_index_build_state",
+                return_value=(revisions, previous, signature),
+            ),
+            patch.object(analysis_mod, "_record_index_build_state") as record,
+            patch.object(analysis_mod, "_checkpoint_postgres"),
+        ):
+            mocks["build_and_store_clap_index"].side_effect = RuntimeError("write failed")
+            analysis_mod._run_all_index_builds(skip_if_unchanged=True)
+
+        record.assert_not_called()
+
+    def test_explicit_rebuild_ignores_a_matching_revision(self):
+        revisions = tuple(0 for _ in range(256))
+        signature = analysis_mod._index_build_signature()
+        with (
+            self._patched() as mocks,
+            patch.object(
+                analysis_mod,
+                "_read_index_build_state",
+                return_value=(revisions, revisions, signature),
+            ),
+            patch.object(analysis_mod, "_record_index_build_state") as record,
+            patch.object(analysis_mod, "_checkpoint_postgres"),
+        ):
+            analysis_mod._run_all_index_builds()
+
+        assert mocks["build_and_store_ivf_index"].called
+        record.assert_called_once_with(revisions, signature)
+
+    def test_changed_build_settings_rebuild_even_when_sources_match(self):
+        revisions = tuple(0 for _ in range(256))
+        signature = analysis_mod._index_build_signature()
+        with (
+            self._patched() as mocks,
+            patch.object(
+                analysis_mod,
+                "_read_index_build_state",
+                return_value=(revisions, revisions, "previous-settings"),
+            ),
+            patch.object(analysis_mod, "_record_index_build_state") as record,
+            patch.object(analysis_mod, "_checkpoint_postgres"),
+        ):
+            analysis_mod._run_all_index_builds(skip_if_unchanged=True)
+
+        assert mocks["build_and_store_ivf_index"].called
+        record.assert_called_once_with(revisions, signature)
+
+    def test_lyrics_toggle_changes_the_build_signature(self):
+        original = analysis_mod.config.LYRICS_ENABLED
+        try:
+            before = analysis_mod._index_build_signature()
+            analysis_mod.config.LYRICS_ENABLED = not original
+            after = analysis_mod._index_build_signature()
+        finally:
+            analysis_mod.config.LYRICS_ENABLED = original
+
+        assert after != before
+
+    def test_primary_index_name_changes_the_build_signature(self):
+        original = analysis_mod.config.INDEX_NAME
+        try:
+            before = analysis_mod._index_build_signature()
+            analysis_mod.config.INDEX_NAME = f"{original}_alternate"
+            after = analysis_mod._index_build_signature()
+        finally:
+            analysis_mod.config.INDEX_NAME = original
+
+        assert after != before
+
+    def test_hyperbolic_label_configuration_changes_the_build_signature(self):
+        original = analysis_mod.config.OTHER_FEATURE_LABELS
+        try:
+            before = analysis_mod._index_build_signature()
+            analysis_mod.config.OTHER_FEATURE_LABELS = [*original, "custom-label"]
+            after = analysis_mod._index_build_signature()
+        finally:
+            analysis_mod.config.OTHER_FEATURE_LABELS = original
+
+        assert after != before
+
+    def test_index_build_state_uses_one_consistent_database_snapshot(self):
+        revisions = list(range(256))
+        stored_revisions = list(revisions)
+        db, cur = _conn_returning((revisions, stored_revisions, "signature"))
+        cur.__enter__.return_value = cur
+        with patch.object(analysis_mod, "get_db", return_value=db):
+            state = analysis_mod._read_index_build_state()
+
+        assert state == (tuple(revisions), tuple(stored_revisions), "signature")
+        cur.execute.assert_called_once()
+
+    def test_index_build_state_read_failure_rolls_back(self):
+        db, cur = _conn_returning(None)
+        cur.__enter__.return_value = cur
+        cur.execute.side_effect = RuntimeError("read failed")
+        with patch.object(analysis_mod, "get_db", return_value=db):
+            with pytest.raises(RuntimeError, match="read failed"):
+                analysis_mod._read_index_build_state()
+
+        db.rollback.assert_called_once_with()

@@ -55,9 +55,13 @@ def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
         {'server_id': 'c', 'name': 'C', 'is_default': False},
     ]
     events = []
+    index_build_calls = []
     monkeypatch.setattr(analysis, '_enabled_analysis_servers', lambda scope: servers)
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: None)
-    monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        analysis, '_run_all_index_builds',
+        lambda *args, **kwargs: index_build_calls.append((args, kwargs)),
+    )
     monkeypatch.setattr(
         analysis,
         'run_analysis_server_task',
@@ -78,6 +82,8 @@ def test_union_analysis_runs_each_server_once_with_no_sweeps(monkeypatch):
         ('analyze', 'b'),
         ('analyze', 'c'),
     ]
+    assert len(index_build_calls) == 1
+    assert index_build_calls[0][1]['skip_if_unchanged'] is True
 
 
 def _union_harness(monkeypatch, phase_results):
@@ -844,7 +850,7 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
                       baseline_read_error=None, status_calls=None,
                       child_rows=None, extra_jobs=None, wedged=None, cancelled=None,
                       all_live_new=False, wedge_forever=False, busy_sibling=None,
-                      neural_available=False):
+                      neural_available=False, index_build_calls=None):
     import importlib
     import tasks.analysis.main as analysis
     import tasks.analysis.helper as helper
@@ -884,7 +890,13 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     monkeypatch.setattr(
         analysis, 'get_tracks_from_album', lambda album_id: tracks_by_album[album_id]
     )
-    monkeypatch.setattr(analysis, '_run_all_index_builds', lambda *a, **k: None)
+    monkeypatch.setattr(
+        analysis, '_run_all_index_builds',
+        lambda *args, **kwargs: (
+            index_build_calls.append((args, kwargs))
+            if index_build_calls is not None else None
+        ),
+    )
     monkeypatch.setattr(analysis, 'LYRICS_ENABLED', False)
     monkeypatch.setattr(clap, 'is_clap_available', lambda: False)
     import tasks.neural_fingerprint as neural_fp
@@ -1031,6 +1043,26 @@ def _run_parent_phase(monkeypatch, albums, tracks_by_album, work_map,
     except AudioMuseError as exc:
         result = {'status': 'FAIL', 'message': str(exc)}
     return result, enqueued
+
+
+def test_single_server_scheduled_and_final_index_builds_skip_unchanged(monkeypatch):
+    import tasks.analysis.main as analysis
+
+    index_build_calls = []
+    monkeypatch.setattr(analysis, 'REBUILD_INDEX_BATCH_SIZE', 1)
+
+    result, enqueued = _run_parent_phase(
+        monkeypatch,
+        [{'Id': 'album-1', 'Name': 'Album'}],
+        {'album-1': [{'Id': 'track-1'}]},
+        {},
+        index_build_calls=index_build_calls,
+    )
+
+    assert result['status'] == 'SUCCESS'
+    assert ('parent-1', True) in enqueued
+    assert len(index_build_calls) == 1
+    assert index_build_calls[0][1]['skip_if_unchanged'] is True
 
 
 def test_union_run_counts_albums_across_every_server(monkeypatch):
@@ -2948,9 +2980,12 @@ def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkey
     import tasks.analysis.index as index
 
     job = Mock(id='index-1')
+    build_calls = []
     monkeypatch.setattr(taskqueue, 'current_task_id', lambda: job.id)
     monkeypatch.setattr('database.get_task_statuses', lambda ids: {ids[0]: 'RUNNING'})
-    monkeypatch.setattr(index, '_run_all_index_builds', lambda **kwargs: None)
+    monkeypatch.setattr(
+        index, '_run_all_index_builds', lambda **kwargs: build_calls.append(kwargs)
+    )
 
     captured = {}
 
@@ -2961,10 +2996,11 @@ def test_index_rebuild_reports_as_a_child_of_the_analysis_that_spawned_it(monkey
 
     monkeypatch.setattr(index, 'make_task_reporter', fake_reporter)
 
-    index.rebuild_all_indexes_task('parent-1')
+    index.rebuild_all_indexes_task('parent-1', skip_if_unchanged=True)
 
     assert captured['task_type'] == 'index_rebuild'
     assert captured['parent_task_id'] == 'parent-1'
+    assert build_calls[0]['skip_if_unchanged'] is True
 
 
 class TestARetryKeepsTheSongsItAlreadyAnalysed:
