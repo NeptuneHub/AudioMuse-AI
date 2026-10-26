@@ -33,6 +33,8 @@ Main Features:
   and ``catalogue_has_canonical_ids`` memoizes that probe (a failure fails
   closed for the TTL); the map cache build seeds the memo from the ids it just
   loaded via ``remember_catalogue_canonical_ids``.
+* ``CLEAR_EXCLUSIONS_PHRASE``: the one copy of the phrase the browse page asks
+  for and the clear-unanalyzable endpoint checks.
 """
 
 import json
@@ -91,6 +93,7 @@ def max_bound(value, ceiling):
 
 SEARCH_PAGE_SIZE = 20
 SEARCH_MIN_QUERY_LENGTH = 1
+CLEAR_EXCLUSIONS_PHRASE = "I want to clean the unanalyzable list. This action is not reversible"
 
 
 def search_query_arg(args, name):

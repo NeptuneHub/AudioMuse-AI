@@ -44,7 +44,7 @@ from flask import Blueprint, render_template, jsonify, request
 from psycopg2.extras import DictCursor
 
 import config
-from app_helper import search_query_arg
+from app_helper import CLEAR_EXCLUSIONS_PHRASE, search_query_arg
 from database import get_db, like_contains_pattern
 from tasks.mediaserver import registry
 from tz_helper import LOCAL_TZ_FMT, UTC_NOW_SQL, to_local_str
@@ -98,7 +98,7 @@ def browse_page():
     return render_template(
         'browse.html', title='AudioMuse-AI - Browse', active='browse',
         browse_servers=servers, page_size=config.DASHBOARD_BROWSE_PAGE_SIZE,
-        max_offset=config.DASHBOARD_BROWSE_MAX_OFFSET,
+        max_offset=config.DASHBOARD_BROWSE_MAX_OFFSET, clean_phrase=CLEAR_EXCLUSIONS_PHRASE,
     )
 
 

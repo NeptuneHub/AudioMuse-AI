@@ -87,6 +87,68 @@
   .browse-pager { display: flex; justify-content: center; align-items: center; gap: 0.75rem; margin-top: 1rem; }
   .browse-pager .pageinfo { min-width: 10rem; text-align: center; color: var(--text-muted); font-size: 0.9rem; }
 
+  .browse-clean { margin: 0.5rem 0 1rem; }
+  .browse-clean-btn {
+    border: none;
+    border-radius: 10px;
+    padding: 0.95rem 1.25rem;
+    cursor: pointer;
+    color: #fff;
+    background: var(--accent-color, #3675f1);
+    font-weight: 700;
+    font-size: 1rem;
+  }
+  .browse-clean-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .browse-clean-confirm { margin-top: 1rem; }
+  .browse-clean-confirm label { display: block; font-weight: 600; margin: 1rem 0 0.25rem; }
+  .browse-clean-phrase { font-style: italic; margin: 0 0 0.5rem; }
+  .browse-clean-confirm input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--border-color, #ccc);
+    border-radius: 8px;
+    padding: 0.85rem 0.9rem;
+    margin-bottom: 1rem;
+    font-size: 0.98rem;
+    background: var(--bg-input, #fff);
+    color: var(--text-main, #111);
+  }
+  .browse-clean .inline-feedback {
+    display: block;
+    width: 100%;
+    min-height: 2.5rem;
+    padding: 0.8rem 1rem;
+    border-radius: 14px;
+    font-size: 0.96rem;
+    border: 1px solid transparent;
+    line-height: 1.3;
+    background: var(--bg-card, #f8f9fb);
+    color: var(--text-main, #111);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    word-break: break-word;
+    box-sizing: border-box;
+    margin: 1rem 0 0;
+  }
+  .browse-clean .inline-feedback.status-success {
+    background: var(--status-success-bg, #e6f4ea);
+    color: var(--status-success-text, #1f4f1f);
+    border-color: var(--status-success-border, #a0d8a8);
+  }
+  .browse-clean .inline-feedback.status-failure {
+    background: var(--status-failure-bg, #fdecea);
+    color: var(--status-failure-text, #7a1f1f);
+    border-color: var(--status-failure-border, #f5c2c0);
+  }
+  .browse-clean .inline-feedback.status-pending {
+    background: var(--status-pending-bg, #fff4db);
+    color: var(--status-pending-text, #7a5c1a);
+    border-color: var(--status-pending-border, #ecd8a9);
+  }
+  @media (max-width: 640px) {
+    .browse-clean-btn { width: 100%; }
+    .browse-clean-confirm input[type="text"] { font-size: 1rem; }
+  }
+
   /* Small screens (e.g. iPhone): keep the table at a readable minimum width and
      scroll the wrapper horizontally - like the dashboard tables. Only the TITLE
      column wraps (capped), so a long title drops to a second line instead of
@@ -173,6 +235,20 @@
 </section>
 
 <section id="browse-results">
+  {% if is_admin %}
+  <div id="browse-clean" class="browse-clean" hidden>
+    <button type="button" id="clean-open-btn" class="browse-clean-btn">Clean the unanalyzable list</button>
+    <div id="clean-confirm" class="browse-clean-confirm" hidden>
+      <p class="inline-feedback status-failure">Warning: this permanently deletes every unanalyzable mark from the database and it CANNOT be restored. The next analysis will try all these tracks again, and a file that is still broken is marked again.</p>
+      <label for="clean-confirm-input">To confirm, type the following phrase exactly:</label>
+      <p class="browse-clean-phrase">{{ clean_phrase }}</p>
+      <input type="text" id="clean-confirm-input" placeholder="Type the phrase above..." autocomplete="off"
+             autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button type="button" id="clean-btn" class="browse-clean-btn" disabled>Clean</button>
+    </div>
+    <p id="clean-status" class="inline-feedback" role="status" style="display: none;"></p>
+  </div>
+  {% endif %}
   <div id="browse-status" role="status" aria-live="polite" class="browse-meta"></div>
   <div class="browse-table-wrap">
     <table class="browse-table">
@@ -192,6 +268,9 @@
 <script>
 (() => {
   const API = "{{ url_for('dashboard_bp.browse_api') }}";
+  const CLEAN_API = "{{ url_for('analysis_bp.clear_analysis_exclusions_endpoint') }}";
+  const CLEAN_PHRASE = {{ clean_phrase|tojson }};
+  let cleaning = false;
   const KINDS = ['songs', 'artists', 'albums', 'unanalyzable'];
   const FILTERS = ['all', 'unique', 'duplicates', 'orphan'];
   const $ = id => document.getElementById(id);
@@ -276,6 +355,18 @@
     chip.textContent = perServer ? state.server : (orphan ? 'Orphan' : 'Catalogue');
     chip.classList.toggle('srv', perServer);
     chip.classList.toggle('cat', !perServer);
+    syncClean();
+  }
+
+  function syncClean() {
+    if (!$('browse-clean')) return;
+    const show = state.kind === 'unanalyzable';
+    $('browse-clean').hidden = !show;
+    if (show) return;
+    $('clean-confirm').hidden = true;
+    $('clean-confirm-input').value = '';
+    $('clean-btn').disabled = true;
+    $('clean-status').style.display = 'none';
   }
 
   function colCount() {
@@ -467,6 +558,49 @@
     if (show) detail.removeAttribute('hidden'); else detail.setAttribute('hidden', '');
     row.classList.toggle('expanded', show);
   });
+
+  if ($('browse-clean')) {
+    $('clean-open-btn').addEventListener('click', () => {
+      const box = $('clean-confirm');
+      box.hidden = !box.hidden;
+      if (!box.hidden) $('clean-confirm-input').focus();
+    });
+    const phraseTyped = () => $('clean-confirm-input').value.trim() === CLEAN_PHRASE;
+    $('clean-confirm-input').addEventListener('input', () => {
+      $('clean-btn').disabled = cleaning || !phraseTyped();
+    });
+    $('clean-btn').addEventListener('click', async () => {
+      if (cleaning || !phraseTyped()) return;
+      const typed = $('clean-confirm-input').value;
+      const st = $('clean-status');
+      cleaning = true;
+      $('clean-btn').disabled = true;
+      st.style.display = 'block';
+      st.className = 'inline-feedback status-pending';
+      st.textContent = 'Cleaning...';
+      try {
+        const resp = await fetch(CLEAN_API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirmation: typed })
+        });
+        const data = await readJsonBody(resp);
+        if (!resp.ok || data === null) throw new Error(apiErrorText(data, 'Server returned an error (HTTP ' + resp.status + ')'));
+        $('clean-confirm-input').value = '';
+        $('clean-confirm').hidden = true;
+        st.className = 'inline-feedback status-success';
+        st.textContent = fmt(data.deleted) + ' unanalyzable marks removed. The next analysis will try these tracks again.';
+        if (state.kind === 'unanalyzable') { state.page = 1; load(); }
+      } catch (err) {
+        st.className = 'inline-feedback status-failure';
+        st.textContent = 'Error: ' + err.message;
+      } finally {
+        cleaning = false;
+        st.style.display = 'block';
+        $('clean-btn').disabled = !phraseTyped();
+      }
+    });
+  }
 
   readUrl();
   load();

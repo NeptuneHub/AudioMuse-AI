@@ -21,15 +21,19 @@ Main Features:
   to empty when the snapshot already knows the count is 0
 * has_more never advertises a page past the offset cap
 * User search text is escaped so % / _ are literal, not wildcards
+* The clean form shows and checks the one phrase the clear endpoint expects
 """
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import jinja2
 import pytest
+from flask import Flask
 
 import app_dashboard as dash
+from app_helper import CLEAR_EXCLUSIONS_PHRASE
 
 
 class TestBrowseLike:
@@ -323,6 +327,37 @@ class TestBrowseTemplateParses:
         src = (Path(__file__).resolve().parents[2] / 'templates' / 'browse.html').read_text(
             encoding='utf-8')
         jinja2.Environment().parse(src)
+
+
+class TestCleanPhrase:
+    def test_the_page_gets_the_phrase_the_clear_endpoint_checks(self, monkeypatch):
+        app = Flask(__name__)
+        app.register_blueprint(dash.dashboard_bp)
+        monkeypatch.setattr(dash.registry, 'list_servers', lambda: [])
+        render = MagicMock(return_value='<html></html>')
+        monkeypatch.setattr(dash, 'render_template', render)
+
+        assert app.test_client().get('/browse').status_code == 200
+        assert render.call_args.kwargs['clean_phrase'] == CLEAR_EXCLUSIONS_PHRASE
+
+    def test_the_template_shows_and_checks_that_one_phrase(self):
+        src = (Path(__file__).resolve().parents[2] / 'templates' / 'browse.html').read_text(
+            encoding='utf-8')
+        env = jinja2.Environment(autoescape=True)
+        html = env.from_string(
+            src.split('{% block content %}')[1].split('{% endblock %}')[0]
+        ).render(is_admin=True, clean_phrase='PHRASE <x>', page_size=1)
+        script = env.from_string(
+            src.split('{% block bodyAdditions %}')[1].split('{% endblock %}')[0]
+        ).render(clean_phrase='PHRASE <x>', page_size=1, max_offset=1,
+                 url_for=lambda *a, **k: '#')
+
+        assert 'PHRASE &lt;x&gt;' in html
+        literal = next(
+            line for line in script.splitlines() if 'const CLEAN_PHRASE' in line
+        ).split('=', 1)[1].strip().rstrip(';')
+        assert json.loads(literal) == 'PHRASE <x>'
+        assert '<' not in literal
 
 
 class TestDominantLabelTieBreak:

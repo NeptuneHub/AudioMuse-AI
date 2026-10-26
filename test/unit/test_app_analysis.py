@@ -21,10 +21,13 @@ Main Features:
   names the task that actually won, even when that task has since finished
 * Cleaning also refuses while a sweep runs, which analysis deliberately does not
 * A queue failure answers 500 rather than leaving a half-claimed row
+* The unanalyzable list is emptied only after the typed phrase, and the
+  dashboard count drops to 0 in the same transaction
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch
 from flask import Flask
 
 import config
@@ -32,6 +35,7 @@ import database
 import app_analysis
 import taskqueue
 from app_analysis import analysis_bp
+from app_helper import CLEAR_EXCLUSIONS_PHRASE
 
 
 @pytest.fixture
@@ -283,6 +287,96 @@ class TestStartCleaning:
         assert 'already running' in body['error'].lower()
 
 
+class TestClearUnanalyzableList:
+    PATH = '/api/analysis/exclusions/clear'
+
+    @pytest.fixture
+    def cleared(self, monkeypatch):
+        calls = []
+
+        def _clear():
+            calls.append(True)
+            return 7
+
+        monkeypatch.setattr(database, 'clear_analysis_exclusions', _clear)
+        return calls
+
+    def test_the_exact_phrase_empties_the_list_and_reports_the_count(self, client, cleared):
+        response = client.post(self.PATH, json={'confirmation': CLEAR_EXCLUSIONS_PHRASE})
+
+        assert response.status_code == 200
+        assert response.get_json() == {'success': True, 'deleted': 7}
+        assert cleared == [True]
+
+    def test_spaces_a_phone_keyboard_adds_around_the_phrase_are_ignored(self, client, cleared):
+        response = client.post(
+            self.PATH, json={'confirmation': ' ' + CLEAR_EXCLUSIONS_PHRASE + ' '}
+        )
+
+        assert response.status_code == 200
+        assert cleared == [True]
+
+    @pytest.mark.parametrize('body', [
+        None,
+        {},
+        {'confirmation': ''},
+        {'confirmation': 5},
+        {'confirmation': CLEAR_EXCLUSIONS_PHRASE.lower()},
+        {'confirmation': CLEAR_EXCLUSIONS_PHRASE[:-1]},
+        CLEAR_EXCLUSIONS_PHRASE,
+        [CLEAR_EXCLUSIONS_PHRASE],
+    ])
+    def test_anything_but_the_phrase_is_refused_with_400_and_deletes_nothing(
+        self, client, cleared, body
+    ):
+        response = client.post(self.PATH, json=body) if body is not None else client.post(self.PATH)
+
+        assert response.status_code == 400
+        assert cleared == []
+
+    def test_a_database_error_answers_503_without_its_detail(self, client, monkeypatch):
+        def _boom():
+            raise RuntimeError('relation is gone')
+
+        monkeypatch.setattr(database, 'clear_analysis_exclusions', _boom)
+
+        response = client.post(self.PATH, json={'confirmation': CLEAR_EXCLUSIONS_PHRASE})
+
+        assert response.status_code == 503
+        assert 'relation is gone' not in response.get_data(as_text=True)
+
+    @staticmethod
+    def _db(monkeypatch, cur):
+        db = MagicMock()
+        db.cursor.return_value.__enter__.return_value = cur
+        monkeypatch.setattr(database, 'get_db', lambda: db)
+        return db
+
+    def test_the_delete_covers_every_server_and_zeroes_the_dashboard_count(self, monkeypatch):
+        cur = MagicMock(rowcount=3)
+        db = self._db(monkeypatch, cur)
+
+        assert database.clear_analysis_exclusions() == 3
+        statements = [c.args[0] for c in cur.execute.call_args_list]
+        assert statements[0] == "DELETE FROM analysis_exclusions"
+        assert 'dashboard_stats' in statements[1] and 'unanalyzable_tracks' in statements[1], (
+            'the browse total and the dashboard card read the snapshot, so it has to '
+            'drop to 0 with the rows instead of a minute later'
+        )
+        db.commit.assert_called_once_with()
+        db.rollback.assert_not_called()
+
+    def test_a_failed_delete_rolls_back_and_raises(self, monkeypatch):
+        cur = MagicMock()
+        cur.execute.side_effect = RuntimeError('lock timeout')
+        db = self._db(monkeypatch, cur)
+
+        with pytest.raises(RuntimeError, match='lock timeout'):
+            database.clear_analysis_exclusions()
+        db.rollback.assert_called_once_with()
+        db.commit.assert_not_called()
+
+
 class TestCleaningPage:
     def test_the_page_renders_with_the_catalogue_default(self, client):
         with patch('app_analysis.render_template', return_value='<html></html>') as render:
@@ -306,8 +400,13 @@ class TestBlueprintWiring:
         assert rules['analysis_bp.cleaning_page'] == '/cleaning'
         assert rules['analysis_bp.start_analysis_endpoint'] == '/api/analysis/start'
         assert rules['analysis_bp.start_cleaning_endpoint'] == '/api/cleaning/start'
+        assert rules['analysis_bp.clear_analysis_exclusions_endpoint'] == (
+            '/api/analysis/exclusions/clear'
+        )
 
-    @pytest.mark.parametrize('path', ['/api/analysis/start', '/api/cleaning/start'])
+    @pytest.mark.parametrize(
+        'path', ['/api/analysis/start', '/api/cleaning/start', '/api/analysis/exclusions/clear']
+    )
     def test_the_start_endpoints_accept_post_only(self, client, path):
         assert client.get(path).status_code == 405
 
