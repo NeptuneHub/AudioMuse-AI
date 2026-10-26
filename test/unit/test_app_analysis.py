@@ -359,10 +359,11 @@ class TestClearUnanalyzableList:
         assert database.clear_analysis_exclusions() == 3
         statements = [c.args[0] for c in cur.execute.call_args_list]
         assert statements[0] == "DELETE FROM analysis_exclusions"
-        assert 'dashboard_stats' in statements[1] and 'unanalyzable_tracks' in statements[1], (
+        assert 'dashboard_stats' in statements[1], (
             'the browse total and the dashboard card read the snapshot, so it has to '
             'drop to 0 with the rows instead of a minute later'
         )
+        assert 'unanalyzable_tracks' in statements[1]
         db.commit.assert_called_once_with()
         db.rollback.assert_not_called()
 
