@@ -94,7 +94,7 @@ from error.error_dictionary import ERR_CLUSTERING_FAILED
 from .recovery import (
     ChildDrainSupervisor, child_marks, row_heartbeat, slow_step_budget_minutes,
 )
-from .task_run import TaskCancelled, cancel_guard, make_task_reporter
+from .task_run import TaskCancelled, TaskFailed, cancel_guard, make_task_reporter
 
 from database import (
     get_task_info_from_db,
@@ -633,12 +633,15 @@ def run_clustering_task(
 
             successes = [s for s in per_server_summary if s['status'] == 'success']
             if not successes:
-                raise ValueError(
+                no_solution = (
                     "No valid clustering solution found on any server: "
                     + "; ".join(
                         f"{s['server']}: {s.get('reason')}" for s in per_server_summary
                     )
                 )
+                if all(s['status'] == 'skipped' for s in per_server_summary):
+                    raise TaskFailed(no_solution)
+                raise ValueError(no_solution)
 
             skipped = [s for s in per_server_summary if s['status'] != 'success']
             skipped_detail = (
@@ -1258,6 +1261,14 @@ def _cluster_one_server_impl(
         f"Post-processing complete: {initial_playlist_count} -> {final_playlist_count} playlists",
         89,
     )
+
+    if final_playlist_count == 0:
+        reason = (
+            f"no clustering solution found: no playlist reached {min_size_threshold} songs; "
+            "previous playlists kept"
+        )
+        report(f"Skipping this server: {reason}.", 100)
+        return 'skipped', reason
 
     report(
         f"Best clustering found with score: {state['best_score']:.2f}. Creating playlists...",

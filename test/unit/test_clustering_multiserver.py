@@ -239,16 +239,35 @@ class TestRevokeAndFailure:
         assert [(e[0], e[1]) for e in _persists(events)] == [('persist', 's1')]
         assert ('cluster', 's3') not in [(e[0], e[1]) for e in events]
 
-    def test_all_servers_failing_raises_and_writes_nothing(self, monkeypatch):
+    def test_all_servers_skipping_fails_permanently_and_writes_nothing(self, monkeypatch):
         _result, events, _statuses, raised = _run_clustering(
             monkeypatch,
             servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
             results_by_server={
                 's1': ('skipped', 'only 0 clusterable tracks available'),
-                's2': ('skipped', 'only 1 clusterable tracks available'),
+                's2': ('skipped', 'no clustering solution found: no playlist reached 20 songs'),
             },
         )
+        from taskqueue import TaskFailed
+
+        assert isinstance(raised, TaskFailed), (
+            'nothing to cluster cannot change on a retry, so the queue must fail it at once'
+        )
+        assert _persists(events) == []
+
+    def test_a_crashed_server_with_no_success_stays_retryable(self, monkeypatch):
+        _result, events, _statuses, raised = _run_clustering(
+            monkeypatch,
+            servers=[_server('s1', 'One', default=True), _server('s2', 'Two')],
+            results_by_server={
+                's1': ('skipped', 'only 0 clusterable tracks available'),
+                's2': RuntimeError('provider unreachable'),
+            },
+        )
+        from taskqueue import TaskFailed
+
         assert isinstance(raised, ValueError)
+        assert not isinstance(raised, TaskFailed)
         assert _persists(events) == []
 
     def test_failed_server_keeps_its_previous_runs_rows_until_a_success_replaces_them(self, monkeypatch):
