@@ -19,7 +19,9 @@ Main Features:
 * resolve_providers: build the provider chain for one session; ``label`` names
   the model (see MODEL_LABELS) so a plugin can offer its accelerator for only
   the graphs it compiles, and ``cpu_only_default`` keeps core CPU sessions on
-  CPU unless a plugin opts in by naming the label in only_models.
+  CPU unless a plugin opts in by naming the label in only_models. On a native
+  build CoreML keeps its compiled model in coreml_models under the data dir, so
+  a new session reuses it; the macOS supervisor empties that folder at boot.
 * create_onnx_session: load a model with the resolved chain, falling back to a
   plain CPU session on any load failure.
 * run_inference / run_inference_with_oom_fallback: map feed keys and output
@@ -32,9 +34,11 @@ Main Features:
 """
 
 import logging
+import os
 
 import onnxruntime as ort
 
+import config
 from cpu_budget import usable_cpu_count
 
 from .memory_utils import cleanup_onnx_session, comprehensive_memory_cleanup
@@ -139,6 +143,8 @@ def resolve_providers(allow_coreml=False, cuda_options=None, label=None,
                 {
                     'MLComputeUnits': 'ALL',
                     'ModelFormat': 'MLProgram',
+                    'ModelCacheDirectory': os.path.join(config.APP_DATA_DIR, 'coreml_models')
+                    if config.APP_DATA_DIR else '',
                 },
             )
         )
