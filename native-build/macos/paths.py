@@ -20,6 +20,8 @@ Main Features:
 * The CoreML compile cache folder macOS keeps under ``~/Library/Caches`` for
   the app bundle. The bundle id is fixed here, not read at runtime, so a run
   from source never points at the cache Python shares with other programs.
+* The ``coreml_models`` data folder where ONNX Runtime keeps the Core ML model
+  it compiles, so a new session reuses it instead of compiling again.
 """
 
 import os
@@ -71,6 +73,10 @@ def numba_cache_dir():
 
 def backup_dir():
     return _ensure(os.path.join(app_support_dir(), "backup"))
+
+
+def coreml_models_dir():
+    return os.path.join(app_support_dir(), "coreml_models")
 
 
 def coreml_cache_dir():

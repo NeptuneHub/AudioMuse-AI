@@ -28,6 +28,8 @@ Main Features:
 * A dropped session is replaced once before the database is declared unhealthy
 * An unreachable database returns False and is logged with its traceback
 * A programming error in the probe surfaces instead of faking an unhealthy database
+* The macOS boot empties the folder CoreML compiles into, so a half-written
+  model does not survive a relaunch; without a native data dir nothing is cached
 """
 
 import importlib.util
@@ -42,6 +44,9 @@ import urllib.request
 from unittest.mock import MagicMock
 
 import pytest
+
+import config
+import tasks.onnx_utils as onnx_utils
 
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 NATIVE_BUILD = os.path.join(REPO_ROOT, 'native-build')
@@ -1000,3 +1005,41 @@ class TestSupervisorFatalErrorsAreWrittenToAFile:
             'a hidden console swallowed every supervisor traceback; the file is '
             'the only place a crash can be read back from'
         )
+
+
+class TestTheMacosBootEmptiesTheCoremlModelFolder:
+    @pytest.fixture
+    def coreml_model_folder(self, monkeypatch):
+        monkeypatch.setattr(onnx_utils, 'ort', types.SimpleNamespace(
+            get_available_providers=lambda: ['CoreMLExecutionProvider', 'CPUExecutionProvider']
+        ))
+        monkeypatch.setattr(onnx_utils, '_plugin_onnx_providers', lambda: [])
+
+        def folder(app_data_dir):
+            monkeypatch.setattr(config, 'APP_DATA_DIR', app_data_dir)
+            chain = dict(onnx_utils.resolve_providers(allow_coreml=True, label='clap'))
+            return chain['CoreMLExecutionProvider']['ModelCacheDirectory']
+
+        return folder
+
+    def test_the_folder_coreml_compiles_into_is_emptied_at_the_next_launch(
+        self, coreml_model_folder, tmp_path, monkeypatch
+    ):
+        mod = _load_supervisor('macos')
+        sup = _bare_supervisor(mod)
+        monkeypatch.setattr(mod.paths, 'app_support_dir', lambda: str(tmp_path / 'data'))
+        monkeypatch.setattr(mod.paths, 'coreml_cache_dir', lambda: str(tmp_path / 'e5rt'))
+        folder = coreml_model_folder(mod.paths.app_support_dir())
+        os.makedirs(os.path.join(folder, 'killed_mid_compile'))
+        os.makedirs(mod.paths.coreml_cache_dir())
+
+        sup._clear_platform_caches()
+
+        assert not os.path.exists(folder), (
+            'ONNX Runtime trusts a model folder as soon as it exists, so one left by a '
+            'compile that was killed would send every later CoreML load to CPU'
+        )
+        assert not os.path.exists(mod.paths.coreml_cache_dir())
+
+    def test_without_a_native_data_dir_coreml_caches_nothing(self, coreml_model_folder):
+        assert coreml_model_folder('') == ''
