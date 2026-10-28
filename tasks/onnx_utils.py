@@ -21,7 +21,7 @@ Main Features:
   the graphs it compiles, and ``cpu_only_default`` keeps core CPU sessions on
   CPU unless a plugin opts in by naming the label in only_models. On a native
   build CoreML keeps its compiled model in coreml_models under the data dir, so
-  a new session reuses it; the macOS supervisor empties that folder at boot.
+  a new session reuses it.
 * create_onnx_session: load a model with the resolved chain, falling back to a
   plain CPU session on any load failure.
 * run_inference / run_inference_with_oom_fallback: map feed keys and output
