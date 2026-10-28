@@ -15,8 +15,9 @@ platform label, the control socket, the CoreML model cache folder and the OBJC
 fork-safety and LC_NUMERIC settings that keep forked children from aborting.
 
 Main Features:
-* Adds the macOS label, control socket, CoreML model cache folder and
-  fork-safety settings to the shared child environment.
+* Adds the macOS label, control socket, CoreML model cache folder (one per
+  role, emptied as the role starts) and fork-safety settings to the shared child
+  environment.
 * Derives POSTGRES_HOST/POSTGRES_PORT from the URL the embedded server reported,
   so the children reach the socket it actually opened rather than a guess:
   ``config.py`` builds every connection string from those two.
@@ -41,6 +42,6 @@ def build_child_env(role, database_url):
             "OBJC_DISABLE_INITIALIZE_FORK_SAFETY": "YES",
             "LC_NUMERIC": "C",
             "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
-            "COREML_MODEL_CACHE_DIR": paths.coreml_models_dir(),
+            "COREML_MODEL_CACHE_DIR": paths.empty_coreml_models_dir(role),
         },
     )

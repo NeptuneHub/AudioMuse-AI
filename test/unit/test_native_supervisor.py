@@ -28,8 +28,9 @@ Main Features:
 * A dropped session is replaced once before the database is declared unhealthy
 * An unreachable database returns False and is logged with its traceback
 * A programming error in the probe surfaces instead of faking an unhealthy database
-* The macOS boot empties the folder CoreML compiles into, so a half-written
-  model does not survive a relaunch; without a folder from the launcher nothing is cached
+* Each macOS worker starts with its own empty CoreML model folder, so a model
+  half-written by a killed worker is never reused; without a folder from the
+  launcher nothing is cached
 """
 
 import importlib.util
@@ -1007,7 +1008,7 @@ class TestSupervisorFatalErrorsAreWrittenToAFile:
         )
 
 
-class TestTheMacosBootEmptiesTheCoremlModelFolder:
+class TestEachMacosWorkerStartsWithAnEmptyCoremlModelFolder:
     @pytest.fixture
     def coreml_model_folder(self, monkeypatch):
         monkeypatch.setattr(onnx_utils, 'ort', types.SimpleNamespace(
@@ -1022,30 +1023,40 @@ class TestTheMacosBootEmptiesTheCoremlModelFolder:
 
         return folder
 
-    def test_the_folder_handed_to_the_workers_is_emptied_at_the_next_launch(
+    def test_each_role_starts_with_its_own_empty_folder(
         self, coreml_model_folder, tmp_path, monkeypatch
     ):
         mod = _load_supervisor('macos')
-        sup = _bare_supervisor(mod)
         monkeypatch.setattr(mod.paths, 'app_support_dir', lambda: str(tmp_path / 'data'))
-        monkeypatch.setattr(mod.paths, 'coreml_cache_dir', lambda: str(tmp_path / 'e5rt'))
         handed = {}
         monkeypatch.setattr(
             mod.env_builder.child_env, 'build_child_env',
-            lambda paths, role, url, postgres, extra: handed.update(extra) or {},
+            lambda paths, role, url, postgres, extra: handed.update({role: extra}) or {},
         )
-        mod.env_builder.build_child_env('worker-default', 'postgresql://unused')
-        folder = coreml_model_folder(handed['COREML_MODEL_CACHE_DIR'])
-        os.makedirs(os.path.join(folder, 'killed_mid_compile'))
-        os.makedirs(mod.paths.coreml_cache_dir())
+        left_by_a_killed_worker = tmp_path / 'data' / 'coreml_models' / 'worker-default' / 'half'
+        left_by_a_killed_worker.mkdir(parents=True)
+        compiling_in_a_live_sibling = tmp_path / 'data' / 'coreml_models' / 'worker-high' / 'model'
+        compiling_in_a_live_sibling.mkdir(parents=True)
 
-        sup._clear_platform_caches()
+        mod.env_builder.build_child_env('worker-default', 'postgresql://unused')
+        folder = coreml_model_folder(handed['worker-default']['COREML_MODEL_CACHE_DIR'])
 
         assert not os.path.exists(folder), (
             'ONNX Runtime trusts a model folder as soon as it exists, so one left by a '
-            'compile that was killed would send every later CoreML load to CPU'
+            'worker killed mid-compile would send every load of its successor to CPU'
         )
-        assert not os.path.exists(mod.paths.coreml_cache_dir())
+        assert compiling_in_a_live_sibling.exists(), 'another role\'s folder is not ours to empty'
+
+    def test_a_folder_that_could_not_be_emptied_is_not_handed_over(self, tmp_path, monkeypatch):
+        mod = _load_supervisor('macos')
+        monkeypatch.setattr(mod.paths, 'app_support_dir', lambda: str(tmp_path / 'data'))
+        stuck = tmp_path / 'data' / 'coreml_models' / 'worker-default' / 'half'
+        stuck.mkdir(parents=True)
+        monkeypatch.setattr(mod.paths.shutil, 'rmtree', lambda *a, **k: None)
+
+        assert mod.paths.empty_coreml_models_dir('worker-default') == '', (
+            'a leftover the wipe could not remove would be trusted; no cache beats a broken one'
+        )
 
     def test_without_a_folder_from_the_launcher_coreml_caches_nothing(self, coreml_model_folder):
         assert coreml_model_folder('') == ''

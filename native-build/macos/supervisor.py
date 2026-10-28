@@ -24,10 +24,6 @@ Main Features:
   per load that it never reuses and only purges when the disk runs low. No
   child is running yet, so no live CoreML session can lose its cache; a missing
   folder is skipped silently.
-* Deletes the ``coreml_models`` folder the same way. ONNX Runtime reuses the
-  compiled CLAP model it keeps there for the whole run, but trusts a folder as
-  soon as it exists and never checks the model weights, so each app launch
-  starts it empty. A worker the health loop respawns keeps it until then.
 """
 
 import os
@@ -50,11 +46,11 @@ class ProcessSupervisor(PosixSupervisor):
     env_builder = env_builder
 
     def _clear_platform_caches(self):
-        for cache_dir in (paths.coreml_cache_dir(), paths.coreml_models_dir()):
-            if not os.path.isdir(cache_dir):
-                continue
-            try:
-                shutil.rmtree(cache_dir)
-                self._log.info("Deleted the CoreML compile cache %s", cache_dir)
-            except Exception:
-                self._log.exception("Could not delete the CoreML compile cache %s", cache_dir)
+        cache_dir = paths.coreml_cache_dir()
+        if not os.path.isdir(cache_dir):
+            return
+        try:
+            shutil.rmtree(cache_dir)
+            self._log.info("Deleted the CoreML compile cache %s", cache_dir)
+        except Exception:
+            self._log.exception("Could not delete the CoreML compile cache %s", cache_dir)
