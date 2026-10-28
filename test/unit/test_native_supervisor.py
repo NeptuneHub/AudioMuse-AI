@@ -29,7 +29,7 @@ Main Features:
 * An unreachable database returns False and is logged with its traceback
 * A programming error in the probe surfaces instead of faking an unhealthy database
 * The macOS boot empties the folder CoreML compiles into, so a half-written
-  model does not survive a relaunch; without a native data dir nothing is cached
+  model does not survive a relaunch; without a folder from the launcher nothing is cached
 """
 
 import importlib.util
@@ -1015,21 +1015,27 @@ class TestTheMacosBootEmptiesTheCoremlModelFolder:
         ))
         monkeypatch.setattr(onnx_utils, '_plugin_onnx_providers', lambda: [])
 
-        def folder(app_data_dir):
-            monkeypatch.setattr(config, 'APP_DATA_DIR', app_data_dir)
+        def folder(handed_by_the_launcher):
+            monkeypatch.setattr(config, 'COREML_MODEL_CACHE_DIR', handed_by_the_launcher)
             chain = dict(onnx_utils.resolve_providers(allow_coreml=True, label='clap'))
             return chain['CoreMLExecutionProvider']['ModelCacheDirectory']
 
         return folder
 
-    def test_the_folder_coreml_compiles_into_is_emptied_at_the_next_launch(
+    def test_the_folder_handed_to_the_workers_is_emptied_at_the_next_launch(
         self, coreml_model_folder, tmp_path, monkeypatch
     ):
         mod = _load_supervisor('macos')
         sup = _bare_supervisor(mod)
         monkeypatch.setattr(mod.paths, 'app_support_dir', lambda: str(tmp_path / 'data'))
         monkeypatch.setattr(mod.paths, 'coreml_cache_dir', lambda: str(tmp_path / 'e5rt'))
-        folder = coreml_model_folder(mod.paths.app_support_dir())
+        handed = {}
+        monkeypatch.setattr(
+            mod.env_builder.child_env, 'build_child_env',
+            lambda paths, role, url, postgres, extra: handed.update(extra) or {},
+        )
+        mod.env_builder.build_child_env('worker-default', 'postgresql://unused')
+        folder = coreml_model_folder(handed['COREML_MODEL_CACHE_DIR'])
         os.makedirs(os.path.join(folder, 'killed_mid_compile'))
         os.makedirs(mod.paths.coreml_cache_dir())
 
@@ -1041,5 +1047,11 @@ class TestTheMacosBootEmptiesTheCoremlModelFolder:
         )
         assert not os.path.exists(mod.paths.coreml_cache_dir())
 
-    def test_without_a_native_data_dir_coreml_caches_nothing(self, coreml_model_folder):
+    def test_without_a_folder_from_the_launcher_coreml_caches_nothing(self, coreml_model_folder):
         assert coreml_model_folder('') == ''
+
+    def test_the_folder_is_never_persisted_as_a_setting(self):
+        assert 'COREML_MODEL_CACHE_DIR' in config.SETUP_BOOTSTRAP_EXCLUDED_KEYS, (
+            'the launcher hands it over at each launch; a persisted value would pin '
+            'one install\'s data dir on every later start'
+        )
