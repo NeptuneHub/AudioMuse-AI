@@ -321,7 +321,7 @@ def call_with_tools(
                 {"role": "user", "content": user_message},
             ],
             "tools": functions,
-            "tool_choice": "auto",
+            "tool_choice": "required",
             "temperature": 0,
             "max_tokens": 1024,
         }
@@ -376,7 +376,7 @@ def call_with_tools(
             else:
                 retry_success = False
 
-                # Retry without reasoning_effort
+
                 if "reasoning_effort" in payload:
                     log_messages.append(
                         "reasoning_effort unsupported by this model; retrying without it"
@@ -390,8 +390,6 @@ def call_with_tools(
                         if retry_err.response.status_code != 400:
                             raise
 
-                # Step 2: Retry replacing temperature and max_tokens with max_completion_tokens
-                # This is the phase that use the newer models for 5.x and 6
                 if not retry_success:
                     log_messages.append(
                         "400 Bad Request received; retrying with max_completion_tokens and removing temperature"
@@ -408,8 +406,6 @@ def call_with_tools(
                         if retry_err.response.status_code != 400:
                             raise
 
-                # Step 3: Ultra-minimal retry removing max_completion_tokens
-                # In case nothing works this normally never comes
                 if not retry_success:
                     log_messages.append(
                         "400 Bad Request persisted; retrying in ultra-minimal mode without token limit"
@@ -419,11 +415,7 @@ def call_with_tools(
                     payload.pop("reasoning_effort", None)
                     payload["reasoning_effort"] = "none"
                     payload.pop("max_completion_tokens", None)
-                    try:
-                        result = _post(payload)
-                    except httpx.HTTPStatusError as err3:
-                        log_messages.append(f"OpenAI API 400 Response Body: {err3.response.text}")
-                        raise
+                    result = _post(payload)
 
         tool_calls = []
         if "choices" in result and result["choices"]:
