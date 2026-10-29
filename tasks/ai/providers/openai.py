@@ -373,15 +373,48 @@ def call_with_tools(
                         "DeepSeek rejected all thinking-disable forms; retrying without them"
                     )
                     result = _post(payload)
-            elif "reasoning_effort" in payload:
-                log_messages.append(
-                    "reasoning_effort unsupported by this model; retrying without it"
-                )
-                payload.pop("reasoning_effort", None)
-                _MODELS_REJECTING_REASONING.add(model_name)
-                result = _post(payload)
             else:
-                raise
+                retry_success = False
+
+                if "reasoning_effort" in payload:
+                    log_messages.append(
+                        "reasoning_effort unsupported by this model; retrying without it"
+                    )
+                    payload.pop("reasoning_effort", None)
+                    _MODELS_REJECTING_REASONING.add(model_name)
+                    try:
+                        result = _post(payload)
+                        retry_success = True
+                    except httpx.HTTPStatusError as retry_err:
+                        if retry_err.response.status_code != 400:
+                            raise
+
+                if not retry_success:
+                    log_messages.append(
+                        "400 Bad Request received; retrying with max_completion_tokens and removing temperature"
+                    )
+                    payload.pop("temperature", None)
+                    payload.pop("max_tokens", None)
+                    payload.pop("reasoning_effort", None)
+                    payload["reasoning_effort"] = "none"
+                    payload["max_completion_tokens"] = 1024
+                    try:
+                        result = _post(payload)
+                        retry_success = True
+                    except httpx.HTTPStatusError as retry_err:
+                        if retry_err.response.status_code != 400:
+                            raise
+
+                if not retry_success:
+                    log_messages.append(
+                        "400 Bad Request persisted; retrying in ultra-minimal mode without token limit"
+                    )
+                    payload.pop("temperature", None)
+                    payload.pop("max_tokens", None)
+                    payload.pop("reasoning_effort", None)
+                    payload["reasoning_effort"] = "none"
+                    payload.pop("max_completion_tokens", None)
+                    result = _post(payload)
 
         tool_calls = []
         if "choices" in result and result["choices"]:
