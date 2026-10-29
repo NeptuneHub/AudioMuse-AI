@@ -7,6 +7,7 @@ services:
       args:
         BASE_IMAGE: nvidia/cuda:13.3.1-cudnn-runtime-ubuntu24.04
     image: audiomuse-ai-local-nvidia-worker:latest
+    hostname: "${WORKER_HOSTNAME:-gpuworker}"
     environment:
       SERVICE_TYPE: "worker"
       TZ: "${TZ:-UTC}"
