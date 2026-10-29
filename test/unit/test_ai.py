@@ -16,6 +16,7 @@ Main Features:
 * Streaming chunk assembly, rate-limit backoff, and parameter fallbacks.
 * URL-based OpenAI-vs-Ollama format detection and API-error handling.
 * An Ollama /api/chat URL is sent to /api/generate for plain text generation.
+* OpenAI tool-calling 400 retry ladder: request count, forced tool_choice, newer-GPT params.
 """
 
 import os
@@ -141,6 +142,7 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 import json
+import httpx
 import tasks.ai.providers.openai as ai_openai
 from tasks.ai.api import clean_playlist_name, get_ai_playlist_name
 from tasks.ai.providers.openai import generate_text as get_openai_compatible_playlist_name
@@ -776,6 +778,53 @@ class TestGetOpenAICompatiblePlaylistName:
         assert 'reasoning_effort' not in second_call_data
         assert 'temperature' in second_call_data
         assert second_call_data.get('max_tokens') == 8000
+
+
+_TOOL_REPLY = {'choices': [{'message': {'tool_calls': [
+    {'type': 'function', 'function': {'name': 'search_database', 'arguments': '{}'}}]}}]}
+
+
+def _call_tools_against(status_for):
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        status = status_for(sent[-1])
+        return httpx.Response(status, json=_TOOL_REPLY if status == 200 else {'error': {}})
+
+    real_client = httpx.Client
+    transport = httpx.MockTransport(handler)
+    with patch.object(httpx, 'Client', lambda **kw: real_client(transport=transport, **kw)):
+        result = ai_openai.call_with_tools(
+            'http://x/v1/chat/completions', 'some-model', 'k', 'sys', 'user',
+            [{'name': 'search_database', 'description': 'd', 'inputSchema': {'type': 'object'}}], [],
+        )
+    return result, sent
+
+
+@pytest.mark.skipif(not hasattr(httpx, 'MockTransport'), reason='needs the real httpx')
+class TestOpenAICallWithToolsRetries:
+    @pytest.mark.parametrize('status_for, ok, requests_sent', [
+        (lambda b: 200, True, 1),
+        (lambda b: 400 if 'reasoning_effort' in b else 200, True, 2),
+        (lambda b: 400 if 'max_tokens' in b or 'temperature' in b else 200, True, 3),
+        (lambda b: 400 if 'max_tokens' in b or 'max_completion_tokens' in b else 200, True, 4),
+        (lambda b: 400, False, 4),
+        (lambda b: 500, False, 1),
+    ], ids=['accepted', 'no-reasoning-effort', 'newer-gpt', 'no-token-limit', 'always-400',
+            'server-error-not-retried'])
+    def test_retry_ladder(self, status_for, ok, requests_sent):
+        result, sent = _call_tools_against(status_for)
+        assert ('tool_calls' in result) is ok
+        assert len(sent) == requests_sent
+        assert all(body['tool_choice'] == 'required' for body in sent)
+
+    def test_newer_gpt_gets_max_completion_tokens_without_temperature(self):
+        _, sent = _call_tools_against(
+            lambda b: 400 if 'max_tokens' in b or 'temperature' in b else 200
+        )
+        assert sent[-1]['max_completion_tokens'] == 1024 and sent[-1]['reasoning_effort'] == 'none'
+        assert 'temperature' not in sent[-1] and 'max_tokens' not in sent[-1]
 
 
 class TestGetOllamaPlaylistName:
