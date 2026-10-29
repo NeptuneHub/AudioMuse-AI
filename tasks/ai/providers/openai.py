@@ -376,7 +376,6 @@ def call_with_tools(
             else:
                 retry_success = False
 
-
                 if "reasoning_effort" in payload:
                     log_messages.append(
                         "reasoning_effort unsupported by this model; retrying without it"
