@@ -330,6 +330,48 @@
         margin-top: 0.5rem;
     }
 
+    .tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 2px solid var(--border-color);
+    }
+    .tab-btn {
+        padding: 0.6rem 1.2rem;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        color: var(--text-muted);
+        transition: all 0.2s;
+    }
+    .tab-btn.active {
+        color: var(--color-primary);
+        border-bottom-color: var(--color-primary);
+        font-weight: 600;
+    }
+    .tab-btn:hover { color: var(--color-primary); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    .song-picked {
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+        color: var(--text-muted);
+    }
+
+    .checkbox-container {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .search-container .checkbox-container label {
+        margin-bottom: 0;
+    }
+
     @media (max-width: 768px) {
         .example-queries {
             margin-top: 1rem;
@@ -419,6 +461,12 @@
     {% endif %}
     
     <div class="search-container">
+        <div class="tabs">
+            <button type="button" class="tab-btn active" data-tab="text">By Text</button>
+            <button type="button" class="tab-btn" data-tab="song">By Song</button>
+        </div>
+
+        <div class="tab-pane active" id="tab-text">
         <form id="search-form">
             <div class="param-group">
                 <label for="search-query" class="label-with-tooltip">
@@ -479,8 +527,58 @@
                 <span style="color: var(--text-muted);">Loading recommendations...</span>
             </div>
         </div>
+        </div>
+
+        <div class="tab-pane" id="tab-song">
+            <form id="song-form">
+                <div class="param-group">
+                    <label for="clap-song-query" class="label-with-tooltip">
+                        Seed Song:
+                        <button type="button" class="info-tooltip info-tooltip-button" aria-label="About the seed song">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Type to find a song in your library and select it. The search returns the songs whose DCLAP sound is closest to it, using the same index as the text search.</span>
+                        </button>
+                    </label>
+                    <div class="autocomplete-container">
+                        <input type="text" id="clap-song-query" class="search-box"
+                               placeholder="Start typing a song or artist..."
+                               autocomplete="off"
+                               {% if not cache_stats.loaded %}disabled{% endif %}>
+                        <input type="hidden" id="clap-song-item-id">
+                        <div id="clap-song-picked" class="song-picked"></div>
+                        <div id="clap-song-results" class="autocomplete-results hidden"></div>
+                    </div>
+                </div>
+                <div class="param-group">
+                    <label for="song-limit" class="label-with-tooltip">
+                        Number of results:
+                        <button type="button" class="info-tooltip info-tooltip-button" aria-label="About the number of results">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">Maximum number of similar songs to return (1-200).</span>
+                        </button>
+                    </label>
+                    <input type="number" id="song-limit" name="limit" value="{{ clap_search_limit_default }}" min="{{ clap_search_limit_default|min_bound(1) }}" max="{{ clap_search_limit_default|max_bound(200) }}"
+                           {% if not cache_stats.loaded %}disabled{% endif %}>
+                </div>
+                <div class="param-group">
+                    <div class="checkbox-container">
+                        <input type="checkbox" id="song-eliminate-duplicates" name="eliminate_duplicates" {% if eliminate_duplicates_default %}checked{% endif %}>
+                        <label for="song-eliminate-duplicates" class="label-with-tooltip">
+                            Limit songs per artist in results
+                            <button type="button" class="info-tooltip info-tooltip-button" aria-label="About the artist limit">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Prevents the playlist from being dominated by one artist. When enabled, limits how many tracks from the same artist can appear in results.</span>
+                            </button>
+                        </label>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.loaded %}disabled{% endif %}>
+                    Find Similar Songs
+                </button>
+            </form>
+        </div>
     </div>
-    
+
     {% endif %}
 </section>
 
@@ -520,6 +618,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const topQueriesContainer = document.getElementById('top-queries-container');
     
     let currentResults = [];
+    let currentSeedId = null;
     
     // Warmup model on page load for instant searches
     warmupModel();
@@ -740,6 +839,83 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     loadConcepts();
 
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    tabButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabButtons.forEach(b => b.classList.toggle('active', b === btn));
+            document.querySelectorAll('.tab-pane').forEach(pane => {
+                pane.classList.toggle('active', pane.id === 'tab-' + btn.dataset.tab);
+            });
+        });
+    });
+
+    const songInput = document.getElementById('clap-song-query');
+    const songItemId = document.getElementById('clap-song-item-id');
+    const songPicked = document.getElementById('clap-song-picked');
+    let songLabel = '';
+
+    if (songInput) {
+        songItemId.value = '';
+        AudioMuseAutocomplete.attach({
+            input: songInput,
+            box: document.getElementById('clap-song-results'),
+            url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
+            params: { index: 'clap' },
+            onSelect: (track) => {
+                songItemId.value = track.item_id || '';
+                songLabel = `${track.title || 'Unknown'} - ${track.author || 'Unknown'}`;
+                songInput.value = songLabel;
+                songPicked.textContent = track.album ? `${songLabel} (${track.album})` : songLabel;
+            },
+        });
+        songInput.addEventListener('input', () => {
+            if (songInput.value !== songLabel) {
+                songItemId.value = '';
+                songPicked.textContent = '';
+            }
+        });
+    }
+
+    const songForm = document.getElementById('song-form');
+    if (songForm) {
+        songForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const itemId = songItemId.value.trim();
+            if (!itemId) {
+                alert('Please select a song from the suggestions first.');
+                return;
+            }
+            const limit = parseInt(document.getElementById('song-limit').value, 10) || {{ clap_search_limit_default }};
+            const eliminateDuplicates = document.getElementById('song-eliminate-duplicates').checked;
+
+            resultsContainer.classList.remove('hidden');
+            resultsList.innerHTML = '<div class="loading-spinner">Searching...</div>';
+            resultCount.textContent = '';
+            playlistCreator.classList.add('hidden');
+            renderLatentPanel(null);
+
+            try {
+                const response = await fetch("{{ url_for('clap_search_bp.clap_search_by_song_api') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_id: itemId, limit, eliminate_duplicates: eliminateDuplicates })
+                });
+                const data = await readJsonBody(response);
+                if (!response.ok || data === null) {
+                    throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
+                }
+                currentSeedId = itemId;
+                currentResults = data.results || [];
+                displayResults(currentResults, songLabel, null);
+                document.getElementById('playlist_name').value = 'Similar to ' + songLabel;
+            } catch (error) {
+                currentSeedId = null;
+                currentResults = [];
+                resultsList.innerHTML = `<div class="error-message">${escapeHtml(error.message)}</div>`;
+            }
+        });
+    }
+
     // Search form submission
     searchForm.addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -758,6 +934,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         // Show loading
+        currentSeedId = null;
         resultsContainer.classList.remove('hidden');
         resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
         playlistCreator.classList.add('hidden');
@@ -917,7 +1094,8 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
-        const trackIds = currentResults.map(r => r.item_id);
+        const resultIds = currentResults.map(r => r.item_id);
+        const trackIds = currentSeedId ? [currentSeedId, ...resultIds] : resultIds;
         playlistStatusDiv.textContent = 'Creating playlist...';
         
         try {

@@ -187,8 +187,14 @@ def _neural_fingerprint_where():
     return picker_where()
 
 
+def _clap_where():
+    from tasks.clap_text_search import picker_where
+
+    return picker_where()
+
+
 _AUTOCOMPLETE_INDEX_IDS = {'sem_grove': _sem_grove_item_ids}
-_AUTOCOMPLETE_INDEX_WHERE = {'neural': _neural_fingerprint_where}
+_AUTOCOMPLETE_INDEX_WHERE = {'neural': _neural_fingerprint_where, 'clap': _clap_where}
 
 
 @ivf_bp.route('/api/search_tracks', methods=['GET'])
@@ -216,10 +222,10 @@ def search_tracks_endpoint():
           type: string
       - name: index
         in: query
-        description: Restrict the suggestions to the songs of one loaded index. 'musicnn' (default) offers every analysed song of the selected server; 'sem_grove' offers only the songs in the SemGrove index; 'neural' offers only the songs that carry a neural fingerprint (filtered in the database, never by shipping the index's id list); both answer nothing while their index is not loaded.
+        description: Restrict the suggestions to the songs of one loaded index. 'musicnn' (default) offers every analysed song of the selected server; 'sem_grove' offers only the songs in the SemGrove index; 'neural' offers only the songs that carry a neural fingerprint and 'clap' only the songs that carry a DCLAP embedding (both filtered in the database, never by shipping the index's id list); each answers nothing while its index is not loaded.
         schema:
           type: string
-          enum: ['musicnn', 'sem_grove', 'neural']
+          enum: ['musicnn', 'sem_grove', 'neural', 'clap']
       - name: start
         in: query
         description: 0-based pagination start.
@@ -263,7 +269,7 @@ def search_tracks_endpoint():
     if len(search_query) < SEARCH_MIN_QUERY_LENGTH:
         return jsonify([])
 
-    # Optional index filter: 'musicnn' (default), 'sem_grove' or 'neural'
+    # Optional index filter: 'musicnn' (default), 'sem_grove', 'neural' or 'clap'
     index_param = request.args.get('index', 'musicnn', type=str).strip().lower()
     item_id_filter = None
     extra_where = None

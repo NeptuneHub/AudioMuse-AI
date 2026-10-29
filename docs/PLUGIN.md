@@ -41,7 +41,7 @@ Go to the Catalog tab and click **Install**. You must confirm a warning first: p
 
 ### Apply your changes (restart)
 
-Install, update, enable, disable and uninstall all need a restart to take effect. After any of these actions a yellow banner appears: "A restart is required to apply your changes". The banner is remembered on the server, so it stays after a page reload and every admin sees it until the restart happens. You can do several changes in a row and then click **Apply now (restart)** once. AudioMuse-AI restarts and the page reloads by itself after about 20 seconds.
+Install, update, enable, disable and uninstall all need a restart to take effect. After any of these actions a yellow banner appears: "A restart is required to apply your changes". The banner is remembered on the server, so it stays after a page reload and every admin sees it until the restart happens. You can do several changes in a row and then click **Apply now (restart)** once. AudioMuse-AI restarts and the page reloads by itself after about 20 seconds. Every plugin task that is running or queued is stopped first (it shows as cancelled in Recent tasks), so no plugin can hold the restart up; scheduled plugin tasks start again at their next time.
 
 ### Update a plugin
 
@@ -57,12 +57,12 @@ Disable turns a plugin off without removing anything. Its pages, menu items and 
 
 ### Uninstall
 
-When you uninstall, AudioMuse-AI first asks you to confirm the uninstall itself. Then it asks one more question: do you also want to delete the plugin's data tables?
+When you uninstall, AudioMuse-AI first asks you to confirm the uninstall itself, and then stops every task of that plugin that is running or queued before removing anything. Then it asks one more question: do you also want to delete the plugin's data tables?
 
 * Choose **OK** to drop every table the plugin created. This cannot be undone.
 * Choose **Cancel** to keep the tables for later.
 
-The plugin's settings and its entries in Scheduled Tasks are always removed. If you kept the data tables, reinstalling the plugin later finds them again.
+The plugin's settings and its entries in Scheduled Tasks are always removed. Its runs leave the dashboard's Recent tasks too, the next time a task shown there finishes. If you kept the data tables, reinstalling the plugin later finds them again.
 
 ## Working example
 
@@ -233,10 +233,12 @@ def daily_job():
     logger.info("my plugin ran")
 
 def register(ctx):
-    ctx.add_cron_task("daily", daily_job)
+    ctx.add_cron_task("daily", daily_job, description="Saves an hourly snapshot of the index log.")
 ```
 
-Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+Then open Administration > Scheduled Tasks. Every cron task of an enabled plugin is listed there under "Plugin tasks" with its own cron field and an Enable checkbox. The task type is `plugin.<your id>.<task name>` (here `plugin.my_plugin.daily`). The optional `description` (plain text, up to 300 characters) is shown as an info tooltip next to the task, so say what the task does and whether the admin should enable it. Each run gets a row under Active Tasks and is marked success or failure by itself - you do not need to report anything.
+
+Every `add_task` name is listed there too. A job you only start with `enqueue` needs no `add_task`: `enqueue` runs a function by its import path.
 
 ### Scheduled tasks and multiple music servers
 
@@ -298,7 +300,7 @@ def rebuild():
     return render_page("<p>Rebuild started. Check the worker logs.</p>", title="My Plugin")
 ```
 
-Keyword arguments work too: `enqueue(rebuild_report, days=30)`. Arguments must be JSON-serializable (str, int, float, bool, None, list, dict): pass an ISO string instead of a `datetime` and a list instead of a set, or `enqueue` raises a `TypeError` telling you which argument cannot be stored. It returns the queued task id (a string that also exposes `.id` for code written against the old job object). Use `queue='high'` if the job should skip the analysis queue. The `logger` output goes to the worker container logs.
+Keyword arguments work too: `enqueue(rebuild_report, days=30)`. Arguments must be JSON-serializable (str, int, float, bool, None, list, dict): pass an ISO string instead of a `datetime` and a list instead of a set, or `enqueue` raises a `TypeError` telling you which argument cannot be stored. It returns the queued task id (a string that also exposes `.id` for code written against the old job object). Use `queue='high'` if the job should skip the analysis queue. The `logger` output goes to the worker container logs. Called from a request rather than from inside a running task, `enqueue` raises an `AudioMuseError` while another queue job is running. From anywhere, including inside a running task, it also raises it while a scheduled AudioMuse-AI analysis or clustering is waiting to retry: AudioMuse-AI's own scheduled work goes first, and plugin tasks start again after it has run. Your plugin's scheduled tasks wait the same way.
 
 Two keyword names are **reserved**: `server_scope` and `task_claim_required`. AudioMuse-AI reads them itself before it calls your function, so a task function that declares a parameter with one of those names could never receive it. `enqueue`, `add_task` and `add_cron_task` raise a `TypeError` naming the offending parameter, so rename it (ask `active_server_id()` which server the current run targets instead). Passing `server_scope` **to** `enqueue` is fine and is what it is for: `enqueue(rebuild_report, 30, server_scope='all')` runs the job once per configured music server, `server_scope='default'` only on the default one, and a server id or name only on that server - exactly like a scheduled plugin task (see "Scheduled tasks and multiple music servers"). Without it the job runs once, against whichever server the worker is already bound to.
 

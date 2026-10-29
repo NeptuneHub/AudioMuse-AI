@@ -47,6 +47,7 @@ import time
 import types
 import zipfile
 
+from flask import g, has_app_context
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
@@ -211,6 +212,12 @@ def _plugin_targets(manifest):
 
 def _role_target(role):
     return 'worker' if role == 'worker' else 'flask'
+
+
+def _cron_task_description(loaded, persisted, name):
+    task = loaded[name] if name in loaded else persisted.get(name)
+    description = task.get('description') if isinstance(task, dict) else None
+    return description if isinstance(description, str) and description else None
 
 
 def _download_url(url, max_bytes):
@@ -778,18 +785,23 @@ class PluginManager:
         for plugin_id, record in self.records.items():
             if not record.get('enabled'):
                 continue
-            names = set(record.get('cron_tasks') or {})
+            loaded = record.get('cron_tasks') or {}
+            names = set(loaded)
             persisted = (record.get('manifest') or {}).get('cron_tasks') or {}
             names.update(
                 name for name, task in persisted.items()
                 if isinstance(task, dict) and task.get('dotted')
             )
             for name in sorted(names):
-                items.append({
+                item = {
                     'task_type': f'plugin.{plugin_id}.{name}',
                     'plugin': plugin_id,
                     'task': name,
-                })
+                }
+                description = _cron_task_description(loaded, persisted, name)
+                if description:
+                    item['description'] = description
+                items.append(item)
         return sorted(items, key=lambda e: e['task_type'])
 
     def get_settings_endpoint(self, plugin_id):
@@ -962,6 +974,8 @@ def _run_per_server(func, server_scope, args, kwargs, cancel=None, task_id=None)
     budget = slow_step_budget_minutes(config.QUEUE_WEDGED_MAIN_TASK_MINUTES)
 
     def step(_server, name):
+        if has_app_context() and g.get('db') is not None:
+            g.db.commit()
         with row_heartbeat(
             task_id,
             f"the plugin function on {name}, one call that writes no row until it "

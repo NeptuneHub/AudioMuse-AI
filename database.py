@@ -83,7 +83,6 @@ from config import (
 
 _TERMINAL_STATUSES = list(TASK_STATUS_TERMINAL)
 
-TASK_HISTORY_MAX_ROWS = 10
 MAX_LOG_ENTRIES_STORED = 10
 
 TEXT_SEARCH_QUERIES_DDL = """
@@ -188,6 +187,9 @@ SELF_MANAGED_TASK_TYPE_PREFIXES = task_types.SELF_MANAGED_TASK_TYPE_PREFIXES
 _BLOCKING_TASK_TYPE_PATTERNS = [
     prefix + '%' for prefix in task_types.BLOCKING_TASK_TYPE_PREFIXES
 ]
+
+_PLUGIN_TASK_NAMESPACE = 'audiomuse_plugins'
+_PLUGIN_OWNED_TASK_TYPE_RE = r'^plugin\.(audiomuse_plugins\.[^.]+\.|[^.]+\.[^.]+$)'
 
 NON_BLOCKING_TASK_TYPES = task_types.NON_BLOCKING_TASK_TYPES
 
@@ -339,6 +341,9 @@ def _build_task_note(task_type, details_obj):
         details_obj = {}
     t = (task_type or '').lower()
 
+    if task_types.matches(t, prefixes=task_types.PREFIXES):
+        return ''
+
     try:
         if 'analysis' in t:
             songs = details_obj.get('tracks_analyzed')
@@ -407,12 +412,34 @@ def record_task_history(task_id, task_type, status, duration_seconds=None, note=
             cur.execute(
                 """
                 DELETE FROM task_history
-                WHERE id NOT IN (
-                    SELECT id FROM task_history ORDER BY recorded_at DESC, id DESC LIMIT %s
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY task_type ORDER BY recorded_at DESC, id DESC
+                               ) AS type_rank
+                        FROM task_history
+                    ) AS ranked
+                    WHERE type_rank > %s
                 )
                 """,
-                (TASK_HISTORY_MAX_ROWS,),
+                (max(1, config.TASK_HISTORY_MAX_ROWS_PER_TYPE),),
             )
+        db.commit()
+        with db.cursor() as cur:
+            cur.execute("SELECT to_regclass('plugins') IS NOT NULL")
+            if cur.fetchone()[0]:
+                cur.execute(
+                    """
+                    DELETE FROM task_history
+                    WHERE task_type ~ %s
+                      AND CASE WHEN split_part(task_type, '.', 2) = %s
+                               THEN split_part(task_type, '.', 3)
+                               ELSE split_part(task_type, '.', 2)
+                          END NOT IN (SELECT id FROM plugins)
+                    """,
+                    (_PLUGIN_OWNED_TASK_TYPE_RE, _PLUGIN_TASK_NAMESPACE),
+                )
         db.commit()
     except Exception as e:
         logger.warning(f"record_task_history failed for {task_id}: {e}")
@@ -1399,6 +1426,26 @@ def delete_stale_analysis_exclusions(server_id, present_provider_item_ids, conn=
         return 0
     finally:
         cur.close()
+
+
+def clear_analysis_exclusions():
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute("DELETE FROM analysis_exclusions")
+            deleted = cur.rowcount
+            cur.execute(
+                "UPDATE dashboard_stats "
+                "SET content = jsonb_set(content, '{unanalyzable_tracks}', '0') WHERE id = 1"
+            )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Analysis-exclusion clear rollback failed", exc_info=True)
+        raise
+    return int(deleted if deleted is not None and deleted >= 0 else 0)
 
 
 def get_lyrics_axis_vectors(item_ids):
@@ -2848,6 +2895,22 @@ def get_queue_blocking_task(conn=None):
     finally:
         cur.close()
     return dict(active_task) if active_task else None
+
+
+def get_waiting_core_cron_retry(conn=None):
+    db = conn or get_db()
+    cur = db.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute(
+            "SELECT task_type, retry_until FROM cron_retry "
+            "WHERE NOT (task_type LIKE ANY(%s)) AND retry_until > %s "
+            "ORDER BY first_blocked_at LIMIT 1",
+            ([prefix + '%' for prefix in task_types.PREFIXES], time.time()),
+        )
+        waiting = cur.fetchone()
+    finally:
+        cur.close()
+    return dict(waiting) if waiting else None
 
 
 def record_cron_retry(task_type, retry_until, first_blocked_at, blocker_task_id=None, blocker_task_type=None, conn=None):

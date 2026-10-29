@@ -334,7 +334,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.6.3"
+APP_VERSION = "v3.7.0"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1728,6 +1728,13 @@ DASHBOARD_BROWSE_PAGE_SIZE = int(os.environ.get("DASHBOARD_BROWSE_PAGE_SIZE", "1
 # pathological deep-page scan: past this the API stops paging and asks the user to
 # refine with search/filters (every query is always LIMIT-bounded regardless).
 DASHBOARD_BROWSE_MAX_OFFSET = int(os.environ.get("DASHBOARD_BROWSE_MAX_OFFSET", "50000"))
+
+# --- Dashboard "Recent tasks" history ---
+# The dashboard shows one line per task type from task_history. Each type keeps
+# its own newest runs, so a task scheduled every minute cannot push a daily
+# analysis out, and each type stays bounded: its oldest run goes first. A
+# value below 1 is treated as 1.
+TASK_HISTORY_MAX_ROWS_PER_TYPE = int(os.environ.get("TASK_HISTORY_MAX_ROWS_PER_TYPE", "100")) # Max rows task_history keeps per task type
 
 # --- Mood Similarity Filtering ---
 # Threshold for mood similarity filtering. Lower values = stricter filtering (more similar moods required).

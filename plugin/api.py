@@ -44,6 +44,7 @@ from database import (
     get_score_data_by_ids,
     get_tracks_by_ids,
     get_queue_blocking_task,
+    get_waiting_core_cron_retry,
 )
 from config import (
     TASK_STATUS_PENDING,
@@ -66,6 +67,8 @@ ANALYSIS_COMPONENTS = frozenset({'asr'})
 ONNX_POSITIONS = frozenset({'before_cuda', 'before_cpu'})
 
 RESERVED_TASK_PARAMS = frozenset({'server_scope', 'task_claim_required'})
+
+CRON_DESCRIPTION_MAX = 300
 
 __all__ = [
     'PluginContext', 'config', 'logger', 'get_db', 'save_task_status',
@@ -185,10 +188,10 @@ def enqueue(func, *args, queue='default', **kwargs):
             "Task arguments must be JSON-serializable (str, int, float, bool, None, "
             "list, dict); pass an ISO string instead of a datetime, a list instead of a set."
         ) from exc
-    if taskqueue.current_task_id() is None:
-        from error import AudioMuseError
-        from error.error_dictionary import ERR_TASK_IN_PROGRESS
+    from error import AudioMuseError
+    from error.error_dictionary import ERR_TASK_IN_PROGRESS
 
+    if taskqueue.current_task_id() is None:
         blocking = get_queue_blocking_task()
         if blocking:
             raise AudioMuseError(
@@ -196,6 +199,13 @@ def enqueue(func, *args, queue='default', **kwargs):
                 f"Another queue job ({blocking['task_type']}) is still running. "
                 f"Wait for it to finish before starting plugin task {dotted}.",
             )
+    waiting = get_waiting_core_cron_retry()
+    if waiting:
+        raise AudioMuseError(
+            ERR_TASK_IN_PROGRESS,
+            f"The scheduled AudioMuse-AI task {waiting['task_type']} is waiting to "
+            f"start and goes first. Wait for it to run before starting plugin task {dotted}.",
+        )
     taskqueue.enqueue(
         'plugin.manager.run_plugin_task',
         args=(dotted,) + tuple(args),
@@ -267,10 +277,13 @@ class PluginContext:
         _reject_reserved_params(func, dotted)
         self.tasks[name] = {'dotted': dotted, 'queue': queue}
 
-    def add_cron_task(self, name, func, queue='default'):
+    def add_cron_task(self, name, func, queue='default', description=None):
         dotted = dotted_path(func)
         _reject_reserved_params(func, dotted)
-        self.cron_tasks[name] = {'dotted': dotted, 'queue': queue}
+        task = {'dotted': dotted, 'queue': queue}
+        if isinstance(description, str) and description.strip():
+            task['description'] = description.strip()[:CRON_DESCRIPTION_MAX]
+        self.cron_tasks[name] = task
 
     def register_onnx_provider(self, name, options=None, position='before_cpu',
                                only_models=None, exclude_models=None,

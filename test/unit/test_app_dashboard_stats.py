@@ -20,13 +20,21 @@ Main Features:
 * The template cannot regress to a percentage that rounds up into a false 100%
 * The FAST counts refresh every 60s; the distribution charts (Genres, Moods,
   Tempo) stay hourly with their own timestamp; neither walks a media server
+* Recent tasks shows one line per task type (its last run, its last failure and
+  how many runs the history holds), and a cancelled run is never a failure;
+  /api/dashboard/task_history lists one type's runs, newest first
 """
 
 import re
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 import app_dashboard as dash
+import config
+from error.error_dictionary import ERR_INVALID_REQUEST
 
 
 def _cursor_with(mood_rows=(('happy:0.9,sad:0.1', 'danceable:0.5'),),
@@ -306,3 +314,129 @@ class TestTemplateCannotRoundUpToOneHundred:
         js = (Path(__file__).resolve().parents[2]
               / 'static' / 'server_selector.js').read_text(encoding='utf-8')
         assert "'/api/dashboard/'" in js
+
+
+def _history_row(task_id, task_type, status, minute, **extra):
+    row = {
+        'task_id': task_id, 'task_type': task_type, 'status': status,
+        'duration_seconds': 2.5, 'note': f'{task_id} note',
+        'recorded_at': datetime(2026, 10, 12, 10, minute),
+    }
+    row.update(extra)
+    return row
+
+
+class TestRecentTasksShowOneLinePerTaskType:
+    """A plugin task scheduled every minute filled the old 10-row list in 10
+    minutes and pushed AudioMuse's own last analysis, clustering or cleaning
+    run out of sight (#944). One line per task type keeps every type visible,
+    with or without plugins. The row-level cases run against a real Postgres in
+    test/integration/test_task_history_retention_integration.py."""
+
+    @staticmethod
+    def _collect(monkeypatch, rows=()):
+        monkeypatch.setattr(dash, '_table_exists', lambda cur, name: True)
+        cur = MagicMock()
+        cur.fetchall.return_value = list(rows)
+        recent = dash._collect_task_metrics(cur)
+        sql, params = cur.execute.call_args.args
+        return ' '.join(sql.split()), params, recent
+
+    def test_each_task_type_gets_one_line_with_its_last_run(self, monkeypatch):
+        sql, _params, _recent = self._collect(monkeypatch)
+
+        assert (
+            'SELECT DISTINCT ON (task_type) * FROM shown '
+            'ORDER BY task_type, recorded_at DESC, id DESC'
+        ) in sql
+        assert sql.endswith('ORDER BY l.recorded_at DESC, l.id DESC'), (
+            'the type that ran last comes first'
+        )
+        assert "task_type IS NOT NULL AND task_type <> '' AND task_type <> 'unknown'" in sql
+
+    def test_the_last_failure_is_a_failed_run_never_a_cancelled_one(self, monkeypatch):
+        sql, params, _recent = self._collect(monkeypatch)
+
+        assert 'WHERE status = %s' in sql
+        assert params == (config.TASK_STATUS_FAILURE,)
+        assert config.TASK_STATUS_REVOKED not in params, (
+            'cancelling a task is not an error: the task was cancelled successfully'
+        )
+
+    def test_a_line_carries_its_last_run_its_last_failure_and_its_run_count(self, monkeypatch):
+        rows = [
+            _history_row(
+                'plugin-9', 'plugin.demo.sync', 'SUCCESS', 59, runs=100,
+                failure_task_id='plugin-4', failure_note='Timed out.',
+                failure_recorded_at=datetime(2026, 10, 12, 10, 54),
+            ),
+            _history_row(
+                'analysis-1', 'main_analysis', 'REVOKED', 2, runs=3,
+                failure_task_id=None, failure_note=None, failure_recorded_at=None,
+            ),
+        ]
+
+        _sql, _params, recent = self._collect(monkeypatch, rows)
+
+        assert [line['task_type'] for line in recent] == ['plugin.demo.sync', 'main_analysis']
+        plugin, analysis = recent
+        assert plugin['task_id'] == 'plugin-9'
+        assert plugin['status'] == 'SUCCESS'
+        assert plugin['runs'] == 100
+        assert plugin['timestamp'] == dash.to_local_str(datetime(2026, 10, 12, 10, 59))
+        assert plugin['last_failure'] == {
+            'task_id': 'plugin-4', 'note': 'Timed out.',
+            'timestamp': dash.to_local_str(datetime(2026, 10, 12, 10, 54)),
+        }
+        assert analysis['last_failure'] is None
+        assert analysis['status'] == 'REVOKED'
+        assert analysis['runs'] == 3
+
+
+class TestTheTaskHistoryEndpoint:
+    @pytest.fixture
+    def client(self):
+        from flask import Flask
+        app = Flask(__name__)
+        app.register_blueprint(dash.dashboard_bp)
+        app.config['TESTING'] = True
+        return app.test_client()
+
+    @staticmethod
+    def _mock_db(monkeypatch, rows):
+        cur = MagicMock()
+        cur.fetchall.return_value = rows
+        cur.fetchone.return_value = (True,)
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        monkeypatch.setattr(dash, 'get_db', lambda: conn)
+        return cur
+
+    def test_a_task_type_is_required(self, client, monkeypatch):
+        self._mock_db(monkeypatch, [])
+
+        resp = client.get('/api/dashboard/task_history')
+
+        assert resp.status_code == 400
+        assert resp.get_json()['error_code'] == ERR_INVALID_REQUEST
+
+    def test_it_lists_one_types_runs_newest_first_up_to_the_per_type_cap(
+            self, client, monkeypatch):
+        monkeypatch.setattr(config, 'TASK_HISTORY_MAX_ROWS_PER_TYPE', 25)
+        cur = self._mock_db(monkeypatch, [
+            _history_row('analysis-2', 'main_analysis', 'FAIL', 30),
+            _history_row('analysis-1', 'main_analysis', 'SUCCESS', 1),
+        ])
+
+        resp = client.get('/api/dashboard/task_history?task_type=main_analysis')
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['task_type'] == 'main_analysis'
+        assert [run['task_id'] for run in data['runs']] == ['analysis-2', 'analysis-1']
+        assert data['runs'][0]['status'] == 'FAIL'
+        assert data['runs'][0]['note'] == 'analysis-2 note'
+        sql, params = cur.execute.call_args.args
+        sql = ' '.join(sql.split())
+        assert 'WHERE task_type = %s ORDER BY recorded_at DESC, id DESC LIMIT %s' in sql
+        assert params == ('main_analysis', 25)

@@ -32,7 +32,9 @@ from flask import Blueprint, render_template, jsonify, request, url_for
 import config
 import database
 import restart_manager
+from app_helper import stop_plugin_tasks, stop_plugin_tasks_before_restart
 from plugin import net
+from plugin.api import NAMESPACE
 from ssrf_guard import validate_outbound_url
 from plugin.manager import plugin_manager, version_ge, _parse_version, _download_url as _download
 from error.error_dictionary import (
@@ -511,6 +513,10 @@ def api_uninstall():
     if not plugin_id:
         return json_error(ERR_INVALID_REQUEST, 'Missing plugin id')
     try:
+        stop_plugin_tasks(
+            (f'plugin.{plugin_id}.', f'plugin.{NAMESPACE}.{plugin_id}.'),
+            'Stopped because its plugin was uninstalled.',
+        )
         plugin_manager.uninstall(plugin_id, purge_data=purge_data)
         return jsonify({'status': 'ok', 'restart_required': True})
     except Exception as exc:
@@ -584,6 +590,7 @@ def api_repos():
 @plugins_bp.route('/api/plugins/apply', methods=['POST'])
 def api_apply():
     try:
+        stop_plugin_tasks_before_restart()
         workers_published = restart_manager.publish_restart_request(
             timeout_seconds=config.QUEUE_CONTROL_TIMEOUT_SECONDS
         )
