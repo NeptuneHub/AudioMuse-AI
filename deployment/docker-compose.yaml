@@ -2,7 +2,7 @@ version: '3.8'
 services:
   # PostgreSQL database service
   postgres:
-    image: postgres:15-alpine
+    image: docker.io/library/postgres:15-alpine
     container_name: audiomuse-postgres
     environment:
       TZ: "${TZ:-UTC}"
