@@ -28,6 +28,9 @@ Main Features:
 * A dropped session is replaced once before the database is declared unhealthy
 * An unreachable database returns False and is logged with its traceback
 * A programming error in the probe surfaces instead of faking an unhealthy database
+* Each macOS worker starts with its own empty CoreML model folder, so a model
+  half-written by a killed worker is never reused; without a folder from the
+  launcher nothing is cached
 """
 
 import importlib.util
@@ -42,6 +45,9 @@ import urllib.request
 from unittest.mock import MagicMock
 
 import pytest
+
+import config
+import tasks.onnx_utils as onnx_utils
 
 REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 NATIVE_BUILD = os.path.join(REPO_ROOT, 'native-build')
@@ -999,4 +1005,64 @@ class TestSupervisorFatalErrorsAreWrittenToAFile:
         assert 'RuntimeError: the supervisor blew up' in text, (
             'a hidden console swallowed every supervisor traceback; the file is '
             'the only place a crash can be read back from'
+        )
+
+
+class TestEachMacosWorkerStartsWithAnEmptyCoremlModelFolder:
+    @pytest.fixture
+    def coreml_model_folder(self, monkeypatch):
+        monkeypatch.setattr(onnx_utils, 'ort', types.SimpleNamespace(
+            get_available_providers=lambda: ['CoreMLExecutionProvider', 'CPUExecutionProvider']
+        ))
+        monkeypatch.setattr(onnx_utils, '_plugin_onnx_providers', lambda: [])
+
+        def folder(handed_by_the_launcher):
+            monkeypatch.setattr(config, 'COREML_MODEL_CACHE_DIR', handed_by_the_launcher)
+            chain = dict(onnx_utils.resolve_providers(allow_coreml=True, label='clap'))
+            return chain['CoreMLExecutionProvider']['ModelCacheDirectory']
+
+        return folder
+
+    def test_each_role_starts_with_its_own_empty_folder(
+        self, coreml_model_folder, tmp_path, monkeypatch
+    ):
+        mod = _load_supervisor('macos')
+        monkeypatch.setattr(mod.paths, 'app_support_dir', lambda: str(tmp_path / 'data'))
+        handed = {}
+        monkeypatch.setattr(
+            mod.env_builder.child_env, 'build_child_env',
+            lambda paths, role, url, postgres, extra: handed.update({role: extra}) or {},
+        )
+        left_by_a_killed_worker = tmp_path / 'data' / 'coreml_models' / 'worker-default' / 'half'
+        left_by_a_killed_worker.mkdir(parents=True)
+        compiling_in_a_live_sibling = tmp_path / 'data' / 'coreml_models' / 'worker-high' / 'model'
+        compiling_in_a_live_sibling.mkdir(parents=True)
+
+        mod.env_builder.build_child_env('worker-default', 'postgresql://unused')
+        folder = coreml_model_folder(handed['worker-default']['COREML_MODEL_CACHE_DIR'])
+
+        assert not os.path.exists(folder), (
+            'ONNX Runtime trusts a model folder as soon as it exists, so one left by a '
+            'worker killed mid-compile would send every load of its successor to CPU'
+        )
+        assert compiling_in_a_live_sibling.exists(), 'another role\'s folder is not ours to empty'
+
+    def test_a_folder_that_could_not_be_emptied_is_not_handed_over(self, tmp_path, monkeypatch):
+        mod = _load_supervisor('macos')
+        monkeypatch.setattr(mod.paths, 'app_support_dir', lambda: str(tmp_path / 'data'))
+        stuck = tmp_path / 'data' / 'coreml_models' / 'worker-default' / 'half'
+        stuck.mkdir(parents=True)
+        monkeypatch.setattr(mod.paths.shutil, 'rmtree', lambda *a, **k: None)
+
+        assert mod.paths.empty_coreml_models_dir('worker-default') == '', (
+            'a leftover the wipe could not remove would be trusted; no cache beats a broken one'
+        )
+
+    def test_without_a_folder_from_the_launcher_coreml_caches_nothing(self, coreml_model_folder):
+        assert coreml_model_folder('') == ''
+
+    def test_the_folder_is_never_persisted_as_a_setting(self):
+        assert 'COREML_MODEL_CACHE_DIR' in config.SETUP_BOOTSTRAP_EXCLUDED_KEYS, (
+            'the launcher hands it over at each launch; a persisted value would pin '
+            'one install\'s data dir on every later start'
         )

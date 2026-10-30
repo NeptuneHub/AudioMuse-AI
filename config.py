@@ -244,6 +244,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # layout. Persisting one launch's answer would pin an old install directory
     # after the application is moved or upgraded, with no wizard field to fix it.
     'APP_DATA_DIR',
+    'COREML_MODEL_CACHE_DIR',
     'DATABASE_TYPE',
     'TEMP_DIR',
     'EMBEDDING_MODEL_PATH',
@@ -899,6 +900,9 @@ _DERIVED_DATABASE_URL = (
 
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE", "postgres").lower()
 APP_DATA_DIR = os.environ.get("APP_DATA_DIR", "")
+# Where CoreML keeps the compiled models it reuses across sessions; the macOS launcher hands
+# each worker its own folder, emptied when the worker starts. Empty (everywhere else) = no cache.
+COREML_MODEL_CACHE_DIR = os.environ.get("COREML_MODEL_CACHE_DIR", "")
 AUDIOMUSE_PLATFORM = os.environ.get("AUDIOMUSE_PLATFORM", "").lower()
 AUDIOMUSE_CONTROL_SOCKET = os.environ.get("AUDIOMUSE_CONTROL_SOCKET", "")
 AUDIOMUSE_CONTROL_HOST = os.environ.get("AUDIOMUSE_CONTROL_HOST", "")

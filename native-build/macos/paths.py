@@ -20,10 +20,16 @@ Main Features:
 * The CoreML compile cache folder macOS keeps under ``~/Library/Caches`` for
   the app bundle. The bundle id is fixed here, not read at runtime, so a run
   from source never points at the cache Python shares with other programs.
+* One ``coreml_models`` folder per supervised role, where ONNX Runtime keeps the
+  Core ML model it compiles so a new session reuses it. It is emptied each time
+  the role starts: ONNX Runtime trusts a folder as soon as it exists, so one left
+  half-written by a killed process must never reach its successor. A folder the
+  wipe could not remove is not handed over at all (empty = no cache).
 """
 
 import os
 import platform
+import shutil
 import sys
 
 APP_NAME = "AudioMuse-AI"
@@ -71,6 +77,12 @@ def numba_cache_dir():
 
 def backup_dir():
     return _ensure(os.path.join(app_support_dir(), "backup"))
+
+
+def empty_coreml_models_dir(role):
+    folder = os.path.join(app_support_dir(), "coreml_models", role)
+    shutil.rmtree(folder, ignore_errors=True)
+    return "" if os.path.exists(folder) else folder
 
 
 def coreml_cache_dir():

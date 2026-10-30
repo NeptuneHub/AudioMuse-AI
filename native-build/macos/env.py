@@ -11,12 +11,13 @@
 The per-user data, model, cache, temp and backup variables every supervised
 child inherits are shared with Linux and Windows in
 ``native_common.child_env``; what is named here is what only macOS needs: the
-platform label, the control socket and the OBJC fork-safety and LC_NUMERIC
-settings that keep forked children from aborting.
+platform label, the control socket, the CoreML model cache folder and the OBJC
+fork-safety and LC_NUMERIC settings that keep forked children from aborting.
 
 Main Features:
-* Adds the macOS label, control socket and fork-safety settings to the shared
-  child environment.
+* Adds the macOS label, control socket, CoreML model cache folder (one per
+  role, emptied as the role starts) and fork-safety settings to the shared child
+  environment.
 * Derives POSTGRES_HOST/POSTGRES_PORT from the URL the embedded server reported,
   so the children reach the socket it actually opened rather than a guess:
   ``config.py`` builds every connection string from those two.
@@ -41,5 +42,6 @@ def build_child_env(role, database_url):
             "OBJC_DISABLE_INITIALIZE_FORK_SAFETY": "YES",
             "LC_NUMERIC": "C",
             "AUDIOMUSE_CONTROL_SOCKET": paths.control_socket_path(),
+            "COREML_MODEL_CACHE_DIR": paths.empty_coreml_models_dir(role),
         },
     )
