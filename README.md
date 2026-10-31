@@ -16,7 +16,7 @@ What started as a personal project now powers music libraries all over the world
 
 However, keeping the project alive and moving forward takes ongoing resources: AI licenses, homelab infrastructure, research, and countless hours spent on releases and user support.
 
-**If you choose to donate €10, or even just a little less or more, you will help keep AudioMuse-AI alive and growing throughout 2027.**
+**If you choose to donate €10, or whatever feels right for you, you will help keep AudioMuse-AI alive and growing throughout 2027.**
 
 Every single contribution makes a difference.
 
