@@ -147,9 +147,7 @@ spec:
         component: flask
     spec:
       securityContext:
-        runAsUser: 0 # Or a non-root user if your image supports it
-        runAsGroup: 0 # Added fsGroup for consistency if needed by volumes
-        fsGroup: 0
+        fsGroup: 1000
       containers:
       - name: flask-app
         image: ghcr.io/neptunehub/audiomuse-ai:latest # Your image from GHCR
@@ -283,9 +281,7 @@ spec:
         component: worker
     spec:
       securityContext:
-        runAsUser: 0
-        runAsGroup: 0
-        fsGroup: 0
+        fsGroup: 1000
       containers:
       - name: queue-worker
         image: ghcr.io/neptunehub/audiomuse-ai:latest # Your image from GHCR
