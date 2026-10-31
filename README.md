@@ -7,9 +7,25 @@
 <strong>⭐ Leave a star on this project:</strong> One shines alone; together, they make it visible and keep it alive.
 </p>
 
-<p align="center">
-💛 <a href="https://liberapay.com/NeptuneHub/donate">Donate</a> to shape AudioMuse-AI future by supporting AI licenses, homelab infrastructure, and continuous development.
-</p>
+<details open>
+<summary>💛 <a href="https://liberapay.com/NeptuneHub/donate">Donate to AudioMuse-AI this Christmas</a></summary>
+
+**Over 2,521 Navidrome users rely on AudioMuse-AI today** ([based on Navidrome anonymous usage statistics](https://www.navidrome.org/docs/usage/admin/insights/)), and that's before counting all our Jellyfin, Emby, and Lyrion users.
+
+What started as a personal project now powers music libraries all over the world. AudioMuse-AI will always remain free and open source because I believe sonic analysis should be accessible to everyone, regardless of their budget. No ads, no paywalls, no subscriptions. Your music library is analyzed on your own server, keeping your data completely under your control.
+
+However, keeping the project alive and moving forward takes ongoing resources: AI licenses, homelab infrastructure, research, and countless hours spent on releases and user support.
+
+**If you choose to donate €10, or even just a little less or more, you will help keep AudioMuse-AI alive and growing throughout 2027.**
+
+Every single contribution makes a difference.
+
+Thank you,
+
+NeptuneHub
+
+Maintainer of AudioMuse-AI
+</details>
 
 # **AudioMuse-AI - Where Music Takes Shape** 
 
