@@ -13,83 +13,96 @@
 // changed, so service-account behaviour stays exactly as before.
 
 (function () {
-    if (!document.body || document.body.getAttribute('data-playlist-visibility') !== 'true') {
+    'use strict';
+
+    if (!document.body || document.body.dataset.playlistVisibility !== 'true') {
         return;
     }
 
-    var ANCHOR_SELECTOR = 'input[name="playlist_name"], input.tree-leaf-name, [data-playlist-visibility-anchor]';
-    var state = { shared: false };
-    var boxes = [];
+    const ANCHOR_SELECTOR = 'input[name="playlist_name"], input.tree-leaf-name, [data-playlist-visibility-anchor]';
+    const state = { shared: false };
+    const boxes = [];
 
     function sync() {
-        boxes.forEach(function (box) { box.checked = state.shared; });
+        for (const box of boxes) {
+            box.checked = state.shared;
+        }
     }
 
     function attach(anchor) {
-        if (anchor.getAttribute('data-playlist-visibility-attached') === '1') {
+        if (anchor.dataset.playlistVisibilityAttached === '1') {
             return;
         }
-        anchor.setAttribute('data-playlist-visibility-attached', '1');
-        var label = document.createElement('label');
+        anchor.dataset.playlistVisibilityAttached = '1';
+        const label = document.createElement('label');
         label.className = 'playlist-visibility';
         label.title = 'Unticked: only you see the playlist in Navidrome.';
-        var box = document.createElement('input');
+        const box = document.createElement('input');
         box.type = 'checkbox';
         box.checked = state.shared;
-        box.addEventListener('change', function () {
+        box.addEventListener('change', () => {
             state.shared = box.checked;
             sync();
         });
         boxes.push(box);
-        label.appendChild(box);
-        label.appendChild(document.createTextNode(' Share with all users'));
+        label.append(box, ' Share with all users');
         if (anchor.tagName === 'INPUT') {
-            anchor.insertAdjacentElement('afterend', label);
+            anchor.after(label);
         } else {
-            anchor.insertAdjacentElement('beforebegin', label);
+            anchor.before(label);
         }
     }
 
     function scan(root) {
-        if (root.matches && root.matches(ANCHOR_SELECTOR)) {
+        if (root.matches?.(ANCHOR_SELECTOR)) {
             attach(root);
         }
         if (root.querySelectorAll) {
-            Array.prototype.forEach.call(root.querySelectorAll(ANCHOR_SELECTOR), attach);
+            for (const anchor of root.querySelectorAll(ANCHOR_SELECTOR)) {
+                attach(anchor);
+            }
         }
     }
 
     function isPlaylistCreation(init) {
-        if (!init || !init.method || String(init.method).toUpperCase() !== 'POST') {
+        if (!init?.method || String(init.method).toUpperCase() !== 'POST') {
             return false;
         }
-        return typeof init.body === 'string' && init.body.indexOf('"playlist_name"') !== -1;
+        return typeof init.body === 'string' && init.body.includes('"playlist_name"');
     }
 
-    var chainedFetch = window.fetch;
-    window.fetch = function (input, init) {
-        try {
-            if (state.shared && typeof input === 'string' && isPlaylistCreation(init)) {
-                var u = new URL(input, window.location.origin);
-                if (u.origin === window.location.origin) {
-                    u.searchParams.set('playlist_public', 'true');
-                    input = u.pathname + u.search + u.hash;
-                }
-            }
-        } catch (e) {
-            // Never let the visibility choice break a request.
+    function withSharedFlag(input, init) {
+        if (!state.shared || typeof input !== 'string' || !isPlaylistCreation(init)) {
+            return input;
         }
-        return chainedFetch.call(this, input, init);
+        const url = new URL(input, window.location.origin);
+        if (url.origin !== window.location.origin) {
+            return input;
+        }
+        url.searchParams.set('playlist_public', 'true');
+        return url.pathname + url.search + url.hash;
+    }
+
+    const chainedFetch = window.fetch;
+    window.fetch = function (input, init) {
+        let target = input;
+        try {
+            target = withSharedFlag(input, init);
+        } catch (error) {
+            console.warn('Playlist visibility flag not applied:', error);
+        }
+        return chainedFetch.call(this, target, init);
     };
 
     scan(document);
-    new MutationObserver(function (mutations) {
-        mutations.forEach(function (m) {
-            Array.prototype.forEach.call(m.addedNodes, function (node) {
-                if (node.nodeType === 1) {
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
                     scan(node);
                 }
-            });
-        });
-    }).observe(document.body, { childList: true, subtree: true });
+            }
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
 })();

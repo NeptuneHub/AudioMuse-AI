@@ -231,7 +231,8 @@ class TestNavidromePassthrough:
             ms_context.reset_acting_user(token)
         kwargs = nd.call_args.kwargs
         assert kwargs['headers'] == {'Remote-User': 'chris'}
-        assert 'u' not in kwargs['params'] and 'p' not in kwargs['params']
+        assert 'u' not in kwargs['params']
+        assert 'p' not in kwargs['params']
 
     def test_no_acting_user_uses_service_account(self, nd):
         navidrome._navidrome_request('getPlaylists')

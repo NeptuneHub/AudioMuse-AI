@@ -61,10 +61,7 @@ def pg_dsn():
         pytest.skip("psycopg2 not importable")
     dsn = os.environ.get('AUDIOMUSE_TEST_DATABASE_URL')
     if dsn:
-        try:
-            psycopg2.connect(dsn).close()
-        except Exception as e:
-            pytest.fail(f"AUDIOMUSE_TEST_DATABASE_URL is set but not reachable, refusing to skip: {e}")
+        psycopg2.connect(dsn).close()
         yield dsn
         return
     try:

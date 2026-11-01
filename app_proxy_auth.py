@@ -182,7 +182,11 @@ def resolve_proxy_identity():
     groups = _parse_groups(request.headers.get(cfg.AUTH_PROXY_GROUPS_HEADER or 'Remote-Groups'))
     role = role_for_groups(groups)
     if role is None:
-        logger.warning("Proxy user %r is not in an AudioMuse group; access denied.", username)
+        logger.warning(
+            "A proxy-authenticated user is in neither %s nor %s; access denied.",
+            _cfg().AUTH_PROXY_ADMIN_GROUP or '(no admin group)',
+            _cfg().AUTH_PROXY_USER_GROUP or '(no user group)',
+        )
         raise ProxyAuthDenied("not in an AudioMuse group")
     return username, role
 
@@ -231,7 +235,8 @@ def bind_acting_user():
         g._passthrough_token = ms_context.begin_passthrough_request()
 
 
-def reset_acting_user(exc=None):
+def reset_acting_user(*_args):
+    """teardown_request hook: release everything bind_acting_user bound."""
     token = g.pop('_acting_user_token', None)
     if token is not None:
         ms_context.reset_acting_user(token)

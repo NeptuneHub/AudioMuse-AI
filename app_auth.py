@@ -67,6 +67,7 @@ from error.responses import json_error, json_exception, wants_json_error
 logger = logging.getLogger(__name__)
 
 _API_SETUP_PATH = '/api/setup'
+_TEXT_PLAIN = 'text/plain'
 
 
 def _original_request_is_https():
@@ -699,7 +700,7 @@ def check_auth_needed(jwt_secret):
     except ProxyAuthDenied:
         if request.path.startswith('/api/'):
             return json_error(ERR_FORBIDDEN, PROXY_DENIED_MESSAGE)
-        return current_app.response_class(PROXY_DENIED_MESSAGE, status=403, mimetype='text/plain')
+        return current_app.response_class(PROXY_DENIED_MESSAGE, status=403, mimetype=_TEXT_PLAIN)
     if proxy_identity is not None:
         csrf_error = proxy_csrf_error()
         if csrf_error:
@@ -877,7 +878,7 @@ def auth_setup_barrier():
                 )
             return current_app.response_class(
                 "The database is unavailable. Check the container logs and retry shortly.",
-                status=503, mimetype='text/plain',
+                status=503, mimetype=_TEXT_PLAIN,
             )
         # Handlers reached during first run (the media-server registry) read
         # this to know the wizard - not an authenticated admin - is the caller.
@@ -966,7 +967,7 @@ def login_page():
         if resolve_proxy_identity() is not None:
             return redirect(url_for('dashboard_bp.dashboard_page'))
     except ProxyAuthDenied:
-        return current_app.response_class(PROXY_DENIED_MESSAGE, status=403, mimetype='text/plain')
+        return current_app.response_class(PROXY_DENIED_MESSAGE, status=403, mimetype=_TEXT_PLAIN)
     return render_template('login.html', title='Login - AudioMuse-AI')
 
 
