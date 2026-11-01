@@ -22,6 +22,8 @@ Main Features:
   unscoped behaviour.
 * ``resolve_input_item_id(s)`` canonicalize caller-supplied seed/track ids
   (provider ids in, canonical ids out) before they reach the shared indexes.
+* ``create_instant_playlist_for_server`` raises ``PassthroughDeniedError`` when
+  the media server refused to act as the proxy-authenticated user.
 * ``create_instant_playlist_for_server`` translates canonical track ids to the
   target server's ids and creates the playlist there (identity for the default).
 * ``filter_rows_for_request_server`` / ``translate_ids_for_request`` rewrite result
@@ -41,6 +43,14 @@ logger = logging.getLogger(__name__)
 
 class UnknownServerError(ValueError):
     pass
+
+
+class PassthroughDeniedError(Exception):
+    """The media server refused to act as the proxy-authenticated user.
+
+    Not a ValueError on purpose: the playlist routes answer ValueError as a
+    rejected request (1012), while this is a media-server permission problem.
+    """
 
 _SECRET_CRED_KEYS = ('token', 'password', 'api_key')
 CRED_MASK = '__unchanged__'
@@ -199,6 +209,7 @@ def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_
     'skipped'}``.
     """
     from tasks import mediaserver
+    from tasks.mediaserver import context as ms_context
     from tasks.mediaserver import registry
 
     requested = len(item_ids)
@@ -210,6 +221,8 @@ def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_
     result = mediaserver.for_server(server_id).create_instant_playlist(
         playlist_name, item_ids, user_creds
     )
+    if not result and ms_context.passthrough_rejected():
+        raise PassthroughDeniedError("The media server refused to act as the signed-in user.")
     return {'result': result, 'requested': requested, 'mapped': mapped, 'skipped': skipped}
 
 

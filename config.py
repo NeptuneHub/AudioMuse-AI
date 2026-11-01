@@ -1802,6 +1802,40 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
 
+# --- Reverse-proxy (forward-auth) authentication ---
+# Lets an identity-aware reverse proxy (authentik, Authelia, oauth2-proxy, ...)
+# authenticate users. The proxy sends the username and group list as request
+# headers; AudioMuse maps the groups to its admin/user roles. Headers are only
+# honoured from AUTH_PROXY_TRUSTED_SOURCES (comma-separated IPs/CIDRs of the
+# proxy itself). The proxy MUST strip any client-supplied copies of these
+# headers. Local login and the API_TOKEN keep working as a fallback.
+AUTH_PROXY_ENABLED = os.environ.get("AUTH_PROXY_ENABLED", "False").lower() == "true"
+AUTH_PROXY_TRUSTED_SOURCES = os.environ.get("AUTH_PROXY_TRUSTED_SOURCES", "")
+# Optional shared secret the proxy adds to every request (header below). When
+# set it must match; combined with AUTH_PROXY_TRUSTED_SOURCES both must match.
+# At least one of the two must be configured, otherwise proxy auth stays off.
+AUTH_PROXY_SHARED_SECRET = os.environ.get("AUTH_PROXY_SHARED_SECRET", "")
+AUTH_PROXY_SECRET_HEADER = os.environ.get("AUTH_PROXY_SECRET_HEADER", "X-Proxy-Secret")
+AUTH_PROXY_USER_HEADER = os.environ.get("AUTH_PROXY_USER_HEADER", "Remote-User")
+AUTH_PROXY_GROUPS_HEADER = os.environ.get("AUTH_PROXY_GROUPS_HEADER", "Remote-Groups")
+# Members of this group become AudioMuse admins.
+AUTH_PROXY_ADMIN_GROUP = os.environ.get("AUTH_PROXY_ADMIN_GROUP", "")
+# When set, only members of this group (or the admin group) may use AudioMuse;
+# when empty, every user the proxy lets through gets the 'user' role.
+AUTH_PROXY_USER_GROUP = os.environ.get("AUTH_PROXY_USER_GROUP", "")
+# Where /logout sends proxy-authenticated users (e.g. the authentik
+# outpost sign-out URL). Empty -> back to the AudioMuse login page.
+AUTH_PROXY_LOGOUT_URL = os.environ.get("AUTH_PROXY_LOGOUT_URL", "")
+
+# --- Navidrome external-auth passthrough ---
+# When a request is proxy-authenticated, Navidrome Subsonic calls made while
+# serving it are sent with this header set to the AudioMuse username, so they
+# run as that Navidrome user (playlists land in their account). Requires
+# Navidrome's ExtAuth.TrustedSources to include the AudioMuse host IP.
+# Navidrome only: other media servers keep using the service account.
+NAVIDROME_EXTAUTH_ENABLED = os.environ.get("NAVIDROME_EXTAUTH_ENABLED", "False").lower() == "true"
+NAVIDROME_EXTAUTH_USER_HEADER = os.environ.get("NAVIDROME_EXTAUTH_USER_HEADER", "Remote-User")
+
 # True once the database overrides and the default music server were projected
 # onto these globals. False means this process is running on env values only.
 # NOTE: every SetupManager read swallows connection failures (table check ->

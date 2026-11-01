@@ -1757,3 +1757,13 @@ html.dark-mode body .toggle-slider {
         inset: -7px -4px;
     }
 }
+
+/* "Share with all users" choice next to playlist-name fields (reverse-proxy users). */
+.playlist-visibility {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0.35rem 0.75rem;
+    font-size: 0.9em;
+    white-space: nowrap;
+}

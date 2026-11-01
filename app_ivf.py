@@ -43,6 +43,7 @@ from app_helper import (
 from error.error_dictionary import (
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_PASSTHROUGH_DENIED,
     ERR_MEDIASERVER_PLAYLIST,
     ERR_NOT_FOUND,
     ERR_PLAYLIST_REJECTED,
@@ -794,6 +795,7 @@ def create_media_server_playlist():
     user_creds = data.get('user_creds') if isinstance(data, dict) else None
 
     from app_server_context import (
+        PassthroughDeniedError,
         resolve_request_server_id,
         create_instant_playlist_for_server,
     )
@@ -815,6 +817,8 @@ def create_media_server_playlist():
             info = create_instant_playlist_for_server(
                 playlist_name, final_track_ids, server_id, user_creds=user_creds
             )
+        except PassthroughDeniedError:
+            return json_error(ERR_MEDIASERVER_PASSTHROUGH_DENIED)
         except ValueError as exc:
             return json_exception(exc, ERR_PLAYLIST_REJECTED)
         result = info['result']

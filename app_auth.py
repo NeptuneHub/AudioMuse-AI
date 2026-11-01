@@ -388,6 +388,10 @@ def _confirm_password_error(data):
     """
     if getattr(g, 'auth_method', None) == 'bearer':
         return None
+    # Proxy-authenticated admins have no local password to re-enter; the
+    # identity provider owns re-authentication for them.
+    if getattr(g, 'auth_method', None) == 'proxy' and getattr(g, 'auth_role', None) == USER_ROLE_ADMIN:
+        return None
     username = getattr(g, 'auth_user', None)
     password = data.get('current_password') if isinstance(data, dict) else None
     if (
@@ -668,7 +672,7 @@ def check_auth_needed(jwt_secret):
     Returns None when the request is authenticated or auth is disabled.
     Returns a Response (redirect or JSON 401) otherwise.
     Populates ``flask.g.auth_role``, ``flask.g.auth_user`` and
-    ``flask.g.auth_method`` ('session' or 'bearer').
+    ``flask.g.auth_method`` ('proxy', 'session' or 'bearer').
     """
     import config as _cfg
 
@@ -678,6 +682,30 @@ def check_auth_needed(jwt_secret):
     g.auth_method = None
 
     if not _cfg.AUTH_ENABLED:
+        return None
+
+    # Reverse-proxy (forward-auth) identity from a trusted proxy. Checked
+    # first: when present it is authoritative for this request. Absent or
+    # untrusted headers fall through to the cookie / bearer checks below.
+    from app_proxy_auth import (
+        PROXY_DENIED_MESSAGE,
+        ProxyAuthDenied,
+        proxy_csrf_error,
+        resolve_proxy_identity,
+    )
+
+    try:
+        proxy_identity = resolve_proxy_identity()
+    except ProxyAuthDenied:
+        if request.path.startswith('/api/'):
+            return json_error(ERR_FORBIDDEN, PROXY_DENIED_MESSAGE)
+        return current_app.response_class(PROXY_DENIED_MESSAGE, status=403, mimetype='text/plain')
+    if proxy_identity is not None:
+        csrf_error = proxy_csrf_error()
+        if csrf_error:
+            return json_error(ERR_FORBIDDEN, csrf_error)
+        g.auth_user, g.auth_role = proxy_identity
+        g.auth_method = 'proxy'
         return None
 
     # Check valid JWT cookie. Never attempt verification with an empty/None
@@ -932,6 +960,13 @@ def login_page():
         return redirect(url_for('dashboard_bp.dashboard_page'))
     if _session_from_token(request.cookies.get('audiomuse_jwt'), _jwt_secret()) is not None:
         return redirect(url_for('dashboard_bp.dashboard_page'))
+    from app_proxy_auth import PROXY_DENIED_MESSAGE, ProxyAuthDenied, resolve_proxy_identity
+
+    try:
+        if resolve_proxy_identity() is not None:
+            return redirect(url_for('dashboard_bp.dashboard_page'))
+    except ProxyAuthDenied:
+        return current_app.response_class(PROXY_DENIED_MESSAGE, status=403, mimetype='text/plain')
     return render_template('login.html', title='Login - AudioMuse-AI')
 
 
@@ -1050,9 +1085,18 @@ def logout_endpoint():
       302:
         description: Browser logout - redirect to /login.
     """
+    import config as _cfg
+
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    proxy_logout = _cfg.AUTH_PROXY_LOGOUT_URL if _cfg.AUTH_PROXY_ENABLED else ''
     if is_ajax:
-        resp = make_response(jsonify({"status": "logged_out"}), 200)
+        body = {"status": "logged_out"}
+        if proxy_logout:
+            body["redirect"] = proxy_logout
+        resp = make_response(jsonify(body), 200)
+    elif proxy_logout:
+        # The IdP session must end too, or the proxy logs the user straight back in.
+        resp = make_response(redirect(proxy_logout))
     else:
         resp = make_response(redirect(url_for('login_page')))
     resp.delete_cookie('audiomuse_jwt', path='/', samesite='Strict')
@@ -1336,7 +1380,11 @@ def init_app(app, setup_manager, jwt_secret_getter):
     global _jwt_secret_getter
     _jwt_secret_getter = jwt_secret_getter
 
+    from app_proxy_auth import bind_acting_user, reset_acting_user
+
     app.before_request(auth_setup_barrier)
+    app.before_request(bind_acting_user)
+    app.teardown_request(reset_acting_user)
     app.add_url_rule('/login', endpoint='login_page', view_func=login_page, methods=['GET'])
     app.add_url_rule('/auth', endpoint='auth_endpoint', view_func=auth_endpoint, methods=['POST'])
     app.add_url_rule(
