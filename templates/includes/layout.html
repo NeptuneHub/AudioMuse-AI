@@ -37,6 +37,7 @@
          the page itself, so no /api/servers round trip is needed after load. -->
     {% if nav_music_servers %}<script type="application/json" id="server-selector-data">{{ nav_music_servers|tojson }}</script>{% endif %}
     <script src="{{ url_for('static', filename='server_selector.js') }}?v={{ app_version }}"></script>
+    {% if auth_enabled and setup_saved %}<script src="{{ url_for('static', filename='session_guard.js') }}?v={{ app_version }}"></script>{% endif %}
 
     {% block headAdditions %}
         {# head additions from template will be set here #}
