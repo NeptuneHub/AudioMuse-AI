@@ -157,6 +157,15 @@ app.add_template_filter(_min_bound_filter, 'min_bound')
 app.add_template_filter(_max_bound_filter, 'max_bound')
 
 
+def _display_group(auth_role):
+    """The identity-provider group that granted the current proxy user's role,
+    for the sidebar account block; None for local sessions and API callers."""
+    if getattr(g, 'auth_method', None) != 'proxy':
+        return None
+    group = config.AUTH_PROXY_ADMIN_GROUP if auth_role == 'admin' else config.AUTH_PROXY_USER_GROUP
+    return group or None
+
+
 @app.context_processor
 def inject_globals():
     from config import CLAP_ENABLED, LYRICS_ENABLED, NEURAL_FINGERPRINT_ENABLED
@@ -208,6 +217,11 @@ def inject_globals():
         setup_saved=not check_setup_needed(),
         is_admin=(auth_role == 'admin'),
         current_user=current_user,
+        auth_method=getattr(g, 'auth_method', None),
+        auth_group=_display_group(auth_role),
+        playlist_visibility_choice=(
+            getattr(g, 'auth_method', None) == 'proxy' and config.NAVIDROME_EXTAUTH_ENABLED
+        ),
         plugin_menu_items=plugin_menu_items,
         nav_music_servers=nav_music_servers,
         search_page_size=SEARCH_PAGE_SIZE,

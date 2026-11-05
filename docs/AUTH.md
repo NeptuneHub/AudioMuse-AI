@@ -93,3 +93,11 @@ The media server plugins authenticate with the `API_TOKEN`, so make sure the plu
 > The Navidrome plugin supports it from release v7. See [NAVIDROME](NAVIDROME.md) for the full setup.
 >
 > The Jellyfin plugin supports it from `v0.1.51` (for Jellyfin 10.10.7) and `v0.1.52` (for Jellyfin 10.11).
+
+## Reverse proxy authentication (SSO)
+
+AudioMuse-AI can delegate login to an identity-aware reverse proxy (authentik,
+Authelia, oauth2-proxy) with group-based `admin`/`user` roles, and can forward
+the identity to Navidrome so actions run as that Navidrome user. See
+[Reverse proxy authentication](REVERSE_PROXY_AUTH.md) for setup, security notes
+and an authentik + Caddy example.

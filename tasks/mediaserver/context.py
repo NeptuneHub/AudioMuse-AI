@@ -21,6 +21,11 @@ Main Features:
 * When a server is bound, ``active_creds`` uses the server's creds as the base
   and lets caller-supplied creds override only non-empty fields, so a bound
   secondary server's URL/token always win over stale defaults.
+* ``set_acting_user`` / ``acting_user`` carry the proxy-authenticated user of
+  a request so providers that support it (Navidrome ExtAuth) run calls as that
+  media-server user; ``playlist_public`` carries whether that user chose to
+  share the playlists created in the request (private by default), and
+  ``passthrough_rejected`` whether the media server refused to act as that user.
 """
 
 import contextvars
@@ -82,3 +87,60 @@ def active_libraries(default=""):
 def active_server_id():
     server = _active_server.get()
     return server.get("server_id") if server else None
+
+
+_acting_user = contextvars.ContextVar("audiomuse_acting_user", default=None)
+
+
+def set_acting_user(username):
+    """Bind the proxy-authenticated AudioMuse user for the current request."""
+    return _acting_user.set(username or None)
+
+
+def reset_acting_user(token):
+    _acting_user.reset(token)
+
+
+def acting_user():
+    """Return the user a request is served for when the identity came from a
+    trusted reverse proxy, else None (always None in worker jobs, so background
+    tasks keep using the service account)."""
+    return _acting_user.get()
+
+
+_playlist_public = contextvars.ContextVar("audiomuse_playlist_public", default=False)
+
+
+def set_playlist_public(public):
+    """Bind whether playlists created for the acting user are shared."""
+    return _playlist_public.set(bool(public))
+
+
+def reset_playlist_public(token):
+    _playlist_public.reset(token)
+
+
+def playlist_public():
+    """True when the acting user asked to share the playlist; private by default."""
+    return _playlist_public.get()
+
+
+_passthrough_rejected = contextvars.ContextVar("audiomuse_passthrough_rejected", default=False)
+
+
+def begin_passthrough_request():
+    """Start a request with no rejected passthrough call; returns the reset token."""
+    return _passthrough_rejected.set(False)
+
+
+def end_passthrough_request(token):
+    _passthrough_rejected.reset(token)
+
+
+def mark_passthrough_rejected():
+    """Record that the media server refused to act as the acting user."""
+    _passthrough_rejected.set(True)
+
+
+def passthrough_rejected():
+    return _passthrough_rejected.get()
