@@ -9,12 +9,12 @@
 """macOS packaging steps for the standalone build.
 
 Platform module invoked by ``build.py`` to stage the macOS ``.app``: it
-generates the ``.icns`` icon, ad-hoc code-signs the nested binaries and dylibs,
-and assembles the distributable with the unsigned-app authorization README.
+ad-hoc code-signs the nested binaries and dylibs, and assembles the
+distributable with the unsigned-app authorization README.
 The Linux/Windows modules are the platform-specific siblings.
 
 Main Features:
-* Generates icons and ad-hoc signs bundled binaries (postgres, dylibs).
+* Ad-hoc signs bundled binaries (postgres, dylibs).
 * Ships a README instructing users to clear the quarantine xattr on the app.
 """
 
@@ -34,8 +34,8 @@ After this you can just open it like any other application.
 
 
 def prepare(ctx):
-    print("==> Generating icons from screenshot/audiomuseai.png")
-    subprocess.run(["bash", "native-build/macos/make_icns.sh"], check=True, cwd=str(ctx.root))
+    # The app and menu bar icons are committed in native-build/macos/assets.
+    pass
 
 
 def _retarget_shared_libomp(app):
