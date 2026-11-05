@@ -10,19 +10,20 @@ Multiple information can be found in the [docs](docs/) folder.
 
 > Issues, discussions, PRs, comments in code, and any other interaction MUST be written in English. We reserve the right not to reply to and to close them if they are not.
 
+> The maintainer reserves the right to close any contribution that does not follow these rules.
+
 ## High-Level Architecture
 To contribute effectively, it is crucial to understand that AudioMuse-AI is not a monolithic program. It is a multi-service, containerized application designed for robustness, scalability, and a clear separation of concerns. This architecture is composed of several core components that work in concert.
 * **Flask Web Application (audiomuse-ai-flask):** Here is the front-end of the application, intended as both an HTML page and an API. Here also lives the logic of the services that are synchronous, such as getting similar songs.
 * **Queue Workers (audiomuse-ai-worker):** This is for tasks that need to be executed asynchronously, such as analyzing songs, performing clustering, or reconstructing the index for similar song searches. With a PostgreSQL-backed queue and a Kubernetes architecture, it is possible to spawn more workers to increase scalability and availability.
-* **Task Queue (`taskqueue/`):** the `task_status` table in PostgreSQL, where Flask writes the job and Workers claim it. There is no separate broker.
-* **PostgreSQL Database (postgres-deployment):** The database. Not only the analysis live here but also the log status o the async task.
+* **PostgreSQL Database (postgres-deployment):** The database. Not only the analysis live here but also the log status and the async task queue.
 
 ## Supported Architecture and Mediaserver
-Remember that this software support both Intel and Arm architecture. So avoid code that will not work on both except for very specific case. If you're not able to test on both architecture, add this in the PR description.
+AudioMuse-AI support both Intel and Arm architecture. Avoid code that will not work on both except for very specific case. If you're not able to test on both architecture, add this in the PR description.
 
-Remember that AudioMuse-AI is also shipped as native app for MacOS, Linux and Windows and your change must avoid to brake them-
+AudioMuse-AI is also shipped as native app for MacOS, Linux and Windows and your change must avoid to brake them-
 
-Remember also that this application support multiple mediaserver. So try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
+Multiple mediaserver are supported. Try to don't introduce change that can distrupt one or the other mediaserver. If you're not able to test on all mediaserver, add this in the PR description.
 
 
 ## **The Codebase Map**
@@ -50,7 +51,7 @@ The development environment for AudioMuse-AI is fully containerized to ensure co
 
 * **Git:** For version control and interacting with the GitHub repository.  
 * **Docker and Docker Compose:** For building and running the containerized application stack.
-* ***Python dependencies:** Need to run unit and integration test locally before push the code.
+* **Python dependencies:** Need to run unit and integration test locally before push the code.
 
 ## **How to compile**
 
@@ -79,6 +80,13 @@ for both `flask` and `worker` container. Then you can just run&build with this c
 ```
 docker-compose up --build -d
 ```
+## Use of AI
+AudioMuse-AI is developed with the help of AI, so its use is accepted, but it must be done responsibly.
+
+- Issue and PR descriptions MUST be written by a human who understands and can explain the problem, proposal, and changes being submitted. At least 2/3 of the issue and PR description MUST be written by the human. AVOID wall of text full written by AI.
+- AI can be used to develop bug fixes and new functionality, provided that the contributor understands, reviews, and takes responsibility for 100% of the submitted code.
+- All changes MUST include appropriate unit, integration, and end-to-end tests. Contributors MUST also manually test the running software under different scenarios before submitting a PR.
+- PRs submitted autonomously by AI agents or bots without meaningful human supervision will be **CLOSED AUTOMATICALLY, WITHOUT REVIEW**.
 
 ## **PR**
 ### Before You Start
@@ -105,8 +113,6 @@ When submitting a pull request, ensure:
 
 > Important: Prefear opening small PR, focused on specific functionality that directly add value. Avoid to change multiple unrelated functionality to facilitate test.
 
-> Contributions generated with AI are welcome, provided that a qualified human reviewer verifies, tests, and understands the code. AI tools can assist in development, but all pull requests must be submitted by someone capable of ensuring correctness and maintainability. 
-
 > Missing requirements may lead to requests for additional information and, if not provided, the PR may be closed. Regardless of the above, the final decision to merge a pull request is at the maintainer’s discretion.
 
 ### Linting, Code Style and test
@@ -132,6 +138,7 @@ All of this is enforced by CI (`.github/workflows/lint-*.yml`), so run it locall
 6. Once ready for review, click **"Ready for review"** in the PR
 
 This workflow helps avoid spending time on PRs that may not align with project goals.
+
 
 ##  **Related Repositories** 
 Below the full list of related repository. When you submit a PR avoid to introduce change that could brake one or more of this repository:
