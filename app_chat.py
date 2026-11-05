@@ -84,6 +84,7 @@ def chat_home():
         active='chat',
         instant_playlist_n_results_default=config.INSTANT_PLAYLIST_DEFAULT_N_RESULTS,
         instant_playlist_max_n_results=config.INSTANT_PLAYLIST_MAX_N_RESULTS,
+        instant_playlist_max_input_chars=config.INSTANT_PLAYLIST_MAX_INPUT_CHARS,
     )
 
 
@@ -160,14 +161,20 @@ def chat_config_defaults_api():
     ), 200
 
 
-def _reject_missing_user_input(data):
-    # Shared guard for both chat endpoints: 400 on non-dict body or blank userInput.
+def _reject_invalid_user_input(data):
+    # Shared guard for both chat endpoints: 400 on non-dict body, blank userInput,
+    # or userInput longer than INSTANT_PLAYLIST_MAX_INPUT_CHARS.
     if (
         not isinstance(data, dict)
         or not isinstance(data.get('userInput'), str)
         or not data['userInput'].strip()
     ):
         return json_error(ERR_INVALID_REQUEST, "Missing userInput in request")
+    max_chars = config.INSTANT_PLAYLIST_MAX_INPUT_CHARS
+    if len(data['userInput']) > max_chars:
+        return json_error(
+            ERR_INVALID_REQUEST, f"userInput is too long (max {max_chars} characters)"
+        )
     return None
 
 
@@ -227,7 +234,7 @@ def _missing_cloud_api_key(ai_provider, ai_secrets):
                         'properties': {
                             'userInput': {
                                 'type': 'string',
-                                'description': "The user's natural language request for a playlist.",
+                                'description': "The user's natural language request for a playlist. Longer than INSTANT_PLAYLIST_MAX_INPUT_CHARS characters (default 2000) is rejected with 400.",
                                 'example': "Songs for a rainy afternoon",
                             },
                             'ai_provider': {
@@ -327,7 +334,7 @@ def _missing_cloud_api_key(ai_provider, ai_secrets):
                 },
             },
             '400': {
-                'description': 'Bad Request - Missing input or invalid parameters.',
+                'description': 'Bad Request - Missing or too long input, or invalid parameters.',
                 'content': {
                     'application/json': {
                         'schema': {'type': 'object', 'properties': {'error': {'type': 'string'}}}
@@ -353,7 +360,7 @@ def chat_playlist_api():
     Non-streaming variant: runs the whole pipeline then returns the full JSON.
     """
     data = request.get_json()
-    err = _reject_missing_user_input(data)
+    err = _reject_invalid_user_input(data)
     if err:
         return err
     try:
@@ -385,7 +392,7 @@ def chat_playlist_stream_api():
     value (the response object) is delivered as the ``done`` event.
     """
     data = request.get_json()
-    err = _reject_missing_user_input(data)
+    err = _reject_invalid_user_input(data)
     if err:
         return err
     try:

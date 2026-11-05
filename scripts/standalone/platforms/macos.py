@@ -11,7 +11,9 @@
 Platform module invoked by ``build.py`` to stage the macOS ``.app``: it
 ad-hoc code-signs the nested binaries and dylibs, and assembles the
 distributable with the unsigned-app authorization README.
-The Linux/Windows modules are the platform-specific siblings.
+The Linux/Windows modules are the platform-specific siblings. ``prepare``
+is a no-op: the app and menu bar icons are committed in
+``native-build/macos/assets``.
 
 Main Features:
 * Ad-hoc signs bundled binaries (postgres, dylibs).
@@ -34,7 +36,6 @@ After this you can just open it like any other application.
 
 
 def prepare(ctx):
-    # The app and menu bar icons are committed in native-build/macos/assets.
     pass
 
 

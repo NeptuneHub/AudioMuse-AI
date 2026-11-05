@@ -520,7 +520,7 @@ def _tempo_hints(text: str, hints: Dict, notes: List[str]) -> None:
 def _key_hints(text: str, hints: Dict, notes: List[str]) -> None:
     for m in _KEY_SCALE_RE.finditer(text):
         note, accidental, mode = m.group(1), (m.group(2) or '').strip().lower(), m.group(3).lower()
-        preceding = text[:m.start()].rstrip().lower()
+        preceding = text[max(0, m.start() - 40):m.start()].rstrip().lower()
         if note == 'A' and not accidental and not re.search(r"\b(?:in|of)$", preceding):
             continue
         accidental = {'sharp': '#', '\u266f': '#', 'flat': 'b', '\u266d': 'b'}.get(accidental, accidental)
@@ -594,7 +594,7 @@ def _duration_hints(text: str, hints: Dict, notes: List[str]) -> None:
         )
 
     for m in _TOTAL_LENGTH_RE.finditer(text):
-        if _TOTAL_LENGTH_GUARD_RE.search(text[:m.start()]):
+        if _TOTAL_LENGTH_GUARD_RE.search(text[max(0, m.start() - 40):m.start()]):
             continue
         number = _word_number(m.group(1))
         if number is None:
