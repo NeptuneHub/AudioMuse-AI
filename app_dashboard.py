@@ -1062,7 +1062,7 @@ def _refresh_dashboard_block(app, collect, label):
                 return
 
             _merge_dashboard_content(db, content)
-        logger.info("%s refreshed in %.1fs", label, time.time() - started)
+        logger.debug("%s refreshed in %.1fs", label, time.time() - started)
     except Exception:
         logger.exception("%s refresh failed", label)
 
