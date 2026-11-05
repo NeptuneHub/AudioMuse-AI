@@ -170,18 +170,17 @@ class TestUserInputLengthLimit:
 
     @pytest.mark.parametrize('path', ENDPOINTS)
     def test_crafted_slow_input_is_rejected_before_the_pipeline(self, app_chat_mod, client, path):
-        # ~205 KB of key phrases: the payload of the quadratic hint-parsing DoS report.
+        repeated_key_phrases = 'A major ' * 26_000
         called = {'run': 0}
         with patch.object(app_chat_mod, '_run_chat_pipeline', _counting_pipeline(called)):
-            resp = client.post(path, json={'userInput': 'A major ' * 26_000})
+            resp = client.post(path, json={'userInput': repeated_key_phrases})
 
         assert resp.status_code == 400
         assert called['run'] == 0
 
-    def test_default_limit_fits_a_long_real_prompt(self, app_chat_mod):
-        # The longest real prompt found in the wild (a Spotify "Prompted Playlist") is
-        # ~1,560 characters; the default must leave room for it.
-        assert app_chat_mod.config.INSTANT_PLAYLIST_MAX_INPUT_CHARS >= 1600
+    def test_default_limit_leaves_room_for_long_detailed_prompts(self, app_chat_mod):
+        long_detailed_prompt_chars = 1600
+        assert app_chat_mod.config.INSTANT_PLAYLIST_MAX_INPUT_CHARS >= long_detailed_prompt_chars
 
     def test_chat_page_gets_the_limit(self, app_chat_mod, monkeypatch):
         captured = {}
