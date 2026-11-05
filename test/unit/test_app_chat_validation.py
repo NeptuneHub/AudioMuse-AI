@@ -13,9 +13,12 @@ user-input validation rejects bad requests and lets valid ones proceed.
 
 Main Features:
 * Non-dict bodies and missing, non-string, empty, or blank user input return 400.
+* User input longer than INSTANT_PLAYLIST_MAX_INPUT_CHARS returns 400 before the
+  pipeline runs; the chat page gets the same limit for its textarea.
 * A well-formed body passes validation into the handler.
 """
 
+import pathlib
 import sys
 import types
 import json
@@ -130,3 +133,67 @@ class TestValidBodyProceeds:
         assert resp.status_code != 400
         assert called['run'] == 1
         assert body is not None
+
+
+def _counting_pipeline(called):
+    def _fake_run(data, log_messages):
+        called['run'] += 1
+        yield from ()
+        return ({'message': 'stub', 'query_results': None}, 200)
+
+    return _fake_run
+
+
+class TestUserInputLengthLimit:
+    @pytest.mark.parametrize('path', ENDPOINTS)
+    def test_input_at_the_limit_passes(self, app_chat_mod, client, path, monkeypatch):
+        monkeypatch.setattr(app_chat_mod.config, 'INSTANT_PLAYLIST_MAX_INPUT_CHARS', 20)
+        called = {'run': 0}
+        with patch.object(app_chat_mod, '_run_chat_pipeline', _counting_pipeline(called)):
+            resp = client.post(path, json={'userInput': 'x' * 20})
+            resp.get_data(as_text=True)
+
+        assert resp.status_code != 400
+        assert called['run'] == 1
+
+    @pytest.mark.parametrize('path', ENDPOINTS)
+    def test_input_over_the_limit_is_rejected(self, app_chat_mod, client, path, monkeypatch):
+        monkeypatch.setattr(app_chat_mod.config, 'INSTANT_PLAYLIST_MAX_INPUT_CHARS', 20)
+        called = {'run': 0}
+        with patch.object(app_chat_mod, '_run_chat_pipeline', _counting_pipeline(called)):
+            resp = client.post(path, json={'userInput': 'x' * 21})
+
+        assert resp.status_code == 400
+        payload = json.loads(resp.get_data(as_text=True))
+        assert payload.get('error') == 'userInput is too long (max 20 characters)'
+        assert called['run'] == 0
+
+    @pytest.mark.parametrize('path', ENDPOINTS)
+    def test_crafted_slow_input_is_rejected_before_the_pipeline(self, app_chat_mod, client, path):
+        # ~205 KB of key phrases: the payload of the quadratic hint-parsing DoS report.
+        called = {'run': 0}
+        with patch.object(app_chat_mod, '_run_chat_pipeline', _counting_pipeline(called)):
+            resp = client.post(path, json={'userInput': 'A major ' * 26_000})
+
+        assert resp.status_code == 400
+        assert called['run'] == 0
+
+    def test_default_limit_fits_a_long_real_prompt(self, app_chat_mod):
+        # The longest real prompt found in the wild (a Spotify "Prompted Playlist") is
+        # ~1,560 characters; the default must leave room for it.
+        assert app_chat_mod.config.INSTANT_PLAYLIST_MAX_INPUT_CHARS >= 1600
+
+    def test_chat_page_gets_the_limit(self, app_chat_mod, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(app_chat_mod, 'render_template', lambda name, **kw: captured.update(kw) or '')
+        monkeypatch.setattr(app_chat_mod.config, 'INSTANT_PLAYLIST_MAX_INPUT_CHARS', 1234)
+        app_chat_mod.chat_home()
+        assert captured['instant_playlist_max_input_chars'] == 1234
+
+    def test_chat_page_textarea_and_submit_enforce_the_limit(self):
+        page = (pathlib.Path(__file__).resolve().parents[2] / 'templates' / 'chat.html').read_text(
+            encoding='utf-8'
+        )
+        assert 'maxlength="{{ instant_playlist_max_input_chars }}"' in page
+        assert 'const maxInputChars = {{ instant_playlist_max_input_chars }};' in page
+        assert 'userInput.value.length > maxInputChars' in page

@@ -246,9 +246,9 @@
                         <span class="tooltip-text">Describe the vibe you want! Examples: "Upbeat songs for a workout", "Calm acoustic music for studying", "Dark and moody electronic". The AI will find songs that match your description.</span>
                     </span>
                 </label>
-                <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" required></textarea>
+                <textarea id="userInput" placeholder="e.g., Upbeat indie rock for a summer road trip" rows="4" maxlength="{{ instant_playlist_max_input_chars }}" required></textarea>
                 <p class="italic" style="margin-top: 0.5rem; font-size: 0.85em; color: var(--text-muted);">
-                    Tip: name 1-3 specific songs or artists, then add filters (genre, year, voice, mood). Shorter is better.
+                    Tip: name 1-3 specific songs or artists, then add filters (genre, year, voice, mood). Shorter is better (max {{ instant_playlist_max_input_chars }} characters).
                 </p>
 
                 <div class="suggestions-container">
@@ -318,6 +318,7 @@
             let globalConfig = {};
             let defaultN = {{ instant_playlist_n_results_default }};
             let maxN = {{ instant_playlist_max_n_results }};
+            const maxInputChars = {{ instant_playlist_max_input_chars }};
             let loadingTimer = null;
             let liveState = null;
             const CHAT_URL = "{{ url_for('chat_bp.chat_playlist_api') }}";
@@ -434,6 +435,10 @@
 
                 if (!userInput.value.trim()) {
                     showError('Please enter your music preference.');
+                    return;
+                }
+                if (userInput.value.length > maxInputChars) {
+                    showError(`Your request is too long (max ${maxInputChars} characters). Shorter is better.`);
                     return;
                 }
 

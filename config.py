@@ -1773,6 +1773,10 @@ ENABLE_PROXY_FIX = os.environ.get("ENABLE_PROXY_FIX", "False").lower() == "true"
 # 1 but never the ceiling, so a direct API caller can ask for any number.
 INSTANT_PLAYLIST_DEFAULT_N_RESULTS = int(os.environ.get("INSTANT_PLAYLIST_DEFAULT_N_RESULTS", "50"))
 INSTANT_PLAYLIST_MAX_N_RESULTS = int(os.environ.get("INSTANT_PLAYLIST_MAX_N_RESULTS", "200"))
+# Longest chat request (userInput, in characters) the chat endpoints accept. Unlike
+# the song-count max above this one IS enforced by the API (400 before any parsing);
+# the chat page also uses it as its textarea's maxlength.
+INSTANT_PLAYLIST_MAX_INPUT_CHARS = int(os.environ.get("INSTANT_PLAYLIST_MAX_INPUT_CHARS", "2000"))
 # Max songs from a single artist in the instant playlist (diversity enforcement)
 MAX_SONGS_PER_ARTIST_PLAYLIST = int(os.environ.get("MAX_SONGS_PER_ARTIST_PLAYLIST", "5"))
 # Enable energy-arc shaping for playlist ordering (gentle start -> peak -> cool down)

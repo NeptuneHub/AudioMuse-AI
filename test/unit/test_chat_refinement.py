@@ -79,6 +79,44 @@ class TestTempoAndKeyHints:
         assert 'key' not in h
 
 
+class TestHintScanIsBounded:
+    """Regression for the quadratic-time chat DoS: each key or playlist-length match
+    looks at a short window before it, never at the whole prefix of the request."""
+
+    def test_key_check_reads_a_short_window(self, monkeypatch):
+        lengths = []
+        real_search = planner.re.search
+
+        def spy(pattern, string, *args, **kwargs):
+            if pattern == r"\b(?:in|of)$":
+                lengths.append(len(string))
+            return real_search(pattern, string, *args, **kwargs)
+
+        monkeypatch.setattr(planner.re, 'search', spy)
+        planner._key_hints('A major ' * 2000, {}, [])
+        assert len(lengths) == 2000 and max(lengths) <= 40
+
+    def test_length_guard_reads_a_short_window(self, monkeypatch):
+        lengths = []
+        guard = planner._TOTAL_LENGTH_GUARD_RE
+
+        class Spy:
+            def search(self, string, *args):
+                lengths.append(len(string))
+                return guard.search(string, *args)
+
+        monkeypatch.setattr(planner, '_TOTAL_LENGTH_GUARD_RE', Spy())
+        planner._duration_hints('under 1 hour playlist ' * 2000, {}, [])
+        assert len(lengths) == 2000 and max(lengths) <= 40
+
+    def test_phrases_deep_in_a_long_request_still_parse(self):
+        preamble = 'I am hosting a dinner party and want something warm and relaxed. ' * 30
+        assert _hints(preamble + 'songs in A major').get('key') == 'A'
+        assert 'key' not in _hints(preamble + 'A major hits')
+        assert _hints(preamble + 'a 2 hour playlist').get('total_seconds') == 7200.0
+        assert 'total_seconds' not in _hints(preamble + 'under 2 hours playlist')
+
+
 class TestNegationAndGenreHints:
     @pytest.mark.parametrize(
         'text, excluded',
