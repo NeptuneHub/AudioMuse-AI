@@ -10,10 +10,11 @@
 # actually existed. This workflow instead runs *after* a build finishes
 # (``workflow_run``) and emits a line ONLY for a build that has a SUCCESSFUL
 # run, after VERIFYING via the API that:
-#   * the latest run of that build on the PR branch concluded ``success``, and
+#   * the latest run of that build on the PR's own commits concluded ``success``, and
 #   * for artifact builds (macOS / Linux), the named artifact actually exists.
 # In-progress and failed builds produce no line. It keys off the latest
-# SUCCESSFUL run on the PR branch, so when a new build is triggered the existing
+# SUCCESSFUL run on the PR's own commits (never a previous PR that used the same
+# branch name, e.g. devel), so when a new build is triggered the existing
 # link stays until the new one succeeds -- a working link is never replaced by a
 # placeholder, and users always have something to test.
 #
@@ -75,7 +76,18 @@ jobs:
               return;
             }
 
-            // ---- Latest SUCCESSFUL run per build, scoped to the PR branch ----
+            // ---- Commits of THIS PR -------------------------------------------
+            // The head branch (e.g. devel) is reused across PRs, so a run on it
+            // may belong to a previous PR. listCommits caps at 250 commits, so
+            // the triggering head commit is added explicitly.
+            const prCommits = await github.paginate(
+              github.rest.pulls.listCommits,
+              { owner, repo, pull_number, per_page: 100 },
+            );
+            const prShas = new Set(prCommits.map(c => c.sha));
+            prShas.add(headSha);
+
+            // ---- Latest SUCCESSFUL run per build, on this PR's commits -------
             const headBranch = context.payload.workflow_run.head_branch;
             const allRuns = await github.paginate(
               github.rest.actions.listWorkflowRunsForRepo,
@@ -84,6 +96,7 @@ jobs:
             const latestSuccessfulRun = (wfFile) => {
               const c = allRuns.filter(r =>
                 r.path === `.github/workflows/${wfFile}` &&
+                prShas.has(r.head_sha) &&
                 r.status === 'completed' && r.conclusion === 'success');
               c.sort((a, b) => b.run_number - a.run_number);
               return c[0] || null;
