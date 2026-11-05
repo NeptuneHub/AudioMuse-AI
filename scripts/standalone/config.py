@@ -60,7 +60,7 @@ PLATFORMS = {
         "use_pgserver": "always",
         "console": False,
         "exe_icon": None,
-        "extra_datas": [("native-build/macos/assets", "assets")],
+        "extra_datas": [("native-build/macos/assets/menubar-icon.png", "assets")],
         "extra_hiddenimports": ["numeric_bootstrap", "rumps"],
         "collect_submodules": ["macos", "native_common"],
         "excludes_base": [],
