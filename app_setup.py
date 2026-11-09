@@ -131,7 +131,7 @@ AI_PROMPT_EXAMPLE_SONGS = (
 # these as <select> dropdowns and the save path normalizes the value to the
 # canonical casing so legacy free-text entries (e.g. "DBSCAN") are cleaned up.
 ENUM_FIELD_OPTIONS = {
-    'AI_MODEL_PROVIDER': ['NONE', 'OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL'],
+    'AI_MODEL_PROVIDER': ['NONE', 'OLLAMA', 'OPENAI', 'GEMINI', 'MISTRAL', 'LITELLM'],
     'CLUSTER_ALGORITHM': ['kmeans', 'dbscan', 'gmm', 'spectral'],
     'AI_NAMING_PROMPT_MODE': ['concept', 'title'],
     'PATH_DISTANCE_METRIC': ['angular', 'euclidean'],

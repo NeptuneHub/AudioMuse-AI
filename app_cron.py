@@ -116,6 +116,9 @@ from config import (
     GEMINI_MODEL_NAME,
     MISTRAL_API_KEY,
     MISTRAL_MODEL_NAME,
+    LITELLM_API_KEY,
+    LITELLM_MODEL_NAME,
+    LITELLM_API_BASE,
     ENABLE_CLUSTERING_EMBEDDINGS,
 )
 from error.error_dictionary import (
@@ -834,6 +837,9 @@ def _dispatch_cron_row(db, r):
             "gemini_model_name_param": GEMINI_MODEL_NAME,
             "mistral_api_key_param": MISTRAL_API_KEY,
             "mistral_model_name_param": MISTRAL_MODEL_NAME,
+            "litellm_api_key_param": LITELLM_API_KEY,
+            "litellm_model_name_param": LITELLM_MODEL_NAME,
+            "litellm_api_base_param": LITELLM_API_BASE,
             "top_n_moods_for_clustering_param": int(TOP_N_MOODS),
             "enable_clustering_embeddings_param": bool(ENABLE_CLUSTERING_EMBEDDINGS),
             "output_server_scope": server_scope,

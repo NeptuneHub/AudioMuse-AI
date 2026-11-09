@@ -977,6 +977,7 @@ def get_config_endpoint():
             "openai_model_name": config.OPENAI_MODEL_NAME,
             "gemini_model_name": config.GEMINI_MODEL_NAME,
             "mistral_model_name": config.MISTRAL_MODEL_NAME,
+            "litellm_model_name": config.LITELLM_MODEL_NAME,
             "top_n_moods": config.TOP_N_MOODS,
             "mood_labels": config.MOOD_LABELS,
             "clustering_runs": config.CLUSTERING_RUNS,

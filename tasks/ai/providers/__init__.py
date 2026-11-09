@@ -9,11 +9,11 @@
 """Per-provider LLM API client subpackage.
 
 Collects the concrete transport clients that ``tasks.ai.api`` dispatches to:
-``gemini`` (google-genai), ``mistral`` (mistralai SDK), and ``openai`` (the
+``gemini`` (google-genai), ``mistral`` (mistralai SDK), ``litellm`` (LiteLLM SDK), and ``openai`` (the
 OpenAI-compatible HTTP path shared by OpenAI, OpenRouter, and Ollama). Each
 module exposes ``generate_text`` and ``call_with_tools`` with a uniform shape.
 
 Main Features:
-* Namespace package only - callers import ``gemini``/``mistral``/``openai`` directly; nothing is re-exported here.
+* Namespace package only - callers import ``gemini``/``mistral``/``litellm``/``openai`` directly; nothing is re-exported here.
 * Isolates vendor-specific request/response quirks so the routing layer stays provider-agnostic.
 """

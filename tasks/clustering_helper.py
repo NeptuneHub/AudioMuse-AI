@@ -172,6 +172,9 @@ def _try_ai_name_playlist(
     primary_genre=None,
     naming_mode=None,
     title_prompt=None,
+    litellm_key=None,
+    litellm_model=None,
+    litellm_url=None,
 ):
     ai_config = {
         'provider': ai_provider,
@@ -184,6 +187,9 @@ def _try_ai_name_playlist(
         'gemini_model': gemini_model,
         'mistral_key': mistral_key,
         'mistral_model': mistral_model,
+        'litellm_key': litellm_key,
+        'litellm_model': litellm_model,
+        'litellm_url': litellm_url,
     }
     return _name_playlist_with_ai_config(
         original_name,

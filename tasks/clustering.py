@@ -384,6 +384,9 @@ def run_clustering_task(
     enable_clustering_embeddings_param=True,
     output_server_scope="all",
     auto_calibration_param=None,
+    litellm_api_key_param=None,
+    litellm_model_name_param=None,
+    litellm_api_base_param=None,
 ):
     from flask_app import app
 
@@ -404,6 +407,7 @@ def run_clustering_task(
         "OPENAI": (openai_server_url_param, openai_model_name_param),
         "GEMINI": ("(gemini-api)", gemini_model_name_param),
         "MISTRAL": ("(mistral-api)", mistral_model_name_param),
+        "LITELLM": (litellm_api_base_param or "(litellm-sdk)", litellm_model_name_param),
     }.get(ai_model_provider_param, ("(none)", "(none)"))
     logger.info(
         "Clustering AI naming -> provider=%s url=%s model=%s",
@@ -582,6 +586,9 @@ def run_clustering_task(
                         top_n_clustering_playlist_param,
                         enable_clustering_embeddings_param,
                         auto_calibration_param,
+                        litellm_api_key_param,
+                        litellm_model_name_param,
+                        litellm_api_base_param,
                     )
                 except (TaskCancelled, OperationalError):
                     raise
@@ -908,6 +915,9 @@ def _cluster_one_server_impl(
     top_n_clustering_playlist_param,
     enable_clustering_embeddings_param,
     auto_calibration_param,
+    litellm_api_key_param=None,
+    litellm_model_name_param=None,
+    litellm_api_base_param=None,
     cancel=None,
 ):
     cancel = cancel or (lambda force=False: None)
@@ -1298,6 +1308,9 @@ def _cluster_one_server_impl(
             mistral_api_key_param,
             mistral_model_name_param,
             previous_playlist_names=previous_playlist_names,
+            litellm_key=litellm_api_key_param,
+            litellm_model=litellm_model_name_param,
+            litellm_url=litellm_api_base_param,
         )
 
         cancel(force=True)
@@ -1689,6 +1702,9 @@ def _name_and_prepare_playlists(
     mistral_key,
     mistral_model,
     previous_playlist_names=None,
+    litellm_key=None,
+    litellm_model=None,
+    litellm_url=None,
 ):
     final_playlists = {}
     used_playlist_names = list(reversed(previous_playlist_names or []))
@@ -1721,6 +1737,9 @@ def _name_and_prepare_playlists(
                 primary_genre=best_result.get("playlist_primary_genres", {}).get(
                     original_name
                 ),
+                litellm_key=litellm_key,
+                litellm_model=litellm_model,
+                litellm_url=litellm_url,
             )
         except Exception as e:
             logger.warning(f"AI naming failed for '{original_name}': {e}. Using original name.")

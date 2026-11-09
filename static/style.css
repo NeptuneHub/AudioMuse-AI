@@ -280,7 +280,8 @@ textarea {
 /* --- AI Provider Specific Config Groups --- */
 #ollama-config-group,
 #gemini-config-group,
-#mistral-config-group {
+#mistral-config-group,
+#litellm-config-group {
     border: 1px solid var(--border-color);
     border-radius: 0.5rem;
     padding: 1.5rem;
@@ -1700,6 +1701,7 @@ html.dark-mode body .toggle-slider {
     #ollama-config-group,
     #gemini-config-group,
     #mistral-config-group,
+    #litellm-config-group,
     #createPlaylistSection,
     #playlist-creator {
         padding: 0.75rem;

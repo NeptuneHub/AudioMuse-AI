@@ -61,6 +61,9 @@ from config import (
     TOP_N_CLUSTERING_PLAYLIST,
     MISTRAL_API_KEY,
     MISTRAL_MODEL_NAME,
+    LITELLM_API_KEY,
+    LITELLM_MODEL_NAME,
+    LITELLM_API_BASE,
 )
 
 # Task queue
@@ -218,7 +221,7 @@ def start_clustering_endpoint():
                 default: "Configured MAX_SONGS_PER_CLUSTER"
               ai_model_provider:
                 type: string
-                description: AI provider for playlist naming (OLLAMA, GEMINI, MISTRAL, NONE).
+                description: AI provider for playlist naming (OLLAMA, GEMINI, MISTRAL, LITELLM, NONE).
                 default: "Configured AI_MODEL_PROVIDER"
               ollama_server_url:
                 type: string
@@ -248,6 +251,11 @@ def start_clustering_endpoint():
                 description: Override for the Mistral model name for this run.
                 nullable: true
                 default: "Defaults to server-configured MISTRAL_MODEL_NAME"
+              litellm_model_name:
+                type: string
+                description: Override for the LiteLLM model id for this run (e.g. anthropic/claude-sonnet-4-5). The LiteLLM key and base URL always come from server configuration.
+                nullable: true
+                default: "Defaults to server-configured LITELLM_MODEL_NAME"
               top_n_moods:
                 type: integer
                 description: Number of top moods to consider for clustering feature vectors (uses the first N from global MOOD_LABELS).
@@ -372,6 +380,9 @@ def start_clustering_endpoint():
             "gemini_model_name_param": _text_param(data, 'gemini_model_name', GEMINI_MODEL_NAME),
             "mistral_api_key_param": MISTRAL_API_KEY,
             "mistral_model_name_param": _text_param(data, 'mistral_model_name', MISTRAL_MODEL_NAME),
+            "litellm_api_key_param": LITELLM_API_KEY,
+            "litellm_model_name_param": _text_param(data, 'litellm_model_name', LITELLM_MODEL_NAME),
+            "litellm_api_base_param": LITELLM_API_BASE,
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get(
                 'enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS

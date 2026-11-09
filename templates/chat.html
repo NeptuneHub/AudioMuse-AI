@@ -173,7 +173,7 @@
                         AI Provider
                         <span class="info-tooltip" tabindex="0">
                             <span class="info-icon"></span>
-                            <span class="tooltip-text">Choose an AI service to help create your playlist. Gemini and Mistral are cloud services (require API key). Ollama runs locally on your computer. "None" lets you describe moods manually.</span>
+                            <span class="tooltip-text">Choose an AI service to help create your playlist. Gemini and Mistral are cloud services (require API key). LiteLLM reaches many providers with server-side credentials. Ollama runs locally on your computer. "None" lets you describe moods manually.</span>
                         </span>
                     </label>
                     <select id="aiProvider">
@@ -182,6 +182,7 @@
                         <option value="OPENAI">OpenAI / OpenRouter</option>
                         <option value="GEMINI">Gemini</option>
                         <option value="MISTRAL">Mistral</option>
+                        <option value="LITELLM">LiteLLM</option>
                     </select>
                 </div>
                 <div id="ollamaConfig" class="hidden">
@@ -232,6 +233,16 @@
                         </span>
                     </label>
                     <input type="text" id="mistralModel" placeholder="e.g., ministral-3b-latest">
+                </div>
+                <div id="litellmConfig" class="hidden">
+                    <label for="litellmModel" class="label-with-tooltip">
+                        LiteLLM Model
+                        <span class="info-tooltip" tabindex="0">
+                            <span class="info-icon"></span>
+                            <span class="tooltip-text">A LiteLLM model id naming the provider, e.g. anthropic/claude-sonnet-4-5, bedrock/..., vertex_ai/gemini-2.5-flash or litellm_proxy/&lt;alias&gt;. Credentials and the optional LiteLLM base URL are set on the server.</span>
+                        </span>
+                    </label>
+                    <input type="text" id="litellmModel" placeholder="e.g., anthropic/claude-sonnet-4-5">
                 </div>
             </div>
         </fieldset>
@@ -329,12 +340,14 @@
             const openaiConfigDiv = document.getElementById('openaiConfig');
             const geminiConfigDiv = document.getElementById('geminiConfig');
             const mistralConfigDiv = document.getElementById('mistralConfig');
+            const litellmConfigDiv = document.getElementById('litellmConfig');
             const ollamaModelSelect = document.getElementById('ollamaModel');
             const ollamaServerUrlInput = document.getElementById('ollamaServerUrl'); // Added Ollama Server URL input
             const openaiModelSelect = document.getElementById('openaiModel');
             const openaiServerUrlInput = document.getElementById('openaiServerUrl');
             const geminiModelSelect = document.getElementById('geminiModel');
             const mistralModelSelect = document.getElementById('mistralModel');
+            const litellmModelSelect = document.getElementById('litellmModel');
             const playlistForm = document.getElementById('playlistForm');
             const userInput = document.getElementById('userInput');
             const numResultsInput = document.getElementById('numResults');
@@ -383,6 +396,7 @@
 
                 geminiModelSelect.value = globalConfig.default_gemini_model_name || "gemini-2.5-pro";
                 mistralModelSelect.value = globalConfig.default_mistral_model_name || "ministral-3b-latest";
+                litellmModelSelect.value = globalConfig.default_litellm_model_name || "";
 
                 if (globalConfig.instant_playlist_default_n_results) defaultN = globalConfig.instant_playlist_default_n_results;
                 if (globalConfig.instant_playlist_max_n_results) maxN = globalConfig.instant_playlist_max_n_results;
@@ -402,26 +416,37 @@
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
+                    litellmConfigDiv.classList.add('hidden');
                 } else if (provider === 'OPENAI') {
                     ollamaConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.remove('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
+                    litellmConfigDiv.classList.add('hidden');
                 } else if (provider === 'GEMINI') {
                     ollamaConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.remove('hidden');
                     mistralConfigDiv.classList.add('hidden');
+                    litellmConfigDiv.classList.add('hidden');
                 } else if (provider === 'MISTRAL') {
                     ollamaConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.remove('hidden');
+                    litellmConfigDiv.classList.add('hidden');
+                } else if (provider === 'LITELLM') {
+                    ollamaConfigDiv.classList.add('hidden');
+                    openaiConfigDiv.classList.add('hidden');
+                    geminiConfigDiv.classList.add('hidden');
+                    mistralConfigDiv.classList.add('hidden');
+                    litellmConfigDiv.classList.remove('hidden');
                 } else {
                     ollamaConfigDiv.classList.add('hidden');
                     openaiConfigDiv.classList.add('hidden');
                     geminiConfigDiv.classList.add('hidden');
                     mistralConfigDiv.classList.add('hidden');
+                    litellmConfigDiv.classList.add('hidden');
                 }
             }
 
@@ -458,6 +483,8 @@
                     // REMOVED: The API key is no longer sent from the frontend
                 } else if (payload.ai_provider === 'MISTRAL') {
                     payload.ai_model = mistralModelSelect.value;
+                } else if (payload.ai_provider === 'LITELLM') {
+                    payload.ai_model = litellmModelSelect.value;
                 }
                 try {
                     await streamChat(payload);

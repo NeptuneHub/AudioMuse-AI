@@ -17,6 +17,7 @@ flasgger==0.9.7.1
 sqlglot==30.6.0
 google-genai==1.57.0
 mistralai==1.12.4
+litellm==1.97.0
 umap-learn==0.5.12
 psutil==7.2.2
 onnx==1.22.0
