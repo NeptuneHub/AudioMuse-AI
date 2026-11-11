@@ -15,6 +15,8 @@
     if (!tbody || !table) return;
 
     const currentUser = table.getAttribute('data-current-user') || '';
+    // Proxy-authenticated admins have no local password; the server skips the check.
+    const isProxyAdmin = table.getAttribute('data-proxy-admin') === 'true';
     const isAdmin = (table.getAttribute('data-is-admin') || 'false') === 'true';
 
     const pwPanel = document.getElementById('change-password-panel');
@@ -251,7 +253,7 @@
             showFeedback('Passwords do not match.', 'error');
             return;
         }
-        if (!currentPw) {
+        if (!currentPw && !isProxyAdmin) {
             showFeedback('Your admin password is required to confirm.', 'error');
             return;
         }
@@ -287,7 +289,7 @@
     function deleteUser() {
         if (delTargetId === null) return;
         const currentPw = (delCurrent && delCurrent.value) || '';
-        if (!currentPw) {
+        if (!currentPw && !isProxyAdmin) {
             showDelFeedback('Your admin password is required to confirm.', 'error');
             return;
         }

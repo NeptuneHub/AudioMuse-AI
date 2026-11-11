@@ -54,6 +54,17 @@ The **mandatory** parameter that you need to change from the example are this:
 | `AUDIOMUSE_PASSWORD`     | Password for web UI login   | *(N/A - from Secret)* |
 | `API_TOKEN`     | Bearer token for API/worker requests | *(N/A - from Secret)* |
 | `JWT_SECRET`     | HMAC key used to sign session JWTs | *from Secret OR automatically created if blank* |
+| `AUTH_PROXY_ENABLED` | Accept users authenticated by a reverse proxy (authentik, Authelia, ...). See [REVERSE_PROXY_AUTH.md](REVERSE_PROXY_AUTH.md) | `false` |
+| `AUTH_PROXY_TRUSTED_SOURCES` | Comma-separated IPs/CIDRs of the proxy. Headers from other peers are ignored | *(empty)* |
+| `AUTH_PROXY_SHARED_SECRET` | Secret the proxy sends with every request; with trusted sources set, both must match | *(empty)* |
+| `AUTH_PROXY_SECRET_HEADER` | Header carrying the shared secret | `X-Proxy-Secret` |
+| `AUTH_PROXY_USER_HEADER` | Header carrying the username | `Remote-User` |
+| `AUTH_PROXY_GROUPS_HEADER` | Header carrying the groups (pipe- or comma-separated) | `Remote-Groups` |
+| `AUTH_PROXY_ADMIN_GROUP` | Group whose members become AudioMuse admins | *(empty)* |
+| `AUTH_PROXY_USER_GROUP` | Group required for the `user` role; empty = every proxy user is a `user` | *(empty)* |
+| `AUTH_PROXY_LOGOUT_URL` | Where Logout sends proxy users (IdP sign-out URL) | *(empty)* |
+| `NAVIDROME_EXTAUTH_ENABLED` | Run Navidrome calls of proxy-authenticated requests as that Navidrome user via Navidrome's external auth (Navidrome only; other media servers keep the service account) | `false` |
+| `NAVIDROME_EXTAUTH_USER_HEADER` | Header name Navidrome expects (`ExtAuth.UserHeader`) | `Remote-User` |
 
 
 These parameters can be left as-is:
