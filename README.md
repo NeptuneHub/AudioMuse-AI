@@ -69,7 +69,8 @@ More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/AR
   > * [AudioMuse-AI Plugin for Navidrome](https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin): Navidrome Plugin;
   > * [AudioMuse-AI Plugin for Jellyfin](https://github.com/NeptuneHub/audiomuse-ai-plugin): Jellyfin Plugin;
   > * [lyrion-audiomuseai-plugin](https://github.com/JameZUK/lyrion-audiomuseai-plugin): Unofficial Lyrion Plugin by [JameZUK](https://github.com/JameZUK);
-  > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality.
+  > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality;
+  > * [ha-audiomuse](https://github.com/colfin22/ha-audiomuse): Unofficial Home Assistant Plugin by [Colfin22](https://github.com/colfin22).
 
 And now just some **NEWS:**
 > * **Version 3.6.1** introduce Setup Wizard > AI Naming > Clustering Naming: set your own prompt for the clustering playlist name based on AI.
