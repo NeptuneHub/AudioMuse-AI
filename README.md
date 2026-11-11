@@ -70,6 +70,7 @@ More information can be found in the [docs folder](docs): [ARCHITECTURE](docs/AR
   > * [AudioMuse-AI Plugin for Jellyfin](https://github.com/NeptuneHub/audiomuse-ai-plugin): Jellyfin Plugin;
   > * [AudioMuse-AI MusicServer](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Open Subosnic like Music Sever with integrated sonic functionality;
   > * [AudioMuse-AI-Local-Bridge](https://github.com/NeptuneHub/AudioMuse-AI-Local-Bridge): Let AudioMuse-AI analyze the music directly on your computer;
+  > * [AudioMuse-AI-plugins](https://github.com/NeptuneHub/AudioMuse-AI-plugins): AudioMuse-AI third party plugins catalog;
   > * [AudioMuse-AI Music Assistant Provider](https://github.com/music-assistant/server/releases/tag/2.11.0b6): Use AudioMuse-AI as sonic analysis provider for Music Assistant v2.11+
   > * [AudioMuse-AI-Jellyfin-SDK](https://github.com/NeptuneHub/AudioMuse-AI-MusicServer): Typed client for the AudioMuse AI endpoints exposed by its Jellyfin plugin, built on @jellyfin/sdk;
   > * [lyrion-audiomuseai-plugin](https://github.com/JameZUK/lyrion-audiomuseai-plugin): Unofficial Lyrion Plugin by [JameZUK](https://github.com/JameZUK);
