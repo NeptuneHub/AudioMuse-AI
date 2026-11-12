@@ -369,11 +369,7 @@
                     div.style.marginBottom = '1rem';
                     const label = document.createElement('label');
                     label.style.cssText = 'display:block;margin-bottom:.5rem;';
-                    label.textContent = pluginTaskLabel(t) + ' ';
-                    const typeTag = document.createElement('small');
-                    typeTag.style.color = 'var(--text-muted)';
-                    typeTag.textContent = t.task_type;
-                    label.appendChild(typeTag);
+                    label.textContent = pluginTaskLabel(t);
                     if (t.description) {
                         label.classList.add('label-with-tooltip');
                         const tip = document.createElement('span');
