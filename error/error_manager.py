@@ -73,6 +73,7 @@ _AUTH_STATUS_CODES = (401, 403)
 
 _EXCEPTION_RULES = (
     ("LyrionAPIError", None, ERR_MEDIASERVER_UNREACHABLE),
+    ("VlcAPIError", None, ERR_MEDIASERVER_UNREACHABLE),
     ("UnknownServerError", ("app_server_context",), ERR_UNKNOWN_SERVER),
     ("OperationalError", ("psycopg2",), ERR_DB_CONNECTION),
     ("InterfaceError", ("psycopg2",), ERR_DB_CONNECTION),

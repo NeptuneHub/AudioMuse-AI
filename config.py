@@ -51,7 +51,7 @@ QUEUE_BLOCKING_TASK_TYPES = (
 )
 
 # --- Media Server Type ---
-MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex
+MEDIASERVER_TYPE = os.environ.get("MEDIASERVER_TYPE", "jellyfin").lower() # Possible values: jellyfin, navidrome, lyrion, emby, plex, vlc
 
 # --- Jellyfin and DB Constants (Read from Environment Variables first) ---
 
@@ -122,12 +122,20 @@ LYRION_URL = os.environ.get("LYRION_URL", "")
 PLEX_URL = os.environ.get("PLEX_URL", "") # e.g. http://your-plex-server:32400
 PLEX_TOKEN = os.environ.get("PLEX_TOKEN", "") # X-Plex-Token for the Plex server
 
+# --- VLC Constants ---
+# These are used only if MEDIASERVER_TYPE is "vlc" (VLC started with --extraintf http).
+VLC_URL = os.environ.get("VLC_URL", "") # e.g. http://your-vlc-host:8080
+VLC_USER = os.environ.get("VLC_USER", "") # Optional: VLC 3 expects an empty user name
+VLC_PASSWORD = os.environ.get("VLC_PASSWORD", "") # The --http-password VLC was started with
+VLC_MUSIC_FOLDER = os.environ.get("VLC_MUSIC_FOLDER", "") # Music folder on the VLC host: C:\Music, /home/me/Music or file:///...
+
 MEDIASERVER_FIELDS_BY_TYPE = {
     'jellyfin': ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN'],
     'navidrome': ['NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY'],
     'lyrion': ['LYRION_URL'],
     'emby': ['EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN'],
     'plex': ['PLEX_URL', 'PLEX_TOKEN'],
+    'vlc': ['VLC_URL', 'VLC_USER', 'VLC_PASSWORD', 'VLC_MUSIC_FOLDER'],
 }
 
 MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
@@ -144,7 +152,7 @@ MEDIASERVER_OBSOLETE_FIELDS_BY_TYPE = {
 # of the per-server ``user_creds`` dict. Lets the multi-server registry build a
 # creds dict for the default server straight from these config globals, and lets
 # secondary servers store creds under the exact keys the backends expect. Note
-# navidrome/lyrion use 'user'/'password' while jellyfin/emby use 'user_id'/'token'.
+# navidrome/lyrion/vlc use 'user'/'password' while jellyfin/emby use 'user_id'/'token'.
 MEDIASERVER_CRED_KEY_BY_FIELD = {
     'JELLYFIN_URL': 'url', 'JELLYFIN_USER_ID': 'user_id', 'JELLYFIN_TOKEN': 'token',
     'EMBY_URL': 'url', 'EMBY_USER_ID': 'user_id', 'EMBY_TOKEN': 'token',
@@ -152,6 +160,8 @@ MEDIASERVER_CRED_KEY_BY_FIELD = {
     'NAVIDROME_API_KEY': 'api_key',
     'LYRION_URL': 'url',
     'PLEX_URL': 'url', 'PLEX_TOKEN': 'token',
+    'VLC_URL': 'url', 'VLC_USER': 'user', 'VLC_PASSWORD': 'password',
+    'VLC_MUSIC_FOLDER': 'music_folder',
 }
 
 # The ONLY persistent home of these settings is the music_servers registry

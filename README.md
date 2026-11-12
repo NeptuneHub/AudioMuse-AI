@@ -104,7 +104,7 @@ From `v1.0.0`, only PostgreSQL and `TZ` are configured via environment variables
 
 **Prerequisites:**
 * Docker and Docker Compose installed
-* A running media server (Navidrome, Jellyfin, Lyrion, Emby, or Plex)
+* A running media server (Navidrome, Jellyfin, Lyrion, Emby, Plex, or VLC with its HTTP interface enabled)
 * See [Hardware Requirements](#hardware-requirements)
 
 **Steps:**

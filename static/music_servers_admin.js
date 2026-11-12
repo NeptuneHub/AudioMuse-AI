@@ -33,6 +33,12 @@
         plex: [
             { key: 'url', label: 'Server URL', placeholder: 'http://plex:32400' },
             { key: 'token', label: 'Plex Token', secret: true }
+        ],
+        vlc: [
+            { key: 'url', label: 'VLC HTTP URL', placeholder: 'http://vlc-computer:8080' },
+            { key: 'user', label: 'Username (optional, VLC uses none)', placeholder: 'leave blank' },
+            { key: 'password', label: 'Password', secret: true, placeholder: 'the --http-password value' },
+            { key: 'music_folder', label: 'Music folder on the VLC computer', placeholder: 'C:\\Users\\me\\Music, /home/me/Music or /Users/me/Music' }
         ]
     };
 

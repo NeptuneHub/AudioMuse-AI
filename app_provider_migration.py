@@ -113,7 +113,7 @@ provider_probe = _LazyProbe()
 # Supported target providers (what the tool knows how to talk to)
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex'})
+_SUPPORTED_TARGETS = frozenset({'jellyfin', 'navidrome', 'emby', 'lyrion', 'plex', 'vlc'})
 
 # A planner id in session state is a durable reservation, not just a cache of the
 # job's current status. The claim and the queue row are one transaction, so a
@@ -627,6 +627,13 @@ def _current_provider_creds():
             'url': getattr(cfg, 'PLEX_URL', ''),
             'token': getattr(cfg, 'PLEX_TOKEN', ''),
         }
+    if t == 'vlc':
+        return t, {
+            'url': getattr(cfg, 'VLC_URL', ''),
+            'user': getattr(cfg, 'VLC_USER', ''),
+            'password': getattr(cfg, 'VLC_PASSWORD', ''),
+            'music_folder': getattr(cfg, 'VLC_MUSIC_FOLDER', ''),
+        }
     return None, {}
 
 
@@ -669,7 +676,7 @@ def provider_migration_page():
     ---
     tags:
       - Provider Migration
-    summary: HTML wizard for migrating analysis state between media-server providers (Jellyfin/Emby/Navidrome/Lyrion).
+    summary: HTML wizard for migrating analysis state between media-server providers (Jellyfin/Emby/Navidrome/Lyrion/Plex/VLC).
     description: Resumes any in-flight session so a page refresh lands on the right step.
     responses:
       200:
@@ -728,7 +735,7 @@ def session_start():
             properties:
               target_type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion, plex]
+                enum: [jellyfin, emby, navidrome, lyrion, plex, vlc]
               target_creds:
                 type: object
                 additionalProperties: true
@@ -1104,7 +1111,7 @@ def probe_test():
             properties:
               type:
                 type: string
-                enum: [jellyfin, emby, navidrome, lyrion, plex]
+                enum: [jellyfin, emby, navidrome, lyrion, plex, vlc]
               creds:
                 type: object
                 additionalProperties: true

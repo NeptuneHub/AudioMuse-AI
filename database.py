@@ -1557,6 +1557,8 @@ def missing_required_creds(server_type, creds):
         if not creds.get('password'):
             missing.append('password')
         return missing
+    if server_type == 'vlc':
+        return [key for key in ('url', 'password', 'music_folder') if not creds.get(key)]
 
     required = [
         config.MEDIASERVER_CRED_KEY_BY_FIELD[field]

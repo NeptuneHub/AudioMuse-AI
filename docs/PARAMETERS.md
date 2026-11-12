@@ -20,13 +20,19 @@ How to find the Plex **auth token** (X-Plex-Token):
 * Copy the `X-Plex-Token` value from the request headers or the query string
 * Reference: https://plexapi.dev/authentication
 
+How to use **VLC** as a music server:
+* Start VLC with its HTTP interface on the computer that holds the music: `vlc --extraintf http --http-port 8080 --http-password <password>` (on Windows: `"C:\Program Files\VideoLAN\VLC\vlc.exe" --extraintf http --http-port 8080 --http-password <password>`)
+* Use `http://<that-computer>:8080` as URL, leave the username blank (VLC 3 has none), and give the music folder as that computer sees it: `C:\Users\me\Music`, `/home/me/Music`, `/Users/me/Music` or a `file:///` URL
+* VLC exposes no tags, ids or play history: songs are identified by a hash of their path relative to the music folder, title/artist/album come from the `Artist/Album (Year)/NN - Title` layout, and play-history features return nothing
+* Songs are downloaded at disk speed, not streamed: VLC copies each song to `Folder.jpg` in its temp folder (`C:\Windows\Temp` on Windows, `/tmp` elsewhere; the file is overwritten by the next song), puts that copy in its play queue for a moment and serves it whole. Keep VLC open while the analysis runs and keep VLC's "Automatically preparse items" preference (`--auto-preparse`) enabled, as it is by default
+
 
 The **mandatory** parameter that you need to change from the example are this:
 
 | Parameter            | Description                                                             | Default Value                     |
 |----------------------|-------------------------------------------------------------------------|-----------------------------------|
 | **Mediaserver General**                        |                                                                 |                 |
-| `MEDIASERVER_TYPE`   | (Required) Which media server to use: `jellyfin`, `navidrome`, `emby`, `lyrion` or `plex`. | `jellyfin` |
+| `MEDIASERVER_TYPE`   | (Required) Which media server to use: `jellyfin`, `navidrome`, `emby`, `lyrion`, `plex` or `vlc`. | `jellyfin` |
 | `NAVIDROME_URL`      | (Required) Your Navidrome / OpenSubsonic server's full URL              | `http://YOUR_NAVIDROME_IP:4533`   |
 | `NAVIDROME_USER`     | (Required for password auth) Navidrome / OpenSubsonic username.         | *(N/A - from Secret)* |
 | `NAVIDROME_PASSWORD` | (Required for password auth) Navidrome / OpenSubsonic password.         | *(N/A - from Secret)* |
@@ -40,6 +46,10 @@ The **mandatory** parameter that you need to change from the example are this:
 | `LYRION_URL`         | (Required) Your Lyrion server's full URL                                | `http://YOUR_LYRION_IP:9000`      |
 | `PLEX_URL`           | (Required) Your Plex Media Server's full URL                            | `http://YOUR_PLEX_IP:32400`       |
 | `PLEX_TOKEN`         | (Required) Plex API token (X-Plex-Token).                               | *(N/A - from Secret)* |
+| `VLC_URL`            | (Required) URL of the VLC HTTP interface (`--http-port`).               | `http://YOUR_VLC_IP:8080`         |
+| `VLC_USER`           | (Optional) VLC HTTP username; VLC 3 has none, so leave it blank.        | *(empty)*                         |
+| `VLC_PASSWORD`       | (Required) The `--http-password` VLC was started with.                  | *(N/A - from Secret)* |
+| `VLC_MUSIC_FOLDER`   | (Required) Music folder on the VLC computer (Windows, Linux or macOS path, or `file:///` URL). | *(empty)* |
 | `POSTGRES_USER`      | (Required) PostgreSQL username.                                         | *(N/A - from Secret)* |
 | `POSTGRES_PASSWORD`  | (Required) PostgreSQL password.                                         | *(N/A - from Secret)* |
 | `POSTGRES_DB`        | (Required) PostgreSQL database name.                                    | *(N/A - from Secret)* |

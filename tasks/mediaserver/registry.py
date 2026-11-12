@@ -499,6 +499,8 @@ def save_default_server_settings(server_type, creds, music_libraries="", conn=No
 
 
 def _default_server_name(server_type):
+    if (server_type or '').lower() == 'vlc':
+        return 'VLC'
     return (server_type or "media server").capitalize()
 
 

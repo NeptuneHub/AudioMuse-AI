@@ -95,6 +95,7 @@ _CRED_LABELS = {
     'user': 'Username',
     'password': 'Password',
     'api_key': 'API key',
+    'music_folder': 'Music folder',
 }
 
 

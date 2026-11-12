@@ -278,6 +278,7 @@ class SetupManager:
         return all(
             self._is_valid_string(getattr(config_module, field, ''))
             for field in self.server_required_fields[media_type]
+            if field != 'VLC_USER'
         )
 
     def _is_valid_auth_config(self, config_module):

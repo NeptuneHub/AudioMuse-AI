@@ -21,6 +21,12 @@ var serverFields = {
     plex: [
         {name: 'PLEX_URL', label: 'Plex URL', placeholder: 'http://your-plex-server:32400', tooltip: 'Base URL of your Plex Media Server, including http:// or https:// and the port (default 32400). Must be reachable from the AudioMuse-AI container.'},
         {name: 'PLEX_TOKEN', label: 'Plex API token', placeholder: 'your-plex-token', tooltip: 'Your X-Plex-Token for the server. See https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/ to find it.'}
+    ],
+    vlc: [
+        {name: 'VLC_URL', label: 'VLC HTTP URL', placeholder: 'http://your-vlc-computer:8080', tooltip: 'Address of the VLC HTTP interface, including http:// and the --http-port VLC was started with (start VLC with: vlc --extraintf http --http-port 8080 --http-password <password>). Must be reachable from the AudioMuse-AI container.'},
+        {name: 'VLC_USER', label: 'VLC username', placeholder: 'leave blank', tooltip: 'VLC 3 has no username: leave this blank unless a proxy in front of VLC asks for one.', required: false},
+        {name: 'VLC_PASSWORD', label: 'VLC password', placeholder: 'the --http-password value', tooltip: 'The password VLC was started with (--http-password).'},
+        {name: 'VLC_MUSIC_FOLDER', label: 'Music folder on the VLC computer', placeholder: 'C:\\Users\\me\\Music or /home/me/Music', tooltip: 'Root folder of your music as the VLC computer sees it: a Windows path (C:\\Users\\me\\Music), a Linux path (/home/me/Music), a macOS path (/Users/me/Music) or a file:/// URL. Every audio file below it is part of the library; song ids are derived from the path relative to this folder.'}
     ]
 };
 
@@ -354,7 +360,7 @@ function renderServerFields(serverType, values, hasValueMap) {
             value = values[field.name];
         }
         var secret = false;
-        var secretKeys = ['NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN'];
+        var secretKeys = ['NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY', 'AUDIOMUSE_PASSWORD', 'API_TOKEN', 'JELLYFIN_TOKEN', 'EMBY_TOKEN', 'PLEX_TOKEN', 'VLC_PASSWORD'];
         for (var i = 0; i < secretKeys.length; i++) {
             if (secretKeys[i] === field.name) {
                 secret = true;
@@ -926,7 +932,7 @@ function loadSetupData() {
 
 function saveCurrentServerValues() {
     var currentServerType = document.getElementById('MEDIASERVER_TYPE').value;
-    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN'];
+    var keys = ['JELLYFIN_URL', 'JELLYFIN_USER_ID', 'JELLYFIN_TOKEN', 'NAVIDROME_URL', 'NAVIDROME_USER', 'NAVIDROME_PASSWORD', 'NAVIDROME_API_KEY', 'LYRION_URL', 'EMBY_URL', 'EMBY_USER_ID', 'EMBY_TOKEN', 'PLEX_URL', 'PLEX_TOKEN', 'VLC_URL', 'VLC_USER', 'VLC_PASSWORD', 'VLC_MUSIC_FOLDER'];
     keys.forEach(function(key) {
         var input = document.getElementById(key);
         if (input) {
@@ -992,6 +998,7 @@ function providerCredsHaveSavedValues(serverType, secretHasValue, basicData) {
     }
     for (var i = 0; i < fields.length; i++) {
         var name = fields[i].name;
+        if (fields[i].required === false) continue;
         // For secret fields the server returns has_value=true when a value is
         // stored; for non-secret it just returns the actual string.
         if (secretHasValue && secretHasValue[name]) continue;

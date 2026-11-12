@@ -108,7 +108,7 @@ Components and responsibilities:
   pre-fetches the model files and pins the runtime flags so results are the same
   on different CPUs.
 - **Media server adapters (`tasks/mediaserver/`)**: Navidrome, Jellyfin, Emby,
-  Lyrion and Plex. They expose one common interface for listing albums,
+  Lyrion, Plex and VLC. They expose one common interface for listing albums,
   downloading a track, reading play history and creating playlists.
 
 Deployment notes:
@@ -356,7 +356,8 @@ Media server settings live in the `music_servers` registry and are edited in the
 Setup Wizard. The legacy environment variables (`MEDIASERVER_TYPE`,
 `MUSIC_LIBRARIES`, `NAVIDROME_URL`, `NAVIDROME_USER`, `NAVIDROME_PASSWORD`,
 `JELLYFIN_URL`, `JELLYFIN_USER_ID`, `JELLYFIN_TOKEN`, `EMBY_URL`,
-`EMBY_USER_ID`, `EMBY_TOKEN`, `LYRION_URL`, `PLEX_URL`, `PLEX_TOKEN`) are only
+`EMBY_USER_ID`, `EMBY_TOKEN`, `LYRION_URL`, `PLEX_URL`, `PLEX_TOKEN`, `VLC_URL`,
+`VLC_USER`, `VLC_PASSWORD`, `VLC_MUSIC_FOLDER`) are only
 read once, at first boot, to seed the registry.
 
 **Task and performance tuning**
