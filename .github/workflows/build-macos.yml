@@ -3,7 +3,7 @@
 #
 # Apple Silicon ONLY (M1/M2/M3/M4...). AudioMuse-AI's macOS build targets arm64
 # exclusively - there is no Intel build. onnxruntime/PyAV wheels are not
-# reliably universal2, so we build natively on an arm64 runner (macos-14).
+# reliably universal2, so we build natively on an arm64 runner (macos-15).
 #
 # Reproducibility: the small, exact-version native build inputs are committed in
 # git (native-build/macos/vendor/pg-contrib/arm64/*), NOT regenerated at build
@@ -50,13 +50,13 @@ env:
 
 jobs:
   build:
-    # Apple Silicon only. macos-14 is arm64; do NOT add an Intel (macos-13) leg.
+    # Apple Silicon only. macos-15 is arm64; do NOT add an Intel (macos-15-intel) leg.
     # Skip draft PRs and fork PRs - the same guard the Docker build workflows use.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.draft == false &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: read
     env:

@@ -254,6 +254,10 @@
             return String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
         }
 
+        function pluginTaskLabel(t){
+            return (t.plugin_name || t.plugin) + ': ' + t.task;
+        }
+
         function cronScheduleRows(){
             const rows = CRON_BUILT_IN_ROWS.map(([name, id]) => ({
                 name: name,
@@ -263,7 +267,7 @@
             const fieldsByType = window.pluginCronFields || new Map();
             for(const t of (window.pluginCronTasks || [])){
                 const fields = fieldsByType.get(t.task_type);
-                if(fields){ rows.push({name: t.plugin + ' - ' + t.task, expr: fields.input.value, enabled: fields.enable.checked}); }
+                if(fields){ rows.push({name: pluginTaskLabel(t), expr: fields.input.value, enabled: fields.enable.checked}); }
             }
             return rows;
         }
@@ -365,7 +369,7 @@
                     div.style.marginBottom = '1rem';
                     const label = document.createElement('label');
                     label.style.cssText = 'display:block;margin-bottom:.5rem;';
-                    label.textContent = t.plugin + ' - ' + t.task + ' (' + t.task_type + ')';
+                    label.textContent = pluginTaskLabel(t);
                     if (t.description) {
                         label.classList.add('label-with-tooltip');
                         const tip = document.createElement('span');
