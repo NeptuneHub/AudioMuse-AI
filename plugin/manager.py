@@ -796,6 +796,7 @@ class PluginManager:
                 item = {
                     'task_type': f'plugin.{plugin_id}.{name}',
                     'plugin': plugin_id,
+                    'plugin_name': record.get('name') or plugin_id,
                     'task': name,
                 }
                 description = _cron_task_description(loaded, persisted, name)

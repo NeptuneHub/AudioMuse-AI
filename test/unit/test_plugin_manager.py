@@ -618,8 +618,11 @@ class TestAvailableCronTasks:
             'cron_tasks': {'never': {'dotted': 'audiomuse_plugins.off.t.never', 'queue': 'default'}},
         })
         mgr.records = {'loaded': loaded, 'persisted': persisted, 'off': off}
+        loaded['name'] = 'Loaded Plugin'
+        persisted['name'] = None
         tasks = mgr.available_cron_tasks()
         assert [t['task_type'] for t in tasks] == ['plugin.loaded.live', 'plugin.persisted.nightly']
+        assert [t['plugin_name'] for t in tasks] == ['Loaded Plugin', 'persisted']
 
 
 class TestInstallFromManifest:
