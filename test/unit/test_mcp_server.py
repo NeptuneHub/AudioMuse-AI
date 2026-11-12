@@ -824,6 +824,64 @@ class TestArtistSimilarityApiSync:
         assert result["songs"] == []
         assert "message" in result
 
+    def test_mid_word_substring_is_not_taken_as_the_seed(self):
+        mod = _import_mcp_impl()
+        cur = self._setup_cursor()
+
+        cur.fetchone = Mock(side_effect=[None, _make_dict_row({"author": "Grabcd Band & Artist X"})])
+        cur.fetchall = Mock(return_value=[])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
+
+        gmm_mod = self._setup_gmm_module(
+            find_return=[], reverse_map={"grabcd band & artist x": 0}
+        )
+
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
+            result = mod._artist_similarity_api_sync("Abcd", count=5, get_songs=10)
+
+        assert result["songs"] == []
+        called = [c.args[0] for c in gmm_mod.find_similar_artists.call_args_list]
+        assert "Grabcd Band & Artist X" not in called
+        assert "grabcd band & artist x" not in called
+
+    def _fuzzy_tier(self, mod, requested, candidate_author):
+        cur = self._setup_cursor()
+        cur.fetchall = Mock(return_value=[
+            _make_dict_row({"item_id": "1", "title": "Song 1", "author": candidate_author, "album": "Album X"})
+        ])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
+        return mod._fuzzy_match_author_title(conn, requested)
+
+    def test_fuzzy_tier_never_matches_on_the_word_the_alone(self):
+        mod = _import_mcp_impl()
+        assert self._fuzzy_tier(mod, "The Zyxw", "The") is None
+        hit = self._fuzzy_tier(mod, "The Band Qrstu", "The Band Qrstv")
+        assert hit is not None and hit["author"] == "The Band Qrstv"
+
+    def test_exact_tier_also_accepts_the_seed_without_a_leading_the(self):
+        mod = _import_mcp_impl()
+        cur = self._setup_cursor()
+        cur.fetchone = Mock(return_value=_make_dict_row({"author": "Band Z"}))
+        cur.fetchall = Mock(return_value=[])
+        conn = _make_connection(cur)
+        conn.cursor = Mock(return_value=cur)
+
+        gmm_mod = self._setup_gmm_module(find_return=[{"artist": "Band Y", "distance": 0.1}])
+
+        with (
+            patch.object(mod, 'get_db_connection', return_value=conn),
+            patch.dict(sys.modules, {'tasks.artist_gmm_manager': gmm_mod}),
+        ):
+            mod._artist_similarity_api_sync("The Band Z", count=5, get_songs=10)
+
+        assert cur.execute.call_args_list[0].args[1] == ("The Band Z", "Band Z", "The Band Z")
+        assert gmm_mod.find_similar_artists.call_args_list[0].args[0] == "Band Z"
+
     def test_gmm_empty_fallback_to_reverse_artist_map(self):
         mod = _import_mcp_impl()
         cur = self._setup_cursor()
