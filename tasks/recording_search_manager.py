@@ -308,19 +308,7 @@ def smart_fade_playlist(item_ids):
     return smart_fade_order([edges.get(item_id) for item_id in item_ids])
 
 
-def _smart_fade_rows(seed_vectors, rows):
-    edges = _stored_edges([row['item_id'] for row in rows])
-    ordered = smart_fade_order([fade_edges(seed_vectors)] + [edges.get(row['item_id']) for row in rows])
-    seed_fade, results = None, []
-    for index, fade in ordered:
-        if index == 0:
-            seed_fade = fade
-            continue
-        results.append(dict(rows[index - 1], **(fade or {'fade_in_seconds': None, 'fade_out_seconds': None, 'duration_seconds': None})))
-    return results, seed_fade
-
-
-def search_by_track(item_id, n_results=None, smart_fade=False):
+def search_by_track(item_id, n_results=None):
     from tasks import neural_fingerprint, neural_fingerprint_index
 
     if n_results is None:
@@ -343,10 +331,7 @@ def search_by_track(item_id, n_results=None, smart_fade=False):
                 best[row['item_id']] = dict(row)
     ranked = neural_fingerprint_index.flag_identified(sorted(best.values(), key=lambda row: -row['score']))
     rows = _rows_with_metadata(ranked[:n_results])
-    if not smart_fade:
-        return {'item_id': item_id, 'results': rows, 'count': len(rows)}
-    rows, seed_fade = _smart_fade_rows(vectors, rows)
-    return {'item_id': item_id, 'results': rows, 'count': len(rows), 'seed_fade_out_seconds': seed_fade['fade_out_seconds']}
+    return {'item_id': item_id, 'results': rows, 'count': len(rows)}
 
 
 def run_recording_search(clip, filename, n_results=None):

@@ -26,8 +26,8 @@ Main Features:
   smart_fade_order keeps the first song first, chains each song into the one
   whose start matches its end, never starts later than 30 s nor ends earlier
   than 30 s before the end, lets the last song play to its end and puts songs
-  without a fingerprint last; search_by_track adds nothing without
-  smart_fade and reorders from the song itself with it
+  without a fingerprint last; smart_fade_playlist reads only the stored edges
+  of the given songs and orders them from the first one
 """
 
 import io
@@ -298,10 +298,7 @@ def test_smart_fade_puts_songs_without_a_fingerprint_last_and_a_lone_song_plays_
     assert lone == [(0, {'fade_in_seconds': 0.0, 'fade_out_seconds': 2.0, 'duration_seconds': 2.0})]
 
 
-def test_search_by_track_with_smart_fade_starts_from_the_song_and_adds_the_times(monkeypatch):
-    from tasks import neural_fingerprint as nf
-    from tasks import neural_fingerprint_index
-
+def test_smart_fade_playlist_reads_the_stored_edges_and_orders_from_the_first_song(monkeypatch):
     rng = np.random.default_rng(9)
     joint, other_motif = _motif(rng), _motif(rng)
     stored = {
@@ -309,28 +306,22 @@ def test_search_by_track_with_smart_fade_starts_from_the_song_and_adds_the_times
         'copy': _song(rng, 200, intro=other_motif),
         'other': _song(rng, 200, intro=joint),
     }
-    monkeypatch.setattr(rsm, '_stored_fingerprint', lambda item_id: b'blob')
-    monkeypatch.setattr(nf, 'decode_blob', lambda blob: np.zeros((200, nf.CODE_BYTES), dtype=np.uint8))
-    monkeypatch.setattr(nf, 'decode_codes', lambda codes: stored['song'])
-    monkeypatch.setattr(neural_fingerprint_index, 'identify_vectors', lambda window, n, exclude_ids=(): [
-        {'item_id': 'copy', 'score': 0.9, 'votes': 9.0, 'offset_seconds': 0.0, 'identified': True, 'lead': 0.6},
-        {'item_id': 'other', 'score': 0.3, 'votes': 2.0, 'offset_seconds': 5.0, 'identified': False, 'lead': None},
-    ])
-    monkeypatch.setattr(rsm, '_fetch_track_metadata', lambda ids: {i: {'title': i, 'author': 'Band', 'album': ''} for i in ids})
-    monkeypatch.setattr(rsm, '_stored_edges', lambda ids: {i: rsm.fade_edges(stored[i]) for i in ids})
+    asked = []
 
-    plain = rsm.search_by_track('song', 5)
-    assert [row['item_id'] for row in plain['results']] == ['copy', 'other']
-    assert 'seed_fade_out_seconds' not in plain
-    assert all('fade_in_seconds' not in row for row in plain['results'])
+    def stored_edges(ids):
+        asked.append(list(ids))
+        return {i: rsm.fade_edges(stored[i]) for i in ids if i in stored}
 
-    faded = rsm.search_by_track('song', 5, smart_fade=True)
-    assert [row['item_id'] for row in faded['results']] == ['other', 'copy']
-    assert faded['count'] == 2
-    assert 0.0 <= _duration(200) - faded['seed_fade_out_seconds'] <= 30.0
-    assert faded['results'][0]['score'] == 0.3
-    assert 0.0 <= faded['results'][0]['fade_in_seconds'] <= 30.0
-    assert faded['results'][1]['fade_out_seconds'] == _duration(200)
+    monkeypatch.setattr(rsm, '_stored_edges', stored_edges)
+    ordered = rsm.smart_fade_playlist(['song', 'copy', 'ghost', 'other'])
+    assert asked == [['song', 'copy', 'ghost', 'other']]
+    assert [index for index, _fade in ordered] == [0, 3, 1, 2]
+    fades = dict(ordered)
+    assert fades[0]['fade_in_seconds'] == 0.0
+    assert 0.0 <= _duration(200) - fades[0]['fade_out_seconds'] <= 30.0
+    assert 0.0 <= fades[3]['fade_in_seconds'] <= 30.0
+    assert fades[1]['fade_out_seconds'] == _duration(200)
+    assert fades[2] is None
 
 
 def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):

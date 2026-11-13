@@ -24,8 +24,9 @@ Main Features:
 * No response of this API ever carries an internal canonical id: results are
   translated to the selected server's ids and the echoed song id goes through
   provider_echo_id, even when the caller sent a canonical id
-* by_track asks the manager for the smart fade only when the body carries
-  smart_fade true, so a legacy call is exactly the old one
+* by_track knows nothing of smart fade (the manager takes the song and the
+  count only, a smart_fade field in the body changes nothing); the page
+  reorders its results by posting them to the smart_fade endpoint
 * The smart_fade endpoint answers 400 without a list, resolves the ids for the
   server, returns the songs in the manager's order under the ids as sent with
   null times for songs without a fingerprint, and never leaks a canonical id
@@ -365,19 +366,35 @@ def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypat
     assert 'secret' not in response.get_json()['error']
 
 
-def test_by_track_asks_for_the_smart_fade_only_when_the_caller_sends_true(client, monkeypatch):
+def test_by_track_knows_nothing_of_smart_fade(client, monkeypatch):
+    import inspect
+
     import tasks.recording_search_manager as rsm
 
+    assert list(inspect.signature(rsm.search_by_track).parameters) == ['item_id', 'n_results']
     calls = []
 
-    def fake(item_id, n_results, **options):
-        calls.append(options)
-        return {'item_id': item_id, 'results': [], 'count': 0}
+    def fake(item_id, n_results):
+        calls.append((item_id, n_results))
+        return {'item_id': item_id, 'results': [{'item_id': 'a', 'title': 'A', 'author': 'x', 'score': 0.9}], 'count': 1}
 
     monkeypatch.setattr(rsm, 'search_by_track', fake)
-    for body in ({'item_id': 'x'}, {'item_id': 'x', 'smart_fade': False}, {'item_id': 'x', 'smart_fade': 'true'}, {'item_id': 'x', 'smart_fade': True}):
-        assert _post_track(client, body).status_code == 200
-    assert calls == [{}, {}, {}, {'smart_fade': True}]
+    response = _post_track(client, {'item_id': 'x', 'n_results': 5, 'smart_fade': True})
+    assert response.status_code == 200
+    assert calls == [('x', 5)]
+    assert sorted(response.get_json()) == ['count', 'item_id', 'results']
+    assert 'fade_in_seconds' not in response.get_json()['results'][0]
+
+
+def test_the_page_reorders_by_track_results_through_the_smart_fade_endpoint():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    assert 'body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })' in source
+    assert 'smart_fade: true' not in source and 'request.smart_fade' not in source
+    assert "url_for('recording_search_bp.recording_search_smart_fade_api')" in source
+    assert 'item_ids: [seedId, ...results.map(r => r.item_id)]' in source
+    assert 'if (smartFade.checked && (data.results || []).length)' in source
 
 
 def _post_fade(client, body):

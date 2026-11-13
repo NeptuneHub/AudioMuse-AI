@@ -17,9 +17,8 @@ Main Features:
 * Routes: `/recording_search` page, `/api/recording_search/search` (multipart:
   the clip and a result count), `/api/recording_search/by_track` (JSON: a
   library song's id and a result count, for the other recordings of that
-  song; optional smart_fade orders them for a smart fade),
-  `/api/recording_search/smart_fade` (JSON: any list of song ids, returned
-  in smart fade order with where to start and end each) and
+  song), `/api/recording_search/smart_fade` (JSON: any list of song ids,
+  returned in smart fade order with where to start and end each) and
   `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
@@ -286,10 +285,6 @@ def recording_search_by_track_api():
                 type: integer
                 minimum: 1
                 default: 100
-              smart_fade:
-                type: boolean
-                default: false
-                description: Optional. When true the results come in smart fade order (the source song first, then each song flowing into the next) and each carries where to start and end it.
     responses:
       200:
         description: Ranked songs, best match first, the source song left out.
@@ -303,26 +298,10 @@ def recording_search_by_track_api():
                   description: The song, as an id of the selected server (never an internal id).
                 count:
                   type: integer
-                seed_fade_out_seconds:
-                  type: number
-                  description: Only with smart_fade, where the source song ends.
                 results:
                   type: array
                   items:
                     type: object
-                    properties:
-                      fade_in_seconds:
-                        type: number
-                        nullable: true
-                        description: Only with smart_fade, where to start the song.
-                      fade_out_seconds:
-                        type: number
-                        nullable: true
-                        description: Only with smart_fade, where to end the song.
-                      duration_seconds:
-                        type: number
-                        nullable: true
-                        description: Only with smart_fade, the song length its fingerprint covers.
       400:
         description: Missing or unknown song, bad count, or a song without a fingerprint.
       503:
@@ -346,8 +325,7 @@ def recording_search_by_track_api():
     except ValueError as exc:
         return json_exception(exc, ERR_INVALID_REQUEST, results=[])
 
-    options = {'smart_fade': True} if data.get('smart_fade') is True else {}
-    payload, failure = _run_search(lambda: search_by_track(canonical_id, n_results, **options), 'Recording search by track')
+    payload, failure = _run_search(lambda: search_by_track(canonical_id, n_results), 'Recording search by track')
     if failure is not None:
         return failure
     payload['item_id'] = app_server_context.provider_echo_id(item_id)

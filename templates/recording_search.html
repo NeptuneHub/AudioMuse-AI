@@ -560,19 +560,39 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    async function smartFadeOrder(seedId, results) {
+        const response = await fetch("{{ url_for('recording_search_bp.recording_search_smart_fade_api') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_ids: [seedId, ...results.map(r => r.item_id)] })
+        });
+        const data = await readJsonBody(response);
+        if (!response.ok || data === null) throw new Error(apiErrorText(data, `Smart fade failed (HTTP ${response.status})`));
+        const rows = data.results || [];
+        const byId = new Map(results.map(r => [r.item_id, r]));
+        const seedRow = rows.find(row => row.item_id === seedId);
+        return {
+            results: rows.filter(row => row.item_id !== seedId && byId.has(row.item_id)).map(row => Object.assign({}, byId.get(row.item_id), row)),
+            seedEnd: seedRow ? seedRow.fade_out_seconds : null
+        };
+    }
+
     async function searchBySong(limit) {
-        const request = { item_id: selectedSong.item_id, n_results: limit };
-        if (smartFade.checked) request.smart_fade = true;
         const response = await fetch("{{ url_for('recording_search_bp.recording_search_by_track_api') }}", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(request)
+            body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })
         });
         const data = await readJsonBody(response);
         if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
         const title = selectedSong.title || 'this song';
-        const fade = typeof data.seed_fade_out_seconds === 'number' ? ` in smart fade order; "${title}" ends at ${clock(data.seed_fade_out_seconds)}` : '';
-        return { data, seedId: selectedSong.item_id, summary: `${(data.results || []).length} songs for "${title}"${fade}` };
+        let summary = `${(data.results || []).length} songs for "${title}"`;
+        if (smartFade.checked && (data.results || []).length) {
+            const faded = await smartFadeOrder(selectedSong.item_id, data.results);
+            data.results = faded.results;
+            if (typeof faded.seedEnd === 'number') summary += ` in smart fade order; "${title}" ends at ${clock(faded.seedEnd)}`;
+        }
+        return { data, seedId: selectedSong.item_id, summary };
     }
 
     searchBtn.addEventListener('click', async () => {

@@ -2414,12 +2414,13 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    remasters, the same take on a compilation; a playlist made from them
    starts with the chosen song, like the similar-song page does with its
    seed. On the recording tab the best match is already the first result.
-3. On the song tab, **Smart fade** returns the same songs in an order where
-   each one flows into the next, starting from the chosen song, and every
-   row shows a small bar with where the song would start and end. The
-   playlist keeps that order; the times are only a hint. The same ordering
-   is available for any list of songs through
-   `POST /api/recording_search/smart_fade`.
+3. On the song tab, **Smart fade** sends the chosen song and the results to
+   `POST /api/recording_search/smart_fade`, a separate endpoint that takes
+   any list of songs (so another frontend can send a list built its own
+   way) and returns them in an order where each one flows into the next,
+   the first one kept first, with where each song would start and end.
+   Search by Song itself is unchanged. Every row shows a small bar with the
+   two times; the playlist keeps the order, the times are only a hint.
 
 **Important behaviours**
 
