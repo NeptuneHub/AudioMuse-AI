@@ -14,9 +14,9 @@ alchemy, CLAP audio and lyrics text search, metadata filtering, and the
 brainstorm recipe runner. This is where every AI tool actually touches data.
 
 Main Features:
-* Multi-tier seed resolution (exact -> normalized ILIKE -> rapidfuzz token-set) so misspelled or punctuation-differing titles/artists still match a real row; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M', so 'Tom' never matches 'Tomas Brothers'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
+* Multi-tier seed resolution (exact, or without 'The' -> normalized ILIKE -> rapidfuzz token-set ignoring 'the') so misspelled or punctuation-differing titles/artists still match a real row; artist substring hits need that score too, so a missing seed is skipped; the search_database artist relaxation matches whole words only (author ~* '\\mName\\M'); alchemy song seeds ('Title by Artist') resolve to real item_ids before blending; key filters normalize flat note names (Eb) to the sharp spellings (D#) the DB stores.
 * search_database scores mood_vector/other_features tags via SUBSTRING regex and keeps the relevance order (no DISTINCT re-sort); exclude_artists/exclude_genres append hard NOT conditions (genre tag score >= 0.3 = excluded), and a male-only voices filter becomes an exclusion of the female vocal tags; brainstorm fuses audio/artist/lyrics/filter channels round-robin, gates each, and relaxes (year pad, then genre audio) when the pool is under floor. Failures log server-side only, never into tool messages.
-* The brainstorm accepts a planner-supplied grounding_filter merged into the recipe (grounding wins over the model's guess for ranges, unions for lists) and a gate_filter applied per channel, so a metadata constraint next to knowledge_lookup shapes the search from inside the tool rather than filtering its output. The gate is asymmetric on purpose: exclusions are hard and never fall back, while a positive gate that empties a channel keeps that channel ungated so the request still returns songs.
+* The brainstorm accepts a planner-supplied grounding_filter merged into the recipe (grounding wins over the model's guess for ranges, unions for lists) and a gate_filter applied per channel, so a metadata constraint shapes the search inside the tool instead of filtering its output. The gate is asymmetric on purpose: exclusions are hard and never fall back, while a positive gate that empties a channel keeps that channel ungated so the request still returns songs.
 * Artist-seed similarity scales its similar-artist fanout to the library size (total//10, min 5) and returns songs round-robin across the seed artist and its neighbors (seed first), so a prolific seed artist can never fill the whole LIMIT.
 * With a server selected, search_database and the artist-seed songs keep only that server's songs in SQL before the LIMIT (registry.availability_sql), so a small secondary server still fills the playlist.
 * search_database bounds track length and created_at; an album keeps file order. _album_named_in_request skips the artist's own name; _journey_sync returns the path_manager song path.
@@ -29,6 +29,7 @@ import re
 from typing import Dict, List, Optional
 
 from psycopg2.extras import DictCursor
+from rapidfuzz import fuzz
 
 from database import like_contains_pattern
 from tasks.ai.calibration import energy_to_raw
@@ -194,6 +195,23 @@ def _normalize_for_match(s: Optional[str]) -> str:
     )
 
 
+_THE_WORD_RE = re.compile(r'\bthe\b')
+
+
+def _name_match_score(requested: str, candidate: str) -> float:
+    requested, candidate = requested.strip().lower(), candidate.strip().lower()
+    return fuzz.token_set_ratio(
+        _THE_WORD_RE.sub(' ', requested).strip() or requested,
+        _THE_WORD_RE.sub(' ', candidate).strip() or candidate,
+    )
+
+
+def _close_artist_name(requested: str, candidate: str) -> bool:
+    if _normalize_for_match(requested) == _normalize_for_match(candidate):
+        return True
+    return _name_match_score(requested, candidate) >= _FUZZY_MATCH_CUTOFF
+
+
 def _album_text(value: str) -> str:
     return ' ' + re.sub(r'[^\w]+', ' ', (value or '').lower()).strip() + ' '
 
@@ -258,8 +276,6 @@ def _fuzzy_match_author_title(
     requested_author: str,
     requested_title: Optional[str] = None,
 ) -> Optional[Dict]:
-    from rapidfuzz import fuzz
-
     if not requested_author and not requested_title:
         return None
 
@@ -312,7 +328,7 @@ def _fuzzy_match_author_title(
             if requested_title
             else (c['author'] or "").strip().lower()
         )
-        score = fuzz.token_set_ratio(target, cand_label)
+        score = _name_match_score(target, cand_label)
         if score > best_score:
             best_score = score
             best = c
@@ -400,12 +416,13 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
         with db_conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute(
                 """
-                SELECT DISTINCT author
+                SELECT author
                 FROM public.score
-                WHERE LOWER(author) = LOWER(%s)
+                WHERE LOWER(author) IN (LOWER(%s), LOWER(%s))
+                ORDER BY LOWER(author) = LOWER(%s) DESC
                 LIMIT 1
             """,
-                (artist,),
+                (artist, re.sub(r'^the\s+', '', artist, flags=re.IGNORECASE), artist),
             )
             result = cur.fetchone()
 
@@ -435,12 +452,13 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                     (like_contains_pattern(artist_normalized),),
                 )
                 result = cur.fetchone()
-                if result:
+                if result and _close_artist_name(artist, result['author']):
                     log_messages.append(f"Fuzzy search found: '{result['author']}'")
                 else:
                     log_messages.append(
-                        f"Fuzzy search returned no results for: '{artist_normalized}'"
+                        f"Fuzzy search returned no close match for: '{artist_normalized}'"
                     )
+                    result = None
 
             if not result:
                 log_messages.append("ILIKE fallback miss, trying rapidfuzz fallback...")
@@ -469,7 +487,7 @@ def _artist_similarity_api_sync(artist: str, count: int, get_songs: int) -> Dict
                 matches = [
                     gmm_artist
                     for gmm_artist in reverse_artist_map.keys()
-                    if artist_lower in gmm_artist.lower()
+                    if artist_lower in gmm_artist.lower() and _close_artist_name(artist, gmm_artist)
                 ]
                 if matches:
                     best_match = min(matches, key=len)
@@ -1693,6 +1711,8 @@ def _ai_brainstorm_sync(
                 art, config.AI_BRAINSTORM_SIMILAR_ARTISTS_PER_SEED, get_songs
             )
             label = f"artist:{art}"
+            if not raw.get("songs"):
+                log_messages.append(f"   seed artist '{art}' not in library, skipped")
             songs = _channel_gate(raw.get("songs"), ymin, ymax, label)
             if songs:
                 channels.append((label, songs))

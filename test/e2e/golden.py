@@ -20,7 +20,8 @@ seed/golden/<module>.json. What is derived from analyzing the real clips on
 the machine at hand (their embeddings, the Whisper transcript of the sung
 ones) differs in the last digits from one CPU to another, so numbers may
 differ by a hundredth, a value hashed from those numbers (the sync `fp`) is
-not recorded, and a ranked list is compared as a ranking: the same songs,
+not recorded, nor are the recording search `votes` (an approximate index
+lookup that may gather one candidate more or less), and a ranked list is compared as a ranking: the same songs,
 each with the same fields, where two songs may swap places, or a song may
 enter or leave at the end of the list, only when their scores are within a
 hundredth of each other (three hundredths for what comes out of the Whisper
@@ -48,7 +49,7 @@ REMEDY = f'if the change is intended, re-record with {RECORD_ENV}=1 bash test/e2
 DROP_KEYS = frozenset((
     'timestamp', 'last_run', 'next_run', 'restore_log',
     'restore_log_name', 'size_bytes', 'elapsed', 'elapsed_seconds', 'memory_mb',
-    'task_id', 'job_id', 'sweep_task_id', 'server_id', 'default_id', 'creds', 'fp',
+    'task_id', 'job_id', 'sweep_task_id', 'server_id', 'default_id', 'creds', 'fp', 'votes',
     'pid', 'run_dir', 'search_u', 'generated', 'build', 'build_id', 'loaded_at', 'age_seconds', 'uptime',
     'version', 'app_version', 'restore_pid', 'playlist_id', 'session_id', 'run_id', 'cache_age', 'log',
     'details_log', 'progress_log', 'processed_at', 'duration_ms', 'took_ms', 'query_time', 'time',
