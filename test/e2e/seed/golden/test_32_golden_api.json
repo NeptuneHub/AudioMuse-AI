@@ -9495,8 +9495,7 @@
     "score": 0.981,
     "title": "Variatio 2 a 1 Clav. (Extended)",
     "top_genre": "jazz",
-    "top_mood": "happy",
-    "votes": 31.26
+    "top_mood": "happy"
    },
    {
     "album": "Compilation Copies",
@@ -9523,8 +9522,7 @@
     "score": 0.363,
     "title": "Variatio 1 a 1 Clav.",
     "top_genre": "jazz",
-    "top_mood": "happy",
-    "votes": 3.64
+    "top_mood": "happy"
    },
    {
     "album": "Seed 22",
@@ -9551,8 +9549,7 @@
     "score": 0.222,
     "title": "song 220",
     "top_genre": "jazz",
-    "top_mood": "relaxed",
-    "votes": 1.1
+    "top_mood": "relaxed"
    },
    {
     "album": "Open Goldberg Variations",
@@ -9579,8 +9576,7 @@
     "score": 0.219,
     "title": "Aria da Capo e Fine",
     "top_genre": "jazz",
-    "top_mood": "happy",
-    "votes": 1.63
+    "top_mood": "happy"
    },
    {
     "album": "Seed 21",
@@ -9607,8 +9603,7 @@
     "score": 0.164,
     "title": "song 205",
     "top_genre": "ambient",
-    "top_mood": "sad",
-    "votes": 0.51
+    "top_mood": "sad"
    }
   ]
  },
