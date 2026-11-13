@@ -180,6 +180,9 @@ def _ai_config():
         'gemini_model': config.GEMINI_MODEL_NAME,
         'mistral_key': config.MISTRAL_API_KEY,
         'mistral_model': config.MISTRAL_MODEL_NAME,
+        'litellm_key': config.LITELLM_API_KEY,
+        'litellm_model': config.LITELLM_MODEL_NAME,
+        'litellm_url': config.LITELLM_API_BASE,
     }
 
 

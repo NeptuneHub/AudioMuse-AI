@@ -361,7 +361,7 @@ PLAYLIST_NAME_HISTORY_ROUNDS = int(os.environ.get("PLAYLIST_NAME_HISTORY_ROUNDS"
 
 # --- Algorithm Choose Constants (Read from Environment Variables) ---
 CLUSTER_ALGORITHM = os.environ.get("CLUSTER_ALGORITHM", "kmeans") # accepted dbscan, kmeans, gmm, or spectral
-AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, OPENAI, GEMINI, MISTRAL, NONE
+AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, OPENAI, GEMINI, MISTRAL, LITELLM, NONE
 ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "True").lower() == "true"
 
 # --- GPU Acceleration for Clustering (Optional, requires NVIDIA GPU and RAPIDS cuML) ---
@@ -565,6 +565,13 @@ GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-pro") # Defa
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
 MISTRAL_MODEL_NAME = os.environ.get("MISTRAL_MODEL_NAME", "ministral-3b-latest")
 
+# LiteLLM SDK: the model id names the upstream provider (e.g. anthropic/claude-sonnet-4-5, bedrock/..., vertex_ai/...),
+# whose credentials LiteLLM reads from that provider's usual environment variables. The key and base URL are optional,
+# e.g. for a LiteLLM proxy (model "litellm_proxy/<alias>", LITELLM_API_BASE "http://litellm:4000").
+LITELLM_MODEL_NAME = os.environ.get("LITELLM_MODEL_NAME", "")
+LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
+LITELLM_API_BASE = os.environ.get("LITELLM_API_BASE", "")
+
 # AI Request Timeout Configuration
 # Timeout in seconds for AI API requests. Increase this value if using slower hardware or larger models.
 # For CPU-only Ollama instances or large models that take longer to generate responses, consider setting to 300-600 seconds.
@@ -713,6 +720,7 @@ QUEUE_SECRET_KWARGS = (
     'openai_api_key_param',
     'gemini_api_key_param',
     'mistral_api_key_param',
+    'litellm_api_key_param',
 )
 
 # How many RESTARTS a task gets before it fails for good: 3 means the first

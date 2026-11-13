@@ -25,6 +25,7 @@ const ollamaConfigGroup = document.getElementById('ollama-config-group');
 const openaiConfigGroup = document.getElementById('openai-config-group');
 const geminiConfigGroup = document.getElementById('gemini-config-group');
 const mistralConfigGroup = document.getElementById('mistral-config-group');
+const litellmConfigGroup = document.getElementById('litellm-config-group');
 
 // Task Buttons
 const startAnalysisBtn = document.getElementById('start-analysis-btn');
@@ -120,6 +121,7 @@ function toggleAiConfig() {
     openaiConfigGroup.classList.add('hidden');
     geminiConfigGroup.classList.add('hidden');
     mistralConfigGroup.classList.add('hidden');
+    litellmConfigGroup.classList.add('hidden');
 
     if (provider === 'OLLAMA') {
         ollamaConfigGroup.classList.remove('hidden');
@@ -129,6 +131,8 @@ function toggleAiConfig() {
         geminiConfigGroup.classList.remove('hidden');
     } else if (provider === 'MISTRAL') {
         mistralConfigGroup.classList.remove('hidden');
+    } else if (provider === 'LITELLM') {
+        litellmConfigGroup.classList.remove('hidden');
     }
 }
 
@@ -198,6 +202,7 @@ function renderConfig(config) {
     document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
     document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
+    document.getElementById('config-litellm_model_name').value = config.litellm_model_name || '';
 }
 
 function updateCancelButtonState(isDisabled) {
@@ -406,6 +411,7 @@ async function startTask(taskType) {
             openai_model_name: document.getElementById('config-openai_model_name').value,
             gemini_model_name: document.getElementById('config-gemini_model_name').value,
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
+            litellm_model_name: document.getElementById('config-litellm_model_name').value,
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
         });
     }

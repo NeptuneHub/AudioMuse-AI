@@ -10,7 +10,7 @@
 
 Facade over the ``providers`` subpackage: validates the AI config, then
 routes ``generate_text`` and ``call_with_tools`` to the selected vendor
-(Ollama/OpenAI/Gemini/Mistral). Also owns playlist-name generation and the
+(Ollama/OpenAI/Gemini/Mistral/LiteLLM). Also owns playlist-name generation and the
 Unicode text hygiene that sibling modules rely on.
 
 Main Features:
@@ -36,6 +36,7 @@ import ftfy
 import config
 from tasks.ai.providers import (
     gemini as ai_api_gemini,
+    litellm as ai_api_litellm,
     mistral as ai_api_mistral,
     openai as ai_api_openai,
 )
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 AI_NAMING_SKIPPED = "AI Naming Skipped"
 
-VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "NONE"}
+VALID_PROVIDERS = {"OLLAMA", "OPENAI", "GEMINI", "MISTRAL", "LITELLM", "NONE"}
 
 _PLAYLIST_DIMENSION_RULES = {
     'contrast': (
@@ -198,6 +199,16 @@ def validate_ai_config(ai_config: Dict) -> Tuple[bool, Optional[str]]:
             logger.error("validate_ai_config: MISTRAL model empty")
             return False, msg
 
+    elif provider == "LITELLM":
+        if not ai_api_litellm.is_available():
+            msg = "Provider=LITELLM but the litellm package is not installed. Pick a different provider."
+            logger.error("validate_ai_config: litellm package missing")
+            return False, msg
+        if not ai_config.get("litellm_model"):
+            msg = "Provider=LITELLM but litellm_model is empty"
+            logger.error("validate_ai_config: LITELLM model empty")
+            return False, msg
+
     return True, None
 
 
@@ -251,6 +262,16 @@ def generate_text(
             ai_config["mistral_key"],
             ai_config["mistral_model"],
             prompt,
+            skip_delay=skip_delay,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    if provider == "LITELLM":
+        return ai_api_litellm.generate_text(
+            ai_config["litellm_model"],
+            prompt,
+            ai_config.get("litellm_key"),
+            ai_config.get("litellm_url"),
             skip_delay=skip_delay,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -315,6 +336,16 @@ def call_with_tools(
         return ai_api_mistral.call_with_tools(
             ai_config["mistral_key"],
             ai_config["mistral_model"],
+            system_prompt,
+            user_message,
+            tools,
+            log_messages,
+        )
+    if provider == "LITELLM":
+        return ai_api_litellm.call_with_tools(
+            ai_config["litellm_model"],
+            ai_config.get("litellm_key"),
+            ai_config.get("litellm_url"),
             system_prompt,
             user_message,
             tools,

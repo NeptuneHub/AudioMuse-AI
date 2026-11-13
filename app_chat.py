@@ -16,7 +16,7 @@ MCP tools from `tasks.ai.tools`, then materializes the result via
 Main Features:
 * Routes: `/` chat page, `/api/config_defaults`, `/api/chatPlaylist`,
   `/api/chatPlaylistStream` (Server-Sent Events), `/api/create_playlist`.
-* Per-request AI provider/model override (Ollama/OpenAI/Gemini/Mistral) and
+* Per-request AI provider/model override (Ollama/OpenAI/Gemini/Mistral/LiteLLM) and
   optional `tasks.playlist_ordering.order_playlist` post-processing.
 * The stored OpenAI key is sent only to the configured OPENAI_SERVER_URL (or
   for an admin), so a request-supplied URL never receives it.
@@ -123,6 +123,10 @@ def chat_home():
                                     'type': 'string',
                                     'example': 'ministral-3b-latest',
                                 },
+                                'default_litellm_model_name': {
+                                    'type': 'string',
+                                    'example': 'anthropic/claude-sonnet-4-5',
+                                },
                                 'instant_playlist_default_n_results': {
                                     'type': 'integer',
                                     'example': 50,
@@ -155,6 +159,7 @@ def chat_config_defaults_api():
             "openai_server_url": cfg.OPENAI_SERVER_URL,
             "default_gemini_model_name": cfg.GEMINI_MODEL_NAME,
             "default_mistral_model_name": cfg.MISTRAL_MODEL_NAME,
+            "default_litellm_model_name": cfg.LITELLM_MODEL_NAME,
             "instant_playlist_default_n_results": cfg.INSTANT_PLAYLIST_DEFAULT_N_RESULTS,
             "instant_playlist_max_n_results": cfg.INSTANT_PLAYLIST_MAX_N_RESULTS,
         }
@@ -239,9 +244,9 @@ def _missing_cloud_api_key(ai_provider, ai_secrets):
                             },
                             'ai_provider': {
                                 'type': 'string',
-                                'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, NONE). Defaults to server config.',
+                                'description': 'The AI provider to use (OLLAMA, OPENAI, GEMINI, MISTRAL, LITELLM, NONE). Defaults to server config.',
                                 'example': 'GEMINI',
-                                'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'NONE'],
+                                'enum': ['OLLAMA', 'OPENAI', 'GEMINI', "MISTRAL", 'LITELLM', 'NONE'],
                             },
                             'ai_model': {
                                 'type': 'string',
@@ -567,11 +572,14 @@ def _run_chat_pipeline(data, log_messages):
         'openai_model': ai_model_from_request or config.OPENAI_MODEL_NAME,
         'gemini_model': ai_model_from_request or config.GEMINI_MODEL_NAME,
         'mistral_model': ai_model_from_request or config.MISTRAL_MODEL_NAME,
+        'litellm_model': ai_model_from_request or config.LITELLM_MODEL_NAME,
+        'litellm_url': config.LITELLM_API_BASE,
     }
     ai_secrets = {
         'openai_key': _openai_key_for_url(ai_config['openai_url']),
         'gemini_key': config.GEMINI_API_KEY,
         'mistral_key': config.MISTRAL_API_KEY,
+        'litellm_key': config.LITELLM_API_KEY,
     }
     # The downstream AI layer expects a single merged dict.
     ai_config_with_secrets = {**ai_config, **ai_secrets}
@@ -582,12 +590,14 @@ def _run_chat_pipeline(data, log_messages):
         "OPENAI": ai_config['openai_url'],
         "GEMINI": "(gemini-api)",
         "MISTRAL": "(mistral-api)",
+        "LITELLM": ai_config['litellm_url'] or "(litellm-sdk)",
     }.get(ai_provider, "(none)")
     _resolved_model = {
         "OLLAMA": ai_config['ollama_model'],
         "OPENAI": ai_config['openai_model'],
         "GEMINI": ai_config['gemini_model'],
         "MISTRAL": ai_config['mistral_model'],
+        "LITELLM": ai_config['litellm_model'],
     }.get(ai_provider, "(none)")
     logger.info(
         "chat_playlist_api -> provider=%s url=%s model=%s (default_provider=%s, client_override=%s)",
