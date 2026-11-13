@@ -2421,6 +2421,13 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    the first one kept first, with where each song would start and end.
    Search by Song itself is unchanged. Every row shows a small bar with the
    two times; the playlist keeps the order, the times are only a hint.
+4. **Play** (or a click on a row) plays the results in the browser, each
+   song fetched once from the media server through
+   `GET /api/recording_search/play/<id>`. With Smart fade every song starts
+   at its suggested start and, 4 seconds before its suggested end, the next
+   one starts at its own while the two cross-fade; without it the songs play
+   whole, one after the other. **Skip to the fade** jumps to 10 seconds
+   before the next transition.
 
 **Important behaviours**
 

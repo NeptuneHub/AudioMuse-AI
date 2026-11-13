@@ -18,8 +18,9 @@ Main Features:
   the clip and a result count), `/api/recording_search/by_track` (JSON: a
   library song's id and a result count, for the other recordings of that
   song), `/api/recording_search/smart_fade` (JSON: any list of song ids,
-  returned in smart fade order with where to start and end each) and
-  `/api/recording_search/warmup`.
+  returned in smart fade order with where to start and end each),
+  `/api/recording_search/play/<id>` (the song's audio from the media server,
+  for the page's player) and `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
@@ -35,14 +36,20 @@ Main Features:
   certificate, one browser warning) or say why the built-in HTTPS is off.
 """
 
-from flask import Blueprint, render_template, request, jsonify
+from flask import Blueprint, Response, render_template, request, jsonify
 import logging
+import mimetypes
+import os
+import shutil
+import tempfile
 
 import app_server_context
 from error.error_dictionary import (
     ERR_CACHE_REFRESH_FAILED,
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_UNREACHABLE,
+    ERR_NOT_FOUND,
     ERR_PAYLOAD_TOO_LARGE,
     ERR_RECORDING_INDEX_UNAVAILABLE,
     ERR_RECORDING_REJECTED,
@@ -405,6 +412,68 @@ def recording_search_smart_fade_api():
     empty = {'fade_in_seconds': None, 'fade_out_seconds': None, 'duration_seconds': None}
     results = [dict({'item_id': app_server_context.provider_echo_id(sent[index])}, **(fade or empty)) for index, fade in ordered]
     return jsonify({'results': results, 'count': len(results)})
+
+
+@recording_search_bp.route('/api/recording_search/play/<item_id>', methods=['GET'])
+def recording_search_play_api(item_id):
+    """
+    Stream a library song to the page's player.
+    ---
+    tags:
+      - Recording Search
+    summary: Fetch one library song from the selected media server and send its audio file.
+    parameters:
+      - in: path
+        name: item_id
+        required: true
+        schema:
+          type: string
+        description: The song, as an id of the selected server.
+    responses:
+      200:
+        description: The audio file as the media server delivers it.
+      404:
+        description: The id is not a song of the library.
+      502:
+        description: The media server did not deliver the song.
+    """
+    from tasks import mediaserver
+    from tasks.commons import fetch_track_metadata_map
+
+    if disabled := _disabled_response():
+        return disabled
+    try:
+        canonical_id = app_server_context.resolve_input_item_id(item_id)
+    except ValueError as exc:
+        return json_exception(exc, ERR_INVALID_REQUEST)
+    if not fetch_track_metadata_map([canonical_id]):
+        return json_error(ERR_NOT_FOUND, 'This song is not in the library.')
+    folder = tempfile.mkdtemp(prefix='audiomuse_play_')
+    try:
+        with app_server_context.use_request_server():
+            path = mediaserver.download_track(folder, {'Id': item_id, 'id': item_id})
+    except Exception:
+        logger.exception('Playback download failed for %s', item_id)
+        path = None
+    if not path:
+        shutil.rmtree(folder, ignore_errors=True)
+        return json_error(ERR_MEDIASERVER_UNREACHABLE, 'The media server did not deliver this song.', http_status=502)
+    return Response(
+        _stream_then_remove(path, folder),
+        mimetype=mimetypes.guess_type(path)[0] or 'application/octet-stream',
+        headers={'Content-Length': str(os.path.getsize(path))},
+    )
+
+
+def _stream_then_remove(path, folder):
+    # send_file's direct passthrough skips call_on_close, so the copy is
+    # removed here, when the server closes the stream (sent or abandoned).
+    try:
+        with open(path, 'rb') as handle:
+            while chunk := handle.read(1024 * 1024):
+                yield chunk
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 @recording_search_bp.route('/api/recording_search/warmup', methods=['POST'])

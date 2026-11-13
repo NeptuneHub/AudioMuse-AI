@@ -30,6 +30,9 @@ Main Features:
 * The smart_fade endpoint answers 400 without a list, resolves the ids for the
   server, returns the songs in the manager's order under the ids as sent with
   null times for songs without a fingerprint, and never leaks a canonical id
+* The play endpoint downloads a library song from the media server and sends
+  it, removing the temporary copy once sent; an id outside the library is a
+  404 and a failed download a 502
 * The warmup endpoint relays the manager status
 * With NEURAL_FINGERPRINT_ENABLED false every route answers 503 naming the
   flag and the page is told the feature is disabled
@@ -435,6 +438,52 @@ def test_smart_fade_returns_the_songs_in_order_under_the_ids_as_sent(client, mon
     assert body['count'] == 3
 
 
+def _fake_media(monkeypatch, tmp_path, payload):
+    import contextlib
+
+    import app_server_context
+    import tasks.commons
+    import tasks.mediaserver
+
+    seen = {}
+    monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda raw_id, data=None: f'fp_{raw_id}')
+    monkeypatch.setattr(app_server_context, 'use_request_server', lambda data=None: contextlib.nullcontext())
+    monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song 1'} for i in ids if i == 'fp_42'})
+
+    def download(folder, item):
+        seen.update(folder=folder, item=item)
+        if payload is None:
+            return None
+        path = os.path.join(folder, '42.mp3')
+        with open(path, 'wb') as handle:
+            handle.write(payload)
+        return path
+
+    monkeypatch.setattr(tasks.mediaserver, 'download_track', download)
+    return seen
+
+
+def test_play_streams_the_song_from_the_media_server_and_cleans_up(client, monkeypatch, tmp_path):
+    seen = _fake_media(monkeypatch, tmp_path, b'ID3audio')
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 200
+    assert response.data == b'ID3audio'
+    assert response.mimetype == 'audio/mpeg'
+    assert response.headers['Content-Length'] == '8'
+    assert seen['item'] == {'Id': '42', 'id': '42'}
+    assert not os.path.exists(seen['folder'])
+
+
+def test_play_refuses_a_song_outside_the_library_and_reports_a_failed_download(client, monkeypatch, tmp_path):
+    seen = _fake_media(monkeypatch, tmp_path, None)
+    response = client.get('/api/recording_search/play/7')
+    assert response.status_code == 404
+    assert 'item' not in seen
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 502
+    assert not os.path.exists(seen['folder'])
+
+
 def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(client, bp_mod, monkeypatch):
     import config
 
@@ -443,6 +492,7 @@ def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(clie
         _post(client, {'clip': _clip()}),
         _post_track(client, {'item_id': 'x'}),
         _post_fade(client, {'item_ids': ['x']}),
+        client.get('/api/recording_search/play/x'),
         client.post('/api/recording_search/warmup'),
     ):
         assert response.status_code == 503

@@ -174,6 +174,34 @@
         background: var(--color-primary);
     }
 
+    .player {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-bottom: 1rem;
+    }
+
+    .player .btn {
+        display: inline-flex;
+        margin: 0;
+    }
+
+    .now-playing {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        overflow-wrap: anywhere;
+    }
+
+    #results-list .result-item {
+        cursor: pointer;
+    }
+
+    #results-list .result-item.playing {
+        border-color: var(--color-primary);
+        box-shadow: 0 0 0 1px var(--color-primary);
+    }
+
     @media (max-width: 768px) {
         .tabs {
             flex-wrap: nowrap;
@@ -274,6 +302,12 @@
 <section id="results-container" class="hidden">
     <h2>Results</h2>
     <div id="result-count" style="margin-bottom: 1rem; font-weight: 600;"></div>
+    <div id="player" class="player hidden">
+        <button type="button" class="btn btn-primary" id="play-btn">Play</button>
+        <button type="button" class="btn btn-ghost" id="skip-btn" disabled>Skip to the fade</button>
+        <button type="button" class="btn btn-ghost" id="stop-btn" disabled>Stop</button>
+        <span id="now-playing" class="now-playing" aria-live="polite"></span>
+    </div>
     <div id="results-list"></div>
 </section>
 
@@ -321,12 +355,27 @@ document.addEventListener('DOMContentLoaded', function () {
     const songSuggestions = document.getElementById('song-suggestions');
     const songSelected = document.getElementById('song-selected');
     const smartFade = document.getElementById('smart-fade');
+    const player = document.getElementById('player');
+    const playBtn = document.getElementById('play-btn');
+    const skipBtn = document.getElementById('skip-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const nowPlaying = document.getElementById('now-playing');
+    const CROSSFADE_SECONDS = 4;
 
     let mode = 'recording';
     let currentClip = null;
     let selectedSong = null;
     let currentResults = [];
     let currentSeedId = null;
+    let currentSeedEnd = null;
+    let currentSeedTitle = '';
+    let playOffset = 0;
+    let playQueue = [];
+    let playSmart = false;
+    let playToken = 0;
+    let playCurrent = null;
+    let playLoads = {};
+    let playAudios = new Set();
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -345,6 +394,8 @@ document.addEventListener('DOMContentLoaded', function () {
     function resetResults() {
         resultCount.textContent = '';
         playlistCreator.classList.add('hidden');
+        stopPlayback();
+        player.classList.add('hidden');
     }
 
     function showError(message) {
@@ -587,13 +638,150 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
         const title = selectedSong.title || 'this song';
         let summary = `${(data.results || []).length} songs for "${title}"`;
+        let seedEnd = null;
         if (smartFade.checked && (data.results || []).length) {
             const faded = await smartFadeOrder(selectedSong.item_id, data.results);
             data.results = faded.results;
+            seedEnd = faded.seedEnd;
             if (typeof faded.seedEnd === 'number') summary += ` in smart fade order; "${title}" ends at ${clock(faded.seedEnd)}`;
         }
-        return { data, seedId: selectedSong.item_id, summary };
+        return { data, seedId: selectedSong.item_id, summary, seedEnd, smart: seedEnd !== null };
     }
+
+    function playUrl(itemId) {
+        return "{{ url_for('recording_search_bp.recording_search_play_api', item_id='__ID__') }}".replace('__ID__', encodeURIComponent(itemId));
+    }
+
+    function buildQueue() {
+        const songs = currentResults.map(r => ({ item_id: r.item_id, title: r.title || 'Unknown', start: r.fade_in_seconds, end: r.fade_out_seconds }));
+        if (currentSeedId) songs.unshift({ item_id: currentSeedId, title: currentSeedTitle || 'Unknown', start: 0, end: currentSeedEnd });
+        playOffset = currentSeedId ? 1 : 0;
+        return songs;
+    }
+
+    function loadSong(index) {
+        if (!playLoads[index]) {
+            playLoads[index] = fetch(playUrl(playQueue[index].item_id)).then(async response => {
+                if (!response.ok) throw new Error(apiErrorText(await readJsonBody(response), `Could not load the song (HTTP ${response.status})`));
+                return URL.createObjectURL(await response.blob());
+            });
+            playLoads[index].catch(() => {});
+        }
+        return playLoads[index];
+    }
+
+    function rampVolume(audio, from, to, done) {
+        const started = Date.now();
+        audio.volume = from;
+        const timer = setInterval(() => {
+            const share = Math.min(1, (Date.now() - started) / (CROSSFADE_SECONDS * 1000));
+            audio.volume = Math.max(0, Math.min(1, from + (to - from) * share));
+            if (share >= 1) {
+                clearInterval(timer);
+                if (done) done();
+            }
+        }, 50);
+    }
+
+    function markPlaying(index) {
+        resultsList.querySelectorAll('.result-item').forEach((item, row) => item.classList.toggle('playing', row === index - playOffset));
+    }
+
+    function retire(audio, index) {
+        audio.pause();
+        playAudios.delete(audio);
+        if (playLoads[index]) {
+            playLoads[index].then(url => URL.revokeObjectURL(url), () => {});
+            delete playLoads[index];
+        }
+    }
+
+    function stopPlayback() {
+        playToken += 1;
+        playAudios.forEach(audio => audio.pause());
+        playAudios.clear();
+        Object.values(playLoads).forEach(load => load.then(url => URL.revokeObjectURL(url), () => {}));
+        playLoads = {};
+        playCurrent = null;
+        markPlaying(-1);
+        nowPlaying.textContent = '';
+        skipBtn.disabled = true;
+        stopBtn.disabled = true;
+    }
+
+    async function playSong(index, fadeIn) {
+        const token = playToken;
+        const song = playQueue[index];
+        if (!song) {
+            stopPlayback();
+            return;
+        }
+        nowPlaying.textContent = `Loading ${song.title}...`;
+        let url;
+        try {
+            url = await loadSong(index);
+        } catch (error) {
+            if (token === playToken) nowPlaying.textContent = error.message;
+            return;
+        }
+        if (token !== playToken) return;
+        const audio = new Audio(url);
+        playAudios.add(audio);
+        await new Promise(resolve => audio.addEventListener('loadedmetadata', resolve, { once: true }));
+        if (token !== playToken) return retire(audio, index);
+        const timed = playSmart && typeof song.start === 'number';
+        if (timed) audio.currentTime = song.start;
+        audio.volume = fadeIn ? 0 : 1;
+        try {
+            await audio.play();
+        } catch (error) {
+            nowPlaying.textContent = `${error.name}: ${error.message}`;
+            return retire(audio, index);
+        }
+        if (fadeIn) rampVolume(audio, 0, 1);
+        const state = { index, audio, handedOver: false };
+        playCurrent = state;
+        markPlaying(index);
+        nowPlaying.textContent = `Playing ${song.title}` + (timed ? ` from ${clock(song.start)}` : '')
+            + (timed && typeof song.end === 'number' && index + 1 < playQueue.length ? ` until ${clock(song.end)}` : '');
+        if (index + 1 < playQueue.length) loadSong(index + 1);
+        const handOver = crossfade => {
+            if (state.handedOver || token !== playToken) return;
+            state.handedOver = true;
+            if (crossfade) rampVolume(audio, audio.volume, 0, () => retire(audio, index));
+            else retire(audio, index);
+            playSong(index + 1, crossfade);
+        };
+        audio.addEventListener('timeupdate', () => {
+            if (timed && typeof song.end === 'number' && index + 1 < playQueue.length
+                && audio.currentTime >= song.end - CROSSFADE_SECONDS) handOver(true);
+        });
+        audio.addEventListener('ended', () => handOver(false));
+    }
+
+    function startPlayback(index) {
+        stopPlayback();
+        playQueue = buildQueue();
+        skipBtn.disabled = false;
+        stopBtn.disabled = false;
+        playSong(index, false);
+    }
+
+    playBtn.addEventListener('click', () => startPlayback(0));
+    stopBtn.addEventListener('click', stopPlayback);
+    skipBtn.addEventListener('click', () => {
+        if (!playCurrent) return;
+        const { audio, index } = playCurrent;
+        const song = playQueue[index];
+        const end = playSmart && typeof song.end === 'number' && index + 1 < playQueue.length ? song.end : audio.duration;
+        const target = end - CROSSFADE_SECONDS - 6;
+        if (Number.isFinite(target) && target > audio.currentTime) audio.currentTime = target;
+    });
+    resultsList.addEventListener('click', event => {
+        const item = event.target.closest('.result-item');
+        if (!item) return;
+        startPlayback([...resultsList.querySelectorAll('.result-item')].indexOf(item) + (currentSeedId ? 1 : 0));
+    });
 
     searchBtn.addEventListener('click', async () => {
         if (mode === 'recording' ? !currentClip : !selectedSong) return;
@@ -603,9 +791,12 @@ document.addEventListener('DOMContentLoaded', function () {
         resetResults();
         searchBtn.disabled = true;
         try {
-            const { data, seedId, summary } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
+            const { data, seedId, summary, seedEnd, smart } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
             currentResults = data.results || [];
             currentSeedId = seedId;
+            currentSeedTitle = seedId && selectedSong ? (selectedSong.title || 'Unknown') : '';
+            currentSeedEnd = typeof seedEnd === 'number' ? seedEnd : null;
+            playSmart = !!smart;
             displayResults(currentResults, summary);
         } catch (error) {
             showError(error.message);
@@ -623,6 +814,8 @@ document.addEventListener('DOMContentLoaded', function () {
         resultCount.textContent = summary;
         resultsList.innerHTML = renderSongList(results, { metric: neuralBadge });
         addFadeSpans(results);
+        skipBtn.textContent = playSmart ? 'Skip to the fade' : 'Skip to the end';
+        player.classList.remove('hidden');
         playlistCreator.classList.remove('hidden');
     }
 
