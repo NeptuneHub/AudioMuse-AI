@@ -138,6 +138,42 @@
         margin-bottom: 1rem;
     }
 
+    .search-container label.checkbox-inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0;
+        cursor: pointer;
+    }
+
+    .fade-span {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.3rem;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .fade-track {
+        position: relative;
+        flex: none;
+        width: 4.5rem;
+        height: 0.35rem;
+        border-radius: 0.2rem;
+        background: var(--border-color);
+        overflow: hidden;
+    }
+
+    .fade-play {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-radius: 0.2rem;
+        background: var(--color-primary);
+    }
+
     @media (max-width: 768px) {
         .tabs {
             flex-wrap: nowrap;
@@ -211,6 +247,13 @@
                 <div id="song-suggestions" class="autocomplete-results hidden" aria-label="Song suggestions"></div>
             </div>
             <div id="song-selected" class="clip-info hidden"></div>
+            <div class="param-group label-with-tooltip">
+                <label class="checkbox-inline"><input type="checkbox" id="smart-fade"> Smart fade</label>
+                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="smart-fade-help">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text" id="smart-fade-help">Orders the songs so each one flows into the next, and shows where each one would start and end. The playlist keeps the order, not the times.</span>
+                </button>
+            </div>
         </div>
 
         <div class="param-group">
@@ -277,6 +320,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const songQuery = document.getElementById('song-query');
     const songSuggestions = document.getElementById('song-suggestions');
     const songSelected = document.getElementById('song-selected');
+    const smartFade = document.getElementById('smart-fade');
 
     let mode = 'recording';
     let currentClip = null;
@@ -495,15 +539,40 @@ document.addEventListener('DOMContentLoaded', function () {
         return { data, seedId: null, summary: `${(data.results || []).length} songs for a ${data.clip_seconds}s clip` };
     }
 
+    function clock(seconds) {
+        const total = Math.max(0, Math.round(seconds));
+        return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+    }
+
+    function addFadeSpans(results) {
+        resultsList.querySelectorAll('.result-item').forEach((item, index) => {
+            const song = results[index];
+            if (!song || typeof song.fade_in_seconds !== 'number' || typeof song.fade_out_seconds !== 'number') return;
+            const length = Math.max(song.duration_seconds || 0, song.fade_out_seconds, 1);
+            const left = Math.min(100, 100 * song.fade_in_seconds / length);
+            const width = Math.max(1, Math.min(100 - left, 100 * (song.fade_out_seconds - song.fade_in_seconds) / length));
+            const start = clock(song.fade_in_seconds);
+            const end = clock(song.fade_out_seconds);
+            item.querySelector('.result-main').insertAdjacentHTML('beforeend',
+                `<div class="fade-span" title="Smart fade: start at ${start}, end at ${end} of ${clock(length)}">`
+                + `<span class="fade-track"><span class="fade-play" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span>`
+                + `<span>${start} - ${end}</span></div>`);
+        });
+    }
+
     async function searchBySong(limit) {
+        const request = { item_id: selectedSong.item_id, n_results: limit };
+        if (smartFade.checked) request.smart_fade = true;
         const response = await fetch("{{ url_for('recording_search_bp.recording_search_by_track_api') }}", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })
+            body: JSON.stringify(request)
         });
         const data = await readJsonBody(response);
         if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
-        return { data, seedId: selectedSong.item_id, summary: `${(data.results || []).length} songs for "${selectedSong.title || 'this song'}"` };
+        const title = selectedSong.title || 'this song';
+        const fade = typeof data.seed_fade_out_seconds === 'number' ? ` in smart fade order; "${title}" ends at ${clock(data.seed_fade_out_seconds)}` : '';
+        return { data, seedId: selectedSong.item_id, summary: `${(data.results || []).length} songs for "${title}"${fade}` };
     }
 
     searchBtn.addEventListener('click', async () => {
@@ -533,6 +602,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         resultCount.textContent = summary;
         resultsList.innerHTML = renderSongList(results, { metric: neuralBadge });
+        addFadeSpans(results);
         playlistCreator.classList.remove('hidden');
     }
 

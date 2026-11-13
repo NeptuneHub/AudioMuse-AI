@@ -22,6 +22,12 @@ Main Features:
 * search_by_track aligns up to three windows of a song's stored codes on the
   index with the song itself excluded, keeps the best score per song, and
   refuses a song without a fingerprint
+* fade_edges keeps only the first and last 30 s (half of a shorter song);
+  smart_fade_order keeps the first song first, chains each song into the one
+  whose start matches its end, never starts later than 30 s nor ends earlier
+  than 30 s before the end, lets the last song play to its end and puts songs
+  without a fingerprint last; search_by_track adds nothing without
+  smart_fade and reorders from the song itself with it
 """
 
 import io
@@ -225,6 +231,106 @@ def test_search_by_track_aligns_windows_of_the_stored_fingerprint_and_leaves_the
     assert payload['count'] == 2
     with pytest.raises(ValueError, match='no neural fingerprint'):
         rsm.search_by_track('missing', 5)
+
+
+def _motif(rng):
+    vector = rng.standard_normal(128).astype(np.float32)
+    return vector / np.linalg.norm(vector)
+
+
+def _song(rng, rows, intro=None, outro=None):
+    vectors = rng.standard_normal((rows, 128)).astype(np.float32)
+    zone = rows * 3 // 10
+    if intro is not None:
+        vectors[:zone] = intro + 0.05 * rng.standard_normal((zone, 128))
+    if outro is not None:
+        vectors[-zone:] = outro + 0.05 * rng.standard_normal((zone, 128))
+    return vectors
+
+
+def _duration(rows):
+    return (rows - 1) * 0.5 + 1.0
+
+
+def _edges(*songs):
+    return [None if song is None else rsm.fade_edges(song) for song in songs]
+
+
+def test_fade_edges_keep_only_the_first_and_last_30_seconds_or_half_a_short_song():
+    long_song = np.arange(400, dtype=np.float32)[:, None].repeat(4, axis=1)
+    head, tail, count = rsm.fade_edges(long_song)
+    assert count == 400 and head.shape[0] == tail.shape[0] == 60
+    assert head[0, 0] == 0 and tail[0, 0] == 340 and tail[-1, 0] == 399
+    head, tail, count = rsm.fade_edges(long_song[:50], decode=lambda part: part * 2)
+    assert count == 50 and head.shape[0] == tail.shape[0] == 25 and tail[0, 0] == 50
+
+
+def test_smart_fade_chains_each_song_into_the_one_whose_start_matches_its_end():
+    rng = np.random.default_rng(7)
+    first, second, third = _motif(rng), _motif(rng), _motif(rng)
+    songs = _edges(
+        _song(rng, 200, outro=first),
+        _song(rng, 160, intro=second, outro=third),
+        _song(rng, 240, intro=first, outro=second),
+    )
+    ordered = rsm.smart_fade_order(songs)
+    assert [index for index, _fade in ordered] == [0, 2, 1]
+    fades = dict(ordered)
+    assert fades[0]['fade_in_seconds'] == 0.0
+    for index, rows in ((0, 200), (1, 160), (2, 240)):
+        assert fades[index]['duration_seconds'] == _duration(rows)
+    for index in (2, 1):
+        assert 0.0 <= fades[index]['fade_in_seconds'] <= 30.0
+    for index in (0, 2):
+        assert 0.0 <= fades[index]['duration_seconds'] - fades[index]['fade_out_seconds'] <= 30.0
+    assert fades[1]['fade_out_seconds'] == _duration(160)
+
+
+def test_smart_fade_puts_songs_without_a_fingerprint_last_and_a_lone_song_plays_whole():
+    rng = np.random.default_rng(8)
+    ordered = rsm.smart_fade_order(_edges(None, _song(rng, 50), None, _song(rng, 5)))
+    assert [index for index, _fade in ordered][2:] == [0, 2]
+    assert ordered[0][0] == 1
+    assert ordered[0][1]['fade_in_seconds'] == 0.0
+    assert ordered[2][1] is None and ordered[3][1] is None
+    assert rsm.smart_fade_order([None, None]) == [(0, None), (1, None)]
+    lone = rsm.smart_fade_order(_edges(_song(rng, 3)))
+    assert lone == [(0, {'fade_in_seconds': 0.0, 'fade_out_seconds': 2.0, 'duration_seconds': 2.0})]
+
+
+def test_search_by_track_with_smart_fade_starts_from_the_song_and_adds_the_times(monkeypatch):
+    from tasks import neural_fingerprint as nf
+    from tasks import neural_fingerprint_index
+
+    rng = np.random.default_rng(9)
+    joint, other_motif = _motif(rng), _motif(rng)
+    stored = {
+        'song': _song(rng, 200, outro=joint),
+        'copy': _song(rng, 200, intro=other_motif),
+        'other': _song(rng, 200, intro=joint),
+    }
+    monkeypatch.setattr(rsm, '_stored_fingerprint', lambda item_id: b'blob')
+    monkeypatch.setattr(nf, 'decode_blob', lambda blob: np.zeros((200, nf.CODE_BYTES), dtype=np.uint8))
+    monkeypatch.setattr(nf, 'decode_codes', lambda codes: stored['song'])
+    monkeypatch.setattr(neural_fingerprint_index, 'identify_vectors', lambda window, n, exclude_ids=(): [
+        {'item_id': 'copy', 'score': 0.9, 'votes': 9.0, 'offset_seconds': 0.0, 'identified': True, 'lead': 0.6},
+        {'item_id': 'other', 'score': 0.3, 'votes': 2.0, 'offset_seconds': 5.0, 'identified': False, 'lead': None},
+    ])
+    monkeypatch.setattr(rsm, '_fetch_track_metadata', lambda ids: {i: {'title': i, 'author': 'Band', 'album': ''} for i in ids})
+    monkeypatch.setattr(rsm, '_stored_edges', lambda ids: {i: rsm.fade_edges(stored[i]) for i in ids})
+
+    plain = rsm.search_by_track('song', 5)
+    assert [row['item_id'] for row in plain['results']] == ['copy', 'other']
+    assert 'seed_fade_out_seconds' not in plain
+    assert all('fade_in_seconds' not in row for row in plain['results'])
+
+    faded = rsm.search_by_track('song', 5, smart_fade=True)
+    assert [row['item_id'] for row in faded['results']] == ['other', 'copy']
+    assert faded['count'] == 2
+    assert 0.0 <= _duration(200) - faded['seed_fade_out_seconds'] <= 30.0
+    assert faded['results'][0]['score'] == 0.3
+    assert 0.0 <= faded['results'][0]['fade_in_seconds'] <= 30.0
+    assert faded['results'][1]['fade_out_seconds'] == _duration(200)
 
 
 def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):

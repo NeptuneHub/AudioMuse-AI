@@ -17,7 +17,10 @@ Main Features:
 * Routes: `/recording_search` page, `/api/recording_search/search` (multipart:
   the clip and a result count), `/api/recording_search/by_track` (JSON: a
   library song's id and a result count, for the other recordings of that
-  song) and `/api/recording_search/warmup`.
+  song; optional smart_fade orders them for a smart fade),
+  `/api/recording_search/smart_fade` (JSON: any list of song ids, returned
+  in smart fade order with where to start and end each) and
+  `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
@@ -283,6 +286,10 @@ def recording_search_by_track_api():
                 type: integer
                 minimum: 1
                 default: 100
+              smart_fade:
+                type: boolean
+                default: false
+                description: Optional. When true the results come in smart fade order (the source song first, then each song flowing into the next) and each carries where to start and end it.
     responses:
       200:
         description: Ranked songs, best match first, the source song left out.
@@ -296,10 +303,26 @@ def recording_search_by_track_api():
                   description: The song, as an id of the selected server (never an internal id).
                 count:
                   type: integer
+                seed_fade_out_seconds:
+                  type: number
+                  description: Only with smart_fade, where the source song ends.
                 results:
                   type: array
                   items:
                     type: object
+                    properties:
+                      fade_in_seconds:
+                        type: number
+                        nullable: true
+                        description: Only with smart_fade, where to start the song.
+                      fade_out_seconds:
+                        type: number
+                        nullable: true
+                        description: Only with smart_fade, where to end the song.
+                      duration_seconds:
+                        type: number
+                        nullable: true
+                        description: Only with smart_fade, the song length its fingerprint covers.
       400:
         description: Missing or unknown song, bad count, or a song without a fingerprint.
       503:
@@ -323,11 +346,87 @@ def recording_search_by_track_api():
     except ValueError as exc:
         return json_exception(exc, ERR_INVALID_REQUEST, results=[])
 
-    payload, failure = _run_search(lambda: search_by_track(canonical_id, n_results), 'Recording search by track')
+    options = {'smart_fade': True} if data.get('smart_fade') is True else {}
+    payload, failure = _run_search(lambda: search_by_track(canonical_id, n_results, **options), 'Recording search by track')
     if failure is not None:
         return failure
     payload['item_id'] = app_server_context.provider_echo_id(item_id)
     return _scoped_response(payload, n_results)
+
+
+@recording_search_bp.route('/api/recording_search/smart_fade', methods=['POST'])
+def recording_search_smart_fade_api():
+    """
+    Order songs for a smart fade from their neural fingerprints.
+    ---
+    tags:
+      - Recording Search
+    summary: Reorder a list of songs so each flows into the next, and say where to start and end each one.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [item_ids]
+            properties:
+              item_ids:
+                type: array
+                items:
+                  type: string
+                description: The songs, as ids of the selected server. The first one stays first.
+    responses:
+      200:
+        description: The same songs in smart fade order; songs without a neural fingerprint come last with null times.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count:
+                  type: integer
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                      fade_in_seconds:
+                        type: number
+                        nullable: true
+                      fade_out_seconds:
+                        type: number
+                        nullable: true
+                      duration_seconds:
+                        type: number
+                        nullable: true
+      400:
+        description: Missing or empty item_ids list, or an unknown server.
+      503:
+        description: Search by Recording is disabled.
+      500:
+        description: Internal error.
+    """
+    from tasks.recording_search_manager import smart_fade_playlist
+
+    if disabled := _disabled_response():
+        return disabled
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get('item_ids')
+    sent = [str(raw).strip() for raw in raw_ids if raw is not None and str(raw).strip()] if isinstance(raw_ids, list) else []
+    if not sent:
+        return json_error(ERR_INVALID_REQUEST, 'Missing "item_ids" list.', results=[])
+    try:
+        canonical = app_server_context.resolve_input_item_ids(sent, data)
+    except ValueError as exc:
+        return json_exception(exc, ERR_INVALID_REQUEST, results=[])
+    ordered, failure = _run_search(lambda: smart_fade_playlist([canonical.get(i, i) for i in sent]), 'Smart fade')
+    if failure is not None:
+        return failure
+    empty = {'fade_in_seconds': None, 'fade_out_seconds': None, 'duration_seconds': None}
+    results = [dict({'item_id': app_server_context.provider_echo_id(sent[index])}, **(fade or empty)) for index, fade in ordered]
+    return jsonify({'results': results, 'count': len(results)})
 
 
 @recording_search_bp.route('/api/recording_search/warmup', methods=['POST'])

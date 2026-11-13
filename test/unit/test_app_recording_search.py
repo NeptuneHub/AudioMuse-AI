@@ -24,6 +24,11 @@ Main Features:
 * No response of this API ever carries an internal canonical id: results are
   translated to the selected server's ids and the echoed song id goes through
   provider_echo_id, even when the caller sent a canonical id
+* by_track asks the manager for the smart fade only when the body carries
+  smart_fade true, so a legacy call is exactly the old one
+* The smart_fade endpoint answers 400 without a list, resolves the ids for the
+  server, returns the songs in the manager's order under the ids as sent with
+  null times for songs without a fingerprint, and never leaks a canonical id
 * The warmup endpoint relays the manager status
 * With NEURAL_FINGERPRINT_ENABLED false every route answers 503 naming the
   flag and the page is told the feature is disabled
@@ -360,6 +365,59 @@ def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypat
     assert 'secret' not in response.get_json()['error']
 
 
+def test_by_track_asks_for_the_smart_fade_only_when_the_caller_sends_true(client, monkeypatch):
+    import tasks.recording_search_manager as rsm
+
+    calls = []
+
+    def fake(item_id, n_results, **options):
+        calls.append(options)
+        return {'item_id': item_id, 'results': [], 'count': 0}
+
+    monkeypatch.setattr(rsm, 'search_by_track', fake)
+    for body in ({'item_id': 'x'}, {'item_id': 'x', 'smart_fade': False}, {'item_id': 'x', 'smart_fade': 'true'}, {'item_id': 'x', 'smart_fade': True}):
+        assert _post_track(client, body).status_code == 200
+    assert calls == [{}, {}, {}, {'smart_fade': True}]
+
+
+def _post_fade(client, body):
+    return client.post('/api/recording_search/smart_fade', json=body)
+
+
+def test_smart_fade_returns_the_songs_in_order_under_the_ids_as_sent(client, monkeypatch):
+    import app_server_context
+    import tasks.recording_search_manager as rsm
+
+    for body in ({}, {'item_ids': []}, {'item_ids': 'a,b'}, {'item_ids': [None, ' ']}):
+        assert _post_fade(client, body).status_code == 400
+
+    _translating_scope(monkeypatch)
+    monkeypatch.setattr(
+        app_server_context, 'resolve_input_item_ids',
+        lambda ids, data=None: {i: i if i.startswith('fp_') else f'fp_{i}' for i in ids},
+    )
+    seen = []
+
+    def playlist(item_ids):
+        seen.append(list(item_ids))
+        return [
+            (2, {'fade_in_seconds': 0.0, 'fade_out_seconds': 180.5, 'duration_seconds': 200.0}),
+            (0, {'fade_in_seconds': 12.0, 'fade_out_seconds': 150.0, 'duration_seconds': 150.0}),
+            (1, None),
+        ]
+
+    monkeypatch.setattr(rsm, 'smart_fade_playlist', playlist)
+    response = _post_fade(client, {'item_ids': ['a', 'b', 'fp_c']})
+    body = response.get_json()
+    assert response.status_code == 200
+    assert seen == [['fp_a', 'fp_b', 'fp_c']]
+    assert 'fp_' not in response.get_data(as_text=True)
+    assert [row['item_id'] for row in body['results']] == ['C', 'a', 'b']
+    assert body['results'][1] == {'item_id': 'a', 'fade_in_seconds': 12.0, 'fade_out_seconds': 150.0, 'duration_seconds': 150.0}
+    assert body['results'][2] == {'item_id': 'b', 'fade_in_seconds': None, 'fade_out_seconds': None, 'duration_seconds': None}
+    assert body['count'] == 3
+
+
 def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(client, bp_mod, monkeypatch):
     import config
 
@@ -367,6 +425,7 @@ def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(clie
     for response in (
         _post(client, {'clip': _clip()}),
         _post_track(client, {'item_id': 'x'}),
+        _post_fade(client, {'item_ids': ['x']}),
         client.post('/api/recording_search/warmup'),
     ):
         assert response.status_code == 503

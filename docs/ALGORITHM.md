@@ -2414,6 +2414,12 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    remasters, the same take on a compilation; a playlist made from them
    starts with the chosen song, like the similar-song page does with its
    seed. On the recording tab the best match is already the first result.
+3. On the song tab, **Smart fade** returns the same songs in an order where
+   each one flows into the next, starting from the chosen song, and every
+   row shows a small bar with where the song would start and end. The
+   playlist keeps that order; the times are only a hint. The same ordering
+   is available for any list of songs through
+   `POST /api/recording_search/smart_fade`.
 
 **Important behaviours**
 
@@ -2600,6 +2606,22 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    window is aligned on the index exactly like a clip with the source track
    excluded from the vote, and the best score per song is kept. The
    identified flag and the lead are recomputed on the merged list.
+   **Smart fade** reuses the same stored matrices, one 128-dimension vector
+   per half second. Only the first and the last 30 seconds of each song are
+   decoded and compared (half of a song shorter than a minute), averaged
+   into overlapping 4-second windows, so a song never starts later than 30
+   seconds in nor ends earlier than 30 seconds before its end. Starting from
+   the first song, the next one is the unplaced song whose fade-in window
+   has the highest cosine with one of the current song's fade-out windows,
+   and that pair gives where the current song ends and the next one starts;
+   the first song starts at 0 and the last one plays to its end. Measured on
+   200 random songs of a 205k-song library: 0.06 s to read and decode the
+   edges and 0.11 s to order them (a 200-song API call answers in 0.13 to
+   0.22 s warm, about 1 s on the first call after a restart); the start lands
+   a median 13 s in and the end a median 14 s before the song's end, and the
+   best pairs reach a cosine of 0.12 to 0.35 between two different songs, so
+   the order is a hint drawn from a fingerprint, not a musical similarity
+   measure.
 5. **The chromaprint alternative, measured and removed.** Before the neural
    fingerprint, the clip was fingerprinted with the duplicate detector's
    fpcalc and slid across the stored chromaprints with learned per-bit
