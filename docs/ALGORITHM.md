@@ -2615,7 +2615,14 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    the first song, the next one is the unplaced song whose fade-in window
    has the highest cosine with one of the current song's fade-out windows,
    and that pair gives where the current song ends and the next one starts;
-   the first song starts at 0 and the last one plays to its end. Measured on
+   the first song starts at 0 and the last one plays to its end. A window
+   that holds silence is never used: two consecutive rows with a cosine of
+   0.95 or more are what digital silence gives (music almost never does), so
+   a song with a silent tail ends before it and a silent intro is skipped
+   (an edge silent from end to end keeps the old choice). On 200 random
+   songs 7 of 199 transitions faded through silence before this rule and 1
+   after. A quiet fade-out is not silence to the fingerprint, which brings
+   every half second to its own level, so it can still be picked. Measured on
    200 random songs of a 205k-song library: 0.06 s to read and decode the
    edges and 0.11 s to order them (a 200-song API call answers in 0.13 to
    0.22 s warm, about 1 s on the first call after a restart); the start lands

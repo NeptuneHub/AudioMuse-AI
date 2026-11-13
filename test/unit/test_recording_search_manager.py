@@ -25,7 +25,8 @@ Main Features:
 * fade_edges keeps only the first and last 30 s (half of a shorter song);
   smart_fade_order keeps the first song first, chains each song into the one
   whose start matches its end, never starts later than 30 s nor ends earlier
-  than 30 s before the end, lets the last song play to its end and puts songs
+  than 30 s before the end, never fades through silent rows (consecutive rows
+  that are nearly identical), lets the last song play to its end and puts songs
   without a fingerprint last; smart_fade_playlist reads only the stored edges
   of the given songs and orders them from the first one
 """
@@ -284,6 +285,24 @@ def test_smart_fade_chains_each_song_into_the_one_whose_start_matches_its_end():
     for index in (0, 2):
         assert 0.0 <= fades[index]['duration_seconds'] - fades[index]['fade_out_seconds'] <= 30.0
     assert fades[1]['fade_out_seconds'] == _duration(160)
+
+
+def test_smart_fade_never_fades_through_silence_at_the_edges():
+    rng = np.random.default_rng(10)
+    silence = _motif(rng)
+    ending = _song(rng, 200)
+    ending[-10:] = silence
+    opening = _song(rng, 200)
+    opening[:6] = silence
+    ordered = rsm.smart_fade_order(_edges(ending, opening))
+    fades = dict(ordered)
+    assert [index for index, _fade in ordered] == [0, 1]
+    assert fades[0]['fade_out_seconds'] <= _duration(200) - 5.0
+    assert fades[1]['fade_in_seconds'] >= 3.0
+    still = np.repeat(silence[None, :], 120, axis=0)
+    lone = rsm.smart_fade_order(_edges(ending, still))
+    assert [index for index, _fade in lone] == [0, 1]
+    assert dict(lone)[1]['fade_in_seconds'] >= 0.0
 
 
 def test_smart_fade_puts_songs_without_a_fingerprint_last_and_a_lone_song_plays_whole():

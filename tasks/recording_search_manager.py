@@ -38,7 +38,7 @@ Main Features:
   best score per song is kept, so the other recordings of that song (copies,
   remasters, compilations) come out first without the song finding itself.
   No audio is decoded and no model runs.
-* smart_fade_order chains songs: next start best matches current end (first/last 30 s)
+* smart_fade_order chains songs: next start matches current end (edge 30 s, no silence)
 * warmup_recording_models maps the index when it is not (normally a no-op,
   Flask maps it at startup and keeps it), preloads the encoder session and
   arms the idle timer (every search, search_by_track included, re-arms it)
@@ -205,6 +205,7 @@ _WINDOW_POSITIONS = (0.2, 0.5, 0.8)
 _FADE_WINDOW_ROWS = 8
 _FADE_EDGE_SECONDS = 30
 _FADE_STEP_ROWS = 2
+_FADE_SILENCE_COSINE = 0.95
 
 
 def _stored_fingerprint(item_id):
@@ -251,17 +252,29 @@ def _stored_edges(item_ids):
 def _fade_windows(vectors, width):
     rows = np.asarray(vectors, dtype=np.float32)
     rows = rows / np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1e-9)
+    still = np.einsum('ij,ij->i', rows[1:], rows[:-1]) >= _FADE_SILENCE_COSINE
+    silent = np.zeros(rows.shape[0], dtype=np.int32)
+    silent[1:] |= still
+    silent[:-1] |= still
+    silent_sums = np.concatenate([[0], np.cumsum(silent)])
     sums = np.cumsum(np.vstack([np.zeros((1, rows.shape[1]), dtype=np.float32), rows]), axis=0)
     windows = sums[width:] - sums[:-width]
-    return windows / np.maximum(np.linalg.norm(windows, axis=1, keepdims=True), 1e-9)
+    windows /= np.maximum(np.linalg.norm(windows, axis=1, keepdims=True), 1e-9)
+    return windows, silent_sums[width:] == silent_sums[:-width]
+
+
+def _fade_candidates(clean, step):
+    positions = np.arange(0, clean.size, step) if step > 0 else np.arange(clean.size - 1, -1, step)
+    kept = positions[clean[positions]]
+    return kept if kept.size else positions
 
 
 def _fade_profile(edges):
     head, tail, count = edges
     width = min(_FADE_WINDOW_ROWS, head.shape[0])
-    intro_windows, outro_windows = _fade_windows(head, width), _fade_windows(tail, width)
-    intro = np.arange(0, intro_windows.shape[0], _FADE_STEP_ROWS)
-    outro = np.arange(outro_windows.shape[0] - 1, -1, -_FADE_STEP_ROWS)
+    (intro_windows, intro_clean), (outro_windows, outro_clean) = _fade_windows(head, width), _fade_windows(tail, width)
+    intro = _fade_candidates(intro_clean, _FADE_STEP_ROWS)
+    outro = _fade_candidates(outro_clean, -_FADE_STEP_ROWS)
     return {
         'rows': count, 'width': width, 'intro': intro, 'outro': outro + count - tail.shape[0],
         'intro_windows': intro_windows[intro], 'outro_windows': outro_windows[outro],
