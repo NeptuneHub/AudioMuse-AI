@@ -27,8 +27,11 @@ Main Features:
   whose start matches its end, never starts later than 30 s nor ends earlier
   than 30 s before the end, never fades through silent rows (consecutive rows
   that are nearly identical), lets the last song play to its end and puts songs
-  without a fingerprint last; smart_fade_playlist reads only the stored edges
-  of the given songs and orders them from the first one
+  without a fingerprint last; a close fingerprint match goes to the song whose
+  stored tempo can be stretched to the current one (half or double time too),
+  a clearly better match still wins and an unknown tempo is never penalised;
+  smart_fade_playlist reads only the stored edges and tempos of the given
+  songs and orders them from the first one
 """
 
 import io
@@ -317,6 +320,32 @@ def test_smart_fade_puts_songs_without_a_fingerprint_last_and_a_lone_song_plays_
     assert lone == [(0, {'fade_in_seconds': 0.0, 'fade_out_seconds': 2.0, 'duration_seconds': 2.0})]
 
 
+def _blend(joint, other, share):
+    mixed = share * joint + np.sqrt(1.0 - share ** 2) * other
+    return mixed / np.linalg.norm(mixed)
+
+
+def test_smart_fade_breaks_a_close_fingerprint_match_on_the_stored_tempo():
+    rng = np.random.default_rng(11)
+    joint, other = _motif(rng), _motif(rng)
+    other -= (other @ joint) * joint
+    other /= np.linalg.norm(other)
+    current = _song(rng, 200, outro=joint)
+    best = _song(rng, 200, intro=joint)
+    close = _song(rng, 200, intro=_blend(joint, other, 0.97))
+    distant = _song(rng, 200, intro=_blend(joint, other, 0.6))
+
+    def order(songs, tempos=None):
+        return [index for index, _fade in rsm.smart_fade_order(_edges(*songs), tempos)]
+
+    assert order((current, best, close)) == [0, 1, 2]
+    assert order((current, best, close), [120.0, 150.0, 123.0]) == [0, 2, 1]
+    assert order((current, best, close), [120.0, 150.0, 246.0]) == [0, 2, 1]
+    assert order((current, best, close), [120.0, None, 123.0]) == [0, 1, 2]
+    assert order((current, best, close), [120.0, 0.0, 123.0]) == [0, 1, 2]
+    assert order((current, best, distant), [120.0, 150.0, 123.0]) == [0, 1, 2]
+
+
 def test_smart_fade_playlist_reads_the_stored_edges_and_orders_from_the_first_song(monkeypatch):
     rng = np.random.default_rng(9)
     joint, other_motif = _motif(rng), _motif(rng)
@@ -331,9 +360,14 @@ def test_smart_fade_playlist_reads_the_stored_edges_and_orders_from_the_first_so
         asked.append(list(ids))
         return {i: rsm.fade_edges(stored[i]) for i in ids if i in stored}
 
+    def stored_tempos(ids):
+        asked.append(('tempo', list(ids)))
+        return {'song': 120.0, 'other': 121.0}
+
     monkeypatch.setattr(rsm, '_stored_edges', stored_edges)
+    monkeypatch.setattr(rsm, '_stored_tempos', stored_tempos)
     ordered = rsm.smart_fade_playlist(['song', 'copy', 'ghost', 'other'])
-    assert asked == [['song', 'copy', 'ghost', 'other']]
+    assert asked == [['song', 'copy', 'ghost', 'other'], ('tempo', ['song', 'copy', 'ghost', 'other'])]
     assert [index for index, _fade in ordered] == [0, 3, 1, 2]
     fades = dict(ordered)
     assert fades[0]['fade_in_seconds'] == 0.0

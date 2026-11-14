@@ -38,7 +38,7 @@ Main Features:
   best score per song is kept, so the other recordings of that song (copies,
   remasters, compilations) come out first without the song finding itself.
   No audio is decoded and no model runs.
-* smart_fade_order chains songs: next start matches current end (edge 30 s, no silence)
+* smart_fade_order chains songs by end/start match (30 s edges, no silence, BPM tie-break)
 * warmup_recording_models maps the index when it is not (normally a no-op,
   Flask maps it at startup and keeps it), preloads the encoder session and
   arms the idle timer (every search, search_by_track included, re-arms it)
@@ -56,6 +56,7 @@ import numpy as np
 import config
 from tasks.idle_unload import IdleUnloadTimer
 from tasks.memory_utils import release_memory_to_os
+from tasks.smart_fade_mix import tempos_match
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,7 @@ _FADE_WINDOW_ROWS = 8
 _FADE_EDGE_SECONDS = 30
 _FADE_STEP_ROWS = 2
 _FADE_SILENCE_COSINE = 0.95
+_FADE_TEMPO_PENALTY = 0.1
 
 
 def _stored_fingerprint(item_id):
@@ -249,6 +251,25 @@ def _stored_edges(item_ids):
     return found
 
 
+def _stored_tempos(item_ids):
+    from database import get_db
+
+    cur = get_db().cursor()
+    try:
+        cur.execute('SELECT item_id, tempo FROM score WHERE item_id = ANY(%s)', (list(dict.fromkeys(item_ids)),))
+        return dict(cur.fetchall())
+    finally:
+        cur.close()
+
+
+def _tempo_penalty(tempos):
+    values = np.array([float(tempo or 0.0) for tempo in tempos])
+    known = values > 0.0
+    values = np.where(known, values, 1.0)
+    clash = ~tempos_match(values[:, None], values[None, :]) & known[:, None] & known[None, :]
+    return _FADE_TEMPO_PENALTY * clash.astype(np.float32)
+
+
 def _fade_windows(vectors, width):
     rows = np.asarray(vectors, dtype=np.float32)
     rows = rows / np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1e-9)
@@ -281,7 +302,7 @@ def _fade_profile(edges):
     }
 
 
-def smart_fade_order(edges):
+def smart_fade_order(edges, tempos=None):
     from tasks.neural_fingerprint import HOP_SECONDS, SAMPLE_RATE, SEGMENT_SAMPLES
 
     segment = SEGMENT_SAMPLES / SAMPLE_RATE
@@ -289,6 +310,7 @@ def smart_fade_order(edges):
     missing = [(index, None) for index in sorted(set(range(len(edges))) - set(usable))]
     if not usable:
         return missing
+    penalty = _tempo_penalty([tempos[index] if tempos else None for index in usable])
     profiles = [_fade_profile(edges[index]) for index in usable]
     intro_windows = np.vstack([profile['intro_windows'] for profile in profiles])
     owner = np.concatenate([np.full(profile['intro'].size, n) for n, profile in enumerate(profiles)])
@@ -297,7 +319,7 @@ def smart_fade_order(edges):
     order, fade_in, fade_out = [0], {0: 0}, {}
     while open_columns.any():
         current = profiles[order[-1]]
-        sims = current['outro_windows'] @ intro_windows.T
+        sims = current['outro_windows'] @ intro_windows.T - penalty[order[-1]][owner]
         sims[:, ~open_columns] = -np.inf
         best_outro, best_column = np.unravel_index(int(np.argmax(sims)), sims.shape)
         following = int(owner[best_column])
@@ -317,8 +339,8 @@ def smart_fade_order(edges):
 
 
 def smart_fade_playlist(item_ids):
-    edges = _stored_edges(item_ids)
-    return smart_fade_order([edges.get(item_id) for item_id in item_ids])
+    edges, tempos = _stored_edges(item_ids), _stored_tempos(item_ids)
+    return smart_fade_order([edges.get(item_id) for item_id in item_ids], [tempos.get(item_id) for item_id in item_ids])
 
 
 def search_by_track(item_id, n_results=None):

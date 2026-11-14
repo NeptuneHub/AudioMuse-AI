@@ -26,13 +26,19 @@ Main Features:
   provider_echo_id, even when the caller sent a canonical id
 * by_track knows nothing of smart fade (the manager takes the song and the
   count only, a smart_fade field in the body changes nothing); the page
-  reorders its results by posting them to the smart_fade endpoint
+  reorders its results by posting them to the smart_fade endpoint; its player
+  decodes the songs and cuts, stretches and fades them itself on one audio
+  clock started in the Play click, never seeking an audio element (Safari)
 * The smart_fade endpoint answers 400 without a list, resolves the ids for the
   server, returns the songs in the manager's order under the ids as sent with
   null times for songs without a fingerprint, and never leaks a canonical id
 * The play endpoint downloads a library song from the media server and sends
   it, removing the temporary copy once sent; an id outside the library is a
   404 and a failed download a 502
+* The transition endpoint answers 400 for missing or bad seconds, 404 for a
+  song outside the library, plans the mix from both downloads and answers only
+  that plan as JSON (no audio), removes them, and answers 400 when the songs
+  have no steady beat
 * The warmup endpoint relays the manager status
 * With NEURAL_FINGERPRINT_ENABLED false every route answers 503 naming the
   flag and the page is told the feature is disabled
@@ -400,6 +406,20 @@ def test_the_page_reorders_by_track_results_through_the_smart_fade_endpoint():
     assert 'if (smartFade.checked && (data.results || []).length)' in source
 
 
+def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_started_in_the_play_click():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    start = source.index('function startPlayback(index) {')
+    assert source.index('unlockAudio();', start) < source.index('stopPlayback();', start)
+    assert "navigator.audioSession.type = 'playback'" in source
+    assert 'audioCtx.decodeAudioData(data)' in source and 'source.start(when, node.offset)' in source
+    assert 'new Audio(' not in source and '.currentTime =' not in source and '.volume =' not in source
+    assert 'stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds)' in source
+    assert 'setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds)' in source
+    assert 'X-Switch-At' not in source
+
+
 def _post_fade(client, body):
     return client.post('/api/recording_search/smart_fade', json=body)
 
@@ -484,6 +504,40 @@ def test_play_refuses_a_song_outside_the_library_and_reports_a_failed_download(c
     assert not os.path.exists(seen['folder'])
 
 
+def test_transition_downloads_both_songs_answers_only_the_plan_and_cleans_up(client, monkeypatch, tmp_path):
+    import tasks.commons
+    import tasks.smart_fade_mix
+
+    seen = _fake_media(monkeypatch, tmp_path, b'audio')
+    monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song'} for i in ids if i in ('fp_42', 'fp_43')})
+    planned = {}
+    plan = {'mix_at': 191.5, 'mix_seconds': 4.0, 'in_at': 27.41, 'resume_at': 31.25, 'stretch': 0.96, 'tempo_from': 120.0, 'tempo_to': 125.0}
+
+    def make_plan(path_out, out_seconds, path_in, in_seconds):
+        planned.update(paths=(os.path.basename(path_out), os.path.basename(path_in)), out=out_seconds, inn=in_seconds,
+                       folder_alive=os.path.isdir(seen['folder']))
+        return plan
+
+    monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', make_plan)
+    for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1', '?from_id=42&out=1&in=1'):
+        assert client.get('/api/recording_search/transition' + query).status_code == 400
+    assert client.get('/api/recording_search/transition?from_id=42&to_id=7&out=200&in=20').status_code == 404
+
+    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20.5')
+    assert response.status_code == 200
+    assert response.mimetype == 'application/json' and response.get_json() == plan
+    assert planned == {'paths': ('42.mp3', '42.mp3'), 'out': 200.0, 'inn': 20.5, 'folder_alive': True}
+    assert not os.path.exists(seen['folder'])
+
+    def no_beat(*args):
+        raise ValueError('No steady beat to match.')
+
+    monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', no_beat)
+    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20')
+    assert response.status_code == 400
+    assert 'steady beat' in response.get_json()['error']
+
+
 def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(client, bp_mod, monkeypatch):
     import config
 
@@ -493,6 +547,7 @@ def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(clie
         _post_track(client, {'item_id': 'x'}),
         _post_fade(client, {'item_ids': ['x']}),
         client.get('/api/recording_search/play/x'),
+        client.get('/api/recording_search/transition?from_id=x&to_id=y&out=1&in=1'),
         client.post('/api/recording_search/warmup'),
     ):
         assert response.status_code == 503

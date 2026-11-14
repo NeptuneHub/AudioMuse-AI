@@ -374,8 +374,8 @@ document.addEventListener('DOMContentLoaded', function () {
     let playSmart = false;
     let playToken = 0;
     let playCurrent = null;
-    let playLoads = {};
-    let playAudios = new Set();
+    let audioCtx = null;
+    const playNodes = new Set();
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -659,49 +659,63 @@ document.addEventListener('DOMContentLoaded', function () {
         return songs;
     }
 
-    function loadSong(index) {
-        if (!playLoads[index]) {
-            playLoads[index] = fetch(playUrl(playQueue[index].item_id)).then(async response => {
-                if (!response.ok) throw new Error(apiErrorText(await readJsonBody(response), `Could not load the song (HTTP ${response.status})`));
-                return URL.createObjectURL(await response.blob());
-            });
-            playLoads[index].catch(() => {});
+    async function decode(data) {
+        try {
+            return await audioCtx.decodeAudioData(data);
+        } catch (error) {
+            throw new Error('This browser cannot play this song.');
         }
-        return playLoads[index];
     }
 
-    function rampVolume(audio, from, to, done) {
-        const started = Date.now();
-        audio.volume = from;
-        const timer = setInterval(() => {
-            const share = Math.min(1, (Date.now() - started) / (CROSSFADE_SECONDS * 1000));
-            audio.volume = Math.max(0, Math.min(1, from + (to - from) * share));
-            if (share >= 1) {
-                clearInterval(timer);
-                if (done) done();
-            }
-        }, 50);
+    async function loadSong(index) {
+        const response = await fetch(playUrl(playQueue[index].item_id));
+        if (!response.ok) throw new Error(apiErrorText(await readJsonBody(response), `Could not load the song (HTTP ${response.status})`));
+        return decode(await response.arrayBuffer());
     }
 
     function markPlaying(index) {
         resultsList.querySelectorAll('.result-item').forEach((item, row) => item.classList.toggle('playing', row === index - playOffset));
     }
 
-    function retire(audio, index) {
-        audio.pause();
-        playAudios.delete(audio);
-        if (playLoads[index]) {
-            playLoads[index].then(url => URL.revokeObjectURL(url), () => {});
-            delete playLoads[index];
+    function unlockAudio() {
+        if (!audioCtx && window.AudioContext) {
+            if (navigator.audioSession) navigator.audioSession.type = 'playback';
+            audioCtx = new AudioContext();
+        }
+        if (audioCtx) audioCtx.resume().catch(() => {});
+        return !!audioCtx;
+    }
+
+    function startSource(buffer, when, offset, fadeIn) {
+        const source = audioCtx.createBufferSource();
+        const gain = audioCtx.createGain();
+        const node = { source, gain, when, offset: Math.max(0, Math.min(offset, buffer.duration)) };
+        source.buffer = buffer;
+        source.connect(gain);
+        gain.connect(audioCtx.destination);
+        if (fadeIn) {
+            gain.gain.setValueAtTime(0, when);
+            gain.gain.linearRampToValueAtTime(1, when + CROSSFADE_SECONDS);
+        }
+        source.onended = () => playNodes.delete(node);
+        source.start(when, node.offset);
+        playNodes.add(node);
+        return node;
+    }
+
+    function halt(node) {
+        playNodes.delete(node);
+        node.gain.disconnect();
+        try {
+            node.source.stop();
+        } catch (error) {
+            node.source.disconnect();
         }
     }
 
     function stopPlayback() {
         playToken += 1;
-        playAudios.forEach(audio => audio.pause());
-        playAudios.clear();
-        Object.values(playLoads).forEach(load => load.then(url => URL.revokeObjectURL(url), () => {}));
-        playLoads = {};
+        [...playNodes].forEach(halt);
         playCurrent = null;
         markPlaying(-1);
         nowPlaying.textContent = '';
@@ -709,73 +723,192 @@ document.addEventListener('DOMContentLoaded', function () {
         stopBtn.disabled = true;
     }
 
-    async function playSong(index, fadeIn) {
+    async function loadTransition(index) {
+        const from = playQueue[index];
+        const to = playQueue[index + 1];
+        if (!playSmart || !to || typeof from.end !== 'number' || typeof to.start !== 'number') return null;
+        const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
+        try {
+            const response = await fetch(`{{ url_for('recording_search_bp.recording_search_transition_api') }}?${query}`);
+            const plan = await readJsonBody(response);
+            return response.ok && plan && plan.mix_seconds > 0 ? plan : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function stretchSegment(buffer, from, to, seconds) {
+        const rate = buffer.sampleRate;
+        const size = 2 * Math.round(0.023 * rate);
+        const hop = size / 2;
+        const slack = hop >> 1;
+        const count = Math.max(hop, Math.round(seconds * rate));
+        const base = Math.max(0, Math.round(from * rate) - slack);
+        const offset = Math.round(from * rate) - base;
+        const resume = Math.round(to * rate);
+        const speed = (resume - Math.round(from * rate)) / count;
+        const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
+        const mono = new Float32Array(Math.max(size, Math.min(buffer.length, resume + 2 * size + slack) - base));
+        channels.forEach(data => {
+            for (let i = 0; i < mono.length && base + i < data.length; i++) mono[i] += data[base + i];
+        });
+        const shape = Float32Array.from({ length: size }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / size));
+        const similarity = (p, q, step) => {
+            let dot = 0;
+            let energy = 1e-9;
+            for (let i = 0; i < size; i += step) {
+                dot += mono[p + i] * mono[q + i];
+                energy += mono[p + i] * mono[p + i];
+            }
+            return dot / Math.sqrt(energy);
+        };
+        const search = (low, high, step, q) => {
+            let best = low;
+            let score = -Infinity;
+            for (let p = low; p <= high; p += step) {
+                const value = similarity(p, q, step);
+                if (value > score) {
+                    score = value;
+                    best = p;
+                }
+            }
+            return best;
+        };
+        const out = audioCtx.createBuffer(channels.length, count, rate);
+        const targets = channels.map((_, c) => out.getChannelData(c));
+        let previous = offset;
+        for (let k = 0; k * hop < count; k++) {
+            const ideal = Math.min(mono.length - size, offset + Math.round(k * hop * speed));
+            let pick = Math.max(0, ideal);
+            const natural = previous + hop;
+            if (k && natural + size <= mono.length) {
+                const low = Math.max(0, ideal - slack);
+                const high = Math.max(low, Math.min(mono.length - size, ideal + slack));
+                const coarse = search(low, high, 4, natural);
+                pick = search(Math.max(low, coarse - 3), Math.min(high, coarse + 3), 1, natural);
+            }
+            channels.forEach((data, c) => {
+                for (let i = 0; i < size && k * hop + i < count; i++) targets[c][k * hop + i] += (data[base + pick + i] || 0) * shape[i];
+            });
+            previous = pick;
+        }
+        channels.forEach((data, c) => {
+            for (let i = 0; i < hop; i++) {
+                const blend = (i + 1) / hop;
+                targets[c][count - hop + i] = targets[c][count - hop + i] * (1 - blend) + (data[resume - hop + i] || 0) * blend;
+            }
+        });
+        return out;
+    }
+
+    function powerCurve(rising) {
+        return Float32Array.from({ length: 256 }, (_, i) => (rising ? Math.sin : Math.cos)(Math.PI / 2 * i / 255));
+    }
+
+    function entryOffset(index) {
+        const song = playQueue[index];
+        return playSmart && typeof song.start === 'number' ? song.start : 0;
+    }
+
+    function begin(index, buffer, node) {
         const token = playToken;
         const song = playQueue[index];
-        if (!song) {
-            stopPlayback();
-            return;
-        }
-        nowPlaying.textContent = `Loading ${song.title}...`;
-        let url;
-        try {
-            url = await loadSong(index);
-        } catch (error) {
-            if (token === playToken) nowPlaying.textContent = error.message;
-            return;
-        }
-        if (token !== playToken) return;
-        const audio = new Audio(url);
-        playAudios.add(audio);
-        await new Promise(resolve => audio.addEventListener('loadedmetadata', resolve, { once: true }));
-        if (token !== playToken) return retire(audio, index);
-        const timed = playSmart && typeof song.start === 'number';
-        if (timed) audio.currentTime = song.start;
-        audio.volume = fadeIn ? 0 : 1;
-        try {
-            await audio.play();
-        } catch (error) {
-            nowPlaying.textContent = `${error.name}: ${error.message}`;
-            return retire(audio, index);
-        }
-        if (fadeIn) rampVolume(audio, 0, 1);
-        const state = { index, audio, handedOver: false };
+        const hasNext = index + 1 < playQueue.length;
+        const fadeEnd = playSmart && typeof song.end === 'number' && hasNext ? song.end : null;
+        const state = { index, buffer, node, next: null, mix: null, failed: null, ready: !hasNext, handoverAt: Infinity, timers: [], scheduled: [] };
+        const after = (time, action) => state.timers.push(setTimeout(() => {
+            if (token === playToken && playCurrent === state) action();
+        }, Math.max(0, (time - audioCtx.currentTime) * 1000)));
+        state.plan = () => {
+            if (token !== playToken || playCurrent !== state || !state.ready) return;
+            state.timers.forEach(clearTimeout);
+            state.timers = [];
+            state.scheduled.forEach(halt);
+            state.scheduled = [];
+            const now = audioCtx.currentTime;
+            const at = second => state.node.when + second - state.node.offset;
+            const mix = state.mix;
+            if (!state.next) {
+                state.handoverAt = at(buffer.duration);
+                after(state.handoverAt, () => {
+                    if (state.failed) nowPlaying.textContent = state.failed;
+                    else stopPlayback();
+                });
+            } else if (mix && at(mix.mix_at) > now + 0.1) {
+                state.handoverAt = at(mix.mix_at);
+                const resume = state.handoverAt + mix.mix_seconds;
+                state.node.gain.gain.setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds);
+                state.node.source.stop(resume);
+                const blend = startSource(mix.buffer, state.handoverAt, 0, false);
+                blend.gain.gain.setValueCurveAtTime(powerCurve(true), state.handoverAt, mix.mix_seconds);
+                state.scheduled = [blend, startSource(state.next, resume, mix.resume_at, false)];
+                after(state.handoverAt, () => {
+                    nowPlaying.textContent = `Beat-matched mix into ${playQueue[index + 1].title} (${mix.tempo_from} to ${mix.tempo_to} BPM, stretch ${mix.stretch})`;
+                });
+                after(resume, () => begin(index + 1, state.next, state.scheduled[1]));
+            } else {
+                const fading = fadeEnd !== null;
+                state.handoverAt = Math.max(now + 0.05, at(fading ? Math.min(fadeEnd, buffer.duration) - CROSSFADE_SECONDS : buffer.duration));
+                if (fading) {
+                    state.node.gain.gain.setValueAtTime(1, state.handoverAt);
+                    state.node.gain.gain.linearRampToValueAtTime(0, state.handoverAt + CROSSFADE_SECONDS);
+                    state.node.source.stop(state.handoverAt + CROSSFADE_SECONDS);
+                }
+                state.scheduled = [startSource(state.next, state.handoverAt, entryOffset(index + 1), fading)];
+                after(state.handoverAt, () => begin(index + 1, state.next, state.scheduled[0]));
+            }
+        };
         playCurrent = state;
         markPlaying(index);
-        nowPlaying.textContent = `Playing ${song.title}` + (timed ? ` from ${clock(song.start)}` : '')
-            + (timed && typeof song.end === 'number' && index + 1 < playQueue.length ? ` until ${clock(song.end)}` : '');
-        if (index + 1 < playQueue.length) loadSong(index + 1);
-        const handOver = crossfade => {
-            if (state.handedOver || token !== playToken) return;
-            state.handedOver = true;
-            if (crossfade) rampVolume(audio, audio.volume, 0, () => retire(audio, index));
-            else retire(audio, index);
-            playSong(index + 1, crossfade);
-        };
-        audio.addEventListener('timeupdate', () => {
-            if (timed && typeof song.end === 'number' && index + 1 < playQueue.length
-                && audio.currentTime >= song.end - CROSSFADE_SECONDS) handOver(true);
-        });
-        audio.addEventListener('ended', () => handOver(false));
+        nowPlaying.textContent = `Playing ${song.title} from ${clock(node.offset)}` + (fadeEnd !== null ? ` until ${clock(fadeEnd)}` : '');
+        if (hasNext) {
+            Promise.all([loadSong(index + 1).catch(error => { state.failed = error.message; return null; }), loadTransition(index)])
+                .then(([next, mix]) => {
+                    state.next = next;
+                    state.mix = next && mix ? Object.assign(mix, { buffer: stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds) }) : null;
+                    state.ready = true;
+                    state.plan();
+                });
+        }
+        state.plan();
+    }
+
+    async function playSong(index) {
+        const token = playToken;
+        nowPlaying.textContent = `Loading ${playQueue[index].title}...`;
+        try {
+            const buffer = await loadSong(index);
+            if (token === playToken) begin(index, buffer, startSource(buffer, audioCtx.currentTime + 0.05, entryOffset(index), false));
+        } catch (error) {
+            if (token === playToken) nowPlaying.textContent = error.message;
+        }
     }
 
     function startPlayback(index) {
+        const ready = unlockAudio();
         stopPlayback();
+        if (!ready) {
+            nowPlaying.textContent = 'This browser cannot play songs here.';
+            return;
+        }
         playQueue = buildQueue();
         skipBtn.disabled = false;
         stopBtn.disabled = false;
-        playSong(index, false);
+        playSong(index);
     }
 
     playBtn.addEventListener('click', () => startPlayback(0));
     stopBtn.addEventListener('click', stopPlayback);
     skipBtn.addEventListener('click', () => {
-        if (!playCurrent) return;
-        const { audio, index } = playCurrent;
-        const song = playQueue[index];
-        const end = playSmart && typeof song.end === 'number' && index + 1 < playQueue.length ? song.end : audio.duration;
-        const target = end - CROSSFADE_SECONDS - 6;
-        if (Number.isFinite(target) && target > audio.currentTime) audio.currentTime = target;
+        const state = playCurrent;
+        if (!state || audioCtx.currentTime >= state.handoverAt - 0.1) return;
+        const song = playQueue[state.index];
+        const end = playSmart && typeof song.end === 'number' && state.index + 1 < playQueue.length ? song.end : state.buffer.duration;
+        const target = (state.mix ? state.mix.mix_at : end - CROSSFADE_SECONDS) - 6;
+        if (!(target > state.node.offset + audioCtx.currentTime - state.node.when)) return;
+        halt(state.node);
+        state.node = startSource(state.buffer, audioCtx.currentTime + 0.05, target, false);
+        state.plan();
     });
     resultsList.addEventListener('click', event => {
         const item = event.target.closest('.result-item');

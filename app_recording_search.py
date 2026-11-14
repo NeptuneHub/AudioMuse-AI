@@ -20,7 +20,9 @@ Main Features:
   song), `/api/recording_search/smart_fade` (JSON: any list of song ids,
   returned in smart fade order with where to start and end each),
   `/api/recording_search/play/<id>` (the song's audio from the media server,
-  for the page's player) and `/api/recording_search/warmup`.
+  for the page's player), `/api/recording_search/transition` (JSON: where the
+  page cuts and mixes two songs on the beat at their smart fade points) and
+  `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
@@ -38,6 +40,7 @@ Main Features:
 
 from flask import Blueprint, Response, render_template, request, jsonify
 import logging
+import math
 import mimetypes
 import os
 import shutil
@@ -437,18 +440,30 @@ def recording_search_play_api(item_id):
       502:
         description: The media server did not deliver the song.
     """
+    if disabled := _disabled_response():
+        return disabled
+    folder = tempfile.mkdtemp(prefix='audiomuse_play_')
+    path, failure = _fetch_song(item_id, folder)
+    if failure is not None:
+        shutil.rmtree(folder, ignore_errors=True)
+        return failure
+    return Response(
+        _stream_then_remove(path, folder),
+        mimetype=mimetypes.guess_type(path)[0] or 'application/octet-stream',
+        headers={'Content-Length': str(os.path.getsize(path))},
+    )
+
+
+def _fetch_song(item_id, folder):
     from tasks import mediaserver
     from tasks.commons import fetch_track_metadata_map
 
-    if disabled := _disabled_response():
-        return disabled
     try:
         canonical_id = app_server_context.resolve_input_item_id(item_id)
     except ValueError as exc:
-        return json_exception(exc, ERR_INVALID_REQUEST)
+        return None, json_exception(exc, ERR_INVALID_REQUEST)
     if not fetch_track_metadata_map([canonical_id]):
-        return json_error(ERR_NOT_FOUND, 'This song is not in the library.')
-    folder = tempfile.mkdtemp(prefix='audiomuse_play_')
+        return None, json_error(ERR_NOT_FOUND, 'This song is not in the library.')
     try:
         with app_server_context.use_request_server():
             path = mediaserver.download_track(folder, {'Id': item_id, 'id': item_id})
@@ -456,13 +471,109 @@ def recording_search_play_api(item_id):
         logger.exception('Playback download failed for %s', item_id)
         path = None
     if not path:
+        return None, json_error(ERR_MEDIASERVER_UNREACHABLE, 'The media server did not deliver this song.', http_status=502)
+    return path, None
+
+
+@recording_search_bp.route('/api/recording_search/transition', methods=['GET'])
+def recording_search_transition_api():
+    """
+    Plan a beat-matched transition between two songs.
+    ---
+    tags:
+      - Recording Search
+    summary: Say where the page cuts and mixes the end of one song into the next on the beat, at the smart fade points.
+    parameters:
+      - in: query
+        name: from_id
+        required: true
+        schema:
+          type: string
+        description: The song that ends, as an id of the selected server.
+      - in: query
+        name: to_id
+        required: true
+        schema:
+          type: string
+        description: The song that starts.
+      - in: query
+        name: out
+        required: true
+        schema:
+          type: number
+        description: The smart fade end of the first song, in seconds.
+      - in: query
+        name: in
+        required: true
+        schema:
+          type: number
+        description: The smart fade start of the next song, in seconds.
+    responses:
+      200:
+        description: |
+          The plan, in seconds of each song; no audio. The first song plays
+          until mix_at and fades out over mix_seconds; the next song's
+          stretch of in_at to resume_at plays over those mix_seconds (sped up
+          by stretch, pitch kept, so its beats land on the first song's) and
+          fades in; then the next song plays on alone from resume_at.
+          tempo_from and tempo_to are the measured tempos.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mix_at:
+                  type: number
+                mix_seconds:
+                  type: number
+                in_at:
+                  type: number
+                resume_at:
+                  type: number
+                stretch:
+                  type: number
+                tempo_from:
+                  type: number
+                tempo_to:
+                  type: number
+      400:
+        description: Bad parameters, or the songs have no steady beat to match.
+      404:
+        description: An id is not a song of the library.
+      502:
+        description: The media server did not deliver a song.
+    """
+    from tasks.smart_fade_mix import plan_transition
+
+    if disabled := _disabled_response():
+        return disabled
+    from_id = (request.args.get('from_id') or '').strip()
+    to_id = (request.args.get('to_id') or '').strip()
+    try:
+        out_seconds = float(request.args.get('out', ''))
+        in_seconds = float(request.args.get('in', ''))
+    except ValueError:
+        out_seconds = in_seconds = float('nan')
+    if not (from_id and to_id and math.isfinite(out_seconds) and math.isfinite(in_seconds)) or min(out_seconds, in_seconds) < 0:
+        return json_error(ERR_INVALID_REQUEST, 'Give from_id, to_id, out and in (seconds).')
+    folder = tempfile.mkdtemp(prefix='audiomuse_mix_')
+    try:
+        paths = []
+        for item_id in (from_id, to_id):
+            path, failure = _fetch_song(item_id, folder)
+            if failure is not None:
+                return failure
+            paths.append(path)
+        try:
+            plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
+        except ValueError:
+            return json_error(ERR_INVALID_REQUEST, 'These two songs have no steady beat to match at the fade points.')
+        except Exception as exc:
+            logger.exception('Smart fade transition failed')
+            return json_exception(exc, ERR_SEARCH_FAILED, 'The transition could not be made. Check the container logs.')
+    finally:
         shutil.rmtree(folder, ignore_errors=True)
-        return json_error(ERR_MEDIASERVER_UNREACHABLE, 'The media server did not deliver this song.', http_status=502)
-    return Response(
-        _stream_then_remove(path, folder),
-        mimetype=mimetypes.guess_type(path)[0] or 'application/octet-stream',
-        headers={'Content-Length': str(os.path.getsize(path))},
-    )
+    return jsonify(plan)
 
 
 def _stream_then_remove(path, folder):

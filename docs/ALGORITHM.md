@@ -2421,13 +2421,31 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    the first one kept first, with where each song would start and end.
    Search by Song itself is unchanged. Every row shows a small bar with the
    two times; the playlist keeps the order, the times are only a hint.
-4. **Play** (or a click on a row) plays the results in the browser, each
+4. **Beat match.** For each pair of consecutive songs the page then asks
+   `GET /api/recording_search/transition` (the two songs and the two
+   smart fade times), a second separate endpoint any frontend can call. The
+   smart fade times come from the fingerprint, which knows nothing of beats;
+   this one listens to the two songs around those times and moves them onto
+   the beat. It answers numbers only, no audio: where the first song's mix
+   starts and how long it lasts (8 of its beats, ending at about its smart
+   fade end), the beat of the next song that lands on it (its first beat
+   after its smart fade start), the stretch that keeps the two beats
+   together during the mix and the second where the next song plays on
+   alone. It costs the server a fraction of a second to a few seconds per
+   pair, so the page asks for each pair while the song before it plays. Two
+   songs without a steady beat get a 400, and the page then fades at the
+   smart fade times.
+5. **Play** (or a click on a row) plays the results in the browser, each
    song fetched once from the media server through
-   `GET /api/recording_search/play/<id>`. With Smart fade every song starts
-   at its suggested start and, 4 seconds before its suggested end, the next
-   one starts at its own while the two cross-fade; without it the songs play
-   whole, one after the other. **Skip to the fade** jumps to 10 seconds
-   before the next transition.
+   `GET /api/recording_search/play/<id>`, which sends the file unchanged.
+   The page does the whole fade itself from the two answers: it decodes the
+   songs, stretches the next song's part of the mix with the pitch kept,
+   crosses the two and cuts every piece at the exact second the API gave.
+   Without Smart fade the songs play whole, one after the other.
+   **Skip to the fade** jumps to 6 seconds before the next fade starts.
+   On iOS the page asks for the playback audio session, so the silent switch
+   does not mute it; iOS still pauses the page's audio while the page is in
+   the background.
 
 **Important behaviours**
 
@@ -2629,7 +2647,15 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    (an edge silent from end to end keeps the old choice). On 200 random
    songs 7 of 199 transitions faded through silence before this rule and 1
    after. A quiet fade-out is not silence to the fingerprint, which brings
-   every half second to its own level, so it can still be picked. Measured on
+   every half second to its own level, so it can still be picked. The
+   fingerprint knows nothing of tempo, so the stored tempo breaks near ties:
+   a next song whose tempo cannot be stretched to the current one (more than
+   8% apart, half or double time allowed) loses 0.1 of cosine. On 10 real
+   50-song lists the hand-overs that can be tempo matched rose from 28% (no
+   better than two random songs, 26%) to 66%, for 3.8% less mean pair
+   cosine; the stored tempo is one value for the whole song, so it only
+   steers the order and the beat match measures the tempo again where the
+   songs meet. Measured on
    200 random songs of a 205k-song library: 0.06 s to read and decode the
    edges and 0.11 s to order them (a 200-song API call answers in 0.13 to
    0.22 s warm, about 1 s on the first call after a restart); the start lands
@@ -2637,7 +2663,40 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    best pairs reach a cosine of 0.12 to 0.35 between two different songs, so
    the order is a hint drawn from a fingerprint, not a musical similarity
    measure.
-5. **The chromaprint alternative, measured and removed.** Before the neural
+5. **Beat match** (`tasks/smart_fade_mix.py`, `plan_transition`). Both songs
+   are downloaded from the media server and only two regions are decoded
+   (mono, 44.1 kHz): the 12 seconds before the first song's smart fade end
+   plus 2, and 14 seconds from the next song's smart fade start. librosa's
+   beat tracker, the one the analysis uses, finds the beats in each; the
+   tempo and the beat grid come from a line fitted through the beat times
+   (a median beat gap is quantised to the tracker's 11.6 ms frames, off by
+   up to 2%, and on real stretched pairs that left the beats drifting a
+   median 110 ms apart over the mix, 35 ms with the fit). The stretch is the
+   first song's tempo over the next one's, half or double time allowed; past
+   8% the next song is not stretched (`tempos_match`, the same rule the
+   smart fade order uses on the stored tempo). The mix lasts 8 beats of the
+   first song and starts on its beat nearest to 8 beats before its smart
+   fade end; the next song's first beat after its smart fade start lands on
+   it, and that song resumes alone the mix length times the stretch later,
+   counted in its own seconds. Without
+   4 beats in either region, or without room for the mix, it raises
+   `ValueError` and the endpoint answers 400. The page then builds the mix:
+   it decodes both songs with the browser's Web Audio, stretches the next
+   song's part to the mix length with WSOLA (46 ms Hann frames, half
+   overlap, each frame placed where it best continues the last one within
+   11.5 ms either way, pitch kept; about 0.1 s per transition on a desktop), blends
+   the stretched part's last 23 ms into the real song at the resume second
+   so the hand-over has no click, and crosses the two songs with
+   equal-power curves. Every piece is a buffer source started at its exact
+   sample on one audio clock, and Skip restarts the first song's source and
+   plans the mix again. No audio element is ever seeked: Safari seeks MP3
+   files without a seek table several seconds off while reporting the right
+   time, which played the end of the first song, jumped back and played it
+   again. Measured live in Chromium and Firefox on 13 mixes with Play, Skip
+   and Skip during the mix: the recorded output was where the plan said to
+   the sample, and on 10 real stretched pairs the page's stretch placed the
+   next song within 12 ms of the plan for the whole mix.
+6. **The chromaprint alternative, measured and removed.** Before the neural
    fingerprint, the clip was fingerprinted with the duplicate detector's
    fpcalc and slid across the stored chromaprints with learned per-bit
    weights, a noise-frame mask, playback-speed and sub-hop phase variants and
@@ -2648,7 +2707,7 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    minute, and a clip from the end of a track could never match. The
    neural fingerprint identified all of those clips at 10 to 20 seconds, so
    the chromaprint path was retired rather than kept as a second tab.
-6. **The index in the web process.** Flask syncs and maps the stored build
+7. **The index in the web process.** Flask syncs and maps the stored build
    at startup like the other indexes ("Neural fingerprint index loaded at
    startup", or "not found" until the analysis has built it once) and keeps
    it mapped for the life of the process; only the reload event replaces it.
