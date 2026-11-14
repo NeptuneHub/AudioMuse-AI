@@ -24,6 +24,22 @@ Main Features:
 * No response of this API ever carries an internal canonical id: results are
   translated to the selected server's ids and the echoed song id goes through
   provider_echo_id, even when the caller sent a canonical id
+* by_track knows nothing of smart fade (the manager takes the song and the
+  count only, a smart_fade field in the body changes nothing); the page
+  reorders its results by posting them to the smart_fade endpoint; its player
+  decodes the songs and cuts, stretches and fades them itself on one audio
+  clock started in the Play click, never seeking an audio element (Safari);
+  the playing row fills with the progress and seeks only up to its fade
+* The smart_fade endpoint answers 400 without a list, resolves the ids for the
+  server, returns the songs in the manager's order under the ids as sent with
+  null times for songs without a fingerprint, and never leaks a canonical id
+* The play endpoint downloads a library song from the media server and sends
+  it, removing the temporary copy once sent; an id outside the library is a
+  404 and a failed download a 502
+* The transition endpoint answers 400 for missing or bad seconds, 404 for a
+  song outside the library, plans the mix from both downloads and answers only
+  that plan as JSON (no audio), removes them, and answers 400 when the songs
+  have no steady beat
 * The warmup endpoint relays the manager status
 * With NEURAL_FINGERPRINT_ENABLED false every route answers 503 naming the
   flag and the page is told the feature is disabled
@@ -360,6 +376,184 @@ def test_by_track_maps_the_manager_errors_like_the_clip_search(client, monkeypat
     assert 'secret' not in response.get_json()['error']
 
 
+def test_by_track_knows_nothing_of_smart_fade(client, monkeypatch):
+    import inspect
+
+    import tasks.recording_search_manager as rsm
+
+    assert list(inspect.signature(rsm.search_by_track).parameters) == ['item_id', 'n_results']
+    calls = []
+
+    def fake(item_id, n_results):
+        calls.append((item_id, n_results))
+        return {'item_id': item_id, 'results': [{'item_id': 'a', 'title': 'A', 'author': 'x', 'score': 0.9}], 'count': 1}
+
+    monkeypatch.setattr(rsm, 'search_by_track', fake)
+    response = _post_track(client, {'item_id': 'x', 'n_results': 5, 'smart_fade': True})
+    assert response.status_code == 200
+    assert calls == [('x', 5)]
+    assert sorted(response.get_json()) == ['count', 'item_id', 'results']
+    assert 'fade_in_seconds' not in response.get_json()['results'][0]
+
+
+def test_the_page_reorders_by_track_results_through_the_smart_fade_endpoint():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    assert 'body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })' in source
+    assert 'smart_fade: true' not in source and 'request.smart_fade' not in source
+    assert "url_for('recording_search_bp.recording_search_smart_fade_api')" in source
+    assert 'item_ids: [seedId, ...results.map(r => r.item_id)]' in source
+    assert 'if (smartFade.checked && (data.results || []).length)' in source
+
+
+def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_started_in_the_play_click():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    start = source.index('function startPlayback(index) {')
+    assert source.index('unlockAudio();', start) < source.index('stopPlayback();', start)
+    assert "navigator.audioSession.type = 'playback'" in source
+    assert 'audioCtx.decodeAudioData(data)' in source and 'source.start(when, node.offset)' in source
+    assert 'new Audio(' not in source and '.currentTime =' not in source and '.volume =' not in source
+    assert 'stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds)' in source
+    assert 'setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds)' in source
+    assert 'X-Switch-At' not in source
+
+
+def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    style = source[source.index('#results-list .result-item.playing {'):]
+    style = style[:style.index('}')]
+    assert 'var(--play-fill) var(--play-progress, 0%)' in style and 'var(--play-limit-color)' in style
+    assert '--play-fill: #DBEAFE;' in source and 'touch-action: pan-y;' in style
+    assert 'if (state.mix) return state.mix.mix_at;' in source
+    assert 'Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1)' in source
+    assert "if (!item || item.classList.contains('playing')) return;" in source
+    skip = source[source.index("skipBtn.addEventListener('click'"):]
+    assert 'seekTo(state, target)' in skip[:skip.index('});')]
+
+
+def _post_fade(client, body):
+    return client.post('/api/recording_search/smart_fade', json=body)
+
+
+def test_smart_fade_returns_the_songs_in_order_under_the_ids_as_sent(client, monkeypatch):
+    import app_server_context
+    import tasks.recording_search_manager as rsm
+
+    for body in ({}, {'item_ids': []}, {'item_ids': 'a,b'}, {'item_ids': [None, ' ']}):
+        assert _post_fade(client, body).status_code == 400
+
+    _translating_scope(monkeypatch)
+    monkeypatch.setattr(
+        app_server_context, 'resolve_input_item_ids',
+        lambda ids, data=None: {i: i if i.startswith('fp_') else f'fp_{i}' for i in ids},
+    )
+    seen = []
+
+    def playlist(item_ids):
+        seen.append(list(item_ids))
+        return [
+            (2, {'fade_in_seconds': 0.0, 'fade_out_seconds': 180.5, 'duration_seconds': 200.0}),
+            (0, {'fade_in_seconds': 12.0, 'fade_out_seconds': 150.0, 'duration_seconds': 150.0}),
+            (1, None),
+        ]
+
+    monkeypatch.setattr(rsm, 'smart_fade_playlist', playlist)
+    response = _post_fade(client, {'item_ids': ['a', 'b', 'fp_c']})
+    body = response.get_json()
+    assert response.status_code == 200
+    assert seen == [['fp_a', 'fp_b', 'fp_c']]
+    assert 'fp_' not in response.get_data(as_text=True)
+    assert [row['item_id'] for row in body['results']] == ['C', 'a', 'b']
+    assert body['results'][1] == {'item_id': 'a', 'fade_in_seconds': 12.0, 'fade_out_seconds': 150.0, 'duration_seconds': 150.0}
+    assert body['results'][2] == {'item_id': 'b', 'fade_in_seconds': None, 'fade_out_seconds': None, 'duration_seconds': None}
+    assert body['count'] == 3
+
+
+def _fake_media(monkeypatch, tmp_path, payload):
+    import contextlib
+
+    import app_server_context
+    import tasks.commons
+    import tasks.mediaserver
+
+    seen = {}
+    monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda raw_id, data=None: f'fp_{raw_id}')
+    monkeypatch.setattr(app_server_context, 'use_request_server', lambda data=None: contextlib.nullcontext())
+    monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song 1'} for i in ids if i == 'fp_42'})
+
+    def download(folder, item):
+        seen.update(folder=folder, item=item)
+        if payload is None:
+            return None
+        path = os.path.join(folder, '42.mp3')
+        with open(path, 'wb') as handle:
+            handle.write(payload)
+        return path
+
+    monkeypatch.setattr(tasks.mediaserver, 'download_track', download)
+    return seen
+
+
+def test_play_streams_the_song_from_the_media_server_and_cleans_up(client, monkeypatch, tmp_path):
+    seen = _fake_media(monkeypatch, tmp_path, b'ID3audio')
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 200
+    assert response.data == b'ID3audio'
+    assert response.mimetype == 'audio/mpeg'
+    assert response.headers['Content-Length'] == '8'
+    assert seen['item'] == {'Id': '42', 'id': '42'}
+    assert not os.path.exists(seen['folder'])
+
+
+def test_play_refuses_a_song_outside_the_library_and_reports_a_failed_download(client, monkeypatch, tmp_path):
+    seen = _fake_media(monkeypatch, tmp_path, None)
+    response = client.get('/api/recording_search/play/7')
+    assert response.status_code == 404
+    assert 'item' not in seen
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 502
+    assert not os.path.exists(seen['folder'])
+
+
+def test_transition_downloads_both_songs_answers_only_the_plan_and_cleans_up(client, monkeypatch, tmp_path):
+    import tasks.commons
+    import tasks.smart_fade_mix
+
+    seen = _fake_media(monkeypatch, tmp_path, b'audio')
+    monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song'} for i in ids if i in ('fp_42', 'fp_43')})
+    planned = {}
+    plan = {'mix_at': 191.5, 'mix_seconds': 4.0, 'in_at': 27.41, 'resume_at': 31.25, 'stretch': 0.96, 'tempo_from': 120.0, 'tempo_to': 125.0}
+
+    def make_plan(path_out, out_seconds, path_in, in_seconds):
+        planned.update(paths=(os.path.basename(path_out), os.path.basename(path_in)), out=out_seconds, inn=in_seconds,
+                       folder_alive=os.path.isdir(seen['folder']))
+        return plan
+
+    monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', make_plan)
+    for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1', '?from_id=42&out=1&in=1'):
+        assert client.get('/api/recording_search/transition' + query).status_code == 400
+    assert client.get('/api/recording_search/transition?from_id=42&to_id=7&out=200&in=20').status_code == 404
+
+    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20.5')
+    assert response.status_code == 200
+    assert response.mimetype == 'application/json' and response.get_json() == plan
+    assert planned == {'paths': ('42.mp3', '42.mp3'), 'out': 200.0, 'inn': 20.5, 'folder_alive': True}
+    assert not os.path.exists(seen['folder'])
+
+    def no_beat(*args):
+        raise ValueError('No steady beat to match.')
+
+    monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', no_beat)
+    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20')
+    assert response.status_code == 400
+    assert 'steady beat' in response.get_json()['error']
+
+
 def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(client, bp_mod, monkeypatch):
     import config
 
@@ -367,6 +561,9 @@ def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(clie
     for response in (
         _post(client, {'clip': _clip()}),
         _post_track(client, {'item_id': 'x'}),
+        _post_fade(client, {'item_ids': ['x']}),
+        client.get('/api/recording_search/play/x'),
+        client.get('/api/recording_search/transition?from_id=x&to_id=y&out=1&in=1'),
         client.post('/api/recording_search/warmup'),
     ):
         assert response.status_code == 503

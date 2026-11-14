@@ -138,6 +138,98 @@
         margin-bottom: 1rem;
     }
 
+    .search-container label.checkbox-inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0;
+        cursor: pointer;
+    }
+
+    .fade-span {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.3rem;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .fade-track {
+        position: relative;
+        flex: none;
+        width: 4.5rem;
+        height: 0.35rem;
+        border-radius: 0.2rem;
+        background: var(--border-color);
+        overflow: hidden;
+    }
+
+    .fade-play {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        border-radius: 0.2rem;
+        background: var(--color-primary);
+    }
+
+    .player {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-bottom: 1rem;
+    }
+
+    .player .btn {
+        display: inline-flex;
+        margin: 0;
+    }
+
+    .now-playing {
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        overflow-wrap: anywhere;
+    }
+
+    .play-clock {
+        font-size: 0.9rem;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .play-clock:empty {
+        display: none;
+    }
+
+    #results-list {
+        --play-fill: #DBEAFE;
+        --play-limit-color: rgba(37, 99, 235, 0.45);
+    }
+
+    body.dark-mode #results-list,
+    html.dark-mode body #results-list {
+        --play-fill: rgba(59, 130, 246, 0.2);
+        --play-limit-color: rgba(96, 165, 250, 0.6);
+    }
+
+    #results-list .result-item {
+        cursor: pointer;
+    }
+
+    #results-list .result-item.playing {
+        border-color: var(--color-primary);
+        box-shadow: 0 0 0 1px var(--color-primary);
+        cursor: ew-resize;
+        touch-action: pan-y;
+        user-select: none;
+        -webkit-user-select: none;
+        background:
+            linear-gradient(to right, transparent calc(var(--play-limit, 100%) - 2px), var(--play-limit-color) calc(var(--play-limit, 100%) - 2px), var(--play-limit-color) var(--play-limit, 100%), transparent var(--play-limit, 100%)),
+            linear-gradient(to right, var(--play-fill) var(--play-progress, 0%), var(--bg-card) var(--play-progress, 0%));
+    }
+
     @media (max-width: 768px) {
         .tabs {
             flex-wrap: nowrap;
@@ -211,6 +303,13 @@
                 <div id="song-suggestions" class="autocomplete-results hidden" aria-label="Song suggestions"></div>
             </div>
             <div id="song-selected" class="clip-info hidden"></div>
+            <div class="param-group label-with-tooltip">
+                <label class="checkbox-inline"><input type="checkbox" id="smart-fade"> Smart fade</label>
+                <button type="button" class="info-tooltip" aria-label="Help" aria-describedby="smart-fade-help">
+                    <span class="info-icon"></span>
+                    <span class="tooltip-text" id="smart-fade-help">Orders the songs so each one flows into the next, and shows where each one would start and end. The playlist keeps the order, not the times.</span>
+                </button>
+            </div>
         </div>
 
         <div class="param-group">
@@ -231,6 +330,13 @@
 <section id="results-container" class="hidden">
     <h2>Results</h2>
     <div id="result-count" style="margin-bottom: 1rem; font-weight: 600;"></div>
+    <div id="player" class="player hidden">
+        <button type="button" class="btn btn-primary" id="play-btn">Play</button>
+        <button type="button" class="btn btn-ghost" id="skip-btn" disabled>Skip to the fade</button>
+        <button type="button" class="btn btn-ghost" id="stop-btn" disabled>Stop</button>
+        <span id="play-clock" class="play-clock"></span>
+        <span id="now-playing" class="now-playing" aria-live="polite"></span>
+    </div>
     <div id="results-list"></div>
 </section>
 
@@ -277,12 +383,31 @@ document.addEventListener('DOMContentLoaded', function () {
     const songQuery = document.getElementById('song-query');
     const songSuggestions = document.getElementById('song-suggestions');
     const songSelected = document.getElementById('song-selected');
+    const smartFade = document.getElementById('smart-fade');
+    const player = document.getElementById('player');
+    const playBtn = document.getElementById('play-btn');
+    const skipBtn = document.getElementById('skip-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const nowPlaying = document.getElementById('now-playing');
+    const playClock = document.getElementById('play-clock');
+    const CROSSFADE_SECONDS = 4;
 
     let mode = 'recording';
     let currentClip = null;
     let selectedSong = null;
     let currentResults = [];
     let currentSeedId = null;
+    let currentSeedEnd = null;
+    let currentSeedTitle = '';
+    let playOffset = 0;
+    let playQueue = [];
+    let playSmart = false;
+    let playToken = 0;
+    let playCurrent = null;
+    let audioCtx = null;
+    let playTicker = null;
+    let scrub = null;
+    const playNodes = new Set();
 
     function escapeHtml(text) {
         const div = document.createElement('div');
@@ -301,6 +426,8 @@ document.addEventListener('DOMContentLoaded', function () {
     function resetResults() {
         resultCount.textContent = '';
         playlistCreator.classList.add('hidden');
+        stopPlayback();
+        player.classList.add('hidden');
     }
 
     function showError(message) {
@@ -495,6 +622,44 @@ document.addEventListener('DOMContentLoaded', function () {
         return { data, seedId: null, summary: `${(data.results || []).length} songs for a ${data.clip_seconds}s clip` };
     }
 
+    function clock(seconds) {
+        const total = Math.max(0, Math.round(seconds));
+        return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+    }
+
+    function addFadeSpans(results) {
+        resultsList.querySelectorAll('.result-item').forEach((item, index) => {
+            const song = results[index];
+            if (!song || typeof song.fade_in_seconds !== 'number' || typeof song.fade_out_seconds !== 'number') return;
+            const length = Math.max(song.duration_seconds || 0, song.fade_out_seconds, 1);
+            const left = Math.min(100, 100 * song.fade_in_seconds / length);
+            const width = Math.max(1, Math.min(100 - left, 100 * (song.fade_out_seconds - song.fade_in_seconds) / length));
+            const start = clock(song.fade_in_seconds);
+            const end = clock(song.fade_out_seconds);
+            item.querySelector('.result-main').insertAdjacentHTML('beforeend',
+                `<div class="fade-span" title="Smart fade: start at ${start}, end at ${end} of ${clock(length)}">`
+                + `<span class="fade-track"><span class="fade-play" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span>`
+                + `<span>${start} - ${end}</span></div>`);
+        });
+    }
+
+    async function smartFadeOrder(seedId, results) {
+        const response = await fetch("{{ url_for('recording_search_bp.recording_search_smart_fade_api') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item_ids: [seedId, ...results.map(r => r.item_id)] })
+        });
+        const data = await readJsonBody(response);
+        if (!response.ok || data === null) throw new Error(apiErrorText(data, `Smart fade failed (HTTP ${response.status})`));
+        const rows = data.results || [];
+        const byId = new Map(results.map(r => [r.item_id, r]));
+        const seedRow = rows.find(row => row.item_id === seedId);
+        return {
+            results: rows.filter(row => row.item_id !== seedId && byId.has(row.item_id)).map(row => Object.assign({}, byId.get(row.item_id), row)),
+            seedEnd: seedRow ? seedRow.fade_out_seconds : null
+        };
+    }
+
     async function searchBySong(limit) {
         const response = await fetch("{{ url_for('recording_search_bp.recording_search_by_track_api') }}", {
             method: 'POST',
@@ -503,8 +668,348 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         const data = await readJsonBody(response);
         if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
-        return { data, seedId: selectedSong.item_id, summary: `${(data.results || []).length} songs for "${selectedSong.title || 'this song'}"` };
+        const title = selectedSong.title || 'this song';
+        let summary = `${(data.results || []).length} songs for "${title}"`;
+        let seedEnd = null;
+        if (smartFade.checked && (data.results || []).length) {
+            const faded = await smartFadeOrder(selectedSong.item_id, data.results);
+            data.results = faded.results;
+            seedEnd = faded.seedEnd;
+            if (typeof faded.seedEnd === 'number') summary += ` in smart fade order; "${title}" ends at ${clock(faded.seedEnd)}`;
+        }
+        return { data, seedId: selectedSong.item_id, summary, seedEnd, smart: seedEnd !== null };
     }
+
+    function playUrl(itemId) {
+        return "{{ url_for('recording_search_bp.recording_search_play_api', item_id='__ID__') }}".replace('__ID__', encodeURIComponent(itemId));
+    }
+
+    function buildQueue() {
+        const songs = currentResults.map(r => ({ item_id: r.item_id, title: r.title || 'Unknown', start: r.fade_in_seconds, end: r.fade_out_seconds }));
+        if (currentSeedId) songs.unshift({ item_id: currentSeedId, title: currentSeedTitle || 'Unknown', start: 0, end: currentSeedEnd });
+        playOffset = currentSeedId ? 1 : 0;
+        return songs;
+    }
+
+    async function decode(data) {
+        try {
+            return await audioCtx.decodeAudioData(data);
+        } catch (error) {
+            throw new Error('This browser cannot play this song.');
+        }
+    }
+
+    async function loadSong(index) {
+        const response = await fetch(playUrl(playQueue[index].item_id));
+        if (!response.ok) throw new Error(apiErrorText(await readJsonBody(response), `Could not load the song (HTTP ${response.status})`));
+        return decode(await response.arrayBuffer());
+    }
+
+    function markPlaying(index) {
+        resultsList.querySelectorAll('.result-item').forEach((item, row) => {
+            const playing = row === index - playOffset;
+            item.classList.toggle('playing', playing);
+            if (playing) item.title = 'Click or drag to move in the song, up to the line where it fades';
+            else item.removeAttribute('title');
+        });
+    }
+
+    function seekLimit(state) {
+        if (state.mix) return state.mix.mix_at;
+        return state.fadeEnd !== null ? state.fadeEnd - CROSSFADE_SECONDS : state.buffer.duration;
+    }
+
+    function showProgress(item, second, state) {
+        const length = state.buffer.duration || 1;
+        item.style.setProperty('--play-progress', `${(100 * Math.min(1, second / length)).toFixed(2)}%`);
+        item.style.setProperty('--play-limit', `${(100 * Math.min(1, seekLimit(state) / length)).toFixed(2)}%`);
+    }
+
+    function tick() {
+        const state = playCurrent;
+        if (!state) return;
+        const second = Math.min(state.buffer.duration, state.node.offset + Math.max(0, audioCtx.currentTime - state.node.when));
+        playClock.textContent = `${clock(second)} / ${clock(state.buffer.duration)}`;
+        const item = resultsList.querySelector('.result-item.playing');
+        if (item && !scrub) showProgress(item, second, state);
+    }
+
+    function canSeek(state) {
+        return !!state && state === playCurrent && audioCtx.currentTime < state.handoverAt - 0.1;
+    }
+
+    function seekTo(state, second) {
+        halt(state.node);
+        state.node = startSource(state.buffer, audioCtx.currentTime + 0.05, Math.max(0, second), false);
+        state.plan();
+        tick();
+    }
+
+    function unlockAudio() {
+        if (!audioCtx && window.AudioContext) {
+            if (navigator.audioSession) navigator.audioSession.type = 'playback';
+            audioCtx = new AudioContext();
+        }
+        if (audioCtx) audioCtx.resume().catch(() => {});
+        return !!audioCtx;
+    }
+
+    function startSource(buffer, when, offset, fadeIn) {
+        const source = audioCtx.createBufferSource();
+        const gain = audioCtx.createGain();
+        const node = { source, gain, when, offset: Math.max(0, Math.min(offset, buffer.duration)) };
+        source.buffer = buffer;
+        source.connect(gain);
+        gain.connect(audioCtx.destination);
+        if (fadeIn) {
+            gain.gain.setValueAtTime(0, when);
+            gain.gain.linearRampToValueAtTime(1, when + CROSSFADE_SECONDS);
+        }
+        source.onended = () => playNodes.delete(node);
+        source.start(when, node.offset);
+        playNodes.add(node);
+        return node;
+    }
+
+    function halt(node) {
+        playNodes.delete(node);
+        node.gain.disconnect();
+        try {
+            node.source.stop();
+        } catch (error) {
+            node.source.disconnect();
+        }
+    }
+
+    function stopPlayback() {
+        playToken += 1;
+        [...playNodes].forEach(halt);
+        clearInterval(playTicker);
+        playCurrent = null;
+        scrub = null;
+        markPlaying(-1);
+        playClock.textContent = '';
+        nowPlaying.textContent = '';
+        skipBtn.disabled = true;
+        stopBtn.disabled = true;
+    }
+
+    async function loadTransition(index) {
+        const from = playQueue[index];
+        const to = playQueue[index + 1];
+        if (!playSmart || !to || typeof from.end !== 'number' || typeof to.start !== 'number') return null;
+        const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
+        try {
+            const response = await fetch(`{{ url_for('recording_search_bp.recording_search_transition_api') }}?${query}`);
+            const plan = await readJsonBody(response);
+            return response.ok && plan && plan.mix_seconds > 0 ? plan : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function stretchSegment(buffer, from, to, seconds) {
+        const rate = buffer.sampleRate;
+        const size = 2 * Math.round(0.023 * rate);
+        const hop = size / 2;
+        const slack = hop >> 1;
+        const count = Math.max(hop, Math.round(seconds * rate));
+        const base = Math.max(0, Math.round(from * rate) - slack);
+        const offset = Math.round(from * rate) - base;
+        const resume = Math.round(to * rate);
+        const speed = (resume - Math.round(from * rate)) / count;
+        const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
+        const mono = new Float32Array(Math.max(size, Math.min(buffer.length, resume + 2 * size + slack) - base));
+        channels.forEach(data => {
+            for (let i = 0; i < mono.length && base + i < data.length; i++) mono[i] += data[base + i];
+        });
+        const shape = Float32Array.from({ length: size }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / size));
+        const similarity = (p, q, step) => {
+            let dot = 0;
+            let energy = 1e-9;
+            for (let i = 0; i < size; i += step) {
+                dot += mono[p + i] * mono[q + i];
+                energy += mono[p + i] * mono[p + i];
+            }
+            return dot / Math.sqrt(energy);
+        };
+        const search = (low, high, step, q) => {
+            let best = low;
+            let score = -Infinity;
+            for (let p = low; p <= high; p += step) {
+                const value = similarity(p, q, step);
+                if (value > score) {
+                    score = value;
+                    best = p;
+                }
+            }
+            return best;
+        };
+        const out = audioCtx.createBuffer(channels.length, count, rate);
+        const targets = channels.map((_, c) => out.getChannelData(c));
+        let previous = offset;
+        for (let k = 0; k * hop < count; k++) {
+            const ideal = Math.min(mono.length - size, offset + Math.round(k * hop * speed));
+            let pick = Math.max(0, ideal);
+            const natural = previous + hop;
+            if (k && natural + size <= mono.length) {
+                const low = Math.max(0, ideal - slack);
+                const high = Math.max(low, Math.min(mono.length - size, ideal + slack));
+                const coarse = search(low, high, 4, natural);
+                pick = search(Math.max(low, coarse - 3), Math.min(high, coarse + 3), 1, natural);
+            }
+            channels.forEach((data, c) => {
+                for (let i = 0; i < size && k * hop + i < count; i++) targets[c][k * hop + i] += (data[base + pick + i] || 0) * shape[i];
+            });
+            previous = pick;
+        }
+        channels.forEach((data, c) => {
+            for (let i = 0; i < hop; i++) {
+                const blend = (i + 1) / hop;
+                targets[c][count - hop + i] = targets[c][count - hop + i] * (1 - blend) + (data[resume - hop + i] || 0) * blend;
+            }
+        });
+        return out;
+    }
+
+    function powerCurve(rising) {
+        return Float32Array.from({ length: 256 }, (_, i) => (rising ? Math.sin : Math.cos)(Math.PI / 2 * i / 255));
+    }
+
+    function entryOffset(index) {
+        const song = playQueue[index];
+        return playSmart && typeof song.start === 'number' ? song.start : 0;
+    }
+
+    function begin(index, buffer, node) {
+        const token = playToken;
+        const song = playQueue[index];
+        const hasNext = index + 1 < playQueue.length;
+        const fadeEnd = playSmart && typeof song.end === 'number' && hasNext ? song.end : null;
+        const state = { index, buffer, node, fadeEnd, next: null, mix: null, failed: null, ready: !hasNext, handoverAt: Infinity, timers: [], scheduled: [] };
+        const after = (time, action) => state.timers.push(setTimeout(() => {
+            if (token === playToken && playCurrent === state) action();
+        }, Math.max(0, (time - audioCtx.currentTime) * 1000)));
+        state.plan = () => {
+            if (token !== playToken || playCurrent !== state || !state.ready) return;
+            state.timers.forEach(clearTimeout);
+            state.timers = [];
+            state.scheduled.forEach(halt);
+            state.scheduled = [];
+            const now = audioCtx.currentTime;
+            const at = second => state.node.when + second - state.node.offset;
+            const mix = state.mix;
+            if (!state.next) {
+                state.handoverAt = at(buffer.duration);
+                after(state.handoverAt, () => {
+                    if (state.failed) nowPlaying.textContent = state.failed;
+                    else stopPlayback();
+                });
+            } else if (mix && at(mix.mix_at) > now + 0.1) {
+                state.handoverAt = at(mix.mix_at);
+                const resume = state.handoverAt + mix.mix_seconds;
+                state.node.gain.gain.setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds);
+                state.node.source.stop(resume);
+                const blend = startSource(mix.buffer, state.handoverAt, 0, false);
+                blend.gain.gain.setValueCurveAtTime(powerCurve(true), state.handoverAt, mix.mix_seconds);
+                state.scheduled = [blend, startSource(state.next, resume, mix.resume_at, false)];
+                after(state.handoverAt, () => {
+                    nowPlaying.textContent = `Beat-matched mix into ${playQueue[index + 1].title} (${mix.tempo_from} to ${mix.tempo_to} BPM, stretch ${mix.stretch})`;
+                });
+                after(resume, () => begin(index + 1, state.next, state.scheduled[1]));
+            } else {
+                const fading = fadeEnd !== null;
+                state.handoverAt = Math.max(now + 0.05, at(fading ? Math.min(fadeEnd, buffer.duration) - CROSSFADE_SECONDS : buffer.duration));
+                if (fading) {
+                    state.node.gain.gain.setValueAtTime(1, state.handoverAt);
+                    state.node.gain.gain.linearRampToValueAtTime(0, state.handoverAt + CROSSFADE_SECONDS);
+                    state.node.source.stop(state.handoverAt + CROSSFADE_SECONDS);
+                }
+                state.scheduled = [startSource(state.next, state.handoverAt, entryOffset(index + 1), fading)];
+                after(state.handoverAt, () => begin(index + 1, state.next, state.scheduled[0]));
+            }
+        };
+        playCurrent = state;
+        markPlaying(index);
+        nowPlaying.textContent = `Playing ${song.title} from ${clock(node.offset)}` + (fadeEnd !== null ? ` until ${clock(fadeEnd)}` : '');
+        if (hasNext) {
+            Promise.all([loadSong(index + 1).catch(error => { state.failed = error.message; return null; }), loadTransition(index)])
+                .then(([next, mix]) => {
+                    state.next = next;
+                    state.mix = next && mix ? Object.assign(mix, { buffer: stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds) }) : null;
+                    state.ready = true;
+                    state.plan();
+                });
+        }
+        state.plan();
+    }
+
+    async function playSong(index) {
+        const token = playToken;
+        nowPlaying.textContent = `Loading ${playQueue[index].title}...`;
+        try {
+            const buffer = await loadSong(index);
+            if (token === playToken) begin(index, buffer, startSource(buffer, audioCtx.currentTime + 0.05, entryOffset(index), false));
+        } catch (error) {
+            if (token === playToken) nowPlaying.textContent = error.message;
+        }
+    }
+
+    function startPlayback(index) {
+        const ready = unlockAudio();
+        stopPlayback();
+        if (!ready) {
+            nowPlaying.textContent = 'This browser cannot play songs here.';
+            return;
+        }
+        playQueue = buildQueue();
+        skipBtn.disabled = false;
+        stopBtn.disabled = false;
+        playTicker = setInterval(tick, 250);
+        playSong(index);
+    }
+
+    playBtn.addEventListener('click', () => startPlayback(0));
+    stopBtn.addEventListener('click', stopPlayback);
+    skipBtn.addEventListener('click', () => {
+        const state = playCurrent;
+        if (!canSeek(state)) return;
+        const target = seekLimit(state) - 6;
+        if (target > state.node.offset + audioCtx.currentTime - state.node.when) seekTo(state, target);
+    });
+    resultsList.addEventListener('click', event => {
+        const item = event.target.closest('.result-item');
+        if (!item || item.classList.contains('playing')) return;
+        startPlayback([...resultsList.querySelectorAll('.result-item')].indexOf(item) + (currentSeedId ? 1 : 0));
+    });
+
+    function scrubSecond(event) {
+        const rect = scrub.item.getBoundingClientRect();
+        const share = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+        return Math.max(0, Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1));
+    }
+
+    resultsList.addEventListener('pointerdown', event => {
+        const item = event.target.closest('.result-item.playing');
+        if (!item || event.button !== 0 || !canSeek(playCurrent)) return;
+        scrub = { item, state: playCurrent };
+        item.setPointerCapture(event.pointerId);
+        showProgress(item, scrubSecond(event), scrub.state);
+    });
+    resultsList.addEventListener('pointermove', event => {
+        if (scrub) showProgress(scrub.item, scrubSecond(event), scrub.state);
+    });
+    resultsList.addEventListener('pointerup', event => {
+        if (!scrub) return;
+        const { state } = scrub;
+        const second = scrubSecond(event);
+        scrub = null;
+        if (canSeek(state)) seekTo(state, second);
+    });
+    resultsList.addEventListener('pointercancel', () => {
+        scrub = null;
+        tick();
+    });
 
     searchBtn.addEventListener('click', async () => {
         if (mode === 'recording' ? !currentClip : !selectedSong) return;
@@ -514,9 +1019,12 @@ document.addEventListener('DOMContentLoaded', function () {
         resetResults();
         searchBtn.disabled = true;
         try {
-            const { data, seedId, summary } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
+            const { data, seedId, summary, seedEnd, smart } = await (mode === 'recording' ? searchByClip(limit) : searchBySong(limit));
             currentResults = data.results || [];
             currentSeedId = seedId;
+            currentSeedTitle = seedId && selectedSong ? (selectedSong.title || 'Unknown') : '';
+            currentSeedEnd = typeof seedEnd === 'number' ? seedEnd : null;
+            playSmart = !!smart;
             displayResults(currentResults, summary);
         } catch (error) {
             showError(error.message);
@@ -533,6 +1041,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         resultCount.textContent = summary;
         resultsList.innerHTML = renderSongList(results, { metric: neuralBadge });
+        addFadeSpans(results);
+        skipBtn.textContent = playSmart ? 'Skip to the fade' : 'Skip to the end';
+        player.classList.remove('hidden');
         playlistCreator.classList.remove('hidden');
     }
 
