@@ -10,12 +10,13 @@
 
 Ten seconds cut from the middle of a fixture clip are uploaded exactly as the
 page does; the neural fingerprint index must identify the source track and the
-alignment offset. Searching by a stored track finds its other copy in the
-catalogue, and unusable clips are refused.
+alignment offset. Searching by a stored track leaves out its other copy in the
+catalogue (a fingerprint twin under another title), and unusable clips are
+refused.
 
 Main Features:
 * an uploaded slice identifies its source track with the right offset
-* by_track finds the padded copy of the same recording
+* by_track leaves out the padded copy of the same recording and still fills the list
 * silent, missing and unknown inputs are 400
 * warmup reports the neural and encoder models loaded
 """
@@ -68,13 +69,13 @@ def test_clip_identifies_its_track(stack, api, library, probe_clip):
     assert abs(best['offset_seconds'] - probe['start_s']) <= 1.5, best
 
 
-def test_by_track_finds_the_padded_copy(stack, api, library, analyzed_library):
+def test_by_track_leaves_out_the_padded_copy(stack, api, library, analyzed_library):
     body = api.json('POST', '/api/recording_search/by_track', json={'item_id': library.pid('A02'), 'n_results': 5})
     assert_no_fp_ids(body)
     assert body['item_id'] == library.pid('A02')
-    assert body['results'], body
-    assert body['results'][0]['item_id'] == library.pid('F02'), body['results']
-    assert body['results'][0]['identified'] is True
+    ids = [row['item_id'] for row in body['results']]
+    assert len(ids) == 5, body['results']
+    assert library.pid('F02') not in ids and library.pid('A02') not in ids, body['results']
 
 
 def test_unusable_inputs(stack, api, probe_clip):
