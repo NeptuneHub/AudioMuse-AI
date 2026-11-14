@@ -35,15 +35,14 @@ Main Features:
 * search_by_track is the entry point for a library song: its stored
   fingerprint is cut into up to three 20-second windows (a fifth, half and
   four fifths of the way in), each is aligned on every other track, and the
-  best score per song is kept, so the other recordings of that song (copies,
-  remasters, compilations) come out first without the song finding itself.
-  No audio is decoded and no model runs.
+  best score per song is kept. Like similar song it then drops repeats of the
+  song or a kept result (same title and author, or a fingerprint twin: mean
+  cosine plus a 20 s alignment) and caps MAX_SONGS_PER_ARTIST, with an index
+  margin so the count holds. No audio is decoded and no model runs.
 * smart_fade_order chains songs by end/start match (30 s edges, no silence, BPM tie-break)
-* warmup_recording_models maps the index when it is not (normally a no-op,
-  Flask maps it at startup and keeps it), preloads the encoder session and
-  arms the idle timer (every search, search_by_track included, re-arms it)
-  that releases that session and the cell cache, then returns the freed heap
-  to the OS, after RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
+* warmup_recording_models maps the index if Flask has not, preloads the encoder
+  and arms the idle timer (every search re-arms it) that frees the session and
+  the cell cache after RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
 """
 
 import logging
@@ -56,6 +55,7 @@ import numpy as np
 import config
 from tasks.idle_unload import IdleUnloadTimer
 from tasks.memory_utils import release_memory_to_os
+from tasks.search_shaping import name_key_for
 from tasks.smart_fade_mix import tempos_match
 
 logger = logging.getLogger(__name__)
@@ -208,6 +208,7 @@ _FADE_EDGE_SECONDS = 30
 _FADE_STEP_ROWS = 2
 _FADE_SILENCE_COSINE = 0.95
 _FADE_TEMPO_PENALTY = 0.1
+_TWIN_ALIGN_SCORE = 0.5
 
 
 def _stored_fingerprint(item_id):
@@ -249,6 +250,77 @@ def _stored_edges(item_ids):
         if codes is not None and codes.shape[0]:
             found[item_id] = fade_edges(codes, neural_fingerprint.decode_codes)
     return found
+
+
+def _stored_twins(item_ids):
+    from database import get_db
+    from tasks import neural_fingerprint
+    from tasks.neural_fingerprint_index import iter_codes
+
+    found = {}
+    for item_id, codes in iter_codes(get_db(), list(dict.fromkeys(item_ids))):
+        if codes is not None and codes.shape[0]:
+            mean = neural_fingerprint.decode_codes(codes).mean(axis=0)
+            found[item_id] = {'mean': mean / max(float(np.linalg.norm(mean)), 1e-9), 'codes': codes}
+    return found
+
+
+def _alignment(rows, other):
+    best = -1.0
+    for window in query_windows(rows):
+        width = window.shape[0]
+        if other.shape[0] >= width:
+            sims = window @ other.T
+            span = other.shape[0] - width + 1
+            best = max(best, float(sum(sims[k, k:k + span] for k in range(width)).max()) / width)
+    return best
+
+
+def _without_repeats(item_id, ranked, limit):
+    from tasks import neural_fingerprint
+
+    threshold = float(config.DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT or 0.0)
+    cap = int(config.MAX_SONGS_PER_ARTIST or 0)
+    ids = [item_id] + [row['item_id'] for row in ranked]
+    metadata = _fetch_track_metadata(ids)
+    songs = _stored_twins(ids) if threshold > 0 else {}
+    decoded = {}
+
+    def rows(song_id):
+        if song_id not in decoded:
+            decoded[song_id] = neural_fingerprint.decode_codes(songs[song_id]['codes'])
+        return decoded[song_id]
+
+    def twins(a, b):
+        if a not in songs or b not in songs or float(songs[a]['mean'] @ songs[b]['mean']) < 1.0 - threshold:
+            return False
+        return max(_alignment(rows(a), rows(b)), _alignment(rows(b), rows(a))) >= _TWIN_ALIGN_SCORE
+
+    seed = metadata.get(item_id) or {}
+    names = {name_key_for(seed.get('title'), seed.get('author'))} - {None}
+    claimed, kept, artists, dropped = [item_id], [], {}, 0
+    for row in ranked:
+        if len(kept) >= limit:
+            break
+        info = metadata.get(row['item_id'])
+        if not info:
+            continue
+        name = name_key_for(info.get('title'), info.get('author'))
+        artist = (info.get('author') or '').strip().lower()
+        repeat = name is not None and name in names
+        capped = bool(artist) and 0 < cap <= artists.get(artist, 0)
+        if repeat or capped or any(twins(row['item_id'], other) for other in claimed):
+            dropped += 1
+            continue
+        kept.append(row)
+        claimed.append(row['item_id'])
+        if name is not None:
+            names.add(name)
+        if artist:
+            artists[artist] = artists.get(artist, 0) + 1
+    if dropped:
+        logger.info('Search by song left out %d songs: repeats, fingerprint twins or past the per-artist cap', dropped)
+    return kept
 
 
 def _stored_tempos(item_ids):
@@ -360,12 +432,12 @@ def search_by_track(item_id, n_results=None):
         _arm_idle_unload()
     best = {}
     for window in query_windows(vectors):
-        for row in neural_fingerprint_index.identify_vectors(window, n_results, exclude_ids=(item_id,)):
+        for row in neural_fingerprint_index.identify_vectors(window, n_results + max(20, n_results // 4), exclude_ids=(item_id,)):
             current = best.get(row['item_id'])
             if current is None or row['score'] > current['score']:
                 best[row['item_id']] = dict(row)
-    ranked = neural_fingerprint_index.flag_identified(sorted(best.values(), key=lambda row: -row['score']))
-    rows = _rows_with_metadata(ranked[:n_results])
+    kept = _without_repeats(item_id, sorted(best.values(), key=lambda row: -row['score']), n_results)
+    rows = _rows_with_metadata(neural_fingerprint_index.flag_identified(kept))
     return {'item_id': item_id, 'results': rows, 'count': len(rows)}
 
 

@@ -16,8 +16,8 @@ on the sequences the analysis stored.
 Main Features:
 * Routes: `/recording_search` page, `/api/recording_search/search` (multipart:
   the clip and a result count), `/api/recording_search/by_track` (JSON: a
-  library song's id and a result count, for the other recordings of that
-  song), `/api/recording_search/smart_fade` (JSON: any list of song ids,
+  library song's id and a result count, for the songs closest to it,
+  duplicates left out), `/api/recording_search/smart_fade` (JSON: any list of song ids,
   returned in smart fade order with where to start and end each),
   `/api/recording_search/play/<id>` (the song's audio from the media server,
   for the page's player), `/api/recording_search/transition` (JSON: where the
@@ -275,11 +275,11 @@ def recording_search_api():
 @recording_search_bp.route('/api/recording_search/by_track', methods=['POST'])
 def recording_search_by_track_api():
     """
-    Find the other recordings of a library song.
+    Find the songs closest to a library song by neural fingerprint, without duplicates.
     ---
     tags:
       - Recording Search
-    summary: Align windows of a stored song's neural fingerprint on every other track and return the best matches.
+    summary: Align windows of a stored song's neural fingerprint on every other track and return the best matches, duplicates left out.
     requestBody:
       required: true
       content:
@@ -297,7 +297,12 @@ def recording_search_by_track_api():
                 default: 100
     responses:
       200:
-        description: Ranked songs, best match first, the source song left out.
+        description: |
+          Ranked songs, best match first, the source song left out. Like the similar-song
+          search, repeats are left out, keeping the better-ranked one: a song with the same
+          title and author as the source or as a result already kept, or the same song by
+          neural fingerprint under another title (DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT),
+          and no artist gets more than MAX_SONGS_PER_ARTIST results.
         content:
           application/json:
             schema:

@@ -2410,8 +2410,11 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    each with its match score (the badge turns green when the match is
    certain), with the same result rows and the same "create a playlist"
    button as the other search pages. The song tab leaves the chosen song
-   itself out, so what comes back are its other recordings: duplicates,
-   remasters, the same take on a compilation; a playlist made from them
+   itself out and, like the similar-song page, leaves out duplicates: a
+   song with the same title and author as the chosen song or as a better
+   ranked result, the same song under another title (a remaster, an
+   extended version, a compilation copy), and the songs past
+   `MAX_SONGS_PER_ARTIST` per artist; a playlist made from the results
    starts with the chosen song, like the similar-song page does with its
    seed. On the recording tab the best match is already the first result.
 3. On the song tab, **Smart fade** sends the chosen song and the results to
@@ -2634,8 +2637,29 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    three 20-second windows (a fifth, half and four fifths of the way in, so
    an edit that shares only part of the recording still matches), each
    window is aligned on the index exactly like a clip with the source track
-   excluded from the vote, and the best score per song is kept. The
-   identified flag and the lead are recomputed on the merged list.
+   excluded from the vote, and the best score per song is kept. The ranked
+   list then goes down once like the similar-song filters (name, then
+   artist cap, then distance; a rejected song claims nothing): a song with
+   the same title and author as the chosen song or a kept result is left
+   out, so is a song past `MAX_SONGS_PER_ARTIST` (the chosen song does not
+   count, a song without an author is exempt), and so is a fingerprint twin
+   of the chosen song or of any kept result. The copies of one song are
+   ranked far apart, so every kept song is compared, not a lookback. A twin
+   needs two signals: the cosine between the two whole-song fingerprints
+   (the mean of every half-second row) at most
+   `DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT` (0.25) away, and a 20 s
+   piece of one song slid along the other scoring 0.5 or more, the measure
+   of this very search; only the rare pairs that pass the first are
+   aligned, so only those are fully decoded. Each window asks the index for
+   a quarter more songs (at least 20 more) so the count still holds after
+   the filter. Measured on 20 real 100-song lists (101,000 pairs): every
+   same title and author copy, 10 of 18 other versions (remix, extended,
+   instrumental) and no unrelated song were left out; the two
+   different-title drops were the same piece under another title. At 0.30
+   one unrelated song was dropped too, the average alone at 0.25 dropped 5
+   songs with unrelated titles, the first and last 30 s alone caught only 7
+   versions, and the alignment alone is too slow to run on every pair. The
+   identified flag and the lead are computed on the kept list.
    **Smart fade** reuses the same stored matrices, one 128-dimension vector
    per half second. Only the first and the last 30 seconds of each song are
    decoded and compared (half of a song shorter than a minute), averaged
@@ -2844,6 +2868,12 @@ address, a reverse proxy, or `http://localhost:8000` on the server itself.
 - `RECORDING_SEARCH_TARGET_LEVEL_DB` (-14): RMS level the clip is normalised to.
 - `RECORDING_SEARCH_WARMUP_DURATION` (300): idle seconds before the neural
   fingerprint pack and its encoder session unload from the web process.
+- `DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT` (0.25): Search by Song
+  leaves out a song whose whole-song fingerprint is closer than this cosine
+  distance to the chosen song or a kept result, when a 20 s alignment
+  confirms it; 0 turns it off.
+- `MAX_SONGS_PER_ARTIST` (3): the shared per-artist cap, also applied to the
+  Search by Song results; 0 turns it off.
 
 ---
 

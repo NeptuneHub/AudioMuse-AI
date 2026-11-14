@@ -21,7 +21,11 @@ Main Features:
   starts the pack loading, and the index status names the pack's state
 * search_by_track aligns up to three windows of a song's stored codes on the
   index with the song itself excluded, keeps the best score per song, and
-  refuses a song without a fingerprint
+  refuses a song without a fingerprint; it asks each window for a margin and
+  leaves out the same title and author as the song or a kept result, a
+  fingerprint twin of either (a same-average song that does not align stays)
+  and results past MAX_SONGS_PER_ARTIST (the song does not count), keeps a
+  result without a fingerprint, and 0 turns the fingerprint check and the cap off
 * fade_edges keeps only the first and last 30 s (half of a shorter song);
   smart_fade_order keeps the first song first, chains each song into the one
   whose start matches its end, never starts later than 30 s nor ends earlier
@@ -219,11 +223,12 @@ def test_search_by_track_aligns_windows_of_the_stored_fingerprint_and_leaves_the
         rsm, '_fetch_track_metadata',
         lambda ids: {i: {'title': i.title(), 'author': 'Band', 'album': ''} for i in ids},
     )
+    monkeypatch.setattr(rsm, '_stored_twins', lambda ids: {})
     monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_MIN_SCORE', 0.4)
     monkeypatch.setattr(rsm.config, 'NEURAL_FINGERPRINT_MIN_LEAD', 0.15)
     payload = rsm.search_by_track('song', 5)
     assert [c[0] for c in calls] == [(40, nf.DIM)] * 3
-    assert all(c[1] == 5 and c[2] == ('song',) for c in calls)
+    assert all(c[1] == 25 and c[2] == ('song',) for c in calls)
     assert payload['item_id'] == 'song'
     assert [row['item_id'] for row in payload['results']] == ['copy', 'other']
     assert payload['results'][0]['score'] == pytest.approx(0.8)
@@ -375,6 +380,63 @@ def test_smart_fade_playlist_reads_the_stored_edges_and_orders_from_the_first_so
     assert 0.0 <= fades[3]['fade_in_seconds'] <= 30.0
     assert fades[1]['fade_out_seconds'] == _duration(200)
     assert fades[2] is None
+
+
+def _unit_rows(rows):
+    return (rows / np.linalg.norm(rows, axis=1, keepdims=True)).astype(np.float32)
+
+
+def test_search_by_track_leaves_out_repeats_fingerprint_twins_and_extra_songs_by_one_artist(monkeypatch):
+    from tasks import neural_fingerprint, neural_fingerprint_index
+
+    rng = np.random.default_rng(12)
+
+    def random_rows():
+        return _unit_rows(rng.standard_normal((200, 128)))
+
+    seed, hit = random_rows(), random_rows()
+    rows = {
+        'seed': seed, 'hit': hit, 'repeat': random_rows(),
+        'remix': _unit_rows(hit + 0.05 * rng.standard_normal((200, 128))),
+        'lookalike': hit[rng.permutation(200)],
+        'cover': _unit_rows(seed + 0.05 * rng.standard_normal((200, 128))),
+        'named': random_rows(), 'b1': random_rows(), 'b2': random_rows(), 'b3': random_rows(), 'b4': random_rows(),
+        'extra1': random_rows(), 'extra2': random_rows(),
+    }
+    titles = {
+        'seed': ('Seed', 'Band'), 'hit': ('Hit', 'Other'), 'repeat': (' hit ', 'OTHER'),
+        'remix': ('Hit (extended version)', 'Other'), 'lookalike': ('Lookalike', 'Third'),
+        'cover': ('Seed (remastered)', 'Band feat. Guest'), 'named': ('SEED', 'band'),
+        'b1': ('One', 'Band'), 'b2': ('Two', 'Band'), 'b3': ('Three', 'Band'), 'b4': ('Four', ' band'),
+        'none': ('No fingerprint', 'Fourth'), 'extra1': ('Extra one', 'Fifth'), 'extra2': ('Extra two', 'Sixth'),
+    }
+    ranked = ['hit', 'repeat', 'remix', 'lookalike', 'cover', 'named', 'b1', 'b2', 'b3', 'b4', 'none', 'nometa', 'extra1', 'extra2']
+    asked = []
+
+    def identify_vectors(window, n_results, exclude_ids=()):
+        asked.append(n_results)
+        return [{'item_id': i, 'score': 1.0 - 0.01 * n, 'votes': 1.0, 'offset_seconds': 0.0, 'identified': False, 'lead': None}
+                for n, i in enumerate(ranked)]
+
+    def twin(item_rows):
+        mean = item_rows.mean(axis=0)
+        return {'mean': mean / np.linalg.norm(mean), 'codes': item_rows}
+
+    monkeypatch.setattr(rsm, '_stored_fingerprint', lambda item_id: b'blob')
+    monkeypatch.setattr(neural_fingerprint, 'decode_blob', lambda blob: seed)
+    monkeypatch.setattr(neural_fingerprint, 'decode_codes', lambda codes: codes)
+    monkeypatch.setattr(neural_fingerprint_index, 'identify_vectors', identify_vectors)
+    monkeypatch.setattr(rsm, '_stored_twins', lambda ids: {i: twin(rows[i]) for i in ids if i in rows})
+    monkeypatch.setattr(rsm, '_fetch_track_metadata', lambda ids: {i: {'title': titles[i][0], 'author': titles[i][1], 'album': ''} for i in ids if i in titles})
+    monkeypatch.setattr(rsm.config, 'DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT', 0.25)
+    monkeypatch.setattr(rsm.config, 'MAX_SONGS_PER_ARTIST', 3)
+    payload = rsm.search_by_track('seed', 7)
+    assert asked == [27, 27, 27]
+    assert [row['item_id'] for row in payload['results']] == ['hit', 'lookalike', 'b1', 'b2', 'b3', 'none', 'extra1']
+    assert payload['count'] == 7 and payload['results'][0]['lead'] == pytest.approx(0.03)
+    monkeypatch.setattr(rsm.config, 'DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT', 0.0)
+    monkeypatch.setattr(rsm.config, 'MAX_SONGS_PER_ARTIST', 0)
+    assert [row['item_id'] for row in rsm.search_by_track('seed', 7)['results']] == ['hit', 'remix', 'lookalike', 'cover', 'b1', 'b2', 'b3']
 
 
 def test_neural_rows_get_titles_and_keep_their_alignment_fields(monkeypatch):
