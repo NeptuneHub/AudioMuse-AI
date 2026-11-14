@@ -28,7 +28,8 @@ Main Features:
   count only, a smart_fade field in the body changes nothing); the page
   reorders its results by posting them to the smart_fade endpoint; its player
   decodes the songs and cuts, stretches and fades them itself on one audio
-  clock started in the Play click, never seeking an audio element (Safari)
+  clock started in the Play click, never seeking an audio element (Safari);
+  the playing row fills with the progress and seeks only up to its fade
 * The smart_fade endpoint answers 400 without a list, resolves the ids for the
   server, returns the songs in the manager's order under the ids as sent with
   null times for songs without a fingerprint, and never leaks a canonical id
@@ -418,6 +419,21 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
     assert 'stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds)' in source
     assert 'setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds)' in source
     assert 'X-Switch-At' not in source
+
+
+def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
+    with open(path, encoding='utf-8') as handle:
+        source = handle.read()
+    style = source[source.index('#results-list .result-item.playing {'):]
+    style = style[:style.index('}')]
+    assert 'var(--play-fill) var(--play-progress, 0%)' in style and 'var(--play-limit-color)' in style
+    assert '--play-fill: #DBEAFE;' in source and 'touch-action: pan-y;' in style
+    assert 'if (state.mix) return state.mix.mix_at;' in source
+    assert 'Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1)' in source
+    assert "if (!item || item.classList.contains('playing')) return;" in source
+    skip = source[source.index("skipBtn.addEventListener('click'"):]
+    assert 'seekTo(state, target)' in skip[:skip.index('});')]
 
 
 def _post_fade(client, body):

@@ -2441,7 +2441,11 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    The page does the whole fade itself from the two answers: it decodes the
    songs, stretches the next song's part of the mix with the pitch kept,
    crosses the two and cuts every piece at the exact second the API gave.
-   Without Smart fade the songs play whole, one after the other.
+   Without Smart fade the songs play whole, one after the other. The
+   playing row fills in light blue as the song plays, with a thin line
+   where its fade starts, and the player shows the elapsed and total time.
+   A click or a drag on the playing row moves in the song, never closer
+   than one second to that line, so the planned fade always happens.
    **Skip to the fade** jumps to 6 seconds before the next fade starts.
    On iOS the page asks for the playback audio session, so the silent switch
    does not mute it; iOS still pauses the page's audio while the page is in

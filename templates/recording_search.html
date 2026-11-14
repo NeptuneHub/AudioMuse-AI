@@ -193,6 +193,27 @@
         overflow-wrap: anywhere;
     }
 
+    .play-clock {
+        font-size: 0.9rem;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .play-clock:empty {
+        display: none;
+    }
+
+    #results-list {
+        --play-fill: #DBEAFE;
+        --play-limit-color: rgba(37, 99, 235, 0.45);
+    }
+
+    body.dark-mode #results-list,
+    html.dark-mode body #results-list {
+        --play-fill: rgba(59, 130, 246, 0.2);
+        --play-limit-color: rgba(96, 165, 250, 0.6);
+    }
+
     #results-list .result-item {
         cursor: pointer;
     }
@@ -200,6 +221,13 @@
     #results-list .result-item.playing {
         border-color: var(--color-primary);
         box-shadow: 0 0 0 1px var(--color-primary);
+        cursor: ew-resize;
+        touch-action: pan-y;
+        user-select: none;
+        -webkit-user-select: none;
+        background:
+            linear-gradient(to right, transparent calc(var(--play-limit, 100%) - 2px), var(--play-limit-color) calc(var(--play-limit, 100%) - 2px), var(--play-limit-color) var(--play-limit, 100%), transparent var(--play-limit, 100%)),
+            linear-gradient(to right, var(--play-fill) var(--play-progress, 0%), var(--bg-card) var(--play-progress, 0%));
     }
 
     @media (max-width: 768px) {
@@ -306,6 +334,7 @@
         <button type="button" class="btn btn-primary" id="play-btn">Play</button>
         <button type="button" class="btn btn-ghost" id="skip-btn" disabled>Skip to the fade</button>
         <button type="button" class="btn btn-ghost" id="stop-btn" disabled>Stop</button>
+        <span id="play-clock" class="play-clock"></span>
         <span id="now-playing" class="now-playing" aria-live="polite"></span>
     </div>
     <div id="results-list"></div>
@@ -360,6 +389,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const skipBtn = document.getElementById('skip-btn');
     const stopBtn = document.getElementById('stop-btn');
     const nowPlaying = document.getElementById('now-playing');
+    const playClock = document.getElementById('play-clock');
     const CROSSFADE_SECONDS = 4;
 
     let mode = 'recording';
@@ -375,6 +405,8 @@ document.addEventListener('DOMContentLoaded', function () {
     let playToken = 0;
     let playCurrent = null;
     let audioCtx = null;
+    let playTicker = null;
+    let scrub = null;
     const playNodes = new Set();
 
     function escapeHtml(text) {
@@ -674,7 +706,43 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function markPlaying(index) {
-        resultsList.querySelectorAll('.result-item').forEach((item, row) => item.classList.toggle('playing', row === index - playOffset));
+        resultsList.querySelectorAll('.result-item').forEach((item, row) => {
+            const playing = row === index - playOffset;
+            item.classList.toggle('playing', playing);
+            if (playing) item.title = 'Click or drag to move in the song, up to the line where it fades';
+            else item.removeAttribute('title');
+        });
+    }
+
+    function seekLimit(state) {
+        if (state.mix) return state.mix.mix_at;
+        return state.fadeEnd !== null ? state.fadeEnd - CROSSFADE_SECONDS : state.buffer.duration;
+    }
+
+    function showProgress(item, second, state) {
+        const length = state.buffer.duration || 1;
+        item.style.setProperty('--play-progress', `${(100 * Math.min(1, second / length)).toFixed(2)}%`);
+        item.style.setProperty('--play-limit', `${(100 * Math.min(1, seekLimit(state) / length)).toFixed(2)}%`);
+    }
+
+    function tick() {
+        const state = playCurrent;
+        if (!state) return;
+        const second = Math.min(state.buffer.duration, state.node.offset + Math.max(0, audioCtx.currentTime - state.node.when));
+        playClock.textContent = `${clock(second)} / ${clock(state.buffer.duration)}`;
+        const item = resultsList.querySelector('.result-item.playing');
+        if (item && !scrub) showProgress(item, second, state);
+    }
+
+    function canSeek(state) {
+        return !!state && state === playCurrent && audioCtx.currentTime < state.handoverAt - 0.1;
+    }
+
+    function seekTo(state, second) {
+        halt(state.node);
+        state.node = startSource(state.buffer, audioCtx.currentTime + 0.05, Math.max(0, second), false);
+        state.plan();
+        tick();
     }
 
     function unlockAudio() {
@@ -716,8 +784,11 @@ document.addEventListener('DOMContentLoaded', function () {
     function stopPlayback() {
         playToken += 1;
         [...playNodes].forEach(halt);
+        clearInterval(playTicker);
         playCurrent = null;
+        scrub = null;
         markPlaying(-1);
+        playClock.textContent = '';
         nowPlaying.textContent = '';
         skipBtn.disabled = true;
         stopBtn.disabled = true;
@@ -815,7 +886,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const song = playQueue[index];
         const hasNext = index + 1 < playQueue.length;
         const fadeEnd = playSmart && typeof song.end === 'number' && hasNext ? song.end : null;
-        const state = { index, buffer, node, next: null, mix: null, failed: null, ready: !hasNext, handoverAt: Infinity, timers: [], scheduled: [] };
+        const state = { index, buffer, node, fadeEnd, next: null, mix: null, failed: null, ready: !hasNext, handoverAt: Infinity, timers: [], scheduled: [] };
         const after = (time, action) => state.timers.push(setTimeout(() => {
             if (token === playToken && playCurrent === state) action();
         }, Math.max(0, (time - audioCtx.currentTime) * 1000)));
@@ -894,6 +965,7 @@ document.addEventListener('DOMContentLoaded', function () {
         playQueue = buildQueue();
         skipBtn.disabled = false;
         stopBtn.disabled = false;
+        playTicker = setInterval(tick, 250);
         playSong(index);
     }
 
@@ -901,19 +973,42 @@ document.addEventListener('DOMContentLoaded', function () {
     stopBtn.addEventListener('click', stopPlayback);
     skipBtn.addEventListener('click', () => {
         const state = playCurrent;
-        if (!state || audioCtx.currentTime >= state.handoverAt - 0.1) return;
-        const song = playQueue[state.index];
-        const end = playSmart && typeof song.end === 'number' && state.index + 1 < playQueue.length ? song.end : state.buffer.duration;
-        const target = (state.mix ? state.mix.mix_at : end - CROSSFADE_SECONDS) - 6;
-        if (!(target > state.node.offset + audioCtx.currentTime - state.node.when)) return;
-        halt(state.node);
-        state.node = startSource(state.buffer, audioCtx.currentTime + 0.05, target, false);
-        state.plan();
+        if (!canSeek(state)) return;
+        const target = seekLimit(state) - 6;
+        if (target > state.node.offset + audioCtx.currentTime - state.node.when) seekTo(state, target);
     });
     resultsList.addEventListener('click', event => {
         const item = event.target.closest('.result-item');
-        if (!item) return;
+        if (!item || item.classList.contains('playing')) return;
         startPlayback([...resultsList.querySelectorAll('.result-item')].indexOf(item) + (currentSeedId ? 1 : 0));
+    });
+
+    function scrubSecond(event) {
+        const rect = scrub.item.getBoundingClientRect();
+        const share = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+        return Math.max(0, Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1));
+    }
+
+    resultsList.addEventListener('pointerdown', event => {
+        const item = event.target.closest('.result-item.playing');
+        if (!item || event.button !== 0 || !canSeek(playCurrent)) return;
+        scrub = { item, state: playCurrent };
+        item.setPointerCapture(event.pointerId);
+        showProgress(item, scrubSecond(event), scrub.state);
+    });
+    resultsList.addEventListener('pointermove', event => {
+        if (scrub) showProgress(scrub.item, scrubSecond(event), scrub.state);
+    });
+    resultsList.addEventListener('pointerup', event => {
+        if (!scrub) return;
+        const { state } = scrub;
+        const second = scrubSecond(event);
+        scrub = null;
+        if (canSeek(state)) seekTo(state, second);
+    });
+    resultsList.addEventListener('pointercancel', () => {
+        scrub = null;
+        tick();
     });
 
     searchBtn.addEventListener('click', async () => {
