@@ -630,6 +630,7 @@ class TestEachSearchPathPassesItsOwnThreshold:
         ('DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS', 0.0),
         ('DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC', 0.30),
         ('DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP', 0.01),
+        ('DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT', 0.25),
     ])
     def test_the_measured_default_is_the_shipped_default(self, name, expected):
         assert getattr(config, name) == pytest.approx(expected)
@@ -639,6 +640,7 @@ class TestEachSearchPathPassesItsOwnThreshold:
         'DUPLICATE_DISTANCE_THRESHOLD_COSINE_LYRICS_AXIS',
         'DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC',
         'DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP',
+        'DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT',
     ])
     def test_the_operator_can_reach_it_from_the_setup_wizard(self, name):
         import app_setup

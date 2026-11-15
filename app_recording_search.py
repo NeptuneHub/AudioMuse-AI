@@ -16,8 +16,13 @@ on the sequences the analysis stored.
 Main Features:
 * Routes: `/recording_search` page, `/api/recording_search/search` (multipart:
   the clip and a result count), `/api/recording_search/by_track` (JSON: a
-  library song's id and a result count, for the other recordings of that
-  song) and `/api/recording_search/warmup`.
+  library song's id and a result count, for the songs closest to it,
+  duplicates left out), `/api/recording_search/smart_fade` (JSON: any list of song ids,
+  returned in smart fade order with where to start and end each),
+  `/api/recording_search/play/<id>` (the song's audio from the media server,
+  for the page's player), `/api/recording_search/transition` (JSON: where the
+  page cuts and mixes two songs on the beat at their smart fade points) and
+  `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
   any byte is copied.
@@ -33,14 +38,21 @@ Main Features:
   certificate, one browser warning) or say why the built-in HTTPS is off.
 """
 
-from flask import Blueprint, render_template, request, jsonify
+from flask import Blueprint, Response, render_template, request, jsonify
 import logging
+import math
+import mimetypes
+import os
+import shutil
+import tempfile
 
 import app_server_context
 from error.error_dictionary import (
     ERR_CACHE_REFRESH_FAILED,
     ERR_INDEX_EMPTY,
     ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_UNREACHABLE,
+    ERR_NOT_FOUND,
     ERR_PAYLOAD_TOO_LARGE,
     ERR_RECORDING_INDEX_UNAVAILABLE,
     ERR_RECORDING_REJECTED,
@@ -263,11 +275,11 @@ def recording_search_api():
 @recording_search_bp.route('/api/recording_search/by_track', methods=['POST'])
 def recording_search_by_track_api():
     """
-    Find the other recordings of a library song.
+    Find the songs closest to a library song by neural fingerprint, without duplicates.
     ---
     tags:
       - Recording Search
-    summary: Align windows of a stored song's neural fingerprint on every other track and return the best matches.
+    summary: Align windows of a stored song's neural fingerprint on every other track and return the best matches, duplicates left out.
     requestBody:
       required: true
       content:
@@ -285,7 +297,12 @@ def recording_search_by_track_api():
                 default: 100
     responses:
       200:
-        description: Ranked songs, best match first, the source song left out.
+        description: |
+          Ranked songs, best match first, the source song left out. Like the similar-song
+          search, repeats are left out, keeping the better-ranked one: a song with the same
+          title and author as the source or as a result already kept, or the same song by
+          neural fingerprint under another title (DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT),
+          and no artist gets more than MAX_SONGS_PER_ARTIST results.
         content:
           application/json:
             schema:
@@ -328,6 +345,251 @@ def recording_search_by_track_api():
         return failure
     payload['item_id'] = app_server_context.provider_echo_id(item_id)
     return _scoped_response(payload, n_results)
+
+
+@recording_search_bp.route('/api/recording_search/smart_fade', methods=['POST'])
+def recording_search_smart_fade_api():
+    """
+    Order songs for a smart fade from their neural fingerprints.
+    ---
+    tags:
+      - Recording Search
+    summary: Reorder a list of songs so each flows into the next, and say where to start and end each one.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [item_ids]
+            properties:
+              item_ids:
+                type: array
+                items:
+                  type: string
+                description: The songs, as ids of the selected server. The first one stays first.
+    responses:
+      200:
+        description: The same songs in smart fade order; songs without a neural fingerprint come last with null times.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count:
+                  type: integer
+                results:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      item_id:
+                        type: string
+                      fade_in_seconds:
+                        type: number
+                        nullable: true
+                      fade_out_seconds:
+                        type: number
+                        nullable: true
+                      duration_seconds:
+                        type: number
+                        nullable: true
+      400:
+        description: Missing or empty item_ids list, or an unknown server.
+      503:
+        description: Search by Recording is disabled.
+      500:
+        description: Internal error.
+    """
+    from tasks.recording_search_manager import smart_fade_playlist
+
+    if disabled := _disabled_response():
+        return disabled
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get('item_ids')
+    sent = [str(raw).strip() for raw in raw_ids if raw is not None and str(raw).strip()] if isinstance(raw_ids, list) else []
+    if not sent:
+        return json_error(ERR_INVALID_REQUEST, 'Missing "item_ids" list.', results=[])
+    try:
+        canonical = app_server_context.resolve_input_item_ids(sent, data)
+    except ValueError as exc:
+        return json_exception(exc, ERR_INVALID_REQUEST, results=[])
+    ordered, failure = _run_search(lambda: smart_fade_playlist([canonical.get(i, i) for i in sent]), 'Smart fade')
+    if failure is not None:
+        return failure
+    empty = {'fade_in_seconds': None, 'fade_out_seconds': None, 'duration_seconds': None}
+    results = [dict({'item_id': app_server_context.provider_echo_id(sent[index])}, **(fade or empty)) for index, fade in ordered]
+    return jsonify({'results': results, 'count': len(results)})
+
+
+@recording_search_bp.route('/api/recording_search/play/<item_id>', methods=['GET'])
+def recording_search_play_api(item_id):
+    """
+    Stream a library song to the page's player.
+    ---
+    tags:
+      - Recording Search
+    summary: Fetch one library song from the selected media server and send its audio file.
+    parameters:
+      - in: path
+        name: item_id
+        required: true
+        schema:
+          type: string
+        description: The song, as an id of the selected server.
+    responses:
+      200:
+        description: The audio file as the media server delivers it.
+      404:
+        description: The id is not a song of the library.
+      502:
+        description: The media server did not deliver the song.
+    """
+    if disabled := _disabled_response():
+        return disabled
+    folder = tempfile.mkdtemp(prefix='audiomuse_play_')
+    path, failure = _fetch_song(item_id, folder)
+    if failure is not None:
+        shutil.rmtree(folder, ignore_errors=True)
+        return failure
+    return Response(
+        _stream_then_remove(path, folder),
+        mimetype=mimetypes.guess_type(path)[0] or 'application/octet-stream',
+        headers={'Content-Length': str(os.path.getsize(path))},
+    )
+
+
+def _fetch_song(item_id, folder):
+    from tasks import mediaserver
+    from tasks.commons import fetch_track_metadata_map
+
+    try:
+        canonical_id = app_server_context.resolve_input_item_id(item_id)
+    except ValueError as exc:
+        return None, json_exception(exc, ERR_INVALID_REQUEST)
+    if not fetch_track_metadata_map([canonical_id]):
+        return None, json_error(ERR_NOT_FOUND, 'This song is not in the library.')
+    try:
+        with app_server_context.use_request_server():
+            path = mediaserver.download_track(folder, {'Id': item_id, 'id': item_id})
+    except Exception:
+        logger.exception('Playback download failed for %s', item_id)
+        path = None
+    if not path:
+        return None, json_error(ERR_MEDIASERVER_UNREACHABLE, 'The media server did not deliver this song.', http_status=502)
+    return path, None
+
+
+@recording_search_bp.route('/api/recording_search/transition', methods=['GET'])
+def recording_search_transition_api():
+    """
+    Plan a beat-matched transition between two songs.
+    ---
+    tags:
+      - Recording Search
+    summary: Say where the page cuts and mixes the end of one song into the next on the beat, at the smart fade points.
+    parameters:
+      - in: query
+        name: from_id
+        required: true
+        schema:
+          type: string
+        description: The song that ends, as an id of the selected server.
+      - in: query
+        name: to_id
+        required: true
+        schema:
+          type: string
+        description: The song that starts.
+      - in: query
+        name: out
+        required: true
+        schema:
+          type: number
+        description: The smart fade end of the first song, in seconds.
+      - in: query
+        name: in
+        required: true
+        schema:
+          type: number
+        description: The smart fade start of the next song, in seconds.
+    responses:
+      200:
+        description: |
+          The plan, in seconds of each song; no audio. The first song plays
+          until mix_at and fades out over mix_seconds; the next song's
+          stretch of in_at to resume_at plays over those mix_seconds (sped up
+          by stretch, pitch kept, so its beats land on the first song's) and
+          fades in; then the next song plays on alone from resume_at.
+          tempo_from and tempo_to are the measured tempos.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mix_at:
+                  type: number
+                mix_seconds:
+                  type: number
+                in_at:
+                  type: number
+                resume_at:
+                  type: number
+                stretch:
+                  type: number
+                tempo_from:
+                  type: number
+                tempo_to:
+                  type: number
+      400:
+        description: Bad parameters, or the songs have no steady beat to match.
+      404:
+        description: An id is not a song of the library.
+      502:
+        description: The media server did not deliver a song.
+    """
+    from tasks.smart_fade_mix import plan_transition
+
+    if disabled := _disabled_response():
+        return disabled
+    from_id = (request.args.get('from_id') or '').strip()
+    to_id = (request.args.get('to_id') or '').strip()
+    try:
+        out_seconds = float(request.args.get('out', ''))
+        in_seconds = float(request.args.get('in', ''))
+    except ValueError:
+        out_seconds = in_seconds = float('nan')
+    if not (from_id and to_id and math.isfinite(out_seconds) and math.isfinite(in_seconds)) or min(out_seconds, in_seconds) < 0:
+        return json_error(ERR_INVALID_REQUEST, 'Give from_id, to_id, out and in (seconds).')
+    folder = tempfile.mkdtemp(prefix='audiomuse_mix_')
+    try:
+        paths = []
+        for item_id in (from_id, to_id):
+            path, failure = _fetch_song(item_id, folder)
+            if failure is not None:
+                return failure
+            paths.append(path)
+        try:
+            plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
+        except ValueError:
+            return json_error(ERR_INVALID_REQUEST, 'These two songs have no steady beat to match at the fade points.')
+        except Exception as exc:
+            logger.exception('Smart fade transition failed')
+            return json_exception(exc, ERR_SEARCH_FAILED, 'The transition could not be made. Check the container logs.')
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    return jsonify(plan)
+
+
+def _stream_then_remove(path, folder):
+    # send_file's direct passthrough skips call_on_close, so the copy is
+    # removed here, when the server closes the stream (sent or abandoned).
+    try:
+        with open(path, 'rb') as handle:
+            while chunk := handle.read(1024 * 1024):
+                yield chunk
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 @recording_search_bp.route('/api/recording_search/warmup', methods=['POST'])

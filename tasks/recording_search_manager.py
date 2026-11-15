@@ -35,14 +35,14 @@ Main Features:
 * search_by_track is the entry point for a library song: its stored
   fingerprint is cut into up to three 20-second windows (a fifth, half and
   four fifths of the way in), each is aligned on every other track, and the
-  best score per song is kept, so the other recordings of that song (copies,
-  remasters, compilations) come out first without the song finding itself.
-  No audio is decoded and no model runs.
-* warmup_recording_models maps the index when it is not (normally a no-op,
-  Flask maps it at startup and keeps it), preloads the encoder session and
-  arms the idle timer (every search, search_by_track included, re-arms it)
-  that releases that session and the cell cache, then returns the freed heap
-  to the OS, after RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
+  best score per song is kept. Like similar song it then drops repeats of the
+  song or a kept result (same title and author, or a fingerprint twin: mean
+  cosine plus a 20 s alignment) and caps MAX_SONGS_PER_ARTIST, with an index
+  margin so the count holds. No audio is decoded and no model runs.
+* smart_fade_order chains songs by end/start match (30 s edges, no silence, BPM tie-break)
+* warmup_recording_models maps the index if Flask has not, preloads the encoder
+  and arms the idle timer (every search re-arms it) that frees the session and
+  the cell cache after RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
 """
 
 import logging
@@ -55,6 +55,8 @@ import numpy as np
 import config
 from tasks.idle_unload import IdleUnloadTimer
 from tasks.memory_utils import release_memory_to_os
+from tasks.search_shaping import name_key_for
+from tasks.smart_fade_mix import tempos_match
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +203,12 @@ def search_neural(audio, sr, n_results):
 
 _WINDOW_ROWS = 40
 _WINDOW_POSITIONS = (0.2, 0.5, 0.8)
+_FADE_WINDOW_ROWS = 8
+_FADE_EDGE_SECONDS = 30
+_FADE_STEP_ROWS = 2
+_FADE_SILENCE_COSINE = 0.95
+_FADE_TEMPO_PENALTY = 0.1
+_TWIN_ALIGN_SCORE = 0.5
 
 
 def _stored_fingerprint(item_id):
@@ -223,6 +231,190 @@ def query_windows(vectors):
     return [vectors[start:start + _WINDOW_ROWS] for start in starts]
 
 
+def fade_edges(rows, decode=None):
+    from tasks.neural_fingerprint import HOP_SECONDS
+
+    count = int(rows.shape[0])
+    edge = max(1, min(int(_FADE_EDGE_SECONDS / HOP_SECONDS), count // 2))
+    decode = decode or (lambda part: part)
+    return decode(rows[:edge]), decode(rows[count - edge:]), count
+
+
+def _stored_edges(item_ids):
+    from database import get_db
+    from tasks import neural_fingerprint
+    from tasks.neural_fingerprint_index import iter_codes
+
+    found = {}
+    for item_id, codes in iter_codes(get_db(), list(dict.fromkeys(item_ids))):
+        if codes is not None and codes.shape[0]:
+            found[item_id] = fade_edges(codes, neural_fingerprint.decode_codes)
+    return found
+
+
+def _stored_twins(item_ids):
+    from database import get_db
+    from tasks import neural_fingerprint
+    from tasks.neural_fingerprint_index import iter_codes
+
+    found = {}
+    for item_id, codes in iter_codes(get_db(), list(dict.fromkeys(item_ids))):
+        if codes is not None and codes.shape[0]:
+            mean = neural_fingerprint.decode_codes(codes).mean(axis=0)
+            found[item_id] = {'mean': mean / max(float(np.linalg.norm(mean)), 1e-9), 'codes': codes}
+    return found
+
+
+def _alignment(rows, other):
+    best = -1.0
+    for window in query_windows(rows):
+        width = window.shape[0]
+        if other.shape[0] >= width:
+            sims = window @ other.T
+            span = other.shape[0] - width + 1
+            best = max(best, float(sum(sims[k, k:k + span] for k in range(width)).max()) / width)
+    return best
+
+
+def _without_repeats(item_id, ranked, limit):
+    from tasks import neural_fingerprint
+
+    threshold = float(config.DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT or 0.0)
+    cap = int(config.MAX_SONGS_PER_ARTIST or 0)
+    ids = [item_id] + [row['item_id'] for row in ranked]
+    metadata = _fetch_track_metadata(ids)
+    songs = _stored_twins(ids) if threshold > 0 else {}
+    decoded = {}
+
+    def rows(song_id):
+        if song_id not in decoded:
+            decoded[song_id] = neural_fingerprint.decode_codes(songs[song_id]['codes'])
+        return decoded[song_id]
+
+    def twins(a, b):
+        if a not in songs or b not in songs or float(songs[a]['mean'] @ songs[b]['mean']) < 1.0 - threshold:
+            return False
+        return max(_alignment(rows(a), rows(b)), _alignment(rows(b), rows(a))) >= _TWIN_ALIGN_SCORE
+
+    seed = metadata.get(item_id) or {}
+    names = {name_key_for(seed.get('title'), seed.get('author'))} - {None}
+    claimed, kept, artists, dropped = [item_id], [], {}, 0
+    for row in ranked:
+        if len(kept) >= limit:
+            break
+        info = metadata.get(row['item_id'])
+        if not info:
+            continue
+        name = name_key_for(info.get('title'), info.get('author'))
+        artist = (info.get('author') or '').strip().lower()
+        repeat = name is not None and name in names
+        capped = bool(artist) and 0 < cap <= artists.get(artist, 0)
+        if repeat or capped or any(twins(row['item_id'], other) for other in claimed):
+            dropped += 1
+            continue
+        kept.append(row)
+        claimed.append(row['item_id'])
+        if name is not None:
+            names.add(name)
+        if artist:
+            artists[artist] = artists.get(artist, 0) + 1
+    if dropped:
+        logger.info('Search by song left out %d songs: repeats, fingerprint twins or past the per-artist cap', dropped)
+    return kept
+
+
+def _stored_tempos(item_ids):
+    from database import get_db
+
+    cur = get_db().cursor()
+    try:
+        cur.execute('SELECT item_id, tempo FROM score WHERE item_id = ANY(%s)', (list(dict.fromkeys(item_ids)),))
+        return dict(cur.fetchall())
+    finally:
+        cur.close()
+
+
+def _tempo_penalty(tempos):
+    values = np.array([float(tempo or 0.0) for tempo in tempos])
+    known = values > 0.0
+    values = np.where(known, values, 1.0)
+    clash = ~tempos_match(values[:, None], values[None, :]) & known[:, None] & known[None, :]
+    return _FADE_TEMPO_PENALTY * clash.astype(np.float32)
+
+
+def _fade_windows(vectors, width):
+    rows = np.asarray(vectors, dtype=np.float32)
+    rows = rows / np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1e-9)
+    still = np.einsum('ij,ij->i', rows[1:], rows[:-1]) >= _FADE_SILENCE_COSINE
+    silent = np.zeros(rows.shape[0], dtype=np.int32)
+    silent[1:] |= still
+    silent[:-1] |= still
+    silent_sums = np.concatenate([[0], np.cumsum(silent)])
+    sums = np.cumsum(np.vstack([np.zeros((1, rows.shape[1]), dtype=np.float32), rows]), axis=0)
+    windows = sums[width:] - sums[:-width]
+    windows /= np.maximum(np.linalg.norm(windows, axis=1, keepdims=True), 1e-9)
+    return windows, silent_sums[width:] == silent_sums[:-width]
+
+
+def _fade_candidates(clean, step):
+    positions = np.arange(0, clean.size, step) if step > 0 else np.arange(clean.size - 1, -1, step)
+    kept = positions[clean[positions]]
+    return kept if kept.size else positions
+
+
+def _fade_profile(edges):
+    head, tail, count = edges
+    width = min(_FADE_WINDOW_ROWS, head.shape[0])
+    (intro_windows, intro_clean), (outro_windows, outro_clean) = _fade_windows(head, width), _fade_windows(tail, width)
+    intro = _fade_candidates(intro_clean, _FADE_STEP_ROWS)
+    outro = _fade_candidates(outro_clean, -_FADE_STEP_ROWS)
+    return {
+        'rows': count, 'width': width, 'intro': intro, 'outro': outro + count - tail.shape[0],
+        'intro_windows': intro_windows[intro], 'outro_windows': outro_windows[outro],
+    }
+
+
+def smart_fade_order(edges, tempos=None):
+    from tasks.neural_fingerprint import HOP_SECONDS, SAMPLE_RATE, SEGMENT_SAMPLES
+
+    segment = SEGMENT_SAMPLES / SAMPLE_RATE
+    usable = [index for index, edge in enumerate(edges) if edge is not None]
+    missing = [(index, None) for index in sorted(set(range(len(edges))) - set(usable))]
+    if not usable:
+        return missing
+    penalty = _tempo_penalty([tempos[index] if tempos else None for index in usable])
+    profiles = [_fade_profile(edges[index]) for index in usable]
+    intro_windows = np.vstack([profile['intro_windows'] for profile in profiles])
+    owner = np.concatenate([np.full(profile['intro'].size, n) for n, profile in enumerate(profiles)])
+    starts = np.concatenate([profile['intro'] for profile in profiles])
+    open_columns = owner != 0
+    order, fade_in, fade_out = [0], {0: 0}, {}
+    while open_columns.any():
+        current = profiles[order[-1]]
+        sims = current['outro_windows'] @ intro_windows.T - penalty[order[-1]][owner]
+        sims[:, ~open_columns] = -np.inf
+        best_outro, best_column = np.unravel_index(int(np.argmax(sims)), sims.shape)
+        following = int(owner[best_column])
+        fade_out[order[-1]] = int(current['outro'][best_outro]) + current['width'] - 1
+        fade_in[following] = int(starts[best_column])
+        order.append(following)
+        open_columns &= owner != following
+    ordered = []
+    for n in order:
+        last_row = profiles[n]['rows'] - 1
+        ordered.append((usable[n], {
+            'fade_in_seconds': round(fade_in[n] * HOP_SECONDS, 1),
+            'fade_out_seconds': round(fade_out.get(n, last_row) * HOP_SECONDS + segment, 1),
+            'duration_seconds': round(last_row * HOP_SECONDS + segment, 1),
+        }))
+    return ordered + missing
+
+
+def smart_fade_playlist(item_ids):
+    edges, tempos = _stored_edges(item_ids), _stored_tempos(item_ids)
+    return smart_fade_order([edges.get(item_id) for item_id in item_ids], [tempos.get(item_id) for item_id in item_ids])
+
+
 def search_by_track(item_id, n_results=None):
     from tasks import neural_fingerprint, neural_fingerprint_index
 
@@ -240,12 +432,12 @@ def search_by_track(item_id, n_results=None):
         _arm_idle_unload()
     best = {}
     for window in query_windows(vectors):
-        for row in neural_fingerprint_index.identify_vectors(window, n_results, exclude_ids=(item_id,)):
+        for row in neural_fingerprint_index.identify_vectors(window, n_results + max(20, n_results // 4), exclude_ids=(item_id,)):
             current = best.get(row['item_id'])
             if current is None or row['score'] > current['score']:
                 best[row['item_id']] = dict(row)
-    ranked = neural_fingerprint_index.flag_identified(sorted(best.values(), key=lambda row: -row['score']))
-    rows = _rows_with_metadata(ranked[:n_results])
+    kept = _without_repeats(item_id, sorted(best.values(), key=lambda row: -row['score']), n_results)
+    rows = _rows_with_metadata(neural_fingerprint_index.flag_identified(kept))
     return {'item_id': item_id, 'results': rows, 'count': len(rows)}
 
 

@@ -1686,6 +1686,15 @@ DUPLICATE_DISTANCE_THRESHOLD_HYPERBOLIC = float(os.getenv("DUPLICATE_DISTANCE_TH
 # 0.12% of real neighbours (nothing at all on real text queries) and catches 75% of known
 # same-recording pairs. 0.02 would catch 90% but costs 0.67%, over the audio budget.
 DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_COSINE_CLAP", "0.01"))
+# Search by Recording, Search by Song tab: two songs are the same song when the cosine
+# distance between their whole-song neural fingerprints (the mean of every half-second row)
+# is under this AND sliding a 20 s piece of one along the other confirms it (alignment score
+# 0.5, the by_track measure). Every kept song is compared, not a lookback: the fingerprint
+# ranking puts copies far apart. Measured on 20 real 100-song lists (101,000 pairs): 0.25
+# (cosine 0.75) drops every same title and author copy, 10 of 18 other versions (remix,
+# extended, instrumental) and no unrelated song; the two different-title drops were the same
+# piece under another title. 0.30 also drops one unrelated song. 0.0 disables it.
+DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT = float(os.getenv("DUPLICATE_DISTANCE_THRESHOLD_NEURAL_FINGERPRINT", "0.25"))
 # Max track-length difference (seconds) for two same-embedding tracks to count as the SAME
 # recording for catalogue identity. Tightened to 1s: two songs that merely sound alike but
 # differ in length by more than this are kept separate. Unknown duration = not the same.
