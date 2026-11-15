@@ -1073,6 +1073,25 @@ def auth_endpoint():
     return resp
 
 
+def _proxy_logout_url():
+    """The IdP sign-out URL when this request came through the proxy with a
+    valid proxy identity, else ''. A local session never gets it."""
+    import config as _cfg
+    from app_proxy_auth import ProxyAuthDenied, resolve_proxy_identity
+
+    if not _cfg.AUTH_PROXY_LOGOUT_URL:
+        return ''
+    try:
+        identity = resolve_proxy_identity()
+    except ProxyAuthDenied:
+        return _cfg.AUTH_PROXY_LOGOUT_URL
+    return _cfg.AUTH_PROXY_LOGOUT_URL if identity is not None else ''
+
+
+def _is_proxy_caller():
+    return getattr(g, 'auth_method', None) == 'proxy'
+
+
 def logout_endpoint():
     """
     Log out.
@@ -1080,16 +1099,19 @@ def logout_endpoint():
     tags:
       - Auth
     summary: Clear the JWT session cookie. AJAX gets 200, browser gets 302 to /login.
+    description: |
+      A request that arrives through the reverse proxy with a valid proxy
+      identity is sent to AUTH_PROXY_LOGOUT_URL (the identity provider's
+      sign-out) instead, so the IdP session ends too. Local sessions, for
+      example the break-glass admin on the direct port, always return to /login.
     responses:
       200:
         description: AJAX logout acknowledged.
       302:
-        description: Browser logout - redirect to /login.
+        description: Browser logout - redirect to /login or the IdP sign-out.
     """
-    import config as _cfg
-
     is_ajax = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-    proxy_logout = _cfg.AUTH_PROXY_LOGOUT_URL if _cfg.AUTH_PROXY_ENABLED else ''
+    proxy_logout = _proxy_logout_url()
     if is_ajax:
         body = {"status": "logged_out"}
         if proxy_logout:
@@ -1116,6 +1138,10 @@ def list_users_endpoint():
     tags:
       - Users
     summary: Return user accounts (admin sees all; non-admin sees only their own row).
+    description: |
+      Reverse-proxy users have no local row. A local account with the same
+      name is a different account: a non-admin proxy user gets an empty list,
+      and `current_user` is that proxy user's name.
     responses:
       200:
         description: User list with caller metadata.
@@ -1146,6 +1172,10 @@ def list_users_endpoint():
     try:
         if role == 'admin':
             users = list_additional_users()
+        elif _is_proxy_caller():
+            # A proxy identity is not a local account: a local row with the
+            # same name belongs to someone else and is never returned.
+            users = []
         else:
             # Scope the query to the caller so non-admins never receive
             # other users' rows from the database at all.
@@ -1272,7 +1302,7 @@ def delete_user_endpoint(user_id):
     if not target:
         return json_error(ERR_NOT_FOUND, "User not found.")
     current_username = getattr(g, 'auth_user', None)
-    if current_username and target['username'] == current_username:
+    if current_username and not _is_proxy_caller() and target['username'] == current_username:
         return json_error(ERR_INVALID_REQUEST, "You cannot delete your own account.")
     confirm_error = _confirm_password_error(request.get_json(silent=True))
     if confirm_error:
@@ -1342,7 +1372,10 @@ def update_user_password_endpoint(user_id):
     role = getattr(g, 'auth_role', None)
     current_username = getattr(g, 'auth_user', None)
     target = get_additional_user_by_id(user_id)
-    if role != 'admin' and (target is None or target['username'] != current_username):
+    is_own_account = (
+        target is not None and not _is_proxy_caller() and target['username'] == current_username
+    )
+    if role != 'admin' and not is_own_account:
         return json_error(ERR_FORBIDDEN, "Forbidden")
     if not target:
         return json_error(ERR_NOT_FOUND, "User not found.")
@@ -1357,7 +1390,7 @@ def update_user_password_endpoint(user_id):
     if not ok:
         return json_error(ERR_INVALID_REQUEST, err or "Failed to update password.")
     resp = jsonify({"status": "ok"})
-    if current_username and target['username'] == current_username:
+    if is_own_account:
         secret = _jwt_secret()
         if secret:
             _set_session_cookie(
@@ -1381,11 +1414,10 @@ def init_app(app, setup_manager, jwt_secret_getter):
     global _jwt_secret_getter
     _jwt_secret_getter = jwt_secret_getter
 
-    from app_proxy_auth import bind_acting_user, reset_acting_user
+    from app_proxy_auth import warn_on_misconfiguration
 
+    warn_on_misconfiguration()
     app.before_request(auth_setup_barrier)
-    app.before_request(bind_acting_user)
-    app.teardown_request(reset_acting_user)
     app.add_url_rule('/login', endpoint='login_page', view_func=login_page, methods=['GET'])
     app.add_url_rule('/auth', endpoint='auth_endpoint', view_func=auth_endpoint, methods=['POST'])
     app.add_url_rule(

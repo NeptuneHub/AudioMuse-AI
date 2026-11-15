@@ -19,9 +19,10 @@ Main Features:
   secret are ignored (401), and ProxyFix cannot spoof the trusted peer.
 * Cross-site unsafe requests of proxy users are rejected (403).
 * Local login and the API bearer token keep working with proxy auth on.
-* The request hook binds the proxy user for the Navidrome ExtAuth header and
-  releases it after the request; playlists created for that user are private
-  unless the request asks to share them, service-account playlists stay public.
+* Only the playlist write (``playlist_owner_context``) runs as the proxy user,
+  and only with AUTH_PROXY_PLAYLIST_OWNER=user; playlists created for that user
+  are private unless the request asks to share them, service-account playlists
+  stay public.
 """
 
 import os
@@ -97,6 +98,7 @@ def proxy_client(pg_dsn, monkeypatch):
     import app_auth
     from tasks.mediaserver import context as ms_context
     from tasks.mediaserver import navidrome
+    from app_proxy_auth import playlist_owner_context
     from tasks.setup_manager import SetupManager
 
     monkeypatch.setattr(app_auth, '_get_db', lambda: conn)
@@ -115,7 +117,7 @@ def proxy_client(pg_dsn, monkeypatch):
     monkeypatch.setattr(config, 'AUTH_PROXY_ADMIN_GROUP', 'audiomuse-admins')
     monkeypatch.setattr(config, 'AUTH_PROXY_USER_GROUP', 'audiomuse-users')
     monkeypatch.setattr(config, 'AUTH_PROXY_LOGOUT_URL', '')
-    monkeypatch.setattr(config, 'NAVIDROME_EXTAUTH_ENABLED', True)
+    monkeypatch.setattr(config, 'AUTH_PROXY_PLAYLIST_OWNER', 'user')
     monkeypatch.setattr(config, 'NAVIDROME_EXTAUTH_USER_HEADER', 'X-Authentik-Username')
 
     ok, err = app_auth.create_additional_user('root', 'rootpw', 'admin')
@@ -138,11 +140,15 @@ def proxy_client(pg_dsn, monkeypatch):
 
     @app.route('/api/navidrome_headers', methods=['GET'])
     def _navidrome_headers():
-        return jsonify({"headers": navidrome._extauth_headers()})
+        outside = navidrome._extauth_headers()
+        with playlist_owner_context():
+            inside = navidrome._extauth_headers()
+        return jsonify({"outside": outside, "inside": inside})
 
     @app.route('/api/create_playlist', methods=['POST'])
     def _create_playlist():
-        return jsonify({"public": navidrome._playlist_public_param()})
+        with playlist_owner_context():
+            return jsonify({"public": navidrome._playlist_public_param()})
 
     client = app.test_client()
     yield client, ms_context
@@ -256,12 +262,20 @@ class TestFallbacks:
 
 @pytest.mark.integration
 class TestNavidromePassthrough:
-    def test_proxy_request_binds_the_navidrome_user(self, proxy_client):
+    def test_only_the_playlist_write_runs_as_the_user(self, proxy_client):
         client, ms_context = proxy_client
         resp = _proxy_get(client, '/api/navidrome_headers', 'chris', 'audiomuse-users')
         assert resp.status_code == 200
-        assert resp.get_json() == {"headers": {"X-Authentik-Username": "chris"}}
+        assert resp.get_json() == {"outside": {}, "inside": {"X-Authentik-Username": "chris"}}
         assert ms_context.acting_user() is None
+
+    def test_owner_service_keeps_the_service_account(self, proxy_client, monkeypatch):
+        import config
+
+        client, _ = proxy_client
+        monkeypatch.setattr(config, 'AUTH_PROXY_PLAYLIST_OWNER', 'service')
+        resp = _proxy_get(client, '/api/navidrome_headers', 'chris', 'audiomuse-users')
+        assert resp.get_json() == {"outside": {}, "inside": {}}
 
     def test_local_session_does_not_bind_a_navidrome_user(self, proxy_client):
         client, _ = proxy_client
@@ -272,7 +286,7 @@ class TestNavidromePassthrough:
         )
         resp = client.get('/api/navidrome_headers')
         assert resp.status_code == 200
-        assert resp.get_json() == {"headers": {}}
+        assert resp.get_json() == {"outside": {}, "inside": {}}
 
 
 @pytest.mark.integration

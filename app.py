@@ -220,7 +220,7 @@ def inject_globals():
         auth_method=getattr(g, 'auth_method', None),
         auth_group=_display_group(auth_role),
         playlist_visibility_choice=(
-            getattr(g, 'auth_method', None) == 'proxy' and config.NAVIDROME_EXTAUTH_ENABLED
+            getattr(g, 'auth_method', None) == 'proxy' and config.AUTH_PROXY_PLAYLIST_OWNER == 'user'
         ),
         plugin_menu_items=plugin_menu_items,
         nav_music_servers=nav_music_servers,

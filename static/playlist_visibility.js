@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // Playlist visibility choice for reverse-proxy users. When AudioMuse acts as the
-// logged-in user on Navidrome (NAVIDROME_EXTAUTH_ENABLED), a playlist created in
+// logged-in user on Navidrome (AUTH_PROXY_PLAYLIST_OWNER=user), a playlist created in
 // the UI belongs to that user and is private by default. This script adds a
 // "Share with all users" checkbox next to every playlist-name field (and next to
 // any element marked data-playlist-visibility-anchor) and, while it is ticked,

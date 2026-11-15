@@ -91,6 +91,7 @@ SECRET_FIELDS = {
     "JWT_SECRET",
     "LYRICS_API_1_APIKEY_VALUE",
     "LYRICS_API_2_APIKEY_VALUE",
+    "AUTH_PROXY_SHARED_SECRET",
 }
 SECRET_PLACEHOLDER = '********'
 # Secrets whose own blank-handling lives elsewhere: AUDIOMUSE_PASSWORD goes
@@ -150,6 +151,19 @@ HIDDEN_ADVANCED_FIELDS = {
     'QUEUE_CONTROL_ACTION_WINDOW_SECONDS',
     'DB_OVERRIDES_LOADED',
     'DB_DEFAULT_SERVER_PROJECTED',
+    # Reverse-proxy auth is configured from the environment only (see
+    # SETUP_BOOTSTRAP_EXCLUDED_KEYS), so the wizard never shows or edits it.
+    'AUTH_PROXY_ENABLED',
+    'AUTH_PROXY_SHARED_SECRET',
+    'AUTH_PROXY_SECRET_HEADER',
+    'AUTH_PROXY_TRUSTED_SOURCES',
+    'AUTH_PROXY_USER_HEADER',
+    'AUTH_PROXY_GROUPS_HEADER',
+    'AUTH_PROXY_ADMIN_GROUP',
+    'AUTH_PROXY_USER_GROUP',
+    'AUTH_PROXY_LOGOUT_URL',
+    'AUTH_PROXY_PLAYLIST_OWNER',
+    'NAVIDROME_EXTAUTH_USER_HEADER',
     # Filesystem locations of bundled data and installed code. They follow the
     # build layout (bundle root, APP_DATA_DIR) and pointing them elsewhere from
     # the browser only breaks the install, so they are never user-editable.

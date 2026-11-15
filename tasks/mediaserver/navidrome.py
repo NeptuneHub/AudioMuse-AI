@@ -162,21 +162,27 @@ def _auth_kwargs_from_creds(user_creds):
 _SUBSONIC_CLIENT_PARAMS = {"v": "1.16.1", "c": "AudioMuse-AI", "f": "json"}
 
 
-def _service_user():
+def _service_creds():
     server = context.active_server()
     if server is not None and "creds" in server:
-        return (server.get("creds") or {}).get("user") or ''
-    return config.NAVIDROME_USER or ''
+        return server.get("creds") or {}
+    return {'user': config.NAVIDROME_USER, 'api_key': config.NAVIDROME_API_KEY}
 
 
 def _is_explicit_user(user_creds):
-    """True when the caller passed a Navidrome user other than the service account.
+    """True when the caller passed Navidrome credentials other than the service
+    account's (another user name, or another API key).
 
     Bound server creds are merged into ``user_creds`` along the call chain, so
-    the service account's own user name is not treated as an explicit choice.
+    the service account's own user name or API key is not an explicit choice.
     """
-    user = (user_creds or {}).get('user') or ''
-    return bool(user) and user != _service_user()
+    creds = user_creds or {}
+    service = _service_creds()
+    user = creds.get('user') or ''
+    api_key = creds.get('api_key') or ''
+    if user and user != (service.get('user') or ''):
+        return True
+    return bool(api_key) and api_key != (service.get('api_key') or '')
 
 
 def _playlist_public_param(user_creds=None):
@@ -190,14 +196,15 @@ def _playlist_public_param(user_creds=None):
 def _extauth_headers(explicit_user=False):
     """ExtAuth header that makes Navidrome run the call as the acting user.
 
-    Only used when NAVIDROME_EXTAUTH_ENABLED is on, a proxy-authenticated user
-    is bound to the current request, and the caller did not pass explicit
+    Only used inside a playlist write of a proxy-authenticated user with
+    AUTH_PROXY_PLAYLIST_OWNER=user (``app_proxy_auth.playlist_owner_context``
+    binds the acting user), and only when the caller did not pass explicit
     Navidrome credentials (those always win). When the header is sent, the
     request carries no service credentials: Navidrome ignores u/p/t/s next to
     the header anyway, and a Navidrome that does not trust AudioMuse then fails
     with an auth error instead of silently acting as the service account.
     """
-    if explicit_user or not config.NAVIDROME_EXTAUTH_ENABLED:
+    if explicit_user or config.AUTH_PROXY_PLAYLIST_OWNER != 'user':
         return {}
     username = context.acting_user()
     if not username:

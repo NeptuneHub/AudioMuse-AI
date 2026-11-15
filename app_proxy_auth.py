@@ -14,30 +14,36 @@ headers into an AudioMuse identity (``username``, ``role``) and is consulted by
 ``app_auth.check_auth_needed`` before the cookie/bearer checks.
 
 Security model:
-* The proxy is recognised by its TCP peer address (``AUTH_PROXY_TRUSTED_SOURCES``)
-  and/or a shared secret header (``AUTH_PROXY_SHARED_SECRET``). Every configured
-  check must pass; with neither configured the feature stays off (fail closed).
-  The peer is the raw socket address, never ``X-Forwarded-For`` (ProxyFix
-  rewrites ``remote_addr``, so the original value it stashes is used instead).
+* The proxy is recognised by a shared secret header (``AUTH_PROXY_SHARED_SECRET``,
+  compared in constant time) that it adds only on its forward-auth route, so
+  bypass routes on the same proxy cannot pass identity headers through. The
+  secret is mandatory: without it proxy auth stays off (fail closed).
+  ``AUTH_PROXY_TRUSTED_SOURCES`` optionally restricts the sender further; the
+  peer is the raw socket address, never ``X-Forwarded-For`` (ProxyFix rewrites
+  ``remote_addr``, so the original value it stashes is used instead).
 * Groups map to roles: ``AUTH_PROXY_ADMIN_GROUP`` -> admin,
   ``AUTH_PROXY_USER_GROUP`` (or anyone, when unset) -> user, otherwise 403.
 * Proxy auth is ambient (the IdP cookie rides along on cross-site requests),
   so state-changing requests must come from the same origin (CSRF guard).
+* A proxy identity is never a local account: a local user with the same name
+  is a different principal (see ``app_auth``).
 
 Main Features:
 * ``resolve_proxy_identity`` - header -> (username, role) or a denial.
 * ``proxy_csrf_error`` - same-origin check for unsafe methods.
-* ``bind_acting_user`` / ``reset_acting_user`` - expose the proxy user to the
-  Navidrome provider so Subsonic calls run as that user (ExtAuth passthrough),
-  together with the user's choice to share created playlists (private default).
+* ``warn_on_misconfiguration`` - startup log when proxy auth cannot work.
+* ``playlist_owner_context`` - around a playlist write only, and only with
+  ``AUTH_PROXY_PLAYLIST_OWNER=user``, exposes the proxy user to the Navidrome
+  provider (ExtAuth) together with the user's share choice (private default).
 """
 
 import hmac
 import ipaddress
 import logging
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 
-from flask import g, request
+from flask import g, has_request_context, request
 
 from tasks.mediaserver import context as ms_context
 
@@ -47,6 +53,7 @@ ROLE_ADMIN = 'admin'
 ROLE_USER = 'user'
 _UNSAFE_METHODS = frozenset({'POST', 'PUT', 'PATCH', 'DELETE'})
 _MAX_USERNAME_LEN = 150
+_MAX_WARNED_PEERS = 32
 
 _warned_untrusted = set()
 
@@ -101,25 +108,50 @@ def is_trusted_peer(addr=None):
 
 
 def _secret_matches():
-    """True when no shared secret is configured or the request carries it."""
+    """True only when a shared secret is configured and the request carries it."""
     cfg = _cfg()
     expected = cfg.AUTH_PROXY_SHARED_SECRET or ''
     if not expected:
-        return True
+        return False
     supplied = request.headers.get(cfg.AUTH_PROXY_SECRET_HEADER or 'X-Proxy-Secret') or ''
     return hmac.compare_digest(supplied.encode('utf-8'), expected.encode('utf-8'))
 
 
 def is_trusted_proxy_request():
-    """Every configured proxy check (peer address, shared secret) passes."""
+    """The request carries the shared secret and, when trusted sources are
+    configured, comes from one of them."""
     cfg = _cfg()
-    has_sources = bool(_parse_networks(cfg.AUTH_PROXY_TRUSTED_SOURCES))
-    has_secret = bool(cfg.AUTH_PROXY_SHARED_SECRET)
-    if not has_sources and not has_secret:
+    if not cfg.AUTH_PROXY_SHARED_SECRET:
         return False
-    if has_sources and not is_trusted_peer():
+    if _parse_networks(cfg.AUTH_PROXY_TRUSTED_SOURCES) and not is_trusted_peer():
         return False
     return _secret_matches()
+
+
+def warn_on_misconfiguration():
+    """Log once at startup when proxy auth is enabled but cannot work."""
+    cfg = _cfg()
+    if not cfg.AUTH_PROXY_ENABLED:
+        return
+    if not cfg.AUTH_PROXY_SHARED_SECRET:
+        logger.error(
+            "AUTH_PROXY_ENABLED is on but AUTH_PROXY_SHARED_SECRET is empty: reverse-proxy "
+            "login stays off until the proxy sends a shared secret."
+        )
+    if not cfg.AUTH_PROXY_ADMIN_GROUP:
+        logger.warning("AUTH_PROXY_ADMIN_GROUP is empty: no proxy user can become an admin.")
+
+
+def _warn_untrusted(header_name):
+    peer = _peer_address()
+    if peer in _warned_untrusted or len(_warned_untrusted) >= _MAX_WARNED_PEERS:
+        return
+    _warned_untrusted.add(peer)
+    logger.warning(
+        "Ignoring %s header from %s: shared secret missing or wrong, or sender not in "
+        "AUTH_PROXY_TRUSTED_SOURCES.",
+        header_name, peer,
+    )
 
 
 def _parse_groups(raw):
@@ -166,14 +198,7 @@ def resolve_proxy_identity():
     if not username:
         return None
     if not is_trusted_proxy_request():
-        peer = _peer_address()
-        if peer not in _warned_untrusted:
-            _warned_untrusted.add(peer)
-            logger.warning(
-                "Ignoring %s header from %s: not a trusted proxy "
-                "(AUTH_PROXY_TRUSTED_SOURCES / AUTH_PROXY_SHARED_SECRET).",
-                cfg.AUTH_PROXY_USER_HEADER, peer,
-            )
+        _warn_untrusted(cfg.AUTH_PROXY_USER_HEADER)
         return None
     username = username.strip()
     if not _valid_username(username):
@@ -207,12 +232,17 @@ def proxy_csrf_error():
     return None
 
 
-# --- Navidrome passthrough --------------------------------------------------
+# --- Playlist owner for proxy users ---------------------------------------
 
 
-def passthrough_active():
-    """True when media-server calls of this request run as the proxy user."""
-    return getattr(g, 'auth_method', None) == 'proxy' and bool(_cfg().NAVIDROME_EXTAUTH_ENABLED)
+def playlist_as_user():
+    """True when a playlist written in this request belongs to the proxy user."""
+    return (
+        has_request_context()
+        and getattr(g, 'auth_method', None) == 'proxy'
+        and bool(getattr(g, 'auth_user', None))
+        and _cfg().AUTH_PROXY_PLAYLIST_OWNER == 'user'
+    )
 
 
 def _requested_playlist_public():
@@ -227,22 +257,22 @@ def _requested_playlist_public():
     return isinstance(data, dict) and data.get('public') is True
 
 
-def bind_acting_user():
-    """before_request hook: expose the proxy user to media-server providers."""
-    if passthrough_active():
-        g._acting_user_token = ms_context.set_acting_user(g.auth_user)
-        g._playlist_public_token = ms_context.set_playlist_public(_requested_playlist_public())
-        g._passthrough_token = ms_context.begin_passthrough_request()
-
-
-def reset_acting_user(*_args):
-    """teardown_request hook: release everything bind_acting_user bound."""
-    token = g.pop('_acting_user_token', None)
-    if token is not None:
-        ms_context.reset_acting_user(token)
-    public_token = g.pop('_playlist_public_token', None)
-    if public_token is not None:
+@contextmanager
+def playlist_owner_context():
+    """Wrap one playlist write. With ``AUTH_PROXY_PLAYLIST_OWNER=user`` and a
+    proxy-authenticated caller, the Navidrome calls inside run as that user
+    (ExtAuth) with the user's share choice; otherwise nothing changes and the
+    service account is used. Reads, connection tests and plugin calls outside
+    this block are never affected."""
+    if not playlist_as_user():
+        yield
+        return
+    user_token = ms_context.set_acting_user(g.auth_user)
+    public_token = ms_context.set_playlist_public(_requested_playlist_public())
+    rejected_token = ms_context.begin_passthrough_request()
+    try:
+        yield
+    finally:
+        ms_context.end_passthrough_request(rejected_token)
         ms_context.reset_playlist_public(public_token)
-    passthrough_token = g.pop('_passthrough_token', None)
-    if passthrough_token is not None:
-        ms_context.end_passthrough_request(passthrough_token)
+        ms_context.reset_acting_user(user_token)

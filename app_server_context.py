@@ -201,6 +201,10 @@ def use_request_server(data=None):
 def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_creds=None):
     """Create a playlist on ``server_id`` (default when None).
 
+    The write runs inside ``playlist_owner_context``: with
+    ``AUTH_PROXY_PLAYLIST_OWNER=user`` a proxy user's playlist is created in
+    that user's own Navidrome account; everything else uses the service account.
+
     The canonical ids are passed through UNTRANSLATED: the mediaserver dispatcher
     is the single place that translates them to the target server's real ids
     (translating here too would translate twice and send wrong ids). The mapping
@@ -208,6 +212,7 @@ def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_
     fail clearly when it has none. Returns ``{'result', 'requested', 'mapped',
     'skipped'}``.
     """
+    from app_proxy_auth import playlist_owner_context
     from tasks import mediaserver
     from tasks.mediaserver import context as ms_context
     from tasks.mediaserver import registry
@@ -218,11 +223,12 @@ def create_instant_playlist_for_server(playlist_name, item_ids, server_id, user_
     skipped = requested - mapped
     if not mapped:
         raise ValueError("None of the selected tracks are available on the target server.")
-    result = mediaserver.for_server(server_id).create_instant_playlist(
-        playlist_name, item_ids, user_creds
-    )
-    if not result and ms_context.passthrough_rejected():
-        raise PassthroughDeniedError("The media server refused to act as the signed-in user.")
+    with playlist_owner_context():
+        result = mediaserver.for_server(server_id).create_instant_playlist(
+            playlist_name, item_ids, user_creds
+        )
+        if not result and ms_context.passthrough_rejected():
+            raise PassthroughDeniedError("The media server refused to act as the signed-in user.")
     return {'result': result, 'requested': requested, 'mapped': mapped, 'skipped': skipped}
 
 
