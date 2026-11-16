@@ -333,6 +333,7 @@
                 </div>
             </fieldset>
 
+            <div class="song-player-options"></div>
             <button type="submit" class="btn btn-primary btn-block">
                 Find Hyperbolic Neighbors
             </button>
@@ -448,6 +449,7 @@
                 </div>
             </fieldset>
 
+            <div class="song-player-options"></div>
             <button type="submit" class="btn btn-primary btn-block">
                 Build the Path
             </button>
@@ -590,6 +592,7 @@
                     return;
                 }
                 resultsWrapper.innerHTML = renderSongList(results, { metric: hyperbolicBadge });
+                AudioMusePlayer.show(resultsWrapper);
             };
 
             // ----- Poincare ball view -----
@@ -806,6 +809,7 @@
                 const radialSpread = clampSpread(Number.parseFloat(spreadInput.value));
                 statusDiv.textContent = 'Searching hyperbolic neighbors...';
                 statusDiv.className = '';
+                AudioMusePlayer.hide(resultsWrapper);
                 try {
                     const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_similar_api") }}', {
                         method: 'POST',
@@ -835,7 +839,8 @@
                     ballState.seedLabel = formatSeedLabel(selectedSong);
                     ballState.results = data.results || [];
                     renderBall();
-                    renderResults(data.results || [], selectedSong.item_id);
+                    const songs = await AudioMusePlayer.arrange(resultsWrapper, data.results || [], { seed: { item_id: selectedSong.item_id, title: selectedSong.title } });
+                    renderResults(songs, selectedSong.item_id);
                     document.getElementById('hyper-playlist-creator').classList.remove('hidden');
                     similarSection.classList.remove('hidden');
                 } catch (err) {
@@ -1308,7 +1313,7 @@
                     const region = regionLabel(row.region);
                     const role = row.is_endpoint ? (idx === 0 ? 'start' : 'end') : '';
                     const radius = Number(row.hyperbolic_radius);
-                    return '<div class="result-item">' +
+                    return '<div class="result-item" data-item-id="' + esc(row.item_id || '') + '" data-title="' + esc(row.title || 'Unknown') + '">' +
                         '<div class="result-main">' +
                         '<div class="result-title">' + (idx + 1) + '. ' + esc(row.title || 'Unknown') +
                         (role ? ' <span class="tree-summary">(' + role + ')</span>' : '') + '</div>' +
@@ -1342,6 +1347,7 @@
                     return;
                 }
                 journeyStatus.textContent = 'Building the path...';
+                AudioMusePlayer.hide(document.getElementById('journey-list'));
                 try {
                     const response = await fetch('{{ url_for("hyperbolic_bp.hyperbolic_journey_api") }}', {
                         method: 'POST',
@@ -1369,7 +1375,9 @@
                     renderJourneyBanner();
                     renderJourneyDisk();
                     renderJourneyProfile();
+                    await AudioMusePlayer.arrange(document.getElementById('journey-list'), data.results || [], { keepOrder: true });
                     renderJourneyList();
+                    AudioMusePlayer.show(document.getElementById('journey-list'));
                     journeySection.classList.remove('hidden');
                 } catch (err) {
                     journeyStatus.textContent = 'An unexpected error occurred.';

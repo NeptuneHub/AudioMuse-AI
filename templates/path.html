@@ -208,6 +208,7 @@
                 </label>
             </div>
         </div>
+        <div class="song-player-options"></div>
         <button type="submit" class="btn btn-primary btn-block">Find Path</button>
     </form>
 </section>
@@ -922,6 +923,7 @@
                 statusDiv.textContent = 'Searching for a path...';
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
+                AudioMusePlayer.hide(resultsTableWrapper);
 
                 // Validate: each endpoint must have a song ID, mood, or anchor selected.
                 // Lyrics mode uses the same song picker as Song mode.
@@ -1028,7 +1030,9 @@
                     const summaryText = `Found a path with ${currentPathData.length} songs. Normalized Path Variance Score: ${totalVariance.toFixed(4)}`;
                     statusDiv.textContent = summaryText;
 
+                    await AudioMusePlayer.arrange(resultsTableWrapper, currentPathData, { keepOrder: true });
                     resultsTableWrapper.innerHTML = renderSongList(currentPathData, {});
+                    AudioMusePlayer.show(resultsTableWrapper);
 
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';

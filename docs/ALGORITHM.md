@@ -1650,6 +1650,9 @@ The Sonic Fingerprint turns a user's listening history into a personal playlist.
 4. **Generate My Sonic Fingerprint** returns a mix of the user's top played songs
    and new songs that match their taste, with a distance column.
 5. The result can be saved as a playlist on that user's account.
+6. The results can be played in the page with the shared song player, and the
+   **Smart fade** and **Demo** options ticked before the search apply to them
+   (section 17.1, steps 3 to 6).
 
 A scheduled version of the same job exists. It writes to a playlist with a stable
 name (`SONIC_FINGERPRINT_CRON_PLAYLIST_NAME`) and replaces it in place, so a
@@ -2417,13 +2420,15 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    `MAX_SONGS_PER_ARTIST` per artist; a playlist made from the results
    starts with the chosen song, like the similar-song page does with its
    seed. On the recording tab the best match is already the first result.
-3. On the song tab, **Smart fade** sends the chosen song and the results to
-   `POST /api/recording_search/smart_fade`, a separate endpoint that takes
-   any list of songs (so another frontend can send a list built its own
-   way) and returns them in an order where each one flows into the next,
-   the first one kept first, with where each song would start and end.
-   Search by Song itself is unchanged. Every row shows a small bar with the
-   two times; the playlist keeps the order, the times are only a hint.
+3. **Smart fade**, ticked before the search, sends the results (after the
+   chosen song on the song tab) to `POST /api/recording_search/smart_fade`, a
+   separate endpoint that takes any list of songs (so another frontend can
+   send a list built its own way) and returns them in an order where each
+   one flows into the next, the first one kept first, with where each song
+   would start and end; with `keep_order` (a path, an album) the order sent
+   is kept and only the times come back. Search by Song itself is unchanged.
+   Every row shows a small bar with the two times; the playlist keeps the
+   order, the times are only a hint.
 4. **Beat match.** For each pair of consecutive songs the page then asks
    `GET /api/recording_search/transition` (the two songs and the two
    smart fade times), a second separate endpoint any frontend can call. The
@@ -2453,6 +2458,26 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    On iOS the page asks for the playback audio session, so the silent switch
    does not mute it; iOS still pauses the page's audio while the page is in
    the background.
+6. **Demo**, ticked before the search, makes **Play** play only the demo of
+   each song, its chorus or drop (`POST /api/demo`, `app_demo.py`, one song
+   or a list and an optional `seconds`, 30 by default, at least 5; section
+   17.2 step 6), one after the other with a 4-second crossfade, the last one
+   stopping at its demo end; the rows show the demo instead. Demo and Smart
+   fade exclude each other: ticking one unticks the other, so a search plays
+   whole songs, only demos or only smart fade.
+   **Skip to the fade** is shown only with Smart fade. Play itself works
+   without the neural fingerprint; the two options need it and are not shown
+   without it.
+7. **One player for every song list.** The player bar (Play, Skip to the
+   fade, Stop) sits right above the results and the two options in the
+   search form of every page that answers a list of songs: Similar Song,
+   Song Path, Hyperbolic (similar songs and the path), Text Search, the three
+   Lyrics searches, Sonic Fingerprint, Search by Recording, Song Alchemy and
+   Album Creation (which offers only Demo), never the map or the clustering
+   page. Its whole interface
+   is `static/song_player.js` (with `static/song_demo.js` for the demos),
+   loaded by `templates/includes/layout.html`; a page only gives the list
+   and, where its playlist starts with one, the seed song that plays first.
 
 **Important behaviours**
 
@@ -2724,7 +2749,32 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    and Skip during the mix: the recorded output was where the plan said to
    the sample, and on 10 real stretched pairs the page's stretch placed the
    next song within 12 ms of the plan for the whole mix.
-6. **The chromaprint alternative, measured and removed.** Before the neural
+6. **Demo** (`tasks/demo_manager.py`, `demo_window`, played by the shared
+   song player, section 17.1). A chorus comes back
+   several times with the same sound, so its half seconds match their own
+   repeats far better than a verse or a bridge does (repetition-based
+   thumbnailing, as in Goto's RefraiD and Mueller's audio thumbnails). The
+   song's stored matrix is compared with itself (the cosine of every half
+   second with every other one), digital silence is blanked with the same
+   0.95 consecutive-row rule as the smart fade (silent rows are the most alike
+   of all and would otherwise win), and the matrix is averaged along its
+   diagonals over 4 seconds so a repeat reads as a path. Every half second
+   then scores the mean of its 2 best matches at least 20 seconds away, the
+   window of the asked length with the best mean score wins, and a 0.2 bias
+   toward the middle of the song breaks near ties between the repeats. A song
+   no longer than the asked length plays whole, a track longer than 10
+   minutes is averaged down to 1,200 rows first so the matrices stay a few
+   MB, and a song without a fingerprint gets null times. No audio is decoded
+   and no model runs: about 3 ms per song. Measured on the 223 songs of a
+   205k-song library that carry hand-made section labels (the public Harmonix
+   Set annotations): a 30-second demo holds 68% chorus and 87% of them hold
+   10 seconds of chorus or more, against 41% and 61% for the window in the
+   middle of the song and 40% for a random one, and 79% hold the start of a
+   chorus (58% in the middle). Longer demos gain little: 60- and 100-second
+   windows hold 10 seconds of chorus 96% and 99% of the time, the middle of
+   the song 95% and 99%. Moving the start to the nearest section boundary
+   was measured and did not help.
+7. **The chromaprint alternative, measured and removed.** Before the neural
    fingerprint, the clip was fingerprinted with the duplicate detector's
    fpcalc and slid across the stored chromaprints with learned per-bit
    weights, a noise-frame mask, playback-speed and sub-hop phase variants and
@@ -2735,7 +2785,7 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    minute, and a clip from the end of a track could never match. The
    neural fingerprint identified all of those clips at 10 to 20 seconds, so
    the chromaprint path was retired rather than kept as a second tab.
-7. **The index in the web process.** Flask syncs and maps the stored build
+8. **The index in the web process.** Flask syncs and maps the stored build
    at startup like the other indexes ("Neural fingerprint index loaded at
    startup", or "not found" until the analysis has built it once) and keeps
    it mapped for the life of the process; only the reload event replaces it.

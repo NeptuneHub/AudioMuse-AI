@@ -1505,6 +1505,102 @@ button.info-tooltip {
 }
 .result-artist { color: var(--text-muted); font-size: 0.9rem; }
 .result-album { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.15rem; }
+
+/* --- Song player (static/song_player.js) and the result rows it plays --- */
+.song-player-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.5rem;
+    margin: 0.75rem 0;
+}
+.song-player-options:empty {
+    display: none;
+}
+.song-player-options .song-player-option-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.song-player-options .song-player-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    cursor: pointer;
+    font-weight: 500;
+}
+.song-player {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+.song-player .btn {
+    display: inline-flex;
+    margin: 0;
+}
+.song-player .now-playing {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+}
+.song-player .play-clock {
+    font-size: 0.9rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.song-player .play-clock:empty {
+    display: none;
+}
+.playable-list {
+    --play-fill: #DBEAFE;
+    --play-limit-color: rgba(37, 99, 235, 0.45);
+}
+body.dark-mode .playable-list,
+html.dark-mode body .playable-list {
+    --play-fill: rgba(59, 130, 246, 0.2);
+    --play-limit-color: rgba(96, 165, 250, 0.6);
+}
+.playable-list .result-item {
+    cursor: pointer;
+}
+.playable-list .result-item.playing {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 1px var(--color-primary);
+    cursor: ew-resize;
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
+    background:
+        linear-gradient(to right, transparent calc(var(--play-limit, 100%) - 2px), var(--play-limit-color) calc(var(--play-limit, 100%) - 2px), var(--play-limit-color) var(--play-limit, 100%), transparent var(--play-limit, 100%)),
+        linear-gradient(to right, var(--play-fill) var(--play-progress, 0%), var(--bg-card) var(--play-progress, 0%));
+}
+.play-span {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.play-span-track {
+    position: relative;
+    flex: none;
+    width: 4.5rem;
+    height: 0.35rem;
+    border-radius: 0.2rem;
+    background: var(--border-color);
+    overflow: hidden;
+}
+.play-span-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 0.2rem;
+    background: var(--color-primary);
+}
 .similarity-badge {
     color: white;
     padding: 0.4rem 0.8rem;

@@ -516,6 +516,7 @@
                 </div>
             </fieldset>
 
+            <div class="song-player-options"></div>
             <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.loaded %}disabled{% endif %}>
                 🔍 Search
             </button>
@@ -572,6 +573,7 @@
                         </label>
                     </div>
                 </div>
+                <div class="song-player-options"></div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.loaded %}disabled{% endif %}>
                     Find Similar Songs
                 </button>
@@ -890,6 +892,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             resultsContainer.classList.remove('hidden');
             resultsList.innerHTML = '<div class="loading-spinner">Searching...</div>';
+            AudioMusePlayer.hide(resultsList);
             resultCount.textContent = '';
             playlistCreator.classList.add('hidden');
             renderLatentPanel(null);
@@ -905,7 +908,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
                 }
                 currentSeedId = itemId;
-                currentResults = data.results || [];
+                currentResults = await AudioMusePlayer.arrange(resultsList, data.results || [], { seed: { item_id: itemId, title: songLabel } });
                 displayResults(currentResults, songLabel, null);
                 document.getElementById('playlist_name').value = 'Similar to ' + songLabel;
             } catch (error) {
@@ -937,6 +940,7 @@ document.addEventListener('DOMContentLoaded', function() {
         currentSeedId = null;
         resultsContainer.classList.remove('hidden');
         resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
+        AudioMusePlayer.hide(resultsList);
         playlistCreator.classList.add('hidden');
         
         try {
@@ -954,7 +958,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
             }
             
-            currentResults = data.results || [];
+            currentResults = await AudioMusePlayer.arrange(resultsList, data.results || [], {});
             displayResults(currentResults, query, data.steering);
             renderLatentPanel(data.steering_explain);
             if (data.steering_warnings && data.steering_warnings.length) {
@@ -1069,6 +1073,7 @@ document.addEventListener('DOMContentLoaded', function() {
             : `Found ${results.length} matches for "${query}"`;
 
         resultsList.innerHTML = renderSongList(results, { metric: songSimilarityBadge });
+        AudioMusePlayer.show(resultsList);
 
         // Show playlist creator
         playlistCreator.classList.remove('hidden');

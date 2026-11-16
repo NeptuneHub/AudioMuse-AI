@@ -39,7 +39,7 @@ Main Features:
   song or a kept result (same title and author, or a fingerprint twin: mean
   cosine plus a 20 s alignment) and caps MAX_SONGS_PER_ARTIST, with an index
   margin so the count holds. No audio is decoded and no model runs.
-* smart_fade_order chains songs by end/start match (30 s edges, no silence, BPM tie-break)
+* smart_fade_order chains songs by end/start match (30 s edges, no silence, BPM tie-break) or keeps a given order
 * warmup_recording_models maps the index if Flask has not, preloads the encoder
   and arms the idle timer (every search re-arms it) that frees the session and
   the cell cache after RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
@@ -374,10 +374,38 @@ def _fade_profile(edges):
     }
 
 
-def smart_fade_order(edges, tempos=None):
+def _fade_times(profile, start_row, end_row):
     from tasks.neural_fingerprint import HOP_SECONDS, SAMPLE_RATE, SEGMENT_SAMPLES
 
     segment = SEGMENT_SAMPLES / SAMPLE_RATE
+    last_row = profile['rows'] - 1
+    return {
+        'fade_in_seconds': round(start_row * HOP_SECONDS, 1),
+        'fade_out_seconds': round((last_row if end_row is None else end_row) * HOP_SECONDS + segment, 1),
+        'duration_seconds': round(last_row * HOP_SECONDS + segment, 1),
+    }
+
+
+def _fades_in_order(edges):
+    profiles = [None if edge is None else _fade_profile(edge) for edge in edges]
+    fade_in, fade_out = {}, {}
+    for current in range(len(profiles) - 1):
+        ending, opening = profiles[current], profiles[current + 1]
+        if ending is None or opening is None:
+            continue
+        sims = ending['outro_windows'] @ opening['intro_windows'].T
+        best_outro, best_intro = np.unravel_index(int(np.argmax(sims)), sims.shape)
+        fade_out[current] = int(ending['outro'][best_outro]) + ending['width'] - 1
+        fade_in[current + 1] = int(opening['intro'][best_intro])
+    return [
+        (index, None if profile is None else _fade_times(profile, fade_in.get(index, 0), fade_out.get(index)))
+        for index, profile in enumerate(profiles)
+    ]
+
+
+def smart_fade_order(edges, tempos=None, keep_order=False):
+    if keep_order:
+        return _fades_in_order(edges)
     usable = [index for index, edge in enumerate(edges) if edge is not None]
     missing = [(index, None) for index in sorted(set(range(len(edges))) - set(usable))]
     if not usable:
@@ -399,19 +427,15 @@ def smart_fade_order(edges, tempos=None):
         fade_in[following] = int(starts[best_column])
         order.append(following)
         open_columns &= owner != following
-    ordered = []
-    for n in order:
-        last_row = profiles[n]['rows'] - 1
-        ordered.append((usable[n], {
-            'fade_in_seconds': round(fade_in[n] * HOP_SECONDS, 1),
-            'fade_out_seconds': round(fade_out.get(n, last_row) * HOP_SECONDS + segment, 1),
-            'duration_seconds': round(last_row * HOP_SECONDS + segment, 1),
-        }))
+    ordered = [(usable[n], _fade_times(profiles[n], fade_in[n], fade_out.get(n))) for n in order]
     return ordered + missing
 
 
-def smart_fade_playlist(item_ids):
-    edges, tempos = _stored_edges(item_ids), _stored_tempos(item_ids)
+def smart_fade_playlist(item_ids, keep_order=False):
+    edges = _stored_edges(item_ids)
+    if keep_order:
+        return smart_fade_order([edges.get(item_id) for item_id in item_ids], keep_order=True)
+    tempos = _stored_tempos(item_ids)
     return smart_fade_order([edges.get(item_id) for item_id in item_ids], [tempos.get(item_id) for item_id in item_ids])
 
 

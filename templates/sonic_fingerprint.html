@@ -154,6 +154,7 @@
             </div>
         </fieldset>
 
+        <div class="song-player-options"></div>
         <button type="submit" class="btn btn-primary btn-block">
             Generate My Sonic Fingerprint
         </button>
@@ -355,6 +356,7 @@
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
                 fingerprintSummary.classList.add('hidden');
+                AudioMusePlayer.hide(resultsTableWrapper);
 
                 try {
                     const response = await fetch("{{ url_for('sonic_fingerprint_bp.generate_sonic_fingerprint_endpoint') }}", {
@@ -373,10 +375,12 @@
                         return;
                     }
 
-                    currentTrackIds = data.map(track => track.item_id);
-                    statusDiv.textContent = `Found ${data.length} recommended tracks.`;
-                    resultsTableWrapper.innerHTML = renderSongList(data, { metric: songDistanceBadge });
-                    renderFingerprint(data);
+                    const songs = await AudioMusePlayer.arrange(resultsTableWrapper, data, {});
+                    currentTrackIds = songs.map(track => track.item_id);
+                    statusDiv.textContent = `Found ${songs.length} recommended tracks.`;
+                    resultsTableWrapper.innerHTML = renderSongList(songs, { metric: songDistanceBadge });
+                    AudioMusePlayer.show(resultsTableWrapper);
+                    renderFingerprint(songs);
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
                     document.getElementById('playlist_name').value = 'My Sonic Fingerprint Mix';

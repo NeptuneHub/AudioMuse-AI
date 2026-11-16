@@ -225,6 +225,7 @@
             </div>
         </fieldset>
 
+        <div class="song-player-options"></div>
         <div class="alchemy-controls task-buttons">
             <button id="run-alchemy" type="submit" class="btn btn-primary btn-block">Run Alchemy</button>
             <button id="add-row" type="button">Add Another Item</button>
@@ -706,14 +707,17 @@
 
                 const wrapper = document.getElementById('results-table-wrapper');
                 wrapper.innerHTML = ''; // Clear previous results
+                AudioMusePlayer.hide(wrapper);
                 // Track current result IDs so playlist creation can use them
                 window.currentResultIds = [];
                 if (Array.isArray(data.ignored_anchors) && data.ignored_anchors.length > 0) {
                     showMessageBox('Anchor ignored', data.ignored_anchors.map(a => `'${a.name}' was ignored: ${a.problem}. Run the alchemy again and re-save it.`).join(' '), true);
                 }
                 if(data.results && data.results.length > 0) {
+                    data.results = await AudioMusePlayer.arrange(wrapper, data.results, {});
                     window.currentResultIds = data.results.map(r => r.item_id).filter(Boolean);
                     wrapper.innerHTML = renderSongList(data.results, { metric: songDistanceBadge });
+                    AudioMusePlayer.show(wrapper);
                     // Save centroid + inclusions + exclusions from alchemy for potential anchor actions (not returned in anchors list)
                     window.lastAddCentroidVector = data.add_centroid_vector || null;
                     window.lastAlchemyExclusions = data.exclusions || [];

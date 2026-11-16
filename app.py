@@ -199,6 +199,19 @@ def inject_globals():
     except Exception:
         logger.exception("Could not build the sidebar server picker data")
         nav_music_servers = None
+    # The song player's endpoints, for static/song_player.js and song_demo.js
+    # (loaded by the layout on the pages that list songs).
+    song_player = None
+    try:
+        from flask import url_for
+        song_player = {
+            'play': url_for('recording_search_bp.recording_search_play_api', item_id='__ID__'),
+            'smart_fade': url_for('recording_search_bp.recording_search_smart_fade_api'),
+            'transition': url_for('recording_search_bp.recording_search_transition_api'),
+            'demo': url_for('demo_bp.demo_api'),
+        }
+    except Exception:
+        logger.exception("Could not build the song player URLs")
     return dict(
         app_version=APP_VERSION,
         clap_enabled=CLAP_ENABLED,
@@ -212,6 +225,7 @@ def inject_globals():
         nav_music_servers=nav_music_servers,
         search_page_size=SEARCH_PAGE_SIZE,
         search_min_chars=SEARCH_MIN_QUERY_LENGTH,
+        song_player=song_player,
     )
 
 
@@ -1210,6 +1224,7 @@ def _register_blueprints(flask_app):
     from app_music_servers import music_servers_bp
     from app_hyperbolic import hyperbolic_bp
     from app_recording_search import recording_search_bp
+    from app_demo import demo_bp
     from app_models import models_bp
 
     flask_app.register_blueprint(chat_bp, url_prefix='/chat')
@@ -1219,7 +1234,7 @@ def _register_blueprints(flask_app):
         alchemy_bp, map_bp, artist_similarity_bp, album_creation_bp, clap_search_bp,
         lyrics_search_bp,
         sem_grove_bp, backup_bp, migration_bp, dashboard_bp, users_bp, sync_bp,
-        music_servers_bp, hyperbolic_bp, recording_search_bp, models_bp,
+        music_servers_bp, hyperbolic_bp, recording_search_bp, demo_bp, models_bp,
     ):
         flask_app.register_blueprint(blueprint)
 
