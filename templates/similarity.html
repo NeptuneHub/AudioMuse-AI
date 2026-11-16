@@ -192,7 +192,6 @@
 
         (() => {
             let currentTrackIds = [];
-            let currentTracks = [];
 
             // Mood centroid data cache
             let moodCentroidsCache = null;
@@ -483,18 +482,8 @@
                     if (!isVectorMode) {
                         const itemId = selectedItemIdInput.value;
                         currentTrackIds = [itemId, ...songs.map(track => track.item_id)];
-                        currentTracks = [
-                            {
-                                id: itemId,
-                                title: playlistLabel,
-                                author: (document.getElementById('selected_item_artist') && document.getElementById('selected_item_artist').value) || 'Unknown',
-                                album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || 'Unknown'
-                            },
-                            ...songs.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))
-                        ];
                     } else {
                         currentTrackIds = songs.map(track => track.item_id);
-                        currentTracks = songs.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}));
                     }
 
                     statusDiv.textContent = 'Found ' + songs.length + ' similar tracks.';

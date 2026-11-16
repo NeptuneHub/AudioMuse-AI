@@ -160,6 +160,7 @@ def test_the_player_plays_whole_songs_demos_or_smart_fade_as_ticked_before_the_s
     assert "const fadeEnd = typeof song.end === 'number' && (hasNext || playMode.stopAtEnd) ? song.end : null;" in source
     assert 'const ending = fadeEnd !== null && playMode.stopAtEnd;' in source
     assert 'if (!playMode.beatMatch || !URLS.transition' in source
+    assert "console.error('Could not prepare the beat-matched mix; crossfading into the next song instead.', error);" in source
 
 
 def test_the_bar_has_play_and_stop_and_shows_skip_only_with_smart_fade():

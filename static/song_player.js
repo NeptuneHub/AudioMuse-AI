@@ -393,6 +393,12 @@
                         state.mix = next && mix ? Object.assign(mix, { buffer: stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds) }) : null;
                         state.ready = true;
                         state.plan();
+                    })
+                    .catch(error => {
+                        console.error('Could not prepare the beat-matched mix; crossfading into the next song instead.', error);
+                        state.mix = null;
+                        state.ready = true;
+                        state.plan();
                     });
             }
             state.plan();
