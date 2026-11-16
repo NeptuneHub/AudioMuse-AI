@@ -265,6 +265,20 @@ class TestOutOfMemoryIsNotEveryInferenceError:
             'is out of RAM only makes the kill worse'
         )
 
+    def test_a_host_oom_caused_by_another_onnx_failure_is_not_a_model_oom(self):
+        # An onnxruntime shape error is not itself an allocation failure, but
+        # it can be chained to a host MemoryError. The model-runtime OOM code
+        # must require ONE link to be both, not any OOM plus any onnx link.
+        invalid_argument = _onnxruntime_exception('InvalidArgument')
+        exc = invalid_argument('Got invalid dimensions for input')
+        exc.__cause__ = MemoryError()
+
+        assert em.is_model_out_of_memory(exc) is False
+        assert em.classify(exc, ed.ERR_ANALYSIS_FAILED) == ed.ERR_OUT_OF_MEMORY, (
+            'classify must agree with is_model_out_of_memory: a host RAM kill '
+            'must not be reported as a model OOM that invites a CPU retry'
+        )
+
     def test_a_wrapped_runtime_allocation_failure_is_found_through_the_cause(self):
         runtime_exception = _onnxruntime_exception('RuntimeException')
         wrapper = RuntimeError('MusiCNN inference failed for track.flac')

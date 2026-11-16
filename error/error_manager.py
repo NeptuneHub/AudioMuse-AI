@@ -193,7 +193,14 @@ def is_model_out_of_memory(exc):
 def _out_of_memory_code(links):
     if not any(_is_memory_exhaustion(link) for link in links):
         return None
-    if any(_module_of(link).startswith(_MODEL_RUNTIME_MODULES) for link in links):
+    # The model code needs ONE link that is both an allocation failure and a
+    # model-runtime exception; an unrelated onnx error chained to a host
+    # MemoryError is a general OOM, not a reason to retry on CPU.
+    if any(
+        _is_memory_exhaustion(link)
+        and _module_of(link).startswith(_MODEL_RUNTIME_MODULES)
+        for link in links
+    ):
         return ERR_MODEL_OUT_OF_MEMORY
     return ERR_OUT_OF_MEMORY
 
