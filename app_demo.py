@@ -15,11 +15,12 @@ static/song_player.js plays the answer.
 
 Main Features:
 * One route, POST `/api/demo`: a list of one or more song ids of the selected
-  server and an optional length in seconds; the answer keeps the order sent.
+  server and an optional length in seconds (config.SONG_DEMO_SECONDS, set in
+  the setup wizard, when none is sent); the answer keeps the order sent.
 * Ids are resolved for the selected server and echoed as sent, never as an
   internal canonical id; a song without a neural fingerprint gets null times.
-* A missing or empty list, or a length that is not a number of at least
-  MIN_SECONDS, answers 400; NEURAL_FINGERPRINT_ENABLED false answers 503 naming
+* A missing or empty list, or a length (sent or configured) that is not a
+  number of at least MIN_SECONDS, answers 400; NEURAL_FINGERPRINT_ENABLED false answers 503 naming
   the flag; anything else is a generic 500 with the detail in the log only.
 """
 
@@ -29,6 +30,7 @@ import math
 from flask import Blueprint, jsonify, request
 
 import app_server_context
+import config
 from error.error_dictionary import ERR_INDEX_EMPTY, ERR_INVALID_REQUEST, ERR_SEARCH_FAILED
 from error.responses import json_error, json_exception
 
@@ -39,7 +41,7 @@ demo_bp = Blueprint('demo_bp', __name__)
 
 def _requested_seconds(raw, default, minimum):
     if raw is None:
-        return default
+        raw = default
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
     seconds = float(raw)
@@ -71,7 +73,7 @@ def demo_api():
                 type: number
                 minimum: 5
                 default: 30
-                description: How long each demo is. A song that is not longer plays whole.
+                description: How long each demo is, in seconds. When omitted, SONG_DEMO_SECONDS from the setup wizard (30 unless changed). A song that is not longer plays whole.
     responses:
       200:
         description: One row per song, in the order sent; null times for a song without a neural fingerprint.
@@ -107,7 +109,7 @@ def demo_api():
       500:
         description: Internal error.
     """
-    from tasks.demo_manager import DEFAULT_SECONDS, MIN_SECONDS, demo_sections
+    from tasks.demo_manager import MIN_SECONDS, demo_sections
     from tasks.neural_fingerprint import DISABLED_MESSAGE, is_enabled
 
     if not is_enabled():
@@ -117,9 +119,13 @@ def demo_api():
     sent = [str(raw).strip() for raw in raw_ids if raw is not None and str(raw).strip()] if isinstance(raw_ids, list) else []
     if not sent:
         return json_error(ERR_INVALID_REQUEST, 'Missing "item_ids" list.', results=[])
-    seconds = _requested_seconds(data.get('seconds'), DEFAULT_SECONDS, MIN_SECONDS)
+    seconds = _requested_seconds(data.get('seconds'), config.SONG_DEMO_SECONDS, MIN_SECONDS)
     if seconds is None:
-        return json_error(ERR_INVALID_REQUEST, f'"seconds" must be a number of at least {MIN_SECONDS:g}.', results=[])
+        return json_error(
+            ERR_INVALID_REQUEST,
+            f'"seconds" (SONG_DEMO_SECONDS when the request sends none) must be a number of at least {MIN_SECONDS:g}.',
+            results=[],
+        )
     try:
         canonical = app_server_context.resolve_input_item_ids(sent, data)
     except ValueError as exc:

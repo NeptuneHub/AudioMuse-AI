@@ -13,7 +13,9 @@ Main Features:
   a number of at least MIN_SECONDS, resolves the ids for the selected server,
   answers one row per id in the order sent under the ids as sent (never a
   canonical id), null times for a song without a fingerprint, and the length
-  used (the default when none is sent)
+  used (SONG_DEMO_SECONDS when none is sent, 400 naming it when under 5)
+* SONG_DEMO_SECONDS is a visible setup wizard field in its Song Player section,
+  documented in PARAMETERS.md, and the wizard refuses to save one under 5
 * With NEURAL_FINGERPRINT_ENABLED false it answers 503 naming the flag; any
   manager failure is a generic 500 without the detail
 * The app registers the blueprint
@@ -107,6 +109,40 @@ def test_the_demos_come_back_in_the_order_sent_under_the_ids_as_sent(client, mon
     response = client.post('/api/demo', json={'item_ids': ['a'], 'seconds': 60})
     assert response.status_code == 200 and response.get_json()['seconds'] == 60.0
     assert seen[-1] == (['fp_a'], 60.0)
+
+
+def test_the_length_sent_by_default_is_the_wizard_setting(client, monkeypatch):
+    import config
+
+    seen = _sections(monkeypatch, lambda ids: [None] * len(ids))
+    monkeypatch.setattr(config, 'SONG_DEMO_SECONDS', 45.0)
+    response = client.post('/api/demo', json={'item_ids': ['a']})
+    assert response.status_code == 200
+    assert response.get_json()['seconds'] == 45.0
+    assert seen == [(['fp_a'], 45.0)]
+    monkeypatch.setattr(config, 'SONG_DEMO_SECONDS', 2.0)
+    response = client.post('/api/demo', json={'item_ids': ['a']})
+    assert response.status_code == 400
+    assert 'SONG_DEMO_SECONDS' in response.get_json()['error']
+    assert len(seen) == 1
+
+
+def test_the_wizard_offers_the_demo_length_and_refuses_one_under_the_minimum():
+    import app_setup
+    import config
+
+    assert config.SONG_DEMO_SECONDS == 30.0
+    assert app_setup.should_show_advanced('SONG_DEMO_SECONDS')
+    assert 'SONG_DEMO_SECONDS' not in config.SETUP_BOOTSTRAP_EXCLUDED_KEYS
+    sections = _source('static', 'setup.js')
+    sections = sections[sections.index('var ADVANCED_SECTIONS'):sections.index('var ADVANCED_OTHER_TITLE')]
+    assert "title: 'Song Player',\n        items: [\n            'SONG_DEMO_SECONDS'\n        ]" in sections
+    assert '| `SONG_DEMO_SECONDS`' in _source('docs', 'PARAMETERS.md')
+    for value in ('30', '5', 60, '12.5'):
+        assert app_setup._song_demo_seconds_problem({'SONG_DEMO_SECONDS': value}) is None
+    for value in ('4.9', '0', '-30', 'abc', '', 'inf', 'nan', None):
+        assert 'SONG_DEMO_SECONDS' in app_setup._song_demo_seconds_problem({'SONG_DEMO_SECONDS': value})
+    assert app_setup._song_demo_seconds_problem({'OTHER': '1'}) is None
 
 
 def test_a_disabled_fingerprint_answers_503_and_a_failure_is_a_generic_500(client, monkeypatch):

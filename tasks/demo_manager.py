@@ -15,7 +15,9 @@ their own repeats far better than a verse or a bridge does. app_demo.py serves
 this module as POST /api/demo; static/song_demo.js plays the answer.
 
 Main Features:
-* demo_window(vectors, seconds) builds the song's self-similarity matrix (the
+* demo_window(vectors, seconds) builds, for a demo of `seconds` (the API sends
+  config.SONG_DEMO_SECONDS unless the request names one, never under
+  MIN_SECONDS), the song's self-similarity matrix (the
   cosine of every half second with every other one), blanks digital silence
   (consecutive rows that do not change), averages it along the diagonals over
   SMOOTH_SECONDS so a repeat reads as a path, and scores every half second by
@@ -41,7 +43,6 @@ from database import get_db
 from tasks import neural_fingerprint
 from tasks.neural_fingerprint_index import iter_codes
 
-DEFAULT_SECONDS = 30.0
 MIN_SECONDS = 5.0
 SMOOTH_SECONDS = 4.0
 GAP_SECONDS = 20.0
@@ -96,7 +97,7 @@ def _section(start, seconds, duration):
     }
 
 
-def demo_window(vectors, seconds=DEFAULT_SECONDS):
+def demo_window(vectors, seconds):
     count = int(vectors.shape[0])
     if count == 0:
         return None
@@ -118,7 +119,7 @@ def demo_window(vectors, seconds=DEFAULT_SECONDS):
     return _section(start, seconds, duration)
 
 
-def demo_sections(item_ids, seconds=DEFAULT_SECONDS):
+def demo_sections(item_ids, seconds):
     found = {}
     for item_id, codes in iter_codes(get_db(), list(dict.fromkeys(item_ids))):
         if codes is not None and codes.shape[0]:

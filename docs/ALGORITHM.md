@@ -2460,7 +2460,8 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    the background.
 6. **Demo**, ticked before the search, makes **Play** play only the demo of
    each song, its chorus or drop (`POST /api/demo`, `app_demo.py`, one song
-   or a list and an optional `seconds`, 30 by default, at least 5; section
+   or a list and an optional `seconds`, at least 5, by default
+   `SONG_DEMO_SECONDS` from the setup wizard's Song Player section, 30; section
    17.2 step 6), one after the other with a 4-second crossfade, the last one
    stopping at its demo end; the rows show the demo instead. Demo and Smart
    fade exclude each other: ticking one unticks the other, so a search plays

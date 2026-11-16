@@ -1371,6 +1371,13 @@ RECORDING_SEARCH_TARGET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_TARGET
 # process after the last recording search before they are unloaded to free RAM.
 RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_DURATION", "300"))
 
+# --- Song demo ---
+# Seconds of each song the song player plays when Demo is ticked, around its chorus
+# or drop (also POST /api/demo's length when the request sends none). At least 5; a
+# song that is not longer plays whole. 30 s holds a chorus most often on songs with
+# hand-made section labels; 60 and 100 s gain little.
+SONG_DEMO_SECONDS = float(os.environ.get("SONG_DEMO_SECONDS", "30"))
+
 # Duration (in seconds) to keep the gte-multilingual-base lyrics-search model
 # loaded after last use. Auto-unloads after this idle period to free RAM.
 LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "300"))

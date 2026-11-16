@@ -24,6 +24,7 @@ Main Features:
   one directory-header read per index, never an index load, and never a number.
 """
 
+import math
 import re
 import types
 import requests
@@ -537,6 +538,20 @@ def _validate_ai_prompt_values(filtered_values):
     return None
 
 
+def _song_demo_seconds_problem(filtered_values):
+    from tasks.demo_manager import MIN_SECONDS
+
+    if 'SONG_DEMO_SECONDS' not in filtered_values:
+        return None
+    try:
+        seconds = float(filtered_values['SONG_DEMO_SECONDS'])
+    except (TypeError, ValueError):
+        seconds = math.nan
+    if math.isfinite(seconds) and seconds >= MIN_SECONDS:
+        return None
+    return 'The song demo length (SONG_DEMO_SECONDS) must be a number of at least %g seconds.' % MIN_SECONDS
+
+
 def _get_allowed_setup_keys():
     allowed_keys = set()
     for f in setup_manager.get_all_fields(config):
@@ -771,6 +786,10 @@ def setup_api():
         prompt_problem = _validate_ai_prompt_values(filtered_values)
         if prompt_problem:
             return json_error(ERR_INVALID_REQUEST, prompt_problem)
+
+        demo_problem = _song_demo_seconds_problem(filtered_values)
+        if demo_problem:
+            return json_error(ERR_INVALID_REQUEST, demo_problem)
 
         # Validate any Lyrics API URL templates before persisting them.
         for slot in (1, 2):
