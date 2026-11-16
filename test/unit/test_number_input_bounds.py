@@ -91,6 +91,17 @@ class TestTheBoundsAlwaysAdmitTheRenderedValue:
         assert min_bound(bad, 40) == 40
         assert max_bound(bad, 200) == 200
 
+    @pytest.mark.parametrize('bad', [float('nan'), float('inf'), float('-inf')])
+    def test_a_non_finite_value_falls_back_to_the_hard_coded_bound(self, bad):
+        """NaN and infinity are floats, so the numeric comparisons do not raise.
+        Rendering NaN/inf into a number input's min/max breaks HTML5 constraint
+        validation just like a non-numeric value does; fall back to the safe
+        hard-coded bound instead of emitting an unusable value."""
+        min_bound, max_bound = _filters()
+
+        assert min_bound(bad, 40) == 40
+        assert max_bound(bad, 200) == 200
+
     def test_a_config_value_outside_the_hard_coded_pair_still_renders_a_valid_input(self):
         min_bound, max_bound = _filters()
         value = 300

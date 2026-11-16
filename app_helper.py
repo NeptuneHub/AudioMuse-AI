@@ -39,6 +39,7 @@ Main Features:
 
 import json
 import logging
+import math
 import time
 
 from flask import jsonify
@@ -79,14 +80,18 @@ logger = logging.getLogger(__name__)
 
 def min_bound(value, floor):
     try:
-        return floor if float(value) >= float(floor) else value
+        number = float(value)
+        # NaN/inf pass the comparison above as ordinary floats, but rendering
+        # them into an input's min/max breaks HTML5 constraint validation.
+        return floor if not math.isfinite(number) or number >= float(floor) else value
     except (TypeError, ValueError):
         return floor
 
 
 def max_bound(value, ceiling):
     try:
-        return ceiling if float(value) <= float(ceiling) else value
+        number = float(value)
+        return ceiling if not math.isfinite(number) or number <= float(ceiling) else value
     except (TypeError, ValueError):
         return ceiling
 
