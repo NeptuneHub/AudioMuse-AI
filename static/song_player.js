@@ -12,15 +12,14 @@
  * templates/includes/layout.html loads it (not on the map and clustering pages)
  * with the play, smart fade and transition URLs and the neural fingerprint flag
  * on its script tag. Each .song-player-options element gets the Smart fade and
- * Demo checkboxes, or only those its data-options lists (Album Creation: demo),
- * only with the neural fingerprint on; every copy on a page stays in step and
+ * Demo checkboxes, only with the neural fingerprint on; every copy on a page stays in step and
  * ticking one unticks the other, so a search plays whole songs, only demos or
  * only smart fade. They are read when a search runs. Every result list gets, right above
  * it, a bar with Play, Skip to the fade (shown only with Smart fade) and Stop, a
  * clock and a status line. A page calls, around its own rendering:
  *   rows = await AudioMusePlayer.arrange(list, rows, {seed, keepOrder}) before
  *     rendering: with Smart fade the rows come back in smart fade order with
- *     where each one starts and ends (keepOrder keeps a path in its order);
+ *     where each one starts and ends (keepOrder keeps a path or an album in its order);
  *   AudioMusePlayer.show(list) once renderSongList filled the list;
  *   AudioMusePlayer.hide(list) when a new search starts.
  * The songs played are the list's .result-item rows (data-item-id, data-title),
@@ -46,7 +45,7 @@
     const OPTIONS = {
         smart: {
             label: 'Smart fade',
-            help: 'Orders the songs so each one flows into the next, plays each from where it should start to where it should end with a beat-matched mix, and shows Skip to the fade. Set it before the search.'
+            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays each from where it should start to where it should end with a beat-matched mix, and shows Skip to the fade. Set it before the search.'
         },
         demo: {
             label: 'Demo',
@@ -562,8 +561,7 @@
     function renderOptions(box) {
         if (!READY || !NEURAL || box.dataset.ready) return;
         box.dataset.ready = 'true';
-        const offered = box.dataset.options ? box.dataset.options.split(',').map(name => name.trim()) : Object.keys(OPTIONS);
-        box.innerHTML = Object.entries(OPTIONS).filter(([name]) => offered.includes(name)).map(([name, option]) => '<span class="song-player-option-group">'
+        box.innerHTML = Object.entries(OPTIONS).map(([name, option]) => '<span class="song-player-option-group">'
             + `<label class="song-player-option"><input type="checkbox" data-option="${name}"> ${option.label}</label>`
             + `<span class="info-tooltip" tabindex="0"><span class="info-icon"></span><span class="tooltip-text">${option.help}</span></span>`
             + '</span>').join('');

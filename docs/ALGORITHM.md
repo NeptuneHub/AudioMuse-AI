@@ -2474,8 +2474,8 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    search form of every page that answers a list of songs: Similar Song,
    Song Path, Hyperbolic (similar songs and the path), Text Search, the three
    Lyrics searches, Sonic Fingerprint, Search by Recording, Song Alchemy and
-   Album Creation (which offers only Demo), never the map or the clustering
-   page. Its whole interface
+   Album Creation (which, like a path, keeps its running order under Smart
+   fade), never the map or the clustering page. Its whole interface
    is `static/song_player.js` (with `static/song_demo.js` for the demos),
    loaded by `templates/includes/layout.html`; a page only gives the list
    and, where its playlist starts with one, the seed song that plays first.

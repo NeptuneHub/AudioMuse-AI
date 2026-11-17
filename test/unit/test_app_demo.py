@@ -242,8 +242,8 @@ def test_the_layout_loads_the_one_player_on_every_song_list_page_and_never_on_th
 def test_every_song_list_page_ticks_before_the_search_and_wraps_its_rendering():
     for page in _PLAYER_PAGES:
         source = _source('templates', f'{page}.html')
-        wanted = '<div class="song-player-options" data-options="demo"></div>' if page == 'album_creation' else '<div class="song-player-options"></div>'
-        assert wanted in source, page
+        assert '<div class="song-player-options"></div>' in source, page
+        assert 'data-options' not in source, page
         assert 'await AudioMusePlayer.arrange(' in source, page
         assert 'AudioMusePlayer.show(' in source and 'AudioMusePlayer.hide(' in source, page
         assert "filename='song_player.js'" not in source and 'AudioMusePlayer.create(' not in source, page
@@ -252,19 +252,19 @@ def test_every_song_list_page_ticks_before_the_search_and_wraps_its_rendering():
         assert 'song-player-options' not in source and 'AudioMusePlayer' not in source, page
 
 
-def test_a_path_keeps_its_order_under_smart_fade():
+def test_a_path_and_an_album_keep_their_order_under_smart_fade():
     for page, needle in (
         ('path', 'await AudioMusePlayer.arrange(resultsTableWrapper, currentPathData, { keepOrder: true });'),
         ('hyperbolic', "await AudioMusePlayer.arrange(document.getElementById('journey-list'), data.results || [], { keepOrder: true });"),
+        ('album_creation', 'await AudioMusePlayer.arrange(resultsWrapper, album.tracks, { keepOrder: true });'),
     ):
         assert needle in _source('templates', f'{page}.html'), page
-    assert 'if (options.keepOrder) body.keep_order = true;' in _source('static', 'song_player.js')
+    player = _source('static', 'song_player.js')
+    assert 'if (options.keepOrder) body.keep_order = true;' in player
+    assert 'if (options.keepOrder) return rows;' in player
 
 
-def test_album_creation_offers_only_the_demo_option():
+def test_every_options_box_offers_both_options():
     source = _source('static', 'song_player.js')
-    assert "const offered = box.dataset.options ? box.dataset.options.split(',').map(name => name.trim()) : Object.keys(OPTIONS);" in source
-    assert 'Object.entries(OPTIONS).filter(([name]) => offered.includes(name))' in source
-    album = _source('templates', 'album_creation.html')
-    assert 'await AudioMusePlayer.arrange(resultsWrapper, album.tracks);' in album
-    assert 'keepOrder' not in album
+    assert 'box.innerHTML = Object.entries(OPTIONS).map(' in source
+    assert 'dataset.options' not in source
