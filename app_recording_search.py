@@ -531,7 +531,16 @@ def recording_search_transition_api():
           stretch of in_at to resume_at plays over those mix_seconds (sped up
           by stretch, pitch kept, so its beats land on the first song's) and
           fades in; then the next song plays on alone from resume_at.
-          tempo_from and tempo_to are the measured tempos.
+          tempo_from and tempo_to are the measured tempos. style says how to
+          mix: 'blend' (tempos match: the bass of the next song comes in and
+          the first song's goes out around swap_at, the middle beat of the
+          mix), 'rise'
+          (tempos match and the next song is louder: it comes in from the
+          treble up), 'fade' (tempos do not match: the same mix with
+          stretch 1, the first song muffled as it fades, the bass swapping
+          at swap_at). beat_seconds is one beat of the first song.
+          A caller may ignore these three: the other fields alone still
+          describe a plain crossfade.
         content:
           application/json:
             schema:
@@ -550,6 +559,13 @@ def recording_search_transition_api():
                 tempo_from:
                   type: number
                 tempo_to:
+                  type: number
+                style:
+                  type: string
+                  enum: [blend, rise, fade]
+                swap_at:
+                  type: number
+                beat_seconds:
                   type: number
       400:
         description: Bad parameters, or the songs have no steady beat to match.

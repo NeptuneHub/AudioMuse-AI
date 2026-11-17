@@ -28,7 +28,8 @@ Main Features:
   the shared static/song_player.js reorders through the smart_fade endpoint
   and cuts, stretches and fades the decoded songs on one audio clock started
   in the Play click, never on an audio element (Safari); the playing row fills
-  with the progress and seeks up to its fade
+  with the progress and seeks up to its fade; it mixes in the plan's style
+  (bass swap, rise or filtered fade)
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
@@ -422,10 +423,54 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
     for code in (source, page):
         assert 'new Audio(' not in code and '.currentTime =' not in code and '.volume =' not in code
         assert 'X-Switch-At' not in code
-    assert 'stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds)' in source
-    assert 'setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds)' in source
+    assert '{ glide, lead: stretchSegment(buffer, glide.lead, glide.seconds), buffer: stretchSegment(next, glide.next, glide.seconds) }' in source
+    assert 'separatedStretch' not in source
+    assert 'outgoing.gain.gain.setValueCurveAtTime(mix.curves[0], state.handoverAt, length);' in source
+    assert 'blend.gain.gain.setValueCurveAtTime(mix.curves[1], state.handoverAt, length);' in source
+    assert 'safeCurves(buffer, mix.mix_at, state.next, mix.in_at, length) : safeCurves(mix.lead, 0, mix.buffer, 0, length);' in source
+    assert 'const outgoing = direct ? state.node : startSource(mix.lead, state.handoverAt, 0, false);' in source
+    assert 'if (!direct) state.node.source.stop(state.handoverAt);' in source
+    safe = source[source.index('function safeCurves('):source.index('function bassCurve(')]
+    assert 'ceiling = Math.max(ceiling, Math.abs(sa), Math.abs(sb));' in safe and 'Math.min(1, ceiling / Math.max(peaks[k] * MIX_HEADROOM, 1e-9))' in safe
+    assert 'for (let j = 1; j < segments; j++) {' in safe
     assert 'AudioMusePlayer.show(resultsList);' in page and 'function startSource(' not in page
     assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
+
+
+def test_the_player_mixes_in_the_plan_style_bass_swap_rise_or_filtered_fade():
+    source = _repo_file('static', 'song_player.js')
+    assert 'source.connect(air);' in source and 'air.connect(tone);' in source and 'tone.connect(mid);' in source and 'mid.connect(gain);' in source
+    assert "air.type = 'lowpass';" in source and 'air.frequency.value = audioCtx.sampleRate / 2;' in source
+    assert "mid.type = 'peaking';" in source and 'mid.gain.value = 0;' in source
+    assert 'fadeMids(outgoing, swap, resume, true);' in source and 'fadeMids(blend, state.handoverAt, swap, false);' in source
+    assert "tone.type = filter || 'lowshelf';" in source
+    assert 'swapBass(outgoing, swap - length / 4, length / 2, true);' in source
+    assert 'swapBass(blend, swap - length / 4, length / 2, false);' in source
+    assert 'node.tone.gain.setValueCurveAtTime(bassCurve(!dropping), from, length);' in source
+    fallback = source[source.index('const span = crossfadeSeconds();'):]
+    fallback = fallback[:fallback.index('state.scheduled = [entry];')]
+    assert 'if (smooth) entry.gain.gain.setValueCurveAtTime(curves[1], state.handoverAt, span);' in fallback
+    assert 'state.node.gain.gain.setValueCurveAtTime(curves[0], state.handoverAt, span);' in fallback
+    assert 'safeCurves(buffer, state.node.offset + state.handoverAt - state.node.when, state.next, entryOffset(index + 1), span)' in fallback
+    assert 'return playMode.beatMatch ? SMART_CROSSFADE_SECONDS : CROSSFADE_SECONDS;' in source
+    assert 'const SMART_CROSSFADE_SECONDS = 10;' in source
+    assert "startSource(mix.buffer, state.handoverAt, 0, false, rise ? 'highpass' : 'lowshelf')" in source
+    assert 'blend.tone.frequency.exponentialRampToValueAtTime(RISE_TO_HZ, resume);' in source
+    assert 'outgoing.air.frequency.exponentialRampToValueAtTime(MUFFLE_TO_HZ, resume);' in source
+    assert 'startSource(state.next, state.handoverAt, mix.in_at, false)' in source
+    assert "const glide = next && mix && mix.style !== 'fade' ? tempoGlide(mix) : null;" in source
+    assert 'createDelay(' not in source
+
+
+def test_a_beat_matched_mix_glides_the_tempo_from_one_song_to_the_next():
+    source = _repo_file('static', 'song_player.js')
+    glide = source[source.index('function tempoGlide(mix) {'):source.index('function stretchSegment(')]
+    assert 'const second = (mix.resume_at - mix.in_at) / beats;' in glide
+    assert 'times.push(times[k] + first + (second - first) * (k + 0.5) / beats);' in glide
+    assert 'lead: map(mix.mix_at, first), next: map(mix.in_at, second)' in glide
+    stretch = source[source.index('function stretchSegment(buffer, inputAt, seconds) {'):source.index('function powerCurve(')]
+    assert 'targets[c][i] += (data[start + i] || 0) * shape[hop + i];' in stretch
+    assert 'Math.round(inputAt(k * hop / rate) * rate) - base' in stretch
 
 
 def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
@@ -438,8 +483,12 @@ def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
     assert 'if (state.mix) return state.mix.mix_at;' in source
     assert 'Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1)' in source
     assert "if (!item || item.classList.contains('playing') || bar.classList.contains('hidden')) return;" in source
-    skip = source[source.index("skipBtn.addEventListener('click'"):]
-    assert 'seekTo(state, target)' in skip[:skip.index('});')]
+    assert "skipBtn.addEventListener('click', () => skipToFade(playCurrent));" in source
+    skip = source[source.index('function skipToFade(state) {'):]
+    skip = skip[:skip.index('\n        }\n')]
+    assert 'state.skipWhenReady = true;' in skip and 'seekTo(state, target)' in skip
+    assert source.index('if (!state.ready) {', source.index('function skipToFade(state) {')) < source.index('const target = seekLimit(state) - 6;')
+    assert source.count('state.plan();\n                        if (state.skipWhenReady) skipToFade(state);') == 2
 
 
 def _post_fade(client, body):

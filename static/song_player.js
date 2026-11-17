@@ -26,8 +26,29 @@
  * after the seed when the page gives one. Play plays whole songs; with Demo only
  * each song's demo (static/song_demo.js) with a 4 s crossfade, the last one
  * stopping at its end; with Smart fade each song from its fade-in to its
- * fade-out, mixed into the next on the beat by the transition API's plan. A row
- * click plays from that row.
+ * fade-out, mixed into the next on the beat by the transition API's plan in
+ * its style, each over the plan's mix (at least 15 s) and in three bands like
+ * a DJ mixer (low shelf, mid peak, the fader for the highs; flat on every
+ * source until a mix): the first song loses its bass around the middle of the
+ * mix, its mids over the second half and its highs last; the next song brings
+ * its highs first, its mids over the first half and its bass last, the two
+ * bass lines crossing over the middle half. Without a plan (no steady beat)
+ * the songs cross over SMART_CROSSFADE_SECONDS. Both fade curves are lowered
+ * just enough where the two songs' sum would peak above the louder of them
+ * (two loud masters near -3 dB each pass full scale and clip), with
+ * MIX_HEADROOM for the filters, which can raise a peak a little. Rise brings a louder next song
+ * in from the treble up, fade
+ * (tempos that do not match) plays the next song unstretched while the first
+ * one is muffled by a closing low-pass (open on every source until then) and
+ * the bass swaps too. A row click plays from that row.
+ *
+ * In a beat-matched mix the tempo glides beat by beat from the first song's
+ * to the next song's (tempoGlide): both songs are stretched onto that grid,
+ * each half the difference off in the middle, so neither jumps in tempo when
+ * the mix starts or when the next song plays on alone.
+ *
+ * Skip to the fade pressed while the next song or its plan is still loading
+ * waits for them, so the planned mix is not missed for the plain crossfade.
  *
  * Songs are fetched whole and decoded into Web Audio buffers; every cut, fade
  * and stretch is scheduled on one AudioContext clock made in the first Play
@@ -38,6 +59,16 @@
  */
 (function () {
     const CROSSFADE_SECONDS = 4;
+    const SMART_CROSSFADE_SECONDS = 10;
+    const MIX_HEADROOM = 1.12;
+    const BASS_HZ = 180;
+    const BASS_CUT_DB = -40;
+    const MID_HZ = 1000;
+    const MID_Q = 0.5;
+    const MID_CUT_DB = -27;
+    const RISE_FROM_HZ = 800;
+    const RISE_TO_HZ = 10;
+    const MUFFLE_TO_HZ = 400;
     const settings = document.currentScript ? document.currentScript.dataset : {};
     const URLS = { play: settings.playUrl || '', smartFade: settings.smartFadeUrl || '', transition: settings.transitionUrl || '' };
     const READY = !!URLS.play;
@@ -45,7 +76,7 @@
     const OPTIONS = {
         smart: {
             label: 'Smart fade',
-            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays each from where it should start to where it should end with a beat-matched mix, and shows Skip to the fade. Set it before the search.'
+            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (a filtered fade when the tempos do not match), and shows Skip to the fade. Set it before the search.'
         },
         demo: {
             label: 'Demo',
@@ -108,16 +139,30 @@
         }
     }
 
-    function stretchSegment(buffer, from, to, seconds) {
+    function tempoGlide(mix) {
+        const beats = Math.max(1, Math.round(mix.mix_seconds / mix.beat_seconds));
+        const first = mix.mix_seconds / beats;
+        const second = (mix.resume_at - mix.in_at) / beats;
+        const times = [0];
+        for (let k = 0; k < beats; k++) times.push(times[k] + first + (second - first) * (k + 0.5) / beats);
+        const map = (start, period) => t => {
+            let k = 0;
+            while (k < beats - 1 && times[k + 1] <= t) k++;
+            return start + (k + (t - times[k]) / (times[k + 1] - times[k])) * period;
+        };
+        return { seconds: times[beats], swap: times[beats >> 1], lead: map(mix.mix_at, first), next: map(mix.in_at, second) };
+    }
+
+    function stretchSegment(buffer, inputAt, seconds) {
         const rate = buffer.sampleRate;
         const size = 2 * Math.round(0.023 * rate);
         const hop = size / 2;
         const slack = hop >> 1;
         const count = Math.max(hop, Math.round(seconds * rate));
-        const base = Math.max(0, Math.round(from * rate) - slack);
-        const offset = Math.round(from * rate) - base;
-        const resume = Math.round(to * rate);
-        const speed = (resume - Math.round(from * rate)) / count;
+        const start = Math.round(inputAt(0) * rate);
+        const base = Math.max(0, start - slack);
+        const offset = start - base;
+        const resume = Math.round(inputAt(count / rate) * rate);
         const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
         const mono = new Float32Array(Math.max(size, Math.min(buffer.length, resume + 2 * size + slack) - base));
         channels.forEach(data => {
@@ -147,9 +192,12 @@
         };
         const out = audioCtx.createBuffer(channels.length, count, rate);
         const targets = channels.map((_, c) => out.getChannelData(c));
+        channels.forEach((data, c) => {
+            for (let i = 0; i < hop && i < count; i++) targets[c][i] += (data[start + i] || 0) * shape[hop + i];
+        });
         let previous = offset;
         for (let k = 0; k * hop < count; k++) {
-            const ideal = Math.min(mono.length - size, offset + Math.round(k * hop * speed));
+            const ideal = Math.min(mono.length - size, Math.round(inputAt(k * hop / rate) * rate) - base);
             let pick = Math.max(0, ideal);
             const natural = previous + hop;
             if (k && natural + size <= mono.length) {
@@ -174,6 +222,58 @@
 
     function powerCurve(rising) {
         return Float32Array.from({ length: 256 }, (_, i) => (rising ? Math.sin : Math.cos)(Math.PI / 2 * i / 255));
+    }
+
+    function safeCurves(first, firstSecond, second, secondSecond, seconds) {
+        const fall = powerCurve(false);
+        const rise = powerCurve(true);
+        const segments = fall.length - 1;
+        const rate = first.sampleRate;
+        const span = Math.max(segments, Math.round(seconds * rate));
+        const a = Array.from({ length: first.numberOfChannels }, (_, c) => first.getChannelData(c));
+        const b = Array.from({ length: second.numberOfChannels }, (_, c) => second.getChannelData(c));
+        const a0 = Math.round(firstSecond * rate);
+        const b0 = Math.round(secondSecond * rate);
+        const lanes = Math.max(a.length, b.length);
+        const peaks = new Float32Array(segments);
+        let ceiling = 1;
+        for (let k = 0; k < segments; k++) {
+            const end = Math.floor(span * (k + 1) / segments);
+            for (let i = Math.floor(span * k / segments); i < end; i++) {
+                const f = i * segments / span - k;
+                const ga = fall[k] + (fall[k + 1] - fall[k]) * f;
+                const gb = rise[k] + (rise[k + 1] - rise[k]) * f;
+                for (let c = 0; c < lanes; c++) {
+                    const sa = a[Math.min(c, a.length - 1)][a0 + i] || 0;
+                    const sb = b[Math.min(c, b.length - 1)][b0 + i] || 0;
+                    peaks[k] = Math.max(peaks[k], Math.abs(sa * ga + sb * gb));
+                    ceiling = Math.max(ceiling, Math.abs(sa), Math.abs(sb));
+                }
+            }
+        }
+        const trim = k => Math.min(1, ceiling / Math.max(peaks[k] * MIX_HEADROOM, 1e-9));
+        for (let j = 1; j < segments; j++) {
+            const scale = Math.min(trim(j - 1), trim(j));
+            fall[j] *= scale;
+            rise[j] *= scale;
+        }
+        return [fall, rise];
+    }
+
+    function bassCurve(rising) {
+        return Float32Array.from({ length: 64 }, (_, i) => Math.max(BASS_CUT_DB, 20 * Math.log10(Math.max(1e-6, (rising ? Math.sin : Math.cos)(Math.PI / 2 * i / 63)))));
+    }
+
+    function swapBass(node, from, length, dropping) {
+        if (!dropping) node.tone.gain.setValueAtTime(BASS_CUT_DB, node.when);
+        node.tone.gain.setValueCurveAtTime(bassCurve(!dropping), from, length);
+    }
+
+    function fadeMids(node, from, to, out) {
+        const peak = node.mid.gain;
+        if (!out) peak.setValueAtTime(MID_CUT_DB, node.when);
+        peak.setValueAtTime(out ? 0 : MID_CUT_DB, from);
+        peak.linearRampToValueAtTime(out ? MID_CUT_DB : 0, to);
     }
 
     function create(list) {
@@ -238,9 +338,13 @@
             });
         }
 
+        function crossfadeSeconds() {
+            return playMode.beatMatch ? SMART_CROSSFADE_SECONDS : CROSSFADE_SECONDS;
+        }
+
         function seekLimit(state) {
             if (state.mix) return state.mix.mix_at;
-            return state.fadeEnd !== null ? state.fadeEnd - CROSSFADE_SECONDS : state.buffer.duration;
+            return state.fadeEnd !== null ? state.fadeEnd - crossfadeSeconds() : state.buffer.duration;
         }
 
         function showProgress(item, second, state) {
@@ -269,16 +373,46 @@
             tick();
         }
 
-        function startSource(buffer, when, offset, fadeIn) {
+        function skipToFade(state) {
+            if (!canSeek(state)) return;
+            if (!state.ready) {
+                state.skipWhenReady = true;
+                nowPlaying.textContent = 'Preparing the mix...';
+                return;
+            }
+            if (state.skipWhenReady) {
+                state.skipWhenReady = false;
+                nowPlaying.textContent = state.label;
+            }
+            const target = seekLimit(state) - 6;
+            if (target > state.node.offset + audioCtx.currentTime - state.node.when) seekTo(state, target);
+        }
+
+        function startSource(buffer, when, offset, fadeIn, filter) {
             const source = audioCtx.createBufferSource();
+            const air = audioCtx.createBiquadFilter();
+            const tone = audioCtx.createBiquadFilter();
+            const mid = audioCtx.createBiquadFilter();
             const gain = audioCtx.createGain();
-            const node = { source, gain, when, offset: Math.max(0, Math.min(offset, buffer.duration)) };
+            const node = { source, air, tone, mid, gain, when, offset: Math.max(0, Math.min(offset, buffer.duration)) };
+            air.type = 'lowpass';
+            air.frequency.value = audioCtx.sampleRate / 2;
+            tone.type = filter || 'lowshelf';
+            tone.frequency.value = BASS_HZ;
+            tone.gain.value = 0;
+            mid.type = 'peaking';
+            mid.frequency.value = MID_HZ;
+            mid.Q.value = MID_Q;
+            mid.gain.value = 0;
             source.buffer = buffer;
-            source.connect(gain);
+            source.connect(air);
+            air.connect(tone);
+            tone.connect(mid);
+            mid.connect(gain);
             gain.connect(audioCtx.destination);
             if (fadeIn) {
                 gain.gain.setValueAtTime(0, when);
-                gain.gain.linearRampToValueAtTime(1, when + CROSSFADE_SECONDS);
+                gain.gain.linearRampToValueAtTime(1, when + fadeIn);
             }
             source.onended = () => playNodes.delete(node);
             source.start(when, node.offset);
@@ -360,44 +494,77 @@
                     });
                 } else if (mix && at(mix.mix_at) > now + 0.1) {
                     state.handoverAt = at(mix.mix_at);
-                    const resume = state.handoverAt + mix.mix_seconds;
-                    state.node.gain.gain.setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds);
-                    state.node.source.stop(resume);
-                    const blend = startSource(mix.buffer, state.handoverAt, 0, false);
-                    blend.gain.gain.setValueCurveAtTime(powerCurve(true), state.handoverAt, mix.mix_seconds);
-                    state.scheduled = [blend, startSource(state.next, resume, mix.resume_at, false)];
+                    const direct = !mix.buffer;
+                    const length = direct ? mix.mix_seconds : mix.glide.seconds;
+                    const resume = state.handoverAt + length;
+                    const swap = direct ? at(mix.swap_at) : state.handoverAt + mix.glide.swap;
+                    const rise = mix.style === 'rise';
+                    if (!mix.curves) mix.curves = direct ? safeCurves(buffer, mix.mix_at, state.next, mix.in_at, length) : safeCurves(mix.lead, 0, mix.buffer, 0, length);
+                    const outgoing = direct ? state.node : startSource(mix.lead, state.handoverAt, 0, false);
+                    if (!direct) state.node.source.stop(state.handoverAt);
+                    outgoing.gain.gain.setValueCurveAtTime(mix.curves[0], state.handoverAt, length);
+                    swapBass(outgoing, swap - length / 4, length / 2, true);
+                    fadeMids(outgoing, swap, resume, true);
+                    if (direct) {
+                        outgoing.air.frequency.setValueAtTime(audioCtx.sampleRate / 2, state.handoverAt);
+                        outgoing.air.frequency.exponentialRampToValueAtTime(MUFFLE_TO_HZ, resume);
+                    }
+                    outgoing.source.stop(resume);
+                    const blend = direct ? startSource(state.next, state.handoverAt, mix.in_at, false) : startSource(mix.buffer, state.handoverAt, 0, false, rise ? 'highpass' : 'lowshelf');
+                    blend.gain.gain.setValueCurveAtTime(mix.curves[1], state.handoverAt, length);
+                    fadeMids(blend, state.handoverAt, swap, false);
+                    if (rise) {
+                        blend.tone.frequency.setValueAtTime(RISE_FROM_HZ, state.handoverAt);
+                        blend.tone.frequency.exponentialRampToValueAtTime(RISE_TO_HZ, resume);
+                    } else {
+                        swapBass(blend, swap - length / 4, length / 2, false);
+                    }
+                    state.scheduled = direct ? [blend] : [outgoing, blend, startSource(state.next, resume, mix.resume_at, false)];
                     after(state.handoverAt, () => {
-                        nowPlaying.textContent = `Beat-matched mix into ${playQueue[index + 1].title} (${mix.tempo_from} to ${mix.tempo_to} BPM, stretch ${mix.stretch})`;
+                        const kind = direct ? 'Filtered fade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;
+                        const tempos = direct ? `${mix.tempo_from} and ${mix.tempo_to} BPM do not match` : `tempo gliding from ${mix.tempo_from} to ${mix.tempo_to} BPM`;
+                        nowPlaying.textContent = `${kind} into ${playQueue[index + 1].title} (${tempos})`;
                     });
-                    after(resume, () => begin(index + 1, state.next, state.scheduled[1]));
+                    after(resume, () => begin(index + 1, state.next, state.scheduled[state.scheduled.length - 1]));
                 } else {
                     const fading = fadeEnd !== null;
-                    state.handoverAt = Math.max(now + 0.05, at(fading ? Math.min(fadeEnd, buffer.duration) - CROSSFADE_SECONDS : buffer.duration));
-                    if (fading) {
+                    const span = crossfadeSeconds();
+                    state.handoverAt = Math.max(now + 0.05, at(fading ? Math.min(fadeEnd, buffer.duration) - span : buffer.duration));
+                    const smooth = fading && playMode.beatMatch;
+                    const curves = smooth ? safeCurves(buffer, state.node.offset + state.handoverAt - state.node.when, state.next, entryOffset(index + 1), span) : null;
+                    if (smooth) {
+                        state.node.gain.gain.setValueCurveAtTime(curves[0], state.handoverAt, span);
+                    } else if (fading) {
                         state.node.gain.gain.setValueAtTime(1, state.handoverAt);
-                        state.node.gain.gain.linearRampToValueAtTime(0, state.handoverAt + CROSSFADE_SECONDS);
-                        state.node.source.stop(state.handoverAt + CROSSFADE_SECONDS);
+                        state.node.gain.gain.linearRampToValueAtTime(0, state.handoverAt + span);
                     }
-                    state.scheduled = [startSource(state.next, state.handoverAt, entryOffset(index + 1), fading)];
+                    if (fading) state.node.source.stop(state.handoverAt + span);
+                    const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading && !smooth ? span : 0);
+                    if (smooth) entry.gain.gain.setValueCurveAtTime(curves[1], state.handoverAt, span);
+                    state.scheduled = [entry];
                     after(state.handoverAt, () => begin(index + 1, state.next, state.scheduled[0]));
                 }
             };
             playCurrent = state;
             markPlaying(index);
-            nowPlaying.textContent = `Playing ${song.title} from ${clock(node.offset)}` + (fadeEnd !== null ? ` until ${clock(fadeEnd)}` : '');
+            state.label = `Playing ${song.title} from ${clock(node.offset)}` + (fadeEnd !== null ? ` until ${clock(fadeEnd)}` : '');
+            nowPlaying.textContent = state.label;
             if (hasNext) {
                 Promise.all([loadSong(index + 1).catch(error => { state.failed = error.message; return null; }), loadTransition(index)])
                     .then(([next, mix]) => {
                         state.next = next;
-                        state.mix = next && mix ? Object.assign(mix, { buffer: stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds) }) : null;
+                        const glide = next && mix && mix.style !== 'fade' ? tempoGlide(mix) : null;
+                        state.mix = next && mix ? Object.assign(mix, glide ? { glide, lead: stretchSegment(buffer, glide.lead, glide.seconds), buffer: stretchSegment(next, glide.next, glide.seconds) } : { buffer: null }) : null;
                         state.ready = true;
                         state.plan();
+                        if (state.skipWhenReady) skipToFade(state);
                     })
                     .catch(error => {
                         console.error('Could not prepare the beat-matched mix; crossfading into the next song instead.', error);
                         state.mix = null;
                         state.ready = true;
                         state.plan();
+                        if (state.skipWhenReady) skipToFade(state);
                     });
             }
             state.plan();
@@ -448,12 +615,7 @@
 
         playBtn.addEventListener('click', () => startPlayback());
         stopBtn.addEventListener('click', stopPlayback);
-        skipBtn.addEventListener('click', () => {
-            const state = playCurrent;
-            if (!canSeek(state)) return;
-            const target = seekLimit(state) - 6;
-            if (target > state.node.offset + audioCtx.currentTime - state.node.when) seekTo(state, target);
-        });
+        skipBtn.addEventListener('click', () => skipToFade(playCurrent));
         list.addEventListener('click', event => {
             const item = event.target.closest('.result-item');
             if (!item || item.classList.contains('playing') || bar.classList.contains('hidden')) return;

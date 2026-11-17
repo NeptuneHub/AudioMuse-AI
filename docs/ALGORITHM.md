@@ -2435,26 +2435,79 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    smart fade times come from the fingerprint, which knows nothing of beats;
    this one listens to the two songs around those times and moves them onto
    the beat. It answers numbers only, no audio: where the first song's mix
-   starts and how long it lasts (8 of its beats, ending at about its smart
+   starts and how long it lasts (at least 15 seconds, ending at about its smart
    fade end), the beat of the next song that lands on it (its first beat
    after its smart fade start), the stretch that keeps the two beats
    together during the mix and the second where the next song plays on
    alone. It costs the server a fraction of a second to a few seconds per
    pair, so the page asks for each pair while the song before it plays. Two
-   songs without a steady beat get a 400, and the page then fades at the
-   smart fade times.
+   songs without a steady beat get a 400, and the page then crosses them
+   over 10 seconds at the smart fade times. The answer also names a style,
+   like a DJ picks one for the occasion: `blend` when the tempos match (the
+   two basses cross around `swap_at`, the middle beat of the mix), `rise`
+   when they match and the next song is at least 6 dB louder (it comes in
+   from the treble up), and `fade` when they do not match: the same mix with
+   the next song unstretched and the first one muffled as it goes. Real DJ
+   transitions are reproduced better by a fader plus a 3-band EQ than by a
+   crossfade (Kim, Yang, Nam, DAFx 2022, 50,742 transitions of 5,040 mixes);
+   the 180 Hz shelf is that EQ's low band. The mix lasts at least 15 seconds,
+   in steps of 8 beats so it ends on a bar (15 to about 21 seconds): real DJ
+   transitions peak at 32 and 64 beats, 15 and 30 seconds at 128 BPM (Kim et
+   al., ISMIR 2020, 20,765 transitions of 1,557 mixes), and streaming players
+   cross over at most 12 seconds. 8 beats, an echo out and then 16 beats all
+   sounded like a jump on a phone.
 5. **Play** (or a click on a row) plays the results in the browser, each
    song fetched once from the media server through
    `GET /api/recording_search/play/<id>`, which sends the file unchanged.
    The page does the whole fade itself from the two answers: it decodes the
    songs, stretches the next song's part of the mix with the pitch kept,
    crosses the two and cuts every piece at the exact second the API gave.
+   In a beat-matched mix the tempo glides beat by beat from the first song's
+   to the next song's, as Spotify's DJ transitions do (Bittner et al., ISMIR
+   2017): both songs are stretched onto that gliding grid, each half the
+   difference off in the middle (splitting the change between the two songs
+   is more comfortable than putting it all on one, Ishizaki et al., ISMIR
+   2009, 96 listeners), so neither song jumps in tempo when the mix starts
+   or when the next song plays on alone. The stretch is a waveform-similarity
+   overlap-add that only ever copies pieces of the original audio, so it
+   keeps the song's peaks exactly. A stretch that separates tones from hits
+   and runs the tones through a phase vocoder (Driedger and Mueller, as in
+   the automatic DJ of Vande Veire and De Bie, 2018) came closer to an exact
+   synthetic reference (1.26 against 1.85 dB) but was not kept: on real
+   loudness-limited masters rebuilding the phases raised the peaks by 3 to
+   4 dB (1.04 to 1.50) and clipped hundreds of samples in every mix.
+   Every song plays through a low-pass that stays fully open, a low shelf at
+   180 Hz and a wide mid peak at 1 kHz that stay flat until a mix, which then
+   works in three bands like a DJ mixer: the first song loses its bass over
+   the middle half of the mix (an equal-power curve down to -40 dB, centred
+   on `swap_at`), its mids over the second half (down to -27 dB) and its
+   highs last, with the fader; the next song brings its highs first, with
+   the fader, its mids over the first half and its bass over the same middle
+   half, so the bass lines cross smoothly instead of switching. Before a mix
+   the page sums the two songs' samples under the fade curves and, wherever
+   that sum would peak above the louder of the two songs alone, lowers both
+   curves there just enough, with about 1 dB of margin because the mix
+   filters can raise a peak a little: two loud masters at about -3 dB each
+   in the middle of a mix otherwise pass full scale and clip (measured up to
+   1.22, hundreds of clipped samples in one mix). Peaks a song already has
+   on its own (decoded lossy files can pass 1.0) are left as they are.
+   Outside a mix every song plays
+   exactly as decoded. That order (low,
+   then mid, then high out; the reverse in) is the one Kim, Yang and Nam
+   measured on real DJ transitions (NIME 2021, sub-band analysis of 3,930
+   transition regions). A rise sweeps a high-pass on the next song from 800 Hz down to
+   10 Hz over the mix; a fade closes the first song's low-pass down to
+   400 Hz over the mix, so its hi-hats and snare, at another tempo, fade
+   first.
    Without Smart fade the songs play whole, one after the other. The
    playing row fills in light blue as the song plays, with a thin line
    where its fade starts, and the player shows the elapsed and total time.
    A click or a drag on the playing row moves in the song, never closer
    than one second to that line, so the planned fade always happens.
-   **Skip to the fade** jumps to 6 seconds before the next fade starts.
+   **Skip to the fade** jumps to 6 seconds before the next fade starts;
+   pressed while the next song and its plan are still loading, it waits for
+   them ("Preparing the mix..."), because a plan that arrives after its mix
+   point can only be played as the plain crossfade.
    On iOS the page asks for the playback audio session, so the silent switch
    does not mute it; iOS still pauses the page's audio while the page is in
    the background.
@@ -2728,12 +2781,33 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    median 110 ms apart over the mix, 35 ms with the fit). The stretch is the
    first song's tempo over the next one's, half or double time allowed; past
    8% the next song is not stretched (`tempos_match`, the same rule the
-   smart fade order uses on the stored tempo). The mix lasts 8 beats of the
-   first song and starts on its beat nearest to 8 beats before its smart
-   fade end; the next song's first beat after its smart fade start lands on
-   it, and that song resumes alone the mix length times the stretch later,
-   counted in its own seconds. Without
-   4 beats in either region, or without room for the mix, it raises
+   smart fade order uses on the stored tempo). The mix lasts the fewest
+   multiples of 8 beats of the first song that reach 15 seconds and starts
+   on its beat nearest to that many beats before its smart
+   fade end; the next song's entry beat lands on it, and that song resumes
+   alone the mix length times the stretch later, counted in its own seconds.
+   The entry beat is the next song's first beat after its smart fade start,
+   moved to a section start when one is within 8 beats: the region is read
+   from 8 seconds before the smart fade start, a Foote novelty curve (an
+   8-beat checkerboard kernel on the beat-synchronous chroma, MFCC and
+   loudness self-similarity) is computed, and the entry moves to the beat
+   nearest its highest peak in that window, unless that leaves room for a
+   shorter mix. All DJ systems studied start a mix on a phrase or section
+   boundary (Bittner et al. 2017, Vande Veire and De Bie 2018, Kim et al.
+   2020); measured on 60 library songs that have Harmonix Set section
+   annotations, the entry landed within 1 second of a real section start
+   27% of the time (13% before; within 0.5 s: 18% against 5%). The same
+   snap at the first song's fade point did not help (it sits deep in the
+   outro, a median 10 seconds from any annotated boundary), so the mix end
+   is left on the fingerprint point. A loop of the first song's last full
+   bars (Apple Music's AutoMix "repeats sections where necessary") was
+   measured and not added: over 93 real transitions only 1 mix came out
+   under 15 seconds, and the first song fell 10 dB or more below its own
+   level in the first half of the mix in 6% of them (20 dB in 2%), half of
+   those already mixed as a rise. When the decoded regions have no room for
+   that mix (the next song's first beat comes late), it loses 8 beats at a
+   time down to 10 seconds, the page's plain crossfade. Without
+   4 beats in either region, or without room for a 10-second mix, it raises
    `ValueError` and the endpoint answers 400. The page then builds the mix:
    it decodes both songs with the browser's Web Audio, stretches the next
    song's part to the mix length with WSOLA (46 ms Hann frames, half
