@@ -2446,8 +2446,26 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    like a DJ picks one for the occasion: `blend` when the tempos match (the
    two basses cross around `swap_at`, the middle beat of the mix), `rise`
    when they match and the next song is at least 6 dB louder (it comes in
-   from the treble up), and `fade` when they do not match: the same mix with
-   the next song unstretched and the first one muffled as it goes. Real DJ
+   from the treble up), and `fade` when they do not match: a 10 second mix
+   with the next song unstretched and the first one muffled as it goes. A
+   `fade` is also chosen when the tempos match but the beats would not line
+   up: before answering, the server cross-correlates the onset curves of the
+   two planned parts, and if the best match within 30 ms of the plan (about
+   where two drum hits stop sounding as one) is under 80% of the best match
+   at any other offset, the beat grid of one song is not real. Near-ties pass:
+   16th-note hi-hats give peaks every 120 ms that cannot be told apart. On
+   three lists of 10 transitions (an Italian rock similar-song list, an
+   electronic and a rock text search) the 17 beat-matched mixes split
+   cleanly: 11 at 0.97 or more, 6 at 0.65 or less. In the browser output
+   of the rock similar-song list, 3 of the 5 beat-matched mixes played their
+   drums 64 to 181 ms apart (another 43 ms; the one with two steady grids
+   21 ms), and the gate turns those 3 into fades; the tracker's beats
+   wandered 37 to 94 ms around their fitted line on one side of each, against
+   3 to 12 ms on steady songs. A loop of the outgoing song (some streaming players repeat a
+   bar to stretch a short ending) was not added for these: a loop needs the
+   same steady grid and shared tempo that are missing there, DJs use it only
+   to lengthen a short intro or outro of two matching songs, and Apple's own
+   AutoMix stays off when tempos are incompatible. Real DJ
    transitions are reproduced better by a fader plus a 3-band EQ than by a
    crossfade (Kim, Yang, Nam, DAFx 2022, 50,742 transitions of 5,040 mixes);
    the 180 Hz shelf is that EQ's low band. The mix lasts at least 15 seconds,
@@ -2502,6 +2520,10 @@ is aligned on the fingerprint sequences the analysis stores for every track.
    Without Smart fade the songs play whole, one after the other. The
    playing row fills in light blue as the song plays, with a thin line
    where its fade starts, and the player shows the elapsed and total time.
+   During a transition the highlight and the clock stay on the louder song:
+   the ending one until the middle of the mix or crossfade, then they jump
+   to the starting one (they used to move only when a mix ended, so a 15 to
+   20 second mix still showed the old song while the new one played).
    A click or a drag on the playing row moves in the song, never closer
    than one second to that line, so the planned fade always happens.
    **Skip to the fade** jumps to 6 seconds before the next fade starts;

@@ -38,7 +38,7 @@
  * (two loud masters near -3 dB each pass full scale and clip), with
  * MIX_HEADROOM for the filters, which can raise a peak a little. Rise brings a louder next song
  * in from the treble up, fade
- * (tempos that do not match) plays the next song unstretched while the first
+ * (tempos or beats that do not match, a 10 second mix) plays the next song unstretched while the first
  * one is muffled by a closing low-pass (open on every source until then) and
  * the bass swaps too. A row click plays from that row.
  *
@@ -46,6 +46,10 @@
  * to the next song's (tempoGlide): both songs are stretched onto that grid,
  * each half the difference off in the middle, so neither jumps in tempo when
  * the mix starts or when the next song plays on alone.
+ *
+ * During a transition the highlight and the clock stay on the louder song:
+ * the ending one until the middle of the mix or crossfade, then they jump to
+ * the starting one (swapView), not when the transition starts or ends.
  *
  * Skip to the fade pressed while the next song or its plan is still loading
  * waits for them, so the planned mix is not missed for the plain crossfade.
@@ -76,7 +80,7 @@
     const OPTIONS = {
         smart: {
             label: 'Smart fade',
-            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (a filtered fade when the tempos do not match), and shows Skip to the fade. Set it before the search.'
+            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (a 10 second filtered fade when the tempos or the beats do not match), and shows Skip to the fade. Set it before the search.'
         },
         demo: {
             label: 'Demo',
@@ -301,6 +305,7 @@
         let playTicker = null;
         let scrub = null;
         const playNodes = new Set();
+        let swapView = null;
 
         function listSongs() {
             const songs = [...list.querySelectorAll('.result-item')]
@@ -354,9 +359,12 @@
         }
 
         function tick() {
-            const state = playCurrent;
+            const now = audioCtx.currentTime;
+            const view = swapView && now >= swapView.from ? swapView : null;
+            const state = view ? view.state : playCurrent;
             if (!state) return;
-            const second = Math.min(state.buffer.duration, state.node.offset + Math.max(0, audioCtx.currentTime - state.node.when));
+            if (view) list.querySelectorAll('.result-item').forEach((item, n) => item.classList.toggle('playing', n === view.row));
+            const second = view ? view.at(now) : Math.min(state.buffer.duration, state.node.offset + Math.max(0, now - state.node.when));
             playClock.textContent = `${clock(second)} / ${clock(state.buffer.duration)}`;
             const item = list.querySelector('.result-item.playing');
             if (item && !scrub) showProgress(item, second, state);
@@ -433,6 +441,7 @@
         function stopPlayback() {
             playToken += 1;
             [...playNodes].forEach(halt);
+            swapView = null;
             clearInterval(playTicker);
             playCurrent = null;
             scrub = null;
@@ -462,11 +471,17 @@
             return typeof song.start === 'number' ? song.start : 0;
         }
 
+        function fadeEndOf(index) {
+            const song = playQueue[index];
+            return typeof song.end === 'number' && (index + 1 < playQueue.length || playMode.stopAtEnd) ? song.end : null;
+        }
+
         function begin(index, buffer, node) {
             const token = playToken;
             const song = playQueue[index];
             const hasNext = index + 1 < playQueue.length;
-            const fadeEnd = typeof song.end === 'number' && (hasNext || playMode.stopAtEnd) ? song.end : null;
+            const fadeEnd = fadeEndOf(index);
+            swapView = null;
             const state = { index, buffer, node, fadeEnd, next: null, mix: null, failed: null, ready: !hasNext, handoverAt: Infinity, timers: [], scheduled: [] };
             const after = (time, action) => state.timers.push(setTimeout(() => {
                 if (token === playToken && playCurrent === state) action();
@@ -477,6 +492,7 @@
                 state.timers = [];
                 state.scheduled.forEach(halt);
                 state.scheduled = [];
+                swapView = null;
                 const now = audioCtx.currentTime;
                 const at = second => state.node.when + second - state.node.offset;
                 const mix = state.mix;
@@ -520,9 +536,15 @@
                         swapBass(blend, swap - length / 4, length / 2, false);
                     }
                     state.scheduled = direct ? [blend] : [outgoing, blend, startSource(state.next, resume, mix.resume_at, false)];
+                    swapView = {
+                        from: swap,
+                        row: playQueue[index + 1].row,
+                        state: { buffer: state.next, mix: null, fadeEnd: fadeEndOf(index + 1) },
+                        at: direct ? t => mix.in_at + t - state.handoverAt : t => mix.glide.next(t - state.handoverAt)
+                    };
                     after(state.handoverAt, () => {
                         const kind = direct ? 'Filtered fade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;
-                        const tempos = direct ? `${mix.tempo_from} and ${mix.tempo_to} BPM do not match` : `tempo gliding from ${mix.tempo_from} to ${mix.tempo_to} BPM`;
+                        const tempos = direct ? `beats not matched, ${mix.tempo_from} and ${mix.tempo_to} BPM` : `tempo gliding from ${mix.tempo_from} to ${mix.tempo_to} BPM`;
                         nowPlaying.textContent = `${kind} into ${playQueue[index + 1].title} (${tempos})`;
                     });
                     after(resume, () => begin(index + 1, state.next, state.scheduled[state.scheduled.length - 1]));
@@ -542,11 +564,12 @@
                     const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading && !smooth ? span : 0);
                     if (smooth) entry.gain.gain.setValueCurveAtTime(curves[1], state.handoverAt, span);
                     state.scheduled = [entry];
-                    after(state.handoverAt, () => begin(index + 1, state.next, state.scheduled[0]));
+                    after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, state.scheduled[0]));
                 }
             };
             playCurrent = state;
             markPlaying(index);
+            tick();
             state.label = `Playing ${song.title} from ${clock(node.offset)}` + (fadeEnd !== null ? ` until ${clock(fadeEnd)}` : '');
             nowPlaying.textContent = state.label;
             if (hasNext) {

@@ -21,8 +21,12 @@ Main Features:
   beats away from it
 * A next song RISE_DB louder at the same tempos rises in instead
 * Tempos too far apart (120 and 150 BPM, no half or double time near) are not
-  stretched and fade: the same mix ending at the fade point, swap_at in its
-  middle; tempos_match is the same rule on numbers and arrays
+  stretched and fade over only MIN_MIX_SECONDS of whole beats ending at the
+  fade point, swap_at in its middle; tempos_match is the same rule on numbers
+  and arrays
+* A beat grid 150 ms off the next song's clicks fades the same way although
+  the tempos match; the onset check takes clicks on the beat (stretched too)
+  and refuses them 100 ms off
 * A tempo whose beat gap falls between the tracker's frames is measured to a
   fraction of a BPM, not to the nearest frame
 * Songs without a beat raise ValueError
@@ -35,7 +39,7 @@ import soundfile
 from tasks import smart_fade_mix as mix
 
 
-def _clicks(path, bpm, seconds, first=0.0, level=0.8):
+def _click_audio(bpm, seconds, first=0.0, level=0.8):
     rate = mix.RATE
     audio = np.zeros(int(seconds * rate), dtype=np.float32)
     burst = (level * np.sin(2 * np.pi * 1000 * np.arange(int(0.03 * rate)) / rate)).astype(np.float32)
@@ -44,7 +48,12 @@ def _clicks(path, bpm, seconds, first=0.0, level=0.8):
         start = int(beat * rate)
         audio[start:start + burst.size] += burst
         beat += 60.0 / bpm
-    soundfile.write(path, np.stack([audio, audio], axis=1), rate)
+    return audio
+
+
+def _clicks(path, bpm, seconds, first=0.0, level=0.8):
+    audio = _click_audio(bpm, seconds, first, level)
+    soundfile.write(path, np.stack([audio, audio], axis=1), mix.RATE)
     return str(path)
 
 
@@ -121,18 +130,51 @@ def test_a_clearly_louder_next_song_rises_in(tmp_path):
     _assert_mix_length(plan)
 
 
-def test_tempos_too_far_apart_fade_unstretched_with_the_bass_swap(tmp_path):
+def _assert_short_fade(plan):
+    beats = round(plan['mix_seconds'] / plan['beat_seconds'])
+    assert plan['style'] == 'fade' and plan['stretch'] == 1.0
+    assert beats == np.ceil(mix.MIN_MIX_SECONDS / plan['beat_seconds'] - 1e-6)
+    assert plan['swap_at'] == pytest.approx(plan['mix_at'] + beats // 2 * plan['beat_seconds'], abs=0.002)
+    assert plan['resume_at'] - plan['in_at'] == pytest.approx(plan['mix_seconds'], abs=0.002)
+    assert plan['mix_at'] + plan['mix_seconds'] == pytest.approx(30.0, abs=0.3)
+
+
+def test_tempos_too_far_apart_fade_unstretched_over_the_short_mix(tmp_path):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0, level=0.1)
     song_in = _clicks(tmp_path / 'b.wav', 150, 40.0)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
-    assert plan['style'] == 'fade'
-    assert plan['stretch'] == 1.0
     assert plan['beat_seconds'] == pytest.approx(0.5, abs=0.01)
-    _assert_mix_length(plan)
-    assert plan['mix_at'] + plan['mix_seconds'] == pytest.approx(30.0, abs=0.3)
+    _assert_short_fade(plan)
     beats_in = plan['in_at'] * 150 / 60
     assert plan['in_at'] >= 5.0 and abs(beats_in - round(beats_in)) <= 0.08
-    assert plan['resume_at'] - plan['in_at'] == pytest.approx(plan['mix_seconds'], abs=0.002)
+
+
+def test_a_beat_grid_that_misses_the_beats_fades_instead_of_matching(tmp_path, monkeypatch):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    song_in = _clicks(tmp_path / 'b.wav', 120, 40.0, first=0.1)
+    tracked = mix._beats
+    calls = []
+
+    def off_grid(audio):
+        tempo, grid = tracked(audio)
+        calls.append(tempo)
+        return tempo, grid + (0.15 if len(calls) > 1 else 0.0)
+
+    monkeypatch.setattr(mix, '_phrase_entry', lambda audio, target: None)
+    assert mix.plan_transition(song_out, 30.0, song_in, 5.0)['style'] == 'blend'
+    monkeypatch.setattr(mix, '_beats', off_grid)
+    plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
+    assert plan['tempo_from'] == pytest.approx(plan['tempo_to'], abs=1.0)
+    _assert_short_fade(plan)
+
+
+def test_the_onset_check_accepts_beats_on_the_beat_and_refuses_them_100_ms_off():
+    song_out = _click_audio(120, 30.0)
+    song_in = _click_audio(120, 30.0, first=0.25)
+    assert mix._in_step(song_out, 10.0, song_in, 10.25, 8.0, 1.0, 0.5)
+    assert not mix._in_step(song_out, 10.0, song_in, 10.15, 8.0, 1.0, 0.5)
+    stretched = _click_audio(125, 30.0)
+    assert mix._in_step(song_out, 10.0, stretched, 9.6, 8.0, 0.96, 0.5)
 
 
 def test_tempos_match_allows_the_stretch_limit_and_half_or_double_time():

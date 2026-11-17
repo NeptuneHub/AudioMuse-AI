@@ -473,6 +473,20 @@ def test_a_beat_matched_mix_glides_the_tempo_from_one_song_to_the_next():
     assert 'Math.round(inputAt(k * hop / rate) * rate) - base' in stretch
 
 
+def test_the_highlight_jumps_to_the_next_song_in_the_middle_of_a_transition():
+    source = _repo_file('static', 'song_player.js')
+    tick = source[source.index('function tick() {'):source.index('function canSeek(')]
+    assert 'const view = swapView && now >= swapView.from ? swapView : null;' in tick
+    assert "if (view) list.querySelectorAll('.result-item').forEach((item, n) => item.classList.toggle('playing', n === view.row));" in tick
+    assert 'const second = view ? view.at(now) :' in tick
+    mix = source[source.index('swapView = {'):source.index("after(state.handoverAt, () => {\n                        const kind")]
+    assert 'from: swap,' in mix and 'row: playQueue[index + 1].row,' in mix
+    assert 'at: direct ? t => mix.in_at + t - state.handoverAt : t => mix.glide.next(t - state.handoverAt)' in mix
+    assert 'after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, state.scheduled[0]));' in source
+    assert source.count('swapView = null;') == 4 and 'mix-in' not in source
+    assert 'playCurrent = state;\n            markPlaying(index);\n            tick();' in source
+
+
 def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
     css = _repo_file('static', 'style.css')
     source = _repo_file('static', 'song_player.js')

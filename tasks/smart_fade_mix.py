@@ -38,8 +38,10 @@ Main Features:
 * style says how the page mixes: 'blend' when the tempos match (the bass of
   the two songs crosses around swap_at, the middle beat of the mix), 'rise'
   when the next song is also RISE_DB louder (it comes in from the treble up),
-  'fade' when they do not match: the same mix unstretched, the first song
-  muffled as it goes.
+  'fade' when they do not match or the planned parts' onsets line up within
+  MATCH_MS less than MATCH_SHARE as well as at some other offset (a grid the
+  tracker could not hold; ties from 16th-note hi-hats pass): unstretched,
+  only MIN_MIX_SECONDS of whole beats, the first song muffled as it goes.
 """
 
 import math
@@ -57,6 +59,9 @@ RISE_DB = 6.0
 PHRASE_LEAD_SECONDS = 8.0
 PHRASE_KERNEL_BEATS = 8
 PHRASE_REACH_BEATS = 8
+MATCH_MS = 30.0
+MATCH_SHARE = 0.8
+ONSET_HOP = 256
 
 
 def tempos_match(tempo_out, tempo_in):
@@ -135,6 +140,25 @@ def _phrase_entry(audio, target):
     return float(grid[low + int(np.argmax(window))]) if window.max() > 0.0 else None
 
 
+def _onsets(audio):
+    import librosa
+
+    envelope = librosa.onset.onset_strength(y=audio, sr=RATE, hop_length=ONSET_HOP)
+    return envelope - envelope.mean()
+
+
+def _in_step(song_out, mix_at, song_in, first_in, overlap, rate, beat):
+    out_part = _onsets(song_out[int(mix_at * RATE):int((mix_at + overlap) * RATE)])
+    in_part = _onsets(song_in[int(first_in * RATE):int((first_in + overlap * rate) * RATE)])
+    in_part = np.interp(np.arange(out_part.size) * rate, np.arange(in_part.size), in_part)
+    reach = max(1, int(beat / 2 * RATE / ONSET_HOP))
+    size = out_part.size
+    scores = np.array([float(np.dot(out_part[max(0, lag):size + min(0, lag)], in_part[max(0, -lag):size - max(0, lag)])) for lag in range(-reach, reach + 1)])
+    near = np.abs(np.arange(-reach, reach + 1)) * ONSET_HOP / RATE * 1000.0 <= MATCH_MS
+    best = float(scores.max())
+    return best > 0.0 and float(scores[near].max()) >= MATCH_SHARE * best
+
+
 def _mix_beats(beat, beats_out, out_length, first_in, in_length, rate):
     beats = BEAT_STEP * math.ceil(MIX_SECONDS / (BEAT_STEP * beat))
     while beats * beat >= MIN_MIX_SECONDS:
@@ -169,6 +193,13 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
     first_in, (beats, usable) = max(fits, key=lambda item: item[1][0])
     overlap = beats * beat
     mix_at = float(usable[np.argmin(np.abs(usable - (out_seconds - a_start - overlap)))])
+    locked = locked and _in_step(song_out, mix_at, song_in, first_in, overlap, rate, beat)
+    if not locked:
+        rate = 1.0
+        beats = max(1, min(beats, math.ceil(MIN_MIX_SECONDS / beat), int((song_in.size / RATE - first_in) / beat)))
+        overlap = beats * beat
+        usable = beats_out[beats_out + overlap <= song_out.size / RATE]
+        mix_at = float(usable[np.argmin(np.abs(usable - (out_seconds - a_start - overlap)))])
     resume_in = first_in + overlap * rate
     if not locked:
         style = 'fade'

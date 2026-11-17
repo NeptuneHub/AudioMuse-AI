@@ -536,7 +536,8 @@ def recording_search_transition_api():
           the first song's goes out around swap_at, the middle beat of the
           mix), 'rise'
           (tempos match and the next song is louder: it comes in from the
-          treble up), 'fade' (tempos do not match: the same mix with
+          treble up), 'fade' (tempos do not match, or the two songs' beats
+          would not line up: a shorter mix of about 10 seconds with
           stretch 1, the first song muffled as it fades, the bass swapping
           at swap_at). beat_seconds is one beat of the first song.
           A caller may ignore these three: the other fields alone still
