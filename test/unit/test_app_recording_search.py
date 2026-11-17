@@ -425,7 +425,7 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
     assert 'stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds)' in source
     assert 'setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds)' in source
     assert 'AudioMusePlayer.show(resultsList);' in page and 'function startSource(' not in page
-    assert "if (smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
+    assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
 
 
 def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
