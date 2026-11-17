@@ -36,6 +36,9 @@ Main Features:
   a clearly better match still wins and an unknown tempo is never penalised;
   smart_fade_playlist reads only the stored edges and tempos of the given
   songs and orders them from the first one
+* with keep_order (a path, an album) the order is kept and only each pair is
+  timed: a song without a fingerprint keeps its place, its neighbours play to
+  their end or start at 0, and no tempo is read
 """
 
 import io
@@ -349,6 +352,42 @@ def test_smart_fade_breaks_a_close_fingerprint_match_on_the_stored_tempo():
     assert order((current, best, close), [120.0, None, 123.0]) == [0, 1, 2]
     assert order((current, best, close), [120.0, 0.0, 123.0]) == [0, 1, 2]
     assert order((current, best, distant), [120.0, 150.0, 123.0]) == [0, 1, 2]
+
+
+def test_smart_fade_in_a_fixed_order_only_times_each_pair_and_keeps_every_song_in_place():
+    rng = np.random.default_rng(12)
+    first, second, third = _motif(rng), _motif(rng), _motif(rng)
+    songs = _edges(
+        _song(rng, 200, outro=first),
+        _song(rng, 160, intro=second, outro=third),
+        None,
+        _song(rng, 240, intro=first, outro=second),
+    )
+    assert [index for index, _fade in rsm.smart_fade_order(songs)] != [0, 1, 2, 3]
+    fixed = rsm.smart_fade_order(songs, keep_order=True)
+    assert [index for index, _fade in fixed] == [0, 1, 2, 3]
+    fades = dict(fixed)
+    assert fades[2] is None
+    assert fades[0]['fade_in_seconds'] == 0.0
+    assert 0.0 <= _duration(200) - fades[0]['fade_out_seconds'] <= 30.0
+    assert 0.0 <= fades[1]['fade_in_seconds'] <= 30.0
+    assert fades[1]['fade_out_seconds'] == _duration(160)
+    assert fades[3]['fade_in_seconds'] == 0.0
+    assert fades[3]['fade_out_seconds'] == _duration(240)
+
+
+def test_smart_fade_playlist_in_a_fixed_order_reads_no_tempo(monkeypatch):
+    rng = np.random.default_rng(13)
+    stored = {'a': _song(rng, 200), 'b': _song(rng, 200)}
+
+    def no_tempo(ids):
+        raise AssertionError('a fixed order never reads the stored tempo')
+
+    monkeypatch.setattr(rsm, '_stored_edges', lambda ids: {i: rsm.fade_edges(stored[i]) for i in ids if i in stored})
+    monkeypatch.setattr(rsm, '_stored_tempos', no_tempo)
+    ordered = rsm.smart_fade_playlist(['b', 'a'], keep_order=True)
+    assert [index for index, _fade in ordered] == [0, 1]
+    assert all(fade is not None for _index, fade in ordered)
 
 
 def test_smart_fade_playlist_reads_the_stored_edges_and_orders_from_the_first_song(monkeypatch):

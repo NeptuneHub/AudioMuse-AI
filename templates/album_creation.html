@@ -176,6 +176,7 @@
             </div>
         </fieldset>
 
+        <div class="song-player-options"></div>
         <button type="submit" id="create-album-btn" class="btn btn-primary btn-block" disabled>
             Search
         </button>
@@ -518,6 +519,7 @@
                 seedLine.classList.remove('hidden');
                 statsBox.classList.remove('hidden');
                 resultsWrapper.innerHTML = renderSongList(album.tracks, { metric: roleBadge });
+                AudioMusePlayer.show(resultsWrapper);
             };
 
             form.addEventListener('submit', async (event) => {
@@ -529,6 +531,7 @@
                 statsBox.classList.add('hidden');
                 seedLine.classList.add('hidden');
                 resultsWrapper.innerHTML = '';
+                AudioMusePlayer.hide(resultsWrapper);
                 statusDiv.textContent = 'Building your album... This may take a moment.';
                 statusDiv.className = '';
                 createButton.disabled = true;
@@ -548,6 +551,7 @@
                     if (!Array.isArray(album.tracks) || !album.tracks.length) {
                         throw new Error('No album could be built from this seed.');
                     }
+                    await AudioMusePlayer.arrange(resultsWrapper, album.tracks, { keepOrder: true });
                     currentTrackIds = album.tracks.map(track => track.item_id);
                     statusDiv.textContent = 'Album ready: ' + album.tracks.length + ' tracks in running order.';
                     showAlbum(album);

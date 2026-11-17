@@ -555,6 +555,12 @@ var ADVANCED_SECTIONS = [
         ]
     },
     {
+        title: 'Song Player',
+        items: [
+            'SONG_DEMO_SECONDS'
+        ]
+    },
+    {
         title: 'Lyrics & SemGrove Search',
         items: [
             'LYRICS_API_ENABLE', 'LYRICS_MUSICNN_SKIP',

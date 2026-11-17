@@ -197,6 +197,7 @@
                     </label>
                     <input type="number" id="axis-limit" name="limit" value="{{ lyrics_axes_limit_default }}" min="{{ lyrics_axes_limit_default|min_bound(1) }}" max="{{ lyrics_axes_limit_default|max_bound(200) }}">
                 </div>
+                <div class="song-player-options"></div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.axis_loaded %}disabled{% endif %}>
                     🔍 Search by axes
                 </button>
@@ -229,6 +230,7 @@
                     </label>
                     <input type="number" id="text-limit" name="limit" value="{{ lyrics_text_limit_default }}" min="{{ lyrics_text_limit_default|min_bound(1) }}" max="{{ lyrics_text_limit_default|max_bound(200) }}">
                 </div>
+                <div class="song-player-options"></div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not cache_stats.index_loaded %}disabled{% endif %}>
                     🔍 Search by text
                 </button>
@@ -284,6 +286,7 @@
                     <input type="number" id="song-limit" name="limit" value="{{ sem_grove_limit_default }}" min="{{ sem_grove_limit_default|min_bound(1) }}" max="{{ sem_grove_limit_default|max_bound(200) }}"
                            {% if not sem_grove_stats.loaded %}disabled{% endif %}>
                 </div>
+                <div class="song-player-options"></div>
                 <button type="submit" class="btn btn-primary btn-block" {% if not sem_grove_stats.loaded %}disabled{% endif %}>
                     🎵 Find Similar Songs
                 </button>
@@ -435,6 +438,7 @@ document.addEventListener('DOMContentLoaded', function () {
     async function runSearch(url, body, queryLabel) {
         resultsContainer.classList.remove('hidden');
         resultsList.innerHTML = '<div class="loading-spinner">🔍 Searching...</div>';
+        AudioMusePlayer.hide(resultsList);
         playlistCreator.classList.add('hidden');
         try {
             const response = await fetch(url, {
@@ -444,7 +448,8 @@ document.addEventListener('DOMContentLoaded', function () {
             });
             const data = await readJsonBody(response);
             if (!response.ok || data === null) throw new Error(apiErrorText(data, `Search failed (HTTP ${response.status})`));
-            currentResults = data.results || [];
+            const seed = (data.results || []).find(r => r.is_seed) || null;
+            currentResults = await AudioMusePlayer.arrange(resultsList, data.results || [], { seed });
             displayResults(currentResults, queryLabel);
         } catch (err) {
             resultsList.innerHTML = `<div class="error-message">❌ ${escapeHtml(err.message)}</div>`;
@@ -463,6 +468,7 @@ document.addEventListener('DOMContentLoaded', function () {
             : `Found ${visibleCount} matches`;
 
         resultsList.innerHTML = renderSongList(results, { skipSeed: true, metric: songSimilarityBadge });
+        AudioMusePlayer.show(resultsList);
         playlistCreator.classList.remove('hidden');
     }
 

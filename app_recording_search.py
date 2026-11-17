@@ -18,9 +18,10 @@ Main Features:
   the clip and a result count), `/api/recording_search/by_track` (JSON: a
   library song's id and a result count, for the songs closest to it,
   duplicates left out), `/api/recording_search/smart_fade` (JSON: any list of song ids,
-  returned in smart fade order with where to start and end each),
-  `/api/recording_search/play/<id>` (the song's audio from the media server,
-  for the page's player), `/api/recording_search/transition` (JSON: where the
+  returned in smart fade order with where to start and end each, or in the
+  order sent with keep_order), `/api/recording_search/play/<id>` (the song's
+  audio from the media server, for the shared song player of every song list;
+  it answers with the neural fingerprint off too), `/api/recording_search/transition` (JSON: where the
   page cuts and mixes two songs on the beat at their smart fade points) and
   `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
@@ -368,9 +369,15 @@ def recording_search_smart_fade_api():
                 items:
                   type: string
                 description: The songs, as ids of the selected server. The first one stays first.
+              keep_order:
+                type: boolean
+                default: false
+                description: Keep the songs in the order sent (a path, an album) and only say where each one starts and ends.
     responses:
       200:
-        description: The same songs in smart fade order; songs without a neural fingerprint come last with null times.
+        description: |
+          The same songs in smart fade order; songs without a neural fingerprint come last with null times.
+          With keep_order the order sent is kept and a song without a fingerprint keeps its place.
         content:
           application/json:
             schema:
@@ -414,7 +421,10 @@ def recording_search_smart_fade_api():
         canonical = app_server_context.resolve_input_item_ids(sent, data)
     except ValueError as exc:
         return json_exception(exc, ERR_INVALID_REQUEST, results=[])
-    ordered, failure = _run_search(lambda: smart_fade_playlist([canonical.get(i, i) for i in sent]), 'Smart fade')
+    keep_order = data.get('keep_order') is True
+    ordered, failure = _run_search(
+        lambda: smart_fade_playlist([canonical.get(i, i) for i in sent], keep_order=keep_order), 'Smart fade'
+    )
     if failure is not None:
         return failure
     empty = {'fade_in_seconds': None, 'fade_out_seconds': None, 'duration_seconds': None}
@@ -445,8 +455,8 @@ def recording_search_play_api(item_id):
       502:
         description: The media server did not deliver the song.
     """
-    if disabled := _disabled_response():
-        return disabled
+    # The player of every song list uses this route; it needs no fingerprint,
+    # so it answers whether or not NEURAL_FINGERPRINT_ENABLED is on.
     folder = tempfile.mkdtemp(prefix='audiomuse_play_')
     path, failure = _fetch_song(item_id, folder)
     if failure is not None:

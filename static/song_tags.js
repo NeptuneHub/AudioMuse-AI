@@ -78,7 +78,7 @@
             const album = s.album || '';
             const m = options.metric ? options.metric(s) : null;
             rows += `
-                <div class="result-item">
+                <div class="result-item" data-item-id="${escapeHtml(s.item_id || '')}" data-title="${escapeHtml(s.title || 'Unknown')}">
                     <div class="result-main">
                         <div class="result-title">${n}. ${escapeHtml(s.title || 'Unknown')}</div>
                         <div class="result-artist">${escapeHtml(artist)}</div>

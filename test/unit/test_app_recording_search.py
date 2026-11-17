@@ -24,25 +24,24 @@ Main Features:
 * No response of this API ever carries an internal canonical id: results are
   translated to the selected server's ids and the echoed song id goes through
   provider_echo_id, even when the caller sent a canonical id
-* by_track knows nothing of smart fade (the manager takes the song and the
-  count only, a smart_fade field in the body changes nothing); the page
-  reorders its results by posting them to the smart_fade endpoint; its player
-  decodes the songs and cuts, stretches and fades them itself on one audio
-  clock started in the Play click, never seeking an audio element (Safari);
-  the playing row fills with the progress and seeks only up to its fade
-* The smart_fade endpoint answers 400 without a list, resolves the ids for the
-  server, returns the songs in the manager's order under the ids as sent with
-  null times for songs without a fingerprint, and never leaks a canonical id
-* The play endpoint downloads a library song from the media server and sends
-  it, removing the temporary copy once sent; an id outside the library is a
-  404 and a failed download a 502
+* by_track knows nothing of smart fade (a smart_fade field changes nothing);
+  the shared static/song_player.js reorders through the smart_fade endpoint
+  and cuts, stretches and fades the decoded songs on one audio clock started
+  in the Play click, never on an audio element (Safari); the playing row fills
+  with the progress and seeks up to its fade
+* The smart_fade endpoint answers 400 without a list, resolves the ids, returns
+  the manager's order (keep_order only on JSON true) under the ids as sent,
+  null times without a fingerprint, never a canonical id
+* The play endpoint (also with the fingerprint off) sends a library song from
+  the media server and removes the temporary copy; an id outside the library
+  is a 404 and a failed download a 502
 * The transition endpoint answers 400 for missing or bad seconds, 404 for a
   song outside the library, plans the mix from both downloads and answers only
   that plan as JSON (no audio), removes them, and answers 400 when the songs
   have no steady beat
 * The warmup endpoint relays the manager status
-* With NEURAL_FINGERPRINT_ENABLED false every route answers 503 naming the
-  flag and the page is told the feature is disabled
+* With NEURAL_FINGERPRINT_ENABLED false every route but play answers 503
+  naming the flag and the page is told the feature is disabled
 * The page hands the template the built-in HTTPS port, or zero when the
   listener is disabled, and the reason when it could not start
 """
@@ -396,42 +395,49 @@ def test_by_track_knows_nothing_of_smart_fade(client, monkeypatch):
     assert 'fade_in_seconds' not in response.get_json()['results'][0]
 
 
+def _repo_file(*parts):
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', *parts), encoding='utf-8') as handle:
+        return handle.read()
+
+
 def test_the_page_reorders_by_track_results_through_the_smart_fade_endpoint():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
-    with open(path, encoding='utf-8') as handle:
-        source = handle.read()
+    source = _repo_file('templates', 'recording_search.html')
+    player = _repo_file('static', 'song_player.js')
+    app_source = _repo_file('app.py')
     assert 'body: JSON.stringify({ item_id: selectedSong.item_id, n_results: limit })' in source
     assert 'smart_fade: true' not in source and 'request.smart_fade' not in source
-    assert "url_for('recording_search_bp.recording_search_smart_fade_api')" in source
-    assert 'item_ids: [seedId, ...results.map(r => r.item_id)]' in source
-    assert 'if (smartFade.checked && (data.results || []).length)' in source
+    assert "currentResults = await AudioMusePlayer.arrange(resultsList, data.results || [], { seed });" in source
+    assert "'smart_fade': url_for('recording_search_bp.recording_search_smart_fade_api')," in app_source
+    assert "const body = { item_ids: [...(seed ? [seed.item_id] : []), ...rows.map(row => String(row.item_id))] };" in player
+    assert 'if (!choice.smart || !rows.length) return rows;' in player
 
 
 def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_started_in_the_play_click():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
-    with open(path, encoding='utf-8') as handle:
-        source = handle.read()
-    start = source.index('function startPlayback(index) {')
-    assert source.index('unlockAudio();', start) < source.index('stopPlayback();', start)
+    page = _repo_file('templates', 'recording_search.html')
+    source = _repo_file('static', 'song_player.js')
+    start = source.index('async function startPlayback(row) {')
+    assert source.index('unlockAudio();', start) < source.index('stopAll();', start)
     assert "navigator.audioSession.type = 'playback'" in source
     assert 'audioCtx.decodeAudioData(data)' in source and 'source.start(when, node.offset)' in source
-    assert 'new Audio(' not in source and '.currentTime =' not in source and '.volume =' not in source
+    for code in (source, page):
+        assert 'new Audio(' not in code and '.currentTime =' not in code and '.volume =' not in code
+        assert 'X-Switch-At' not in code
     assert 'stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds)' in source
     assert 'setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds)' in source
-    assert 'X-Switch-At' not in source
+    assert 'AudioMusePlayer.show(resultsList);' in page and 'function startSource(' not in page
+    assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
 
 
 def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'templates', 'recording_search.html')
-    with open(path, encoding='utf-8') as handle:
-        source = handle.read()
-    style = source[source.index('#results-list .result-item.playing {'):]
+    css = _repo_file('static', 'style.css')
+    source = _repo_file('static', 'song_player.js')
+    style = css[css.index('.playable-list .result-item.playing {'):]
     style = style[:style.index('}')]
     assert 'var(--play-fill) var(--play-progress, 0%)' in style and 'var(--play-limit-color)' in style
-    assert '--play-fill: #DBEAFE;' in source and 'touch-action: pan-y;' in style
+    assert '--play-fill: #DBEAFE;' in css and 'touch-action: pan-y;' in style
     assert 'if (state.mix) return state.mix.mix_at;' in source
     assert 'Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1)' in source
-    assert "if (!item || item.classList.contains('playing')) return;" in source
+    assert "if (!item || item.classList.contains('playing') || bar.classList.contains('hidden')) return;" in source
     skip = source[source.index("skipBtn.addEventListener('click'"):]
     assert 'seekTo(state, target)' in skip[:skip.index('});')]
 
@@ -454,8 +460,10 @@ def test_smart_fade_returns_the_songs_in_order_under_the_ids_as_sent(client, mon
     )
     seen = []
 
-    def playlist(item_ids):
-        seen.append(list(item_ids))
+    def playlist(item_ids, keep_order=False):
+        seen.append((list(item_ids), keep_order))
+        if len(item_ids) != 3:
+            return [(index, None) for index in range(len(item_ids))]
         return [
             (2, {'fade_in_seconds': 0.0, 'fade_out_seconds': 180.5, 'duration_seconds': 200.0}),
             (0, {'fade_in_seconds': 12.0, 'fade_out_seconds': 150.0, 'duration_seconds': 150.0}),
@@ -466,7 +474,10 @@ def test_smart_fade_returns_the_songs_in_order_under_the_ids_as_sent(client, mon
     response = _post_fade(client, {'item_ids': ['a', 'b', 'fp_c']})
     body = response.get_json()
     assert response.status_code == 200
-    assert seen == [['fp_a', 'fp_b', 'fp_c']]
+    assert seen == [(['fp_a', 'fp_b', 'fp_c'], False)]
+    assert _post_fade(client, {'item_ids': ['a'], 'keep_order': True}).status_code == 200
+    assert _post_fade(client, {'item_ids': ['a'], 'keep_order': 'true'}).status_code == 200
+    assert seen[1:] == [(['fp_a'], True), (['fp_a'], False)]
     assert 'fp_' not in response.get_data(as_text=True)
     assert [row['item_id'] for row in body['results']] == ['C', 'a', 'b']
     assert body['results'][1] == {'item_id': 'a', 'fade_in_seconds': 12.0, 'fade_out_seconds': 150.0, 'duration_seconds': 150.0}
@@ -554,7 +565,7 @@ def test_transition_downloads_both_songs_answers_only_the_plan_and_cleans_up(cli
     assert 'steady beat' in response.get_json()['error']
 
 
-def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(client, bp_mod, monkeypatch):
+def test_a_disabled_feature_answers_503_on_every_route_but_play_and_the_page_says_so(client, bp_mod, monkeypatch, tmp_path):
     import config
 
     monkeypatch.setattr(config, 'NEURAL_FINGERPRINT_ENABLED', False)
@@ -562,12 +573,14 @@ def test_a_disabled_feature_answers_503_on_every_route_and_the_page_says_so(clie
         _post(client, {'clip': _clip()}),
         _post_track(client, {'item_id': 'x'}),
         _post_fade(client, {'item_ids': ['x']}),
-        client.get('/api/recording_search/play/x'),
         client.get('/api/recording_search/transition?from_id=x&to_id=y&out=1&in=1'),
         client.post('/api/recording_search/warmup'),
     ):
         assert response.status_code == 503
         assert 'NEURAL_FINGERPRINT_ENABLED' in response.get_json()['error']
+    _fake_media(monkeypatch, tmp_path, b'ID3audio')
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 200 and response.data == b'ID3audio'
     page = _render_page(bp_mod, monkeypatch, {'enabled': True, 'running': True, 'port': 8443, 'error': None})
     assert page['neural_enabled'] is False
 

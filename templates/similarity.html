@@ -152,6 +152,7 @@
                 <label for="mood_similarity">Filter by mood similarity (danceability, energy, etc.)</label>
             </div>-->
         </div>
+        <div class="song-player-options"></div>
         <button type="submit" class="btn btn-primary btn-block">
             Find Similar Tracks
         </button>
@@ -191,7 +192,6 @@
 
         (() => {
             let currentTrackIds = [];
-            let currentTracks = [];
 
             // Mood centroid data cache
             let moodCentroidsCache = null;
@@ -369,6 +369,7 @@
                 statusDiv.textContent = 'Searching...';
                 statusDiv.className = '';
                 resultsTableWrapper.innerHTML = '';
+                AudioMusePlayer.hide(resultsTableWrapper);
                 document.getElementById('max-distance').textContent = '';
 
                 let params;
@@ -476,25 +477,18 @@
                         }
                     }
 
+                    const seed = isVectorMode ? null : { item_id: selectedItemIdInput.value, title: playlistLabel };
+                    const songs = await AudioMusePlayer.arrange(resultsTableWrapper, data, { seed });
                     if (!isVectorMode) {
                         const itemId = selectedItemIdInput.value;
-                        currentTrackIds = [itemId, ...data.map(track => track.item_id)];
-                        currentTracks = [
-                            {
-                                id: itemId,
-                                title: playlistLabel,
-                                author: (document.getElementById('selected_item_artist') && document.getElementById('selected_item_artist').value) || 'Unknown',
-                                album: (document.getElementById('selected_item_album') && document.getElementById('selected_item_album').value) || 'Unknown'
-                            },
-                            ...data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}))
-                        ];
+                        currentTrackIds = [itemId, ...songs.map(track => track.item_id)];
                     } else {
-                        currentTrackIds = data.map(track => track.item_id);
-                        currentTracks = data.map(track => ({id: track.item_id, title: track.title, author: track.author, album: track.album || 'Unknown'}));
+                        currentTrackIds = songs.map(track => track.item_id);
                     }
 
-                    statusDiv.textContent = 'Found ' + data.length + ' similar tracks.';
-                    resultsTableWrapper.innerHTML = renderSongList(data, { metric: songDistanceBadge });
+                    statusDiv.textContent = 'Found ' + songs.length + ' similar tracks.';
+                    resultsTableWrapper.innerHTML = renderSongList(songs, { metric: songDistanceBadge });
+                    AudioMusePlayer.show(resultsTableWrapper);
                     playlistCreator.classList.remove('hidden');
                     playlistStatusDiv.textContent = '';
                     let defaultPlaylistName;
