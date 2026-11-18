@@ -47,6 +47,13 @@
  * each half the difference off in the middle, so neither jumps in tempo when
  * the mix starts or when the next song plays on alone.
  *
+ * With Smart fade every song plays at the same loudness: its integrated
+ * loudness (BS.1770, K-weighted, gated) is measured once decoded and a gain
+ * brings it to TARGET_LUFS, raising a quiet song only up to PEAK_CEILING.
+ * When the plan's confidence is 'low' (no beat lock, and the next song would
+ * come in quieter than the first one at the cut, each against its own
+ * loudness) the page plays the plain crossfade instead of the filtered fade.
+ *
  * During a transition the highlight and the clock stay on the louder song:
  * the ending one until the middle of the mix or crossfade, then they jump to
  * the starting one (swapView), not when the transition starts or ends.
@@ -79,6 +86,8 @@
     const RISE_FROM_HZ = 800;
     const RISE_TO_HZ = 10;
     const MUFFLE_TO_HZ = 400;
+    const TARGET_LUFS = -14;
+    const PEAK_CEILING = 0.891;
     const settings = document.currentScript ? document.currentScript.dataset : {};
     const URLS = { play: settings.playUrl || '', smartFade: settings.smartFadeUrl || '', transition: settings.transitionUrl || '' };
     const READY = !!URLS.play;
@@ -86,7 +95,7 @@
     const OPTIONS = {
         smart: {
             label: 'Smart fade',
-            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (a 10 second filtered fade when the tempos or the beats do not match), and shows Skip to the fade. Set it before the search.'
+            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays them all at the same loudness, each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (a 10 second filtered fade when the tempos or the beats do not match, or a plain 10 second crossfade when the next song would also come in quieter), and shows Skip to the fade. Set it before the search.'
         },
         demo: {
             label: 'Demo',
@@ -151,6 +160,72 @@
         } catch (error) {
             throw new Error('This browser cannot play this song.');
         }
+    }
+
+    const levels = new WeakMap();
+
+    function levelOf(buffer) {
+        return levels.get(buffer) || 1;
+    }
+
+    function biquad(b, a) {
+        return { b0: b[0] / a[0], b1: b[1] / a[0], b2: b[2] / a[0], a1: a[1] / a[0], a2: a[2] / a[0] };
+    }
+
+    function kWeighting(rate) {
+        const angle = 2 * Math.PI * 1500 / rate;
+        const gain = Math.pow(10, 4 / 40);
+        const root = Math.sqrt(2 * gain) * Math.sin(angle);
+        const cos = Math.cos(angle);
+        const low = 2 * Math.PI * 38 / rate;
+        return [
+            biquad([gain * ((gain + 1) + (gain - 1) * cos + root), -2 * gain * ((gain - 1) + (gain + 1) * cos), gain * ((gain + 1) + (gain - 1) * cos - root)],
+                [(gain + 1) - (gain - 1) * cos + root, 2 * ((gain - 1) - (gain + 1) * cos), (gain + 1) - (gain - 1) * cos - root]),
+            biquad([(1 + Math.cos(low)) / 2, -(1 + Math.cos(low)), (1 + Math.cos(low)) / 2], [1 + Math.sin(low), -2 * Math.cos(low), 1 - Math.sin(low)])
+        ];
+    }
+
+    function loudnessGain(buffer) {
+        const [shelf, pass] = kWeighting(buffer.sampleRate);
+        const hop = Math.round(buffer.sampleRate / 10);
+        const power = new Float64Array(Math.ceil(buffer.length / hop));
+        let peak = 0;
+        for (let c = 0; c < buffer.numberOfChannels; c++) {
+            const data = buffer.getChannelData(c);
+            let x1 = 0;
+            let x2 = 0;
+            let y1 = 0;
+            let y2 = 0;
+            let z1 = 0;
+            let z2 = 0;
+            for (let h = 0; h < power.length; h++) {
+                const end = Math.min(data.length, (h + 1) * hop);
+                let sum = 0;
+                for (let i = h * hop; i < end; i++) {
+                    const x = data[i];
+                    if (x > peak || -x > peak) peak = Math.abs(x);
+                    const y = shelf.b0 * x + shelf.b1 * x1 + shelf.b2 * x2 - shelf.a1 * y1 - shelf.a2 * y2;
+                    const z = pass.b0 * y + pass.b1 * y1 + pass.b2 * y2 - pass.a1 * z1 - pass.a2 * z2;
+                    x2 = x1;
+                    x1 = x;
+                    y2 = y1;
+                    y1 = y;
+                    z2 = z1;
+                    z1 = z;
+                    sum += z * z;
+                }
+                power[h] += sum;
+            }
+        }
+        const lufs = energy => -0.691 + 10 * Math.log10(Math.max(energy, 1e-12));
+        const mean = values => values.reduce((total, value) => total + value, 0) / values.length;
+        const blocks = [];
+        for (let h = 0; h + 4 <= power.length; h++) blocks.push((power[h] + power[h + 1] + power[h + 2] + power[h + 3]) / (4 * hop));
+        const loud = blocks.filter(energy => lufs(energy) > -70);
+        if (!loud.length) return 1;
+        const gate = lufs(mean(loud)) - 10;
+        const gain = Math.pow(10, (TARGET_LUFS - lufs(mean(loud.filter(energy => lufs(energy) > gate)))) / 20);
+        return gain > 1 ? Math.max(1, Math.min(gain, PEAK_CEILING / Math.max(peak, 1e-9))) : gain;
     }
 
     function tempoGlide(mix) {
@@ -248,6 +323,8 @@
         const b = Array.from({ length: second.numberOfChannels }, (_, c) => second.getChannelData(c));
         const a0 = Math.round(firstSecond * rate);
         const b0 = Math.round(secondSecond * rate);
+        const la = levelOf(first);
+        const lb = levelOf(second);
         const lanes = Math.max(a.length, b.length);
         const peaks = new Float32Array(segments);
         let ceiling = 1;
@@ -258,8 +335,8 @@
                 const ga = fall[k] + (fall[k + 1] - fall[k]) * f;
                 const gb = rise[k] + (rise[k + 1] - rise[k]) * f;
                 for (let c = 0; c < lanes; c++) {
-                    const sa = a[Math.min(c, a.length - 1)][a0 + i] || 0;
-                    const sb = b[Math.min(c, b.length - 1)][b0 + i] || 0;
+                    const sa = (a[Math.min(c, a.length - 1)][a0 + i] || 0) * la;
+                    const sb = (b[Math.min(c, b.length - 1)][b0 + i] || 0) * lb;
                     peaks[k] = Math.max(peaks[k], Math.abs(sa * ga + sb * gb));
                     ceiling = Math.max(ceiling, Math.abs(sa), Math.abs(sb));
                 }
@@ -340,7 +417,9 @@
         async function loadSong(index) {
             const response = await fetch(URLS.play.replace('__ID__', encodeURIComponent(playQueue[index].item_id)));
             if (!response.ok) throw new Error(apiErrorText(await readJsonBody(response), `Could not load the song (HTTP ${response.status})`));
-            return decode(await response.arrayBuffer());
+            const buffer = await decode(await response.arrayBuffer());
+            if (playMode.beatMatch) levels.set(buffer, loudnessGain(buffer));
+            return buffer;
         }
 
         function markPlaying(index) {
@@ -412,7 +491,8 @@
             const tone = audioCtx.createBiquadFilter();
             const mid = audioCtx.createBiquadFilter();
             const gain = audioCtx.createGain();
-            const node = { source, air, tone, mid, gain, when: onGrid(when), offset: onGrid(Math.max(0, Math.min(offset, buffer.duration))) };
+            const level = audioCtx.createGain();
+            const node = { source, air, tone, mid, gain, level, when: onGrid(when), offset: onGrid(Math.max(0, Math.min(offset, buffer.duration))) };
             air.type = 'lowpass';
             air.frequency.value = audioCtx.sampleRate / 2;
             tone.type = filter || 'lowshelf';
@@ -427,7 +507,9 @@
             air.connect(tone);
             tone.connect(mid);
             mid.connect(gain);
-            gain.connect(audioCtx.destination);
+            level.gain.value = levelOf(buffer);
+            gain.connect(level);
+            level.connect(audioCtx.destination);
             if (fadeIn) {
                 gain.gain.setValueAtTime(0, node.when);
                 gain.gain.linearRampToValueAtTime(1, node.when + fadeIn);
@@ -470,7 +552,7 @@
             try {
                 const response = await fetch(`${URLS.transition}?${query}`);
                 const plan = await readJsonBody(response);
-                return response.ok && plan && plan.mix_seconds > 0 ? plan : null;
+                return response.ok && plan && plan.mix_seconds > 0 && plan.confidence !== 'low' ? plan : null;
             } catch (error) {
                 return null;
             }
@@ -591,6 +673,10 @@
                         state.next = next;
                         const glide = next && mix && mix.style !== 'fade' ? tempoGlide(mix) : null;
                         state.mix = next && mix ? Object.assign(mix, glide ? { glide, lead: stretchSegment(buffer, glide.lead, glide.seconds), buffer: stretchSegment(next, glide.next, glide.seconds) } : { buffer: null }) : null;
+                        if (state.mix && state.mix.buffer) {
+                            levels.set(state.mix.lead, levelOf(buffer));
+                            levels.set(state.mix.buffer, levelOf(next));
+                        }
                         state.ready = true;
                         state.plan();
                         if (state.skipWhenReady) skipToFade(state);

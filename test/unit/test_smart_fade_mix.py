@@ -30,6 +30,11 @@ Main Features:
 * A tempo whose beat gap falls between the tracker's frames is measured to a
   fraction of a BPM, not to the nearest frame
 * Songs without a beat raise ValueError
+* A full-scale 997 Hz tone measures -3.01 LUFS
+* An unstretched fade from a song at full level into a next song that starts
+  quieter than its own level is 'low' (a steady next song 'medium', a beat
+  lock 'high'), on curves and on real files
+* A real AAC .m4a, which libsndfile cannot open, plans like a WAV
 """
 
 import numpy as np
@@ -69,7 +74,10 @@ def test_two_click_tracks_mix_on_the_beat_at_the_first_tempo(tmp_path):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     song_in = _clicks(tmp_path / 'b.wav', 125, 40.0, first=0.2)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
-    assert sorted(plan) == ['beat_seconds', 'in_at', 'mix_at', 'mix_seconds', 'resume_at', 'stretch', 'style', 'swap_at', 'tempo_from', 'tempo_to']
+    assert sorted(plan) == [
+        'beat_seconds', 'confidence', 'in_at', 'mix_at', 'mix_seconds', 'resume_at', 'stretch', 'style', 'swap_at', 'tempo_from', 'tempo_to',
+    ]
+    assert plan['confidence'] == 'high'
     assert plan['style'] == 'blend'
     assert plan['beat_seconds'] == pytest.approx(0.5, abs=0.01)
     _assert_mix_length(plan)
@@ -198,3 +206,82 @@ def test_songs_without_a_beat_raise_value_error(tmp_path):
     soundfile.write(silent, np.zeros((mix.RATE * 40, 2), dtype=np.float32), mix.RATE)
     with pytest.raises(ValueError):
         mix.plan_transition(str(silent), 30.0, str(silent), 5.0)
+
+
+def test_a_full_scale_997_hz_tone_measures_minus_3_lufs(tmp_path):
+    rate = 48000
+    tone = np.sin(2 * np.pi * 997 * np.arange(20 * rate) / rate)
+    assert float(mix._lufs(np.mean(mix._k_weighted(tone, rate)[rate:] ** 2))) == pytest.approx(-3.01, abs=0.05)
+    path = tmp_path / 'tone.wav'
+    soundfile.write(path, (0.5 * tone).astype(np.float32), rate, subtype='FLOAT')
+    levels = mix._levels(str(path))
+    assert levels['loudness'] == pytest.approx(-3.01 - 6.02, abs=0.3)
+
+
+SILENT = -120.0
+
+
+def _curve(*pieces):
+    return np.concatenate([np.linspace(a, b, int(round(seconds / mix.STEP_SECONDS)), endpoint=False) for seconds, a, b in pieces])
+
+
+def _db_levels(curve):
+    energy = 10.0 ** ((curve + 0.691) / 10.0)
+    return {'energy': energy, 'loudness': mix._integrated(energy)}
+
+
+def test_an_unlocked_fade_from_full_level_into_a_quieter_start_has_low_confidence():
+    ending = _db_levels(_curve((150.0, -16.0, -16.0), (50.0, -12.0, -12.0), (6.0, -12.0, -60.0), (2.0, SILENT, SILENT)))
+    quiet = _db_levels(_curve((1.0, SILENT, SILENT), (30.0, -20.0, -20.0), (120.0, -12.0, -12.0)))
+    strong = _db_levels(_curve((40.0, -10.0, -10.0), (110.0, -14.0, -14.0)))
+    assert mix._confidence(ending, 180.0, quiet, 10.0, 10.0, 10.0, False) == 'low'
+    assert mix._confidence(ending, 180.0, strong, 10.0, 10.0, 10.0, False) == 'medium'
+    assert mix._confidence(ending, 100.0, quiet, 10.0, 10.0, 10.0, False) == 'medium'
+    assert mix._confidence(ending, 180.0, quiet, 10.0, 10.0, 10.0, True) == 'high'
+
+
+def _bedded(bpm, seconds, quiet_seconds, quiet_db):
+    rate = mix.RATE
+    audio = _click_audio(bpm, seconds) + 0.2 * np.sin(2 * np.pi * 220 * np.arange(int(seconds * rate)) / rate).astype(np.float32)
+    audio[:int(quiet_seconds * rate)] *= 10.0 ** (quiet_db / 20.0)
+    return audio
+
+
+def _write(path, audio):
+    soundfile.write(path, np.stack([audio, audio], axis=1), mix.RATE)
+    return str(path)
+
+
+def test_a_planned_fade_into_a_quieter_next_song_has_low_confidence(tmp_path):
+    song_out = _write(tmp_path / 'a.wav', _bedded(120, 40.0, 20.0, -3.0))
+    quiet = _write(tmp_path / 'b.wav', _bedded(150, 40.0, 20.0, -4.0))
+    steady = _write(tmp_path / 'c.wav', _bedded(150, 40.0, 0.0, 0.0))
+    plan = mix.plan_transition(song_out, 30.0, quiet, 5.0)
+    assert plan['style'] == 'fade' and plan['confidence'] == 'low'
+    assert mix.plan_transition(song_out, 30.0, steady, 5.0)['confidence'] == 'medium'
+
+
+def _m4a(path, audio):
+    av = pytest.importorskip('av')
+    with av.open(str(path), 'w', format='mp4') as out:
+        stream = out.add_stream('aac', rate=mix.RATE)
+        stream.layout = 'mono'
+        for start in range(0, audio.size, 1024):
+            frame = av.AudioFrame.from_ndarray(audio[None, start:start + 1024].astype(np.float32), format='fltp', layout='mono')
+            frame.sample_rate = mix.RATE
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    return str(path)
+
+
+def test_an_aac_m4a_song_that_libsndfile_cannot_open_plans_through_the_analysis_loader(tmp_path):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    song_in = _m4a(tmp_path / 'b.m4a', _click_audio(120, 40.0, first=0.2))
+    with pytest.raises(soundfile.SoundFileRuntimeError):
+        soundfile.info(song_in)
+    assert mix._region(song_in, 5.0, 10.0).size == pytest.approx(10.0 * mix.RATE, abs=2)
+    plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
+    assert plan['style'] == 'blend' and plan['confidence'] == 'high'
+    assert plan['tempo_to'] == pytest.approx(120, abs=2)

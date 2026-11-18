@@ -542,6 +542,12 @@ def recording_search_transition_api():
           at swap_at). beat_seconds is one beat of the first song.
           A caller may ignore these three: the other fields alone still
           describe a plain crossfade.
+          confidence says how sure the plan is: 'high' (the beats lock),
+          'medium' (a fade at similar loudness) or 'low' (a fade where the
+          first song is still at full level and the next comes in quieter,
+          each against its own loudness); the shared player plays a 'low'
+          plan as its plain crossfade. A caller may ignore it too; the other
+          fields keep their meaning.
         content:
           application/json:
             schema:
@@ -568,6 +574,9 @@ def recording_search_transition_api():
                   type: number
                 beat_seconds:
                   type: number
+                confidence:
+                  type: string
+                  enum: [high, medium, low]
       400:
         description: Bad parameters, or the songs have no steady beat to match.
       404:

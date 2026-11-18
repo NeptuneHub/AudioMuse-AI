@@ -3029,8 +3029,9 @@ the neural fingerprint.
    player. Smart fade and Demo exclude each other.
 2. **Play** plays each song from its start time to its end time (the first
    one from the beginning, the last one to its end) and mixes it into the
-   next with one of the four transitions below. The line under the player
-   names the transition while it plays.
+   next with one of the four transitions below. Every song plays at the same
+   loudness (-14 LUFS; a quiet song is raised only as far as its peaks allow).
+   The line under the player names the transition while it plays.
 3. **One highlighted row, the louder song.** During a transition the
    highlight and the clock stay on the ending song until the middle of the mix
    or crossfade, then they jump to the starting one.
@@ -3076,7 +3077,11 @@ the neural fingerprint.
    - Label: none. The line switches to
      `Playing <next song> from m:ss until m:ss` in the middle of the
      crossfade.
-   - When: there is no transition plan for the pair (section 19.2).
+   - When: there is no transition plan for the pair (section 19.2), or the
+     plan's `confidence` is `low`: a filtered fade would play while the
+     ending song is still at or above its own average loudness and the next
+     song comes in at least 2 LU quieter than its own, which sounds like the
+     music suddenly dropping.
    - How it sounds: a 10-second volume crossfade with no filters and no
      stretch, between the two times of the order endpoint, not on a beat.
 
@@ -3118,19 +3123,24 @@ same way. With the neural fingerprint off both answer 503.
      during the mix, 1.0 for none), `tempo_from` and `tempo_to` (the two
      measured tempos), `style` (`blend`, `rise` or `fade`), `swap_at` (the
      middle of the mix, where the bass lines trade places and the highlight
-     jumps) and `beat_seconds` (one beat of the ending song).
+     jumps), `beat_seconds` (one beat of the ending song) and `confidence`
+     (`high` when the beats lock, `low` for a fade into a next song that
+     comes in quieter, else `medium`). A caller that ignores `confidence`
+     gets exactly the plan it got before.
    - A blend or a rise has `resume_at - in_at` = `mix_seconds` x `stretch`; a
      fade has `stretch` 1.0 and `mix_seconds` = `ceil(10 / beat_seconds)`
      beats.
 
    ```json
    {"mix_at": 192.4, "mix_seconds": 16.0, "in_at": 21.0, "resume_at": 36.36, "stretch": 0.96,
-    "tempo_from": 120.0, "tempo_to": 125.0, "style": "blend", "swap_at": 200.4, "beat_seconds": 0.5}
+    "tempo_from": 120.0, "tempo_to": 125.0, "style": "blend", "swap_at": 200.4, "beat_seconds": 0.5,
+    "confidence": "high"}
    ```
 
    ```json
    {"mix_at": 210.0, "mix_seconds": 10.4132, "in_at": 18.5, "resume_at": 28.9132, "stretch": 1.0,
-    "tempo_from": 121.0, "tempo_to": 92.0, "style": "fade", "swap_at": 214.9587, "beat_seconds": 0.4959}
+    "tempo_from": 121.0, "tempo_to": 92.0, "style": "fade", "swap_at": 214.9587, "beat_seconds": 0.4959,
+    "confidence": "medium"}
    ```
 
    - Errors: `400` "These two songs have no steady beat to match at the fade
@@ -3147,8 +3157,8 @@ same way. With the neural fingerprint off both answer 503.
 |---|---|
 | `style: "blend"` | 1. Beat-matched mix with a bass swap |
 | `style: "rise"` | 2. Beat-matched rise |
-| `style: "fade"` | 3. Filtered fade |
-| an error, no answer, or an answer after its `mix_at` | 4. Plain crossfade |
+| `style: "fade"`, `confidence: "medium"` | 3. Filtered fade |
+| `confidence: "low"`, an error, no answer, or an answer after its `mix_at` | 4. Plain crossfade |
 
 The plain crossfade uses only the order endpoint's two times:
 
@@ -3158,7 +3168,7 @@ The plain crossfade uses only the order endpoint's two times:
 | `mix_seconds` | always 10 seconds |
 | `in_at` | the next song's `fade_in_seconds` |
 | `resume_at` | the next song's `fade_in_seconds` plus 10 seconds |
-| `stretch`, `style`, `swap_at`, `beat_seconds` | nothing: no stretch, no filters, the highlight jumps after 5 seconds |
+| `stretch`, `style`, `swap_at`, `beat_seconds`, `confidence` | nothing: no stretch, no filters, the highlight jumps after 5 seconds |
 
 With the order above, `id-A` fades out from 3:18.5 to 3:28.5 while `id-C`
 starts from 0:20.0 and fades in until 0:30.0, then plays on alone. A song with
@@ -3173,11 +3183,21 @@ it plays to the end of its file and the next song starts right after.
    half second. Only the first and the last 30 seconds of each song are
    decoded and compared (half of a song shorter than a minute), averaged into
    overlapping 4-second windows, so a song never starts later than 30 seconds
-   in nor ends earlier than 30 seconds before its end. Starting from the first
-   song, the next one is the unplaced song whose fade-in window has the
-   highest cosine with one of the current song's fade-out windows, and that
-   pair gives where the current song ends and the next one starts; the first
-   song starts at 0 and the last one plays to its end. A window that holds
+   in nor ends earlier than 30 seconds before its end. Every ordered pair of
+   songs gets a score: the highest cosine between one of the first song's
+   fade-out windows and one of the second song's fade-in windows (that pair
+   of windows gives where the first ends and the second starts), minus the
+   tempo penalty below, minus 0.04 per standard deviation of intensity
+   between the two songs (Album Creation's intensity: centred mood scores,
+   energy and folded tempo, z-scored within the list), plus 0.1 times how much
+   more alike their MusiCNN embeddings are than the list's average pair. A
+   score under the median pair of the list counts twice as much. The order
+   is one path from the first song through all the others that maximises the
+   sum of its scores: the greedy chain (each song followed by its best
+   unplaced song) is the start, then moving any run of 1 to 3 songs to
+   another place is tried until no move helps, which fixes the weak steps the
+   greedy chain leaves for the end. The first song starts at 0 and the last
+   one plays to its end. A window that holds
    silence is never used: two consecutive rows with a cosine of 0.95 or more
    are what digital silence gives (music almost never does), so a song with a
    silent tail ends before it and a silent intro is skipped (an edge silent
@@ -3194,16 +3214,39 @@ it plays to the end of its file and the next song starts right after.
    the whole song, so it only steers the order and the beat match measures
    the tempo again where the songs meet. Measured on 200 random songs of a
    205k-song library: 0.06 s to read and decode the edges and 0.11 s to order
-   them (a 200-song call answers in 0.13 to 0.22 s warm, about 1 s on the
-   first call after a restart); the start lands a median 13 s in and the end a
+   them with the greedy chain alone (about 1 s on the first call after a
+   restart); the start lands a median 13 s in and the end a
    median 14 s before the song's end, and the best pairs reach a cosine of
    0.12 to 0.35 between two different songs, so the order is a hint drawn from
-   a fingerprint, not a musical similarity measure.
+   a fingerprint, not a musical similarity measure. On 38 real 51-song lists
+   (19 seeds, each as a similar-song and a search-by-song list) the best next
+   song stands about 2.4 standard deviations above a song's typical pair in
+   both kinds of list, about what the best of 49 random draws gives: the
+   fingerprint is built to tell recordings apart and hears only 160 Hz to
+   4 kHz. What differs is intensity: in search-by-song lists the fingerprint
+   chain took big intensity steps (over 1.5 standard deviations) less often
+   than random pairs (16-34% against 28-33%), in similar-song lists as often
+   or more (up to 38% against 31%). Measured on 40 more lists against the
+   greedy fingerprint chain, the path with all terms gave 2 to 3% higher mean
+   pair cosine, a worst step of 0.21 to 0.23 instead of 0.17, the same share of
+   tempo-matchable steps (0.68 against 0.69, 0.67 against 0.67) and big
+   intensity steps cut from 28% to 15% (similar-song) and from 25% to 10%
+   (search-by-song); the MusiCNN term changes nothing in similar-song lists
+   (every pair there is 0.88 to 0.95 alike) and pulls related songs together
+   in search-by-song lists. Doubling the intensity weight halves the big
+   steps again but starts losing tempo-matchable steps. The path alone,
+   without the new terms, already raised the mean cosine by 3% and the
+   tempo-matchable share by 3 to 4 points. A 200-song call answers in 0.27 to
+   0.32 s.
 2. **Beat match** (`tasks/smart_fade_mix.py`, `plan_transition`). Both songs
    are downloaded from the media server and only two regions are decoded
    (mono, 44.1 kHz): the 26 seconds before the ending song's fade-out time
    plus 2 after it, and from 8 seconds before the next song's fade-in time to
-   28 seconds after it. librosa's beat tracker, the one the analysis uses,
+   28 seconds after it. A file libsndfile cannot open (an AAC `.m4a`; librosa
+   1.0 no longer falls back to another decoder) goes through the analysis's
+   PyAV loader instead: before, every such pair answered 500 and played the
+   plain crossfade, 14 of 86 transition calls in one evening of listening.
+   librosa's beat tracker, the one the analysis uses,
    finds the beats in each (the next song's tempo only after its fade-in
    time); the tempo and the beat grid come from a line fitted through the beat
    times (a median beat gap is quantised to the tracker's 11.6 ms frames, off
@@ -3254,7 +3297,31 @@ it plays to the end of its file and the next song starts right after.
    the kick band alone or of each half of the mix (noisy: an outro often has
    no drums for 8 seconds) and the best offset alone (a coin flip between
    16th-note peaks).
-4. **The page's mix** (`static/song_player.js`). The page decodes both songs
+4. **Confidence** (`_confidence`). For a `fade` both whole songs are also
+   decoded once at 11,025 Hz (0.4 to 1 s each) for their loudness:
+   K-weighted 400 ms blocks every 100 ms, the integrated loudness gated at
+   -70 LUFS and 10 LU under the mean (BS.1770; a full-scale 997 Hz tone reads
+   -3.01 LUFS). The planned parts are measured against their own song: a
+   `fade` where the ending song is at or above its own loudness and the next
+   song's part is at least 2 LU further under its own is `low`, and the page
+   plays it as the plain crossfade, where one song goes down while the next
+   comes up; a beat-matched plan is `high` without decoding anything more. On 14
+   transitions rated by ear on a phone, two of the three bad ones described
+   the music dropping from an intense song into a slower one, and both
+   measured as unlocked fades from an ending song 0.2 to 2.9 LU above its
+   own level into a next song 2.3 to 6.3 LU lower: both are `low`. The third
+   had no plan at all (an `.m4a`, the 500 above) and now gets a filtered fade
+   (`medium`). Of the 10
+   good ones, beat-locked mixes with level steps, fades out of an ending
+   already 1 to 3 LU under its own level and fades into a quiet start stayed
+   `high` or `medium`; one good fade and the one rated "not so bad" came out
+   `low` too. Over 48 hand-overs of 16 real lists: 13 `high`, 27 `medium`,
+   8 `low`. The timbre (MFCC), chroma, onset rate and brightness of the two
+   parts did not separate good from bad, and neither did the whole-song
+   intensity step, so they do not decide the confidence. A fade's plan now
+   takes up to about 1 s more; the page asks for it while the previous song
+   plays.
+5. **The page's mix** (`static/song_player.js`). The page decodes both songs
    with the browser's Web Audio, in one audio context made in the Play click,
    and starts every piece as a buffer source on a whole sample of that one
    audio clock, at a whole-sample offset in the song; Skip restarts the
@@ -3308,6 +3375,13 @@ it plays to the end of its file and the next song starts right after.
      mix every song plays exactly as decoded.
    - **Plain crossfade.** Equal-power curves over the 10 seconds before the
      ending song's fade-out time, the next song from its fade-in time.
+   - **Same loudness.** Each decoded song's integrated loudness is measured
+     in the page the same way (K-weighted, every channel, gated) and a gain
+     after all the mix filters brings it to -14 LUFS, as streaming players
+     do; a quieter song is raised only until its peak reaches 0.891 (-1 dBFS),
+     never limited. The stretched pieces of a mix keep their song's gain, and
+     the no-clipping check sums the songs at their gains. Plain Play and Demo
+     keep every song as decoded.
    - **Measured live** in Chromium and Firefox on 13 mixes with Play, Skip
      and Skip during the mix: the recorded output was where the plan said to
      the sample, and on 10 real stretched pairs the page's stretch placed the
@@ -3319,7 +3393,7 @@ it plays to the end of its file and the next song starts right after.
      plain crossfade) came out as decoded: bit for bit, or in Chromium off
      by less than -185 dBFS on under 1% of near-silent samples (its rounding
      of the start time), with 0.00 dB change at 15 kHz.
-5. **Measured and not kept.**
+6. **Measured and not kept.**
    - **A loop of the ending song** (some streaming players repeat a bar to
      stretch a short ending; Apple Music's AutoMix "repeats sections where
      necessary"). Over 93 real transitions only 1 mix came out under
@@ -3339,6 +3413,14 @@ it plays to the end of its file and the next song starts right after.
      like a jump on a phone. Real DJ transitions peak at 32 and 64 beats, 15
      and 30 seconds at 128 BPM (ISMIR 2020, 20,765 transitions of 1,557
      mixes), and streaming players cross over at most 12 seconds.
+   - **A radio-style hand-over** for `low` pairs (the ending song plays to
+     where it falls 8 LU under its own loudness and fades in 2.5 seconds
+     while the next one starts from its first sound): rejected after
+     listening, the plain crossfade is kept for them.
+   - **Fading only one side** when one song is much louder at the cut, as
+     radio crossfades do. In the 14 rated transitions every pair where the
+     ending song was already quiet or the next started quiet sounded good
+     with the existing mixes, so no extra transition was added for it.
    - **Other beat fixes, measured without gain**: forcing the tracker to the
      stored tempo, snapping the mix to a bar by onset strength, and moving the
      fade points to the nearest stretch where the tracker looks steady (worse:
@@ -3350,5 +3432,9 @@ it plays to the end of its file and the next song starts right after.
   the option is not shown and the two endpoints answer 503.
 - Nothing else is configurable: the lengths and limits are constants of
   `tasks/smart_fade_mix.py` (`MIX_SECONDS` 15, `MIN_MIX_SECONDS` 10,
-  `MAX_STRETCH` 0.08, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.8) and of
-  `static/song_player.js` (`SMART_CROSSFADE_SECONDS` 10).
+  `MAX_STRETCH` 0.08, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.8,
+  `EDGE_SECONDS` 30, `FULL_LU` 0, `DROP_LU` 2), of
+  `tasks/recording_search_manager.py` (`_FADE_TEMPO_PENALTY` 0.1,
+  `_FADE_INTENSITY_WEIGHT` 0.04, `_FADE_SOUND_WEIGHT` 0.1, `_FADE_WEAK_WEIGHT`
+  1) and of `static/song_player.js` (`SMART_CROSSFADE_SECONDS` 10,
+  `TARGET_LUFS` -14, `PEAK_CEILING` 0.891).

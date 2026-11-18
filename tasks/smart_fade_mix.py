@@ -15,36 +15,34 @@ two songs so the hand-over keeps the beat. It returns numbers only: the page
 fetches the songs and does the whole fade itself.
 
 Main Features:
-* Only a few seconds around each point are decoded (mono, one common rate).
-* The beats come from librosa's beat tracker, the one the analysis uses; the
-  tempo and the grid come from a line fitted through the beat times, finer
-  than the tracker's frames.
-* The next song matches the first song's tempo during the mix (stretch, pitch
-  kept by the page), half or double time included; past MAX_STRETCH it is not
-  stretched. tempos_match is that rule, shared with the smart fade order.
-* The mix lasts at least MIX_SECONDS, in whole steps of BEAT_STEP beats of
-  the first song (real DJ transitions peak at 32 and 64 beats), and ends on
-  its beat nearest to its fade point; the next song plays on alone from
-  resume_at. Without room (a late first beat) the mix loses whole steps down
-  to MIN_MIX_SECONDS, the page's plain crossfade. No steady beat or no room
-  raises ValueError.
-* The next song enters on a section start near its fade point: the beat
-  nearest the highest peak, within PHRASE_REACH_BEATS beats, of a Foote
-  novelty curve (PHRASE_KERNEL_BEATS checkerboard on beat-synchronous chroma,
-  MFCC and loudness) read from PHRASE_LEAD_SECONDS before the point, unless
-  that leaves room for a shorter mix. On Harmonix Set section annotations of
-  library songs this hit a real section start about three times as often;
-  at the first song's fade point (deep in its outro) it did not help.
-* style says how the page mixes: 'blend' when the tempos match (the bass of
-  the two songs crosses around swap_at, the middle beat of the mix), 'rise'
-  when the next song is also RISE_DB louder (it comes in from the treble up),
-  'fade' when they do not match or the planned parts' onsets line up within
-  MATCH_MS less than MATCH_SHARE as well as at some other offset (a grid the
-  tracker could not hold; ties from 16th-note hi-hats pass): unstretched,
-  only MIN_MIX_SECONDS of whole beats, the first song muffled as it goes.
+* A few seconds around each point are decoded (mono, one rate); a file
+  libsndfile cannot open (AAC .m4a) goes through the analysis PyAV loader.
+* Beats come from librosa's tracker, tempo and grid from a line fitted through
+  the beat times. The next song takes the first song's tempo in the mix
+  (stretch, pitch kept by the page, half or double time too, none past
+  MAX_STRETCH); tempos_match is that rule, shared with the smart fade order.
+* The mix lasts at least MIX_SECONDS in whole BEAT_STEP steps (real DJ
+  transitions peak at 32 and 64 beats) and ends on the beat nearest the fade
+  point; without room it loses steps down to MIN_MIX_SECONDS. No steady beat
+  or no room raises ValueError.
+* The next song enters on a section start: the beat nearest the highest peak,
+  within PHRASE_REACH_BEATS, of a Foote novelty curve (PHRASE_KERNEL_BEATS
+  checkerboard on beat-synchronous chroma, MFCC and loudness) read from
+  PHRASE_LEAD_SECONDS before the point; on Harmonix Set annotations it hit a
+  real section start about three times as often.
+* style: 'blend' (tempos match, the bass crosses at swap_at), 'rise' (also
+  RISE_DB louder, in from the treble), 'fade' (tempos or onsets do not line up
+  within MATCH_MS at MATCH_SHARE: unstretched, MIN_MIX_SECONDS, first song
+  muffled).
+* confidence: 'high' beat-locked, 'low' a fade where the first song is at
+  least FULL_LU over its own loudness and the next comes in DROP_LU lower
+  (relative to its own), else 'medium'; loudness is BS.1770 of the whole song
+  at LEVEL_RATE, decoded only for a fade. The page plays a 'low' plan as its
+  plain crossfade.
 """
 
 import math
+import os
 
 import numpy as np
 
@@ -62,6 +60,17 @@ PHRASE_REACH_BEATS = 8
 MATCH_MS = 30.0
 MATCH_SHARE = 0.8
 ONSET_HOP = 256
+EDGE_SECONDS = 30.0
+LEVEL_RATE = 11025
+BLOCK_SECONDS = 0.4
+STEP_SECONDS = 0.1
+K_SHELF_HZ = 1500.0
+K_SHELF_DB = 4.0
+K_PASS_HZ = 38.0
+ABSOLUTE_GATE_LUFS = -70.0
+RELATIVE_GATE_LU = 10.0
+FULL_LU = 0.0
+DROP_LU = 2.0
 
 
 def tempos_match(tempo_out, tempo_in):
@@ -69,11 +78,82 @@ def tempos_match(tempo_out, tempo_in):
     return np.any([np.abs(ratio * octave - 1.0) <= MAX_STRETCH for octave in OCTAVES], axis=0)
 
 
-def _region(path, start, seconds):
+def _load(path, rate, start=0.0, seconds=None):
     import librosa
+    import soundfile
 
-    audio, _sr = librosa.load(path, sr=RATE, mono=True, offset=max(0.0, start), duration=seconds)
+    try:
+        audio, _sr = librosa.load(path, sr=rate, mono=True, offset=max(0.0, start), duration=seconds)
+    except soundfile.SoundFileRuntimeError:
+        from tasks.analysis.song import robust_load_audio_with_fallback
+
+        audio, _sr = robust_load_audio_with_fallback(path, target_sr=rate)
+        if audio is None:
+            raise RuntimeError(f'{os.path.basename(path)} could not be decoded.')
+        begin = int(round(max(0.0, start) * rate))
+        audio = audio[begin:] if seconds is None else audio[begin:begin + int(round(seconds * rate))]
     return np.asarray(audio, dtype=np.float32)
+
+
+def _region(path, start, seconds):
+    return _load(path, RATE, start, seconds)
+
+
+def _k_weighted(audio, rate):
+    from scipy.signal import lfilter
+
+    angle = 2.0 * math.pi * K_SHELF_HZ / rate
+    gain = 10.0 ** (K_SHELF_DB / 40.0)
+    root = math.sqrt(2.0 * gain) * math.sin(angle)
+    cos = math.cos(angle)
+    shelf_b = [gain * ((gain + 1) + (gain - 1) * cos + root), -2 * gain * ((gain - 1) + (gain + 1) * cos), gain * ((gain + 1) + (gain - 1) * cos - root)]
+    shelf_a = [(gain + 1) - (gain - 1) * cos + root, 2 * ((gain - 1) - (gain + 1) * cos), (gain + 1) - (gain - 1) * cos - root]
+    angle = 2.0 * math.pi * K_PASS_HZ / rate
+    cos, sin = math.cos(angle), math.sin(angle)
+    pass_b = [(1 + cos) / 2, -(1 + cos), (1 + cos) / 2]
+    pass_a = [1 + sin, -2 * cos, 1 - sin]
+    shelved = lfilter(np.float32(shelf_b), np.float32(shelf_a), audio.astype(np.float32))
+    return lfilter(np.float32(pass_b), np.float32(pass_a), shelved)
+
+
+def _lufs(energy):
+    return -0.691 + 10.0 * np.log10(np.maximum(energy, 1e-12))
+
+
+def _integrated(energy):
+    loud = _lufs(energy)
+    gated = energy[loud > ABSOLUTE_GATE_LUFS]
+    if not gated.size:
+        return ABSOLUTE_GATE_LUFS
+    kept = energy[(loud > ABSOLUTE_GATE_LUFS) & (loud > float(_lufs(gated.mean())) - RELATIVE_GATE_LU)]
+    return float(_lufs(kept.mean()))
+
+
+def _levels(path):
+    audio = _load(path, LEVEL_RATE)
+    weighted = _k_weighted(audio, LEVEL_RATE)
+    power = np.concatenate([[0.0], np.cumsum(np.square(weighted, dtype=np.float64))])
+    size = int(round(BLOCK_SECONDS * LEVEL_RATE))
+    count = max(1, int((audio.size - size) / (STEP_SECONDS * LEVEL_RATE)) + 1)
+    starts = np.minimum(np.round(np.arange(count) * STEP_SECONDS * LEVEL_RATE).astype(np.int64), audio.size)
+    ends = np.minimum(starts + size, audio.size)
+    energy = (power[ends] - power[starts]) / np.maximum(ends - starts, 1)
+    return {'energy': energy, 'loudness': _integrated(energy)}
+
+
+def _part_lufs(levels, start, seconds):
+    energy = levels['energy']
+    first = min(max(0, int(math.ceil(start / STEP_SECONDS - 1e-9))), energy.size - 1)
+    last = max(first, min(int(math.floor((start + seconds - BLOCK_SECONDS) / STEP_SECONDS + 1e-9)), energy.size - 1))
+    return float(_lufs(energy[first:last + 1].mean()))
+
+
+def _confidence(ending, mix_at, starting, in_at, seconds, in_seconds, locked):
+    if locked:
+        return 'high'
+    out_level = _part_lufs(ending, mix_at, seconds) - ending['loudness']
+    in_level = _part_lufs(starting, in_at, in_seconds) - starting['loudness']
+    return 'low' if out_level >= FULL_LU and in_level - out_level <= -DROP_LU else 'medium'
 
 
 def _beats(audio):
@@ -207,7 +287,7 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
         style = 'rise'
     else:
         style = 'blend'
-    return {
+    plan = {
         'mix_at': round(a_start + mix_at, 4),
         'mix_seconds': round(overlap, 4),
         'in_at': round(b_start + first_in, 4),
@@ -219,3 +299,5 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
         'swap_at': round(a_start + mix_at + beats // 2 * beat, 4),
         'beat_seconds': round(beat, 4),
     }
+    plan['confidence'] = 'high' if locked else _confidence(_levels(path_out), a_start + mix_at, _levels(path_in), b_start + first_in, overlap, overlap * rate, locked)
+    return plan

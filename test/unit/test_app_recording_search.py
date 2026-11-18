@@ -9,44 +9,38 @@
 """Recording search blueprint: request validation and error mapping.
 
 Main Features:
-* A request without a clip or with a bad count answers 400
-* A clip over RECORDING_SEARCH_MAX_UPLOAD_MB answers 413
-* The manager's ValueError answers 400 with its message, the index's
-  IndexUnavailable 503 with its message, any other exception (a plain
-  RuntimeError included) a generic 500 that carries no internal detail
-* A successful search hands the clip to the manager as a stream (never read
-  into memory by the blueprint), passes the count through, scopes the results
-  to the requested count and reports the count
-* The count defaults to the config default
-* The by_track endpoint answers 400 without a song, with a bad count or an
-  unknown song, passes the canonical id through, scopes the results and maps
-  the manager errors like the clip search
-* No response of this API ever carries an internal canonical id: results are
-  translated to the selected server's ids and the echoed song id goes through
-  provider_echo_id, even when the caller sent a canonical id
-* by_track knows nothing of smart fade (a smart_fade field changes nothing);
-  the shared static/song_player.js reorders through the smart_fade endpoint
-  and cuts, stretches and fades the decoded songs on one audio clock started
-  in the Play click, never on an audio element (Safari); the playing row fills
-  with the progress and seeks up to its fade; it mixes in the plan's style
-  (bass swap, rise or filtered fade); every source starts on a whole sample at
-  a whole-sample offset and after every mix the next song plays on from a
-  fresh source, so outside a transition the song is played as decoded
+* No clip or a bad count answers 400, a clip over
+  RECORDING_SEARCH_MAX_UPLOAD_MB 413
+* The manager's ValueError answers 400 and IndexUnavailable 503 with its
+  message, any other exception (a plain RuntimeError too) a generic 500
+  without internal detail
+* A search streams the clip to the manager (never read into memory here),
+  passes the count (config default when missing) and scopes the results to it
+* by_track answers 400 without a song, with a bad count or an unknown song,
+  passes the canonical id through, scopes the results and maps the errors
+* No response carries an internal canonical id: results use the selected
+  server's ids and the echoed id goes through provider_echo_id
+* by_track ignores a smart_fade field; the shared static/song_player.js
+  reorders through the smart_fade endpoint and cuts, stretches and fades the
+  decoded songs on one audio clock started in the Play click, never an audio
+  element (Safari); the playing row fills and seeks up to its fade; it mixes
+  in the plan's style; sources start on whole samples and after a mix a fresh
+  source plays on (outside a transition, as decoded)
+* With Smart fade every song plays at TARGET_LUFS (K-weighted, gated; a quiet
+  song raised only up to PEAK_CEILING) and a 'low' plan plays the plain
+  crossfade
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
-* The play endpoint (also with the fingerprint off) sends a library song from
-  the media server and removes the temporary copy; an id outside the library
-  is a 404 and a failed download a 502
-* The transition endpoint answers 400 for missing or bad seconds, 404 for a
-  song outside the library, plans the mix from both downloads and answers only
-  that plan as JSON (no audio), removes them, and answers 400 when the songs
-  have no steady beat
-* The warmup endpoint relays the manager status
-* With NEURAL_FINGERPRINT_ENABLED false every route but play answers 503
-  naming the flag and the page is told the feature is disabled
-* The page hands the template the built-in HTTPS port, or zero when the
-  listener is disabled, and the reason when it could not start
+* play (also with the fingerprint off) sends a library song and removes the
+  temporary copy; outside the library 404, a failed download 502
+* transition answers 400 for missing or bad seconds, 404 outside the library,
+  plans from both downloads, answers only the JSON plan (no audio), removes
+  them, and answers 400 without a steady beat
+* warmup relays the manager status; with NEURAL_FINGERPRINT_ENABLED false
+  every route but play answers 503 naming the flag and the page says so
+* The page gets the built-in HTTPS port, or zero when the listener is
+  disabled, and the reason when it could not start
 """
 
 import importlib.util
@@ -478,6 +472,28 @@ def test_every_source_starts_on_a_whole_sample_and_each_mix_hands_over_to_a_fres
     assert 'state.scheduled = direct ? [blend, entry] : [outgoing, blend, entry];' in mix
     stretch = source[source.index('function stretchSegment(buffer, inputAt, seconds) {'):source.index('function powerCurve(')]
     assert 'const resume = Math.round(inputAt(count / rate) * rate);' in stretch
+
+
+def test_with_smart_fade_every_song_plays_at_the_same_loudness():
+    source = _repo_file('static', 'song_player.js')
+    assert 'const TARGET_LUFS = -14;' in source and 'const PEAK_CEILING = 0.891;' in source
+    load = source[source.index('async function loadSong(index) {'):source.index('function markPlaying(')]
+    assert 'if (playMode.beatMatch) levels.set(buffer, loudnessGain(buffer));' in load
+    start = source[source.index('function startSource('):source.index('function halt(')]
+    assert 'level.gain.value = levelOf(buffer);' in start and 'gain.connect(level);' in start and 'level.connect(audioCtx.destination);' in start
+    safe = source[source.index('function safeCurves('):source.index('function bassCurve(')]
+    assert '[a0 + i] || 0) * la;' in safe and '[b0 + i] || 0) * lb;' in safe
+    loud = source[source.index('function loudnessGain(buffer) {'):source.index('function tempoGlide(')]
+    assert 'lufs(energy) > -70' in loud and 'const gate = lufs(mean(loud)) - 10;' in loud and 'sum += z * z;' in loud
+    assert 'return gain > 1 ? Math.max(1, Math.min(gain, PEAK_CEILING / Math.max(peak, 1e-9))) : gain;' in loud
+    assert 'levels.set(state.mix.lead, levelOf(buffer));' in source and 'levels.set(state.mix.buffer, levelOf(next));' in source
+
+
+def test_a_low_confidence_plan_plays_the_plain_crossfade():
+    source = _repo_file('static', 'song_player.js')
+    load = source[source.index('async function loadTransition(index) {'):source.index('function entryOffset(')]
+    assert "return response.ok && plan && plan.mix_seconds > 0 && plan.confidence !== 'low' ? plan : null;" in load
+    assert 'handsOver' not in source and 'handover_at' not in source and 'Natural hand-over' not in source
 
 
 def test_a_beat_matched_mix_glides_the_tempo_from_one_song_to_the_next():
