@@ -3029,7 +3029,7 @@ the neural fingerprint.
    player. Smart fade and Demo exclude each other.
 2. **Play** plays each song from its start time to its end time (the first
    one from the beginning, the last one to its end) and mixes it into the
-   next with one of the four transitions below. Every song plays at the same
+   next with one of the three transitions below. Every song plays at the same
    loudness (-14 LUFS; a quiet song is raised only as far as its peaks allow).
    The line under the player names the transition while it plays.
 3. **One highlighted row, the louder song.** During a transition the
@@ -3040,18 +3040,17 @@ the neural fingerprint.
    plan arrives the next row's bar starts with a small icon for how that song
    comes in: a faint dot while it is being planned, an equals sign (accent
    colour) for a beat-matched mix, rising lines for a beat-matched rise, a
-   square split in two halves for the default crossfade (lighter without a
-   plan). Hovering an icon names the transition and the two tempos, and the
+   square split in two halves for the default crossfade. Hovering an icon names the transition and the two tempos, and the
    player bar counts the transitions planned so far (beat-matched first, then
    crossfades).
 5. **Skip to the fade** jumps to 6 seconds before the next transition.
    Pressed while the next song or its plan is still loading, it waits for them
    ("Preparing the mix..."), because a plan that arrives after its mix point
-   can only be played as the plain crossfade. A click or a drag on the playing
+   can only be played as the default crossfade on the order times. A click or a drag on the playing
    row moves in the song, never closer than one second to the line where its
    fade starts, so the planned transition always happens.
 
-**The four transitions**
+**The three transitions**
 
 The default is the crossfade; the two beat-matched mixes play only on a
 confirmed beat lock, when the server is sure of the beats of both songs.
@@ -3076,22 +3075,22 @@ confirmed beat lock, when the server is sure of the beats of both songs.
      song comes in from the treble down (a high-pass opens from 800 Hz to
      10 Hz over the mix, so its bass arrives last); the ending song goes out
      as in the blend.
-3. **Default crossfade, on the plan's points**
-   - Label: `Default crossfade into <next song> (no confirmed beat lock, X and Y BPM)`
-   - When: there is a plan but no confirmed lock (`style: "fade"`): the tempos
-     are too far apart, the stretch would pass 5%, the drum hits would not
-     line up, or the beat trackers disagree on either song.
-   - How it sounds: an equal-power volume crossfade of about 10 seconds (the
-     fewest whole beats of the ending song that reach 10 seconds), no filters,
-     nothing stretched. It starts on a beat of the ending song and the next
-     song comes in on its section start, the points the plan already found.
-4. **Default crossfade, without a plan**
-   - Label: `Default crossfade into <next song> (no transition plan for this pair)`;
-     in the middle of the crossfade the line switches to
+3. **Default crossfade**
+   - Label: `Default crossfade into <next song> (X and Y BPM)`, or just
+     `Default crossfade into <next song>` when there is no plan and so no
+     measured tempos; the line then switches to
      `Playing <next song> from m:ss until m:ss`.
-   - When: there is no transition plan for the pair (section 19.2).
-   - How it sounds: the same 10-second equal-power crossfade, between the two
-     times of the order endpoint, not on a beat.
+   - When: every other case. There is a plan but no confirmed lock
+     (`style: "fade"`: the tempos are too far apart, the drum hits would not
+     line up, or the beat trackers disagree on either song), or there is no
+     plan at all (an error, no answer, or an answer after its mix point).
+   - How it sounds: an equal-power volume crossfade of about 10 seconds, one
+     song going down while the next comes up, no filters, nothing stretched;
+     each song keeps its own tempo.
+   - Where: with a plan it starts on a beat of the ending song and the next
+     song comes in on its section start, the points the plan found, over the
+     fewest whole beats of the ending song that reach 10 seconds. Without a
+     plan it runs between the two times of the order endpoint (section 19.2).
 
 ### 19.2. The Two Endpoints
 
@@ -3166,9 +3165,9 @@ same way. With the neural fingerprint off both answer 503.
 | `style: "blend"` | 1. Beat-matched mix with a bass swap |
 | `style: "rise"` | 2. Beat-matched rise |
 | `style: "fade"` (`confidence` `medium` or `low`) | 3. Default crossfade, on the plan's points |
-| an error, no answer, or an answer after its `mix_at` | 4. Default crossfade, without a plan |
+| an error, no answer, or an answer after its `mix_at` | 3. Default crossfade, on the order times |
 
-The default crossfade without a plan uses only the order endpoint's two times:
+Without a plan the default crossfade uses only the order endpoint's two times:
 
 | Instead of the plan's | the page uses |
 |---|---|
@@ -3256,7 +3255,8 @@ it plays to the end of its file and the next song starts right after.
    28 seconds after it. A file libsndfile cannot open (an AAC `.m4a`; librosa
    1.0 no longer falls back to another decoder) goes through the analysis's
    PyAV loader instead: before, every such pair answered 500 and played the
-   plain crossfade, 14 of 86 transition calls in one evening of listening.
+   default crossfade without a plan, 14 of 86 transition calls in one evening
+   of listening.
    librosa's beat tracker, the one the analysis uses,
    finds the beats in each (the next song's tempo only after its fade-in
    time); the tempo and the beat grid come from a line fitted through the beat
@@ -3428,8 +3428,9 @@ it plays to the end of its file and the next song starts right after.
      clipped samples in one mix). Peaks a song already has on its own
      (decoded lossy files can pass 1.0) are left as they are, and outside a
      mix every song plays exactly as decoded.
-   - **Plain crossfade.** Equal-power curves over the 10 seconds before the
-     ending song's fade-out time, the next song from its fade-in time.
+   - **Default crossfade without a plan.** Equal-power curves over the 10
+     seconds before the ending song's fade-out time, the next song from its
+     fade-in time.
    - **Same loudness.** Each decoded song's integrated loudness is measured
      in the page the same way (K-weighted, every channel, gated) and a gain
      after all the mix filters brings it to -14 LUFS, as streaming players
@@ -3445,7 +3446,8 @@ it plays to the end of its file and the next song starts right after.
      showed the quieter song. Recorded through the page in Chromium 148 and
      Firefox 150 with synthetic songs, each song outside its transitions
      (before the first, and after a blend, a rise, the filtered fade the
-     default crossfade replaced, and a plain crossfade) came out as decoded:
+     default crossfade replaced, and a crossfade without a plan) came out as
+     decoded:
      bit for bit, or in Chromium off
      by less than -185 dBFS on under 1% of near-silent samples (its rounding
      of the start time), with 0.00 dB change at 15 kHz.
@@ -3477,7 +3479,7 @@ it plays to the end of its file and the next song starts right after.
    - **A radio-style hand-over** for `low` pairs (the ending song plays to
      where it falls 8 LU under its own loudness and fades in 2.5 seconds
      while the next one starts from its first sound): rejected after
-     listening, the plain crossfade is kept for them.
+     listening, the default crossfade is kept for them.
    - **Fading only one side** when one song is much louder at the cut, as
      radio crossfades do. In the 14 rated transitions every pair where the
      ending song was already quiet or the next started quiet sounded good

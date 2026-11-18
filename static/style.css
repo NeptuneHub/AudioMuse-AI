@@ -1621,9 +1621,6 @@ html.dark-mode body .playable-list {
 .play-mark[data-mark="pending"] {
     opacity: 0.45;
 }
-.play-mark[data-mark="plain"] {
-    opacity: 0.6;
-}
 .play-mark[data-mark="none"] {
     visibility: hidden;
 }

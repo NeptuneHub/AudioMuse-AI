@@ -27,9 +27,9 @@ Main Features:
   in the plan's style; sources start on whole samples and after a mix a fresh
   source plays on (outside a transition, as decoded)
 * With Smart fade every song plays at TARGET_LUFS (K-weighted, gated; a quiet
-  song raised only up to PEAK_CEILING); a plan without a beat lock plays the
-  default crossfade (no filters) on its points, labelled like the one without
-  a plan; only the playing song's transition is planned (play takes a copy),
+  song raised only up to PEAK_CEILING); without a beat lock, plan or no plan,
+  it is the one "Default crossfade" (no filters, the plan's points if any);
+  only the playing song's transition is planned (play takes a copy),
   the next row shows an icon for how its song comes in, the bar counts them
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
@@ -500,9 +500,11 @@ def test_a_plan_without_a_beat_lock_plays_the_labelled_default_crossfade_on_its_
     assert '} else if (!direct) {\n                        fadeMids(blend, state.handoverAt, swap, false);\n                        swapBass(blend, swap - length / 4, length / 2, false);' in mix
     assert 'outgoing.air.frequency' not in mix
     assert "const kind = direct ? 'Default crossfade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;" in source
-    assert 'no confirmed beat lock, ${mix.tempo_from} and ${mix.tempo_to} BPM' in source
+    assert 'const tempos = direct ? `${mix.tempo_from} and ${mix.tempo_to} BPM`' in source
+    assert "if (!plan) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };" in source
+    assert 'no transition plan' not in source and "'plain'" not in source
     fallback = source[source.index('const span = crossfadeSeconds();'):]
-    assert 'if (smooth) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title} (no transition plan for this pair)`; });' in fallback
+    assert 'if (smooth) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title}`; });' in fallback
     assert 'handsOver' not in source and 'handover_at' not in source and 'Natural hand-over' not in source
 
 

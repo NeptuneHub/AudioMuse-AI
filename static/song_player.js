@@ -32,16 +32,16 @@
  * source until a mix): the first song loses its bass around the middle of the
  * mix, its mids over the second half and its highs last; the next song brings
  * its highs first, its mids over the first half and its bass last, the two
- * bass lines crossing over the middle half. Without a plan (no steady beat)
- * the songs cross over SMART_CROSSFADE_SECONDS. Both fade curves are lowered
+ * bass lines crossing over the middle half. Both fade curves are lowered
  * just enough where the two songs' sum would peak above the louder of them
  * (two loud masters near -3 dB each pass full scale and clip), with
  * MIX_HEADROOM for the filters, which can raise a peak a little. Rise brings a louder next song
  * in from the treble up. The bass swap and the rise only play on a confirmed
- * beat lock; any other plan ('fade') is the default crossfade: an equal-power
- * crossfade with no filters over the plan's mix, from a beat of the first song
- * into the next song's section start, labelled "Default crossfade" like the
- * one without a plan. A row click plays from that row.
+ * beat lock; everything else is the default crossfade: an equal-power
+ * crossfade with no filters, over the plan's mix from a beat of the first song
+ * into the next song's section start when there is a plan ('fade'), else over
+ * SMART_CROSSFADE_SECONDS at the order's times, labelled "Default crossfade"
+ * either way. A row click plays from that row.
  *
  * In a beat-matched mix the tempo glides beat by beat from the first song's
  * to the next song's (tempoGlide): both songs are stretched onto that grid,
@@ -52,8 +52,8 @@
  * plays, as it plays (requestPlan keeps each answer; play takes a fresh copy),
  * and the next row's bar starts with an icon (MARKS) for how that song comes
  * in: a dot while it is planned, an equals sign for a beat-matched mix, rising
- * lines for a rise, a split square for the default crossfade (lighter without
- * a plan); the player bar counts the transitions planned so far.
+ * lines for a rise, a split square for the default crossfade; the player bar
+ * counts the transitions planned so far.
  *
  * With Smart fade every song plays at the same loudness: its integrated
  * loudness (BS.1770, K-weighted, gated) is measured once decoded and a gain
@@ -64,7 +64,7 @@
  * the starting one (swapView), not when the transition starts or ends.
  *
  * Skip to the fade pressed while the next song or its plan is still loading
- * waits for them, so the planned mix is not missed for the plain crossfade.
+ * waits for them, so the planned mix is not missed for the default crossfade.
  *
  * Songs are fetched whole and decoded into Web Audio buffers; every cut, fade
  * and stretch is scheduled on one AudioContext clock made in the first Play
@@ -137,7 +137,7 @@
     function markHtml(mark) {
         const kind = mark ? mark.kind : 'none';
         const title = mark && mark.title ? ` title="${escapeHtml(mark.title)}"` : '';
-        return `<span class="play-mark" data-mark="${kind}"${title}>${MARKS[kind === 'plain' ? 'crossfade' : kind] || ''}</span>`;
+        return `<span class="play-mark" data-mark="${kind}"${title}>${MARKS[kind] || ''}</span>`;
     }
 
     function showSpans(list, songs, label, markOf) {
@@ -580,10 +580,10 @@
         }
 
         function markFor(plan, to) {
-            if (!plan) return { kind: 'plain', title: `Default crossfade into ${to.title} (no transition plan for this pair)` };
+            if (!plan) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };
             if (plan.style === 'blend') return { kind: 'blend', title: `Beat-matched mix with a bass swap into ${to.title} (${plan.tempo_from} to ${plan.tempo_to} BPM)` };
             if (plan.style === 'rise') return { kind: 'rise', title: `Beat-matched rise into ${to.title} (${plan.tempo_from} to ${plan.tempo_to} BPM)` };
-            return { kind: 'crossfade', title: `Default crossfade into ${to.title} (no confirmed beat lock, ${plan.tempo_from} and ${plan.tempo_to} BPM)` };
+            return { kind: 'crossfade', title: `Default crossfade into ${to.title} (${plan.tempo_from} and ${plan.tempo_to} BPM)` };
         }
 
         function requestPlan(from, to) {
@@ -630,7 +630,7 @@
         function showSummary() {
             const kinds = listPairs.map(key => (planMarks.get(key) || { kind: 'none' }).kind);
             const special = kinds.filter(kind => kind === 'blend' || kind === 'rise').length;
-            const crossfades = kinds.filter(kind => kind === 'crossfade' || kind === 'plain').length;
+            const crossfades = kinds.filter(kind => kind === 'crossfade').length;
             playSummary.innerHTML = special + crossfades
                 ? `<span class="play-mark" data-mark="blend">${MARKS.blend}</span>${special} <span class="play-mark" data-mark="crossfade">${MARKS.crossfade}</span>${crossfades}`
                 : '';
@@ -724,7 +724,7 @@
                     };
                     after(state.handoverAt, () => {
                         const kind = direct ? 'Default crossfade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;
-                        const tempos = direct ? `no confirmed beat lock, ${mix.tempo_from} and ${mix.tempo_to} BPM` : `tempo gliding from ${mix.tempo_from} to ${mix.tempo_to} BPM`;
+                        const tempos = direct ? `${mix.tempo_from} and ${mix.tempo_to} BPM` : `tempo gliding from ${mix.tempo_from} to ${mix.tempo_to} BPM`;
                         nowPlaying.textContent = `${kind} into ${playQueue[index + 1].title} (${tempos})`;
                     });
                     after(resume, () => begin(index + 1, state.next, state.scheduled[state.scheduled.length - 1]));
@@ -744,7 +744,7 @@
                     const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading && !smooth ? span : 0);
                     if (smooth) entry.gain.gain.setValueCurveAtTime(curves[1], state.handoverAt, span);
                     state.scheduled = [entry];
-                    if (smooth) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title} (no transition plan for this pair)`; });
+                    if (smooth) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title}`; });
                     after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, state.scheduled[0]));
                 }
             };
