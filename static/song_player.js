@@ -37,22 +37,27 @@
  * just enough where the two songs' sum would peak above the louder of them
  * (two loud masters near -3 dB each pass full scale and clip), with
  * MIX_HEADROOM for the filters, which can raise a peak a little. Rise brings a louder next song
- * in from the treble up, fade
- * (tempos or beats that do not match, a 10 second mix) plays the next song unstretched while the first
- * one is muffled by a closing low-pass (open on every source until then) and
- * the bass swaps too. A row click plays from that row.
+ * in from the treble up. The bass swap and the rise only play on a confirmed
+ * beat lock; any other plan ('fade') is the default crossfade: an equal-power
+ * crossfade with no filters over the plan's mix, from a beat of the first song
+ * into the next song's section start, labelled "Default crossfade" like the
+ * one without a plan. A row click plays from that row.
  *
  * In a beat-matched mix the tempo glides beat by beat from the first song's
  * to the next song's (tempoGlide): both songs are stretched onto that grid,
  * each half the difference off in the middle, so neither jumps in tempo when
  * the mix starts or when the next song plays on alone.
  *
+ * With Smart fade the page asks for a transition plan only for the song that
+ * plays, as it plays (requestPlan keeps each answer; play takes a fresh copy),
+ * and the next row's bar starts with an icon (MARKS) for how that song comes
+ * in: a dot while it is planned, an equals sign for a beat-matched mix, rising
+ * lines for a rise, a split square for the default crossfade (lighter without
+ * a plan); the player bar counts the transitions planned so far.
+ *
  * With Smart fade every song plays at the same loudness: its integrated
  * loudness (BS.1770, K-weighted, gated) is measured once decoded and a gain
  * brings it to TARGET_LUFS, raising a quiet song only up to PEAK_CEILING.
- * When the plan's confidence is 'low' (no beat lock, and the next song would
- * come in quieter than the first one at the cut, each against its own
- * loudness) the page plays the plain crossfade instead of the filtered fade.
  *
  * During a transition the highlight and the clock stay on the louder song:
  * the ending one until the middle of the mix or crossfade, then they jump to
@@ -85,7 +90,6 @@
     const MID_CUT_DB = -27;
     const RISE_FROM_HZ = 800;
     const RISE_TO_HZ = 10;
-    const MUFFLE_TO_HZ = 400;
     const TARGET_LUFS = -14;
     const PEAK_CEILING = 0.891;
     const settings = document.currentScript ? document.currentScript.dataset : {};
@@ -95,7 +99,7 @@
     const OPTIONS = {
         smart: {
             label: 'Smart fade',
-            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays them all at the same loudness, each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (a 10 second filtered fade when the tempos or the beats do not match, or a plain 10 second crossfade when the next song would also come in quieter), and shows Skip to the fade. Set it before the search.'
+            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays them all at the same loudness, each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (only when the beats are confirmed to lock; otherwise the default 10 second crossfade, started on a beat and into the next song\'s section start), and shows Skip to the fade. As each transition is planned, a small icon on the next row says how that song comes in: an equals sign for a beat-matched mix, rising lines for a beat-matched rise, a split square for the default crossfade; the player bar counts them. Set it before the search.'
         },
         demo: {
             label: 'Demo',
@@ -123,7 +127,20 @@
         return div.innerHTML;
     }
 
-    function showSpans(list, songs, label) {
+    const MARKS = {
+        pending: '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="1.6" fill="currentColor"/></svg>',
+        crossfade: '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M10.5 1.5v9h-9z" fill="currentColor"/></svg>',
+        blend: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4.5h8M2 7.5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+        rise: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 7l8-4M2 10.5l8-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
+    };
+
+    function markHtml(mark) {
+        const kind = mark ? mark.kind : 'none';
+        const title = mark && mark.title ? ` title="${escapeHtml(mark.title)}"` : '';
+        return `<span class="play-mark" data-mark="${kind}"${title}>${MARKS[kind === 'plain' ? 'crossfade' : kind] || ''}</span>`;
+    }
+
+    function showSpans(list, songs, label, markOf) {
         list.querySelectorAll('.play-span').forEach(span => span.remove());
         const items = list.querySelectorAll('.result-item');
         songs.forEach(song => {
@@ -136,6 +153,7 @@
             const end = clock(song.end);
             (item.querySelector('.result-main') || item).insertAdjacentHTML('beforeend',
                 `<div class="play-span" title="${escapeHtml(label)}: start at ${start}, end at ${end} of ${clock(length)}">`
+                + (markOf ? markHtml(markOf(song)) : '')
                 + `<span class="play-span-track"><span class="play-span-fill" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span>`
                 + `<span>${start} - ${end}</span></div>`);
         });
@@ -374,6 +392,7 @@
             + '<button type="button" class="btn btn-ghost play-skip-btn hidden" disabled>Skip to the fade</button>'
             + '<button type="button" class="btn btn-ghost play-stop-btn" disabled>Stop</button>'
             + '<span class="play-clock"></span>'
+            + '<span class="play-summary" title="Transitions planned for this list: beat-matched mixes, then default crossfades"></span>'
             + '<span class="now-playing" aria-live="polite"></span>';
         list.parentNode.insertBefore(bar, list);
         list.classList.add('playable-list');
@@ -381,6 +400,7 @@
         const skipBtn = bar.querySelector('.play-skip-btn');
         const stopBtn = bar.querySelector('.play-stop-btn');
         const playClock = bar.querySelector('.play-clock');
+        const playSummary = bar.querySelector('.play-summary');
         const nowPlaying = bar.querySelector('.now-playing');
 
         let choice = null;
@@ -393,6 +413,9 @@
         let scrub = null;
         const playNodes = new Set();
         let swapView = null;
+        const planCache = new Map();
+        const planMarks = new Map();
+        let listPairs = [];
 
         function listSongs() {
             const songs = [...list.querySelectorAll('.result-item')]
@@ -548,14 +571,77 @@
             const from = playQueue[index];
             const to = playQueue[index + 1];
             if (!playMode.beatMatch || !URLS.transition || !to || typeof from.end !== 'number' || typeof to.start !== 'number') return null;
-            const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
-            try {
-                const response = await fetch(`${URLS.transition}?${query}`);
-                const plan = await readJsonBody(response);
-                return response.ok && plan && plan.mix_seconds > 0 && plan.confidence !== 'low' ? plan : null;
-            } catch (error) {
-                return null;
+            const plan = await requestPlan(from, to);
+            return plan ? Object.assign({}, plan) : null;
+        }
+
+        function pairKey(from, to) {
+            return `${from.item_id}>${to.item_id}@${from.end}/${to.start}`;
+        }
+
+        function markFor(plan, to) {
+            if (!plan) return { kind: 'plain', title: `Default crossfade into ${to.title} (no transition plan for this pair)` };
+            if (plan.style === 'blend') return { kind: 'blend', title: `Beat-matched mix with a bass swap into ${to.title} (${plan.tempo_from} to ${plan.tempo_to} BPM)` };
+            if (plan.style === 'rise') return { kind: 'rise', title: `Beat-matched rise into ${to.title} (${plan.tempo_from} to ${plan.tempo_to} BPM)` };
+            return { kind: 'crossfade', title: `Default crossfade into ${to.title} (no confirmed beat lock, ${plan.tempo_from} and ${plan.tempo_to} BPM)` };
+        }
+
+        function requestPlan(from, to) {
+            const key = pairKey(from, to);
+            if (!planCache.has(key)) {
+                const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
+                planMarks.set(key, { kind: 'pending', title: 'Planning this transition...' });
+                paintMark(to, planMarks.get(key));
+                planCache.set(key, fetch(`${URLS.transition}?${query}`)
+                    .then(async response => {
+                        const plan = await readJsonBody(response);
+                        return response.ok && plan && plan.mix_seconds > 0 ? plan : null;
+                    })
+                    .catch(() => {
+                        planCache.delete(key);
+                        return null;
+                    })
+                    .then(plan => {
+                        planMarks.set(key, markFor(plan, to));
+                        paintMark(to, planMarks.get(key));
+                        showSummary();
+                        return plan;
+                    }));
             }
+            return planCache.get(key);
+        }
+
+        function paintMark(song, mark) {
+            const item = song.row >= 0 ? list.querySelectorAll('.result-item')[song.row] : null;
+            const old = item && item.querySelector('.play-mark');
+            if (old) old.outerHTML = markHtml(mark);
+        }
+
+        function smartSpans(songs) {
+            const marks = new Map(songs.map((song, k) => {
+                if (!k) return [song, { kind: 'none' }];
+                const from = songs[k - 1];
+                if (!URLS.transition || typeof from.end !== 'number' || typeof song.start !== 'number') return [song, markFor(null, song)];
+                return [song, planMarks.get(pairKey(from, song)) || { kind: 'none' }];
+            }));
+            showSpans(list, songs, 'Smart fade', song => marks.get(song));
+        }
+
+        function showSummary() {
+            const kinds = listPairs.map(key => (planMarks.get(key) || { kind: 'none' }).kind);
+            const special = kinds.filter(kind => kind === 'blend' || kind === 'rise').length;
+            const crossfades = kinds.filter(kind => kind === 'crossfade' || kind === 'plain').length;
+            playSummary.innerHTML = special + crossfades
+                ? `<span class="play-mark" data-mark="blend">${MARKS.blend}</span>${special} <span class="play-mark" data-mark="crossfade">${MARKS.crossfade}</span>${crossfades}`
+                : '';
+        }
+
+        function trackPairs(songs) {
+            listPairs = [];
+            for (let k = 1; k < songs.length; k++) {
+                if (URLS.transition && typeof songs[k - 1].end === 'number' && typeof songs[k].start === 'number') listPairs.push(pairKey(songs[k - 1], songs[k]));
+            }
+            showSummary();
         }
 
         function entryOffset(index) {
@@ -611,21 +697,20 @@
                     const outgoing = direct ? state.node : startSource(mix.lead, state.handoverAt, 0, false);
                     if (!direct) state.node.source.stop(state.handoverAt);
                     outgoing.gain.gain.setValueCurveAtTime(mix.curves[0], state.handoverAt, length);
-                    swapBass(outgoing, swap - length / 4, length / 2, true);
-                    fadeMids(outgoing, swap, resume, true);
-                    if (direct) {
-                        outgoing.air.frequency.setValueAtTime(audioCtx.sampleRate / 2, state.handoverAt);
-                        outgoing.air.frequency.exponentialRampToValueAtTime(MUFFLE_TO_HZ, resume);
+                    if (!direct) {
+                        swapBass(outgoing, swap - length / 4, length / 2, true);
+                        fadeMids(outgoing, swap, resume, true);
                     }
                     outgoing.source.stop(resume);
                     const blend = direct ? startSource(state.next, state.handoverAt, mix.in_at, false) : startSource(mix.buffer, state.handoverAt, 0, false, rise ? 'highpass' : 'lowshelf');
                     if (direct) blend.source.stop(resume);
                     blend.gain.gain.setValueCurveAtTime(mix.curves[1], state.handoverAt, length);
-                    fadeMids(blend, state.handoverAt, swap, false);
                     if (rise) {
+                        fadeMids(blend, state.handoverAt, swap, false);
                         blend.tone.frequency.setValueAtTime(RISE_FROM_HZ, state.handoverAt);
                         blend.tone.frequency.exponentialRampToValueAtTime(RISE_TO_HZ, resume);
-                    } else {
+                    } else if (!direct) {
+                        fadeMids(blend, state.handoverAt, swap, false);
                         swapBass(blend, swap - length / 4, length / 2, false);
                     }
                     [outgoing, blend].forEach(node => node.gain.gain.setValueAtTime(0, resume + 1 / audioCtx.sampleRate));
@@ -638,8 +723,8 @@
                         at: direct ? t => mix.in_at + t - state.handoverAt : t => mix.glide.next(t - state.handoverAt)
                     };
                     after(state.handoverAt, () => {
-                        const kind = direct ? 'Filtered fade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;
-                        const tempos = direct ? `beats not matched, ${mix.tempo_from} and ${mix.tempo_to} BPM` : `tempo gliding from ${mix.tempo_from} to ${mix.tempo_to} BPM`;
+                        const kind = direct ? 'Default crossfade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;
+                        const tempos = direct ? `no confirmed beat lock, ${mix.tempo_from} and ${mix.tempo_to} BPM` : `tempo gliding from ${mix.tempo_from} to ${mix.tempo_to} BPM`;
                         nowPlaying.textContent = `${kind} into ${playQueue[index + 1].title} (${tempos})`;
                     });
                     after(resume, () => begin(index + 1, state.next, state.scheduled[state.scheduled.length - 1]));
@@ -659,6 +744,7 @@
                     const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading && !smooth ? span : 0);
                     if (smooth) entry.gain.gain.setValueCurveAtTime(curves[1], state.handoverAt, span);
                     state.scheduled = [entry];
+                    if (smooth) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title} (no transition plan for this pair)`; });
                     after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, state.scheduled[0]));
                 }
             };
@@ -723,7 +809,8 @@
             if (token !== playToken) return;
             playMode = queue;
             playQueue = queue.songs;
-            if (queue.label) showSpans(list, playQueue, queue.label);
+            if (queue.beatMatch) smartSpans(playQueue);
+            else if (queue.label) showSpans(list, playQueue, queue.label);
             const index = row === undefined ? 0 : playQueue.findIndex(song => song.row >= row);
             if (index < 0) {
                 nowPlaying.textContent = demoMode ? 'No demo for this song.' : 'Nothing to play.';
@@ -775,6 +862,10 @@
         async function arrange(rows, options) {
             stopPlayback();
             shown += 1;
+            planCache.clear();
+            planMarks.clear();
+            listPairs = [];
+            showSummary();
             const seed = options.seed && options.seed.item_id ? { item_id: String(options.seed.item_id), title: options.seed.title || 'Unknown' } : null;
             choice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };
             if (!choice.smart || !rows.length) return rows;
@@ -819,7 +910,9 @@
                     .then(songs => { if (token === shown) showSpans(list, songs, 'Demo'); })
                     .catch(error => { if (token === shown && !playCurrent) nowPlaying.textContent = error.message; });
             } else if (choice.smart) {
-                showSpans(list, listSongs().map(withFade), 'Smart fade');
+                const songs = listSongs().map(withFade);
+                smartSpans(songs);
+                trackPairs(songs);
             }
         }
 
@@ -827,6 +920,8 @@
             stopPlayback();
             shown += 1;
             choice = null;
+            listPairs = [];
+            showSummary();
             bar.classList.add('hidden');
         }
 

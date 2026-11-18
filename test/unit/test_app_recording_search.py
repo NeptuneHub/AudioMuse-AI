@@ -27,8 +27,10 @@ Main Features:
   in the plan's style; sources start on whole samples and after a mix a fresh
   source plays on (outside a transition, as decoded)
 * With Smart fade every song plays at TARGET_LUFS (K-weighted, gated; a quiet
-  song raised only up to PEAK_CEILING) and a 'low' plan plays the plain
-  crossfade
+  song raised only up to PEAK_CEILING); a plan without a beat lock plays the
+  default crossfade (no filters) on its points, labelled like the one without
+  a plan; only the playing song's transition is planned (play takes a copy),
+  the next row shows an icon for how its song comes in, the bar counts them
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
@@ -433,7 +435,7 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
     assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
 
 
-def test_the_player_mixes_in_the_plan_style_bass_swap_rise_or_filtered_fade():
+def test_the_player_mixes_in_the_plan_style_bass_swap_rise_or_default_crossfade():
     source = _repo_file('static', 'song_player.js')
     assert 'source.connect(air);' in source and 'air.connect(tone);' in source and 'tone.connect(mid);' in source and 'mid.connect(gain);' in source
     assert "air.type = 'lowpass';" in source and 'air.frequency.value = audioCtx.sampleRate / 2;' in source
@@ -452,7 +454,7 @@ def test_the_player_mixes_in_the_plan_style_bass_swap_rise_or_filtered_fade():
     assert 'const SMART_CROSSFADE_SECONDS = 10;' in source
     assert "startSource(mix.buffer, state.handoverAt, 0, false, rise ? 'highpass' : 'lowshelf')" in source
     assert 'blend.tone.frequency.exponentialRampToValueAtTime(RISE_TO_HZ, resume);' in source
-    assert 'outgoing.air.frequency.exponentialRampToValueAtTime(MUFFLE_TO_HZ, resume);' in source
+    assert 'MUFFLE_TO_HZ' not in source and 'Filtered fade' not in source
     assert 'startSource(state.next, state.handoverAt, mix.in_at, false)' in source
     assert "const glide = next && mix && mix.style !== 'fade' ? tempoGlide(mix) : null;" in source
     assert 'createDelay(' not in source
@@ -489,11 +491,38 @@ def test_with_smart_fade_every_song_plays_at_the_same_loudness():
     assert 'levels.set(state.mix.lead, levelOf(buffer));' in source and 'levels.set(state.mix.buffer, levelOf(next));' in source
 
 
-def test_a_low_confidence_plan_plays_the_plain_crossfade():
+def test_a_plan_without_a_beat_lock_plays_the_labelled_default_crossfade_on_its_beat_and_section_points():
     source = _repo_file('static', 'song_player.js')
     load = source[source.index('async function loadTransition(index) {'):source.index('function entryOffset(')]
-    assert "return response.ok && plan && plan.mix_seconds > 0 && plan.confidence !== 'low' ? plan : null;" in load
+    assert 'return response.ok && plan && plan.mix_seconds > 0 ? plan : null;' in load and '            return null;\n            const from' not in load
+    mix = source[source.index('} else if (mix && at(mix.mix_at) > now + 0.1) {'):source.index('swapView = {\n')]
+    assert 'if (!direct) {\n                        swapBass(outgoing, swap - length / 4, length / 2, true);\n                        fadeMids(outgoing, swap, resume, true);' in mix
+    assert '} else if (!direct) {\n                        fadeMids(blend, state.handoverAt, swap, false);\n                        swapBass(blend, swap - length / 4, length / 2, false);' in mix
+    assert 'outgoing.air.frequency' not in mix
+    assert "const kind = direct ? 'Default crossfade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;" in source
+    assert 'no confirmed beat lock, ${mix.tempo_from} and ${mix.tempo_to} BPM' in source
+    fallback = source[source.index('const span = crossfadeSeconds();'):]
+    assert 'if (smooth) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title} (no transition plan for this pair)`; });' in fallback
     assert 'handsOver' not in source and 'handover_at' not in source and 'Natural hand-over' not in source
+
+
+def test_only_the_playing_song_is_planned_and_its_next_row_shows_how_it_comes_in():
+    source = _repo_file('static', 'song_player.js')
+    css = _repo_file('static', 'style.css')
+    marks = source[source.index('const MARKS = {'):source.index('function markHtml(')]
+    assert all(kind in marks for kind in ('pending:', 'crossfade:', 'blend:', 'rise:'))
+    assert 'function showSpans(list, songs, label, markOf) {' in source and "+ (markOf ? markHtml(markOf(song)) : '')" in source
+    load = source[source.index('async function loadTransition(index) {'):source.index('function entryOffset(')]
+    assert 'const plan = await requestPlan(from, to);\n            return plan ? Object.assign({}, plan) : null;' in load
+    assert 'planCache.delete(key);' in load and 'paintMark(to, planMarks.get(key));' in load
+    assert "planMarks.set(key, { kind: 'pending', title: 'Planning this transition...' });" in load
+    show = source[source.index('        function show() {'):source.index('        function hide() {')]
+    assert 'smartSpans(songs);\n                trackPairs(songs);' in show
+    assert 'prefetchPlans' not in source and source.count('requestPlan(') == 2
+    assert 'if (queue.beatMatch) smartSpans(playQueue);' in source
+    arrange = source[source.index('async function arrange(rows, options) {'):]
+    assert 'planCache.clear();\n            planMarks.clear();' in arrange[:400]
+    assert '.play-mark[data-mark="blend"]' in css and '.song-player .play-summary:empty' in css
 
 
 def test_a_beat_matched_mix_glides_the_tempo_from_one_song_to_the_next():

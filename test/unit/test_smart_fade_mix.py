@@ -30,6 +30,13 @@ Main Features:
 * A tempo whose beat gap falls between the tracker's frames is measured to a
   fraction of a BPM, not to the nearest frame
 * Songs without a beat raise ValueError
+* Beat agreement (information gain) is full for the same beats, high for half
+  of them, low for random ones; a click track's committee agrees, noise's
+  does not. Only a confirmed lock mixes: a committee under
+  MIN_AGREEMENT_BITS gets the fade plan although tempos and onsets match
+* A default crossfade over a quiet ending into a quiet intro starts on an
+  earlier beat whose equal-power mix dips FLOOR_GAIN_DB less, never past the
+  last EDGE_SECONDS, and steady songs keep their start
 * A full-scale 997 Hz tone measures -3.01 LUFS
 * An unstretched fade from a song at full level into a next song that starts
   quieter than its own level is 'low' (a steady next song 'medium', a beat
@@ -208,6 +215,27 @@ def test_songs_without_a_beat_raise_value_error(tmp_path):
         mix.plan_transition(str(silent), 30.0, str(silent), 5.0)
 
 
+def test_beat_agreement_is_full_for_the_same_beats_and_low_for_random_ones():
+    steady = np.arange(0.0, 20.0, 0.5)
+    assert mix._error_bits(steady, steady) == pytest.approx(np.log2(mix.AGREEMENT_BINS))
+    assert mix._error_bits(steady, steady[::2]) > 4.0
+    scattered = np.sort(np.random.default_rng(3).uniform(0.0, 20.0, steady.size))
+    assert min(mix._error_bits(steady, scattered), mix._error_bits(scattered, steady)) < mix.MIN_AGREEMENT_BITS
+    assert mix._agreement(_click_audio(120, 28.0)) >= mix.MIN_AGREEMENT_BITS
+    noise = np.random.default_rng(4).standard_normal(int(28.0 * mix.RATE)).astype(np.float32) * 0.1
+    assert mix._agreement(noise) < mix.MIN_AGREEMENT_BITS
+
+
+def test_only_a_confirmed_beat_lock_mixes_everything_else_is_the_crossfade_plan(tmp_path, monkeypatch):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    near = _clicks(tmp_path / 'c.wav', 125, 40.0, first=0.2)
+    assert mix.plan_transition(song_out, 30.0, near, 5.0)['style'] == 'blend'
+    monkeypatch.setattr(mix, '_agreement', lambda audio: mix.MIN_AGREEMENT_BITS - 0.1)
+    plan = mix.plan_transition(song_out, 30.0, near, 5.0)
+    _assert_short_fade(plan)
+    assert plan['confidence'] != 'high'
+
+
 def test_a_full_scale_997_hz_tone_measures_minus_3_lufs(tmp_path):
     rate = 48000
     tone = np.sin(2 * np.pi * 997 * np.arange(20 * rate) / rate)
@@ -227,7 +255,21 @@ def _curve(*pieces):
 
 def _db_levels(curve):
     energy = 10.0 ** ((curve + 0.691) / 10.0)
-    return {'energy': energy, 'loudness': mix._integrated(energy)}
+    return {'energy': energy, 'loudness': mix._integrated(energy), 'seconds': curve.size * mix.STEP_SECONDS + mix.BLOCK_SECONDS - mix.STEP_SECONDS}
+
+
+def test_a_default_crossfade_starts_where_the_mix_dips_least_within_the_last_30_seconds():
+    ending = _db_levels(_curve((180.0, -14.0, -14.0), (12.0, -14.0, -40.0), (8.0, -40.0, -40.0)))
+    quiet_intro = _db_levels(_curve((8.0, -32.0, -32.0), (100.0, -14.0, -14.0)))
+    beats = np.arange(165.0, 190.0, 0.5)
+    chosen = mix._fuller_start(ending, 0.0, beats, 185.0, quiet_intro, 0.0, 10.0)
+    assert chosen < 185.0 and chosen + 10.0 >= ending['seconds'] - mix.EDGE_SECONDS
+    gain = mix._mix_floor(ending, chosen, quiet_intro, 0.0, 10.0) - mix._mix_floor(ending, 185.0, quiet_intro, 0.0, 10.0)
+    assert gain >= mix.FLOOR_GAIN_DB
+    early = mix._fuller_start(ending, 0.0, np.arange(100.0, 190.0, 0.5), 185.0, quiet_intro, 0.0, 10.0)
+    assert early + 10.0 >= ending['seconds'] - mix.EDGE_SECONDS
+    steady = _db_levels(_curve((200.0, -14.0, -14.0)))
+    assert mix._fuller_start(steady, 0.0, beats, 185.0, steady, 0.0, 10.0) == 185.0
 
 
 def test_an_unlocked_fade_from_full_level_into_a_quieter_start_has_low_confidence():

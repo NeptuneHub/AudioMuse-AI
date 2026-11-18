@@ -351,7 +351,7 @@ def test_smart_fade_breaks_a_close_fingerprint_match_on_the_stored_tempo(monkeyp
     monkeypatch.setattr(rsm, '_FADE_INTENSITY_WEIGHT', 0.0)
     rng = np.random.default_rng(11)
     close = _rivals(rng, 0.97)
-    distant = _rivals(rng, 0.6)
+    distant = _rivals(rng, 0.3)
     assert _order(close) == [0, 1, 2]
     assert _order(close, [120.0, 150.0, 123.0]) == [0, 2, 1]
     assert _order(close, [120.0, 150.0, 246.0]) == [0, 2, 1]

@@ -8,10 +8,9 @@
 
 """Beat-matched transition plan between two songs at the smart fade points.
 
-The smart fade (tasks.recording_search_manager) picks from the neural
-fingerprint where one song should end and the next start; this module turns
-that pair of points into the exact seconds where the page cuts and mixes the
-two songs so the hand-over keeps the beat. It returns numbers only: the page
+The smart fade (tasks.recording_search_manager) picks where one song should
+end and the next start; this module turns those points into the seconds where
+the page cuts and mixes the two songs. It returns numbers only: the page
 fetches the songs and does the whole fade itself.
 
 Main Features:
@@ -27,18 +26,23 @@ Main Features:
   or no room raises ValueError.
 * The next song enters on a section start: the beat nearest the highest peak,
   within PHRASE_REACH_BEATS, of a Foote novelty curve (PHRASE_KERNEL_BEATS
-  checkerboard on beat-synchronous chroma, MFCC and loudness) read from
-  PHRASE_LEAD_SECONDS before the point; on Harmonix Set annotations it hit a
-  real section start about three times as often.
-* style: 'blend' (tempos match, the bass crosses at swap_at), 'rise' (also
-  RISE_DB louder, in from the treble), 'fade' (tempos or onsets do not line up
-  within MATCH_MS at MATCH_SHARE: unstretched, MIN_MIX_SECONDS, first song
-  muffled).
-* confidence: 'high' beat-locked, 'low' a fade where the first song is at
-  least FULL_LU over its own loudness and the next comes in DROP_LU lower
-  (relative to its own), else 'medium'; loudness is BS.1770 of the whole song
-  at LEVEL_RATE, decoded only for a fade. The page plays a 'low' plan as its
-  plain crossfade.
+  checkerboard on beat-synchronous chroma, MFCC and loudness) from
+  PHRASE_LEAD_SECONDS before the point (3x more real section starts).
+* A beat lock needs all of: tempos_match, onsets lining up within MATCH_MS
+  at MATCH_SHARE, and on both parts a committee of beat sequences (librosa's
+  tracker on full-band, bass-band and treble-band onsets, plus its pulse
+  curve) agreeing by MIN_AGREEMENT_BITS of mean information gain
+  (AGREEMENT_BINS-bin beat error histograms, ISMIR 2012). The thresholds put
+  about half of a 50-song pop similar list on a beat-matched mix.
+* style: 'blend' (locked, bass crossing at swap_at) or 'rise' (also RISE_DB
+  louder, in from the treble); else 'fade', the page's default crossfade:
+  MIN_MIX_SECONDS unstretched from a beat of the first song into the next
+  song's section start; the beat moves to where the equal-power mix of the
+  two loudness curves dips least when that lifts the floor FLOOR_GAIN_DB
+  (quiet regions sound abrupt, ISMIR 2017), never past EDGE_SECONDS.
+* confidence: 'high' locked, 'low' a fade where the first song is FULL_LU
+  over its own loudness and the next comes in DROP_LU lower, else 'medium';
+  loudness is BS.1770 of the whole song at LEVEL_RATE, only for a fade.
 """
 
 import math
@@ -58,7 +62,7 @@ PHRASE_LEAD_SECONDS = 8.0
 PHRASE_KERNEL_BEATS = 8
 PHRASE_REACH_BEATS = 8
 MATCH_MS = 30.0
-MATCH_SHARE = 0.8
+MATCH_SHARE = 0.6
 ONSET_HOP = 256
 EDGE_SECONDS = 30.0
 LEVEL_RATE = 11025
@@ -71,6 +75,14 @@ ABSOLUTE_GATE_LUFS = -70.0
 RELATIVE_GATE_LU = 10.0
 FULL_LU = 0.0
 DROP_LU = 2.0
+MIN_AGREEMENT_BITS = 1.0
+AGREEMENT_BINS = 40
+COMMITTEE_RATE = 22050
+COMMITTEE_HOP = 512
+COMMITTEE_MELS = 64
+BASS_BAND_HZ = 200.0
+TREBLE_BAND_HZ = 4000.0
+FLOOR_GAIN_DB = 3.0
 
 
 def tempos_match(tempo_out, tempo_in):
@@ -138,7 +150,28 @@ def _levels(path):
     starts = np.minimum(np.round(np.arange(count) * STEP_SECONDS * LEVEL_RATE).astype(np.int64), audio.size)
     ends = np.minimum(starts + size, audio.size)
     energy = (power[ends] - power[starts]) / np.maximum(ends - starts, 1)
-    return {'energy': energy, 'loudness': _integrated(energy)}
+    return {'energy': energy, 'loudness': _integrated(energy), 'seconds': audio.size / LEVEL_RATE}
+
+
+def _relative_energy(levels, start, count):
+    first = int(round((start - BLOCK_SECONDS / 2) / STEP_SECONDS))
+    blocks = np.clip(first + np.arange(count), 0, levels['energy'].size - 1)
+    return levels['energy'][blocks] / 10.0 ** ((levels['loudness'] + 0.691) / 10.0)
+
+
+def _mix_floor(ending, a_at, starting, b_at, seconds):
+    count = max(1, int(round(seconds / STEP_SECONDS)))
+    share = (np.arange(count) + 0.5) / count
+    power = np.cos(np.pi / 2 * share) ** 2 * _relative_energy(ending, a_at, count) + np.sin(np.pi / 2 * share) ** 2 * _relative_energy(starting, b_at, count)
+    width = min(count, int(round(1.0 / STEP_SECONDS)))
+    return float(10.0 * np.log10(np.convolve(power, np.ones(width) / width, mode='valid').min() + 1e-12))
+
+
+def _fuller_start(ending, a_start, candidates, default, starting, b_at, seconds):
+    allowed = [float(c) for c in candidates if a_start + c + seconds >= ending['seconds'] - EDGE_SECONDS] + [default]
+    floors = {c: _mix_floor(ending, a_start + c, starting, b_at, seconds) for c in allowed}
+    best = max(floors, key=floors.get)
+    return best if floors[best] - floors[default] >= FLOOR_GAIN_DB else default
 
 
 def _part_lufs(levels, start, seconds):
@@ -167,6 +200,48 @@ def _beats(audio):
     period, first = np.polyfit(index, beats, 1)
     grid = first + period * np.arange(index[-1] + 1)
     return 60.0 / float(period), grid[grid >= 0.0]
+
+
+def _committee(audio):
+    import librosa
+
+    signal = librosa.resample(audio, orig_sr=RATE, target_sr=COMMITTEE_RATE)
+    spectrum = librosa.power_to_db(librosa.feature.melspectrogram(y=signal, sr=COMMITTEE_RATE, hop_length=COMMITTEE_HOP, n_mels=COMMITTEE_MELS))
+    bands = librosa.mel_frequencies(n_mels=COMMITTEE_MELS, fmax=COMMITTEE_RATE / 2)
+    envelopes = [
+        librosa.onset.onset_strength(S=spectrum[rows], sr=COMMITTEE_RATE, hop_length=COMMITTEE_HOP)
+        for rows in (bands >= 0.0, bands < BASS_BAND_HZ, bands > TREBLE_BAND_HZ)
+    ]
+    sequences = [
+        librosa.beat.beat_track(onset_envelope=envelope, sr=COMMITTEE_RATE, hop_length=COMMITTEE_HOP, units='time')[1]
+        for envelope in envelopes
+    ]
+    pulse = librosa.beat.plp(onset_envelope=envelopes[0], sr=COMMITTEE_RATE, hop_length=COMMITTEE_HOP)
+    sequences.append(librosa.frames_to_time(np.flatnonzero(librosa.util.localmax(pulse)), sr=COMMITTEE_RATE, hop_length=COMMITTEE_HOP))
+    return [np.asarray(sequence, dtype=np.float64) for sequence in sequences]
+
+
+def _error_bits(reference, estimate):
+    if reference.size < 2 or estimate.size < 1:
+        return 0.0
+    nearest = np.abs(estimate[:, None] - reference[None, :]).argmin(axis=1)
+    error = estimate - reference[nearest]
+    gaps = np.diff(reference)
+    after = gaps[np.minimum(nearest, gaps.size - 1)]
+    before = gaps[np.maximum(nearest - 1, 0)]
+    share = (error / np.where(error >= 0.0, after, before) + 0.5) % 1.0 - 0.5
+    counts = np.histogram(share, bins=AGREEMENT_BINS, range=(-0.5, 0.5))[0]
+    shares = counts[counts > 0] / counts.sum()
+    return float(np.log2(AGREEMENT_BINS) + np.sum(shares * np.log2(shares)))
+
+
+def _agreement(audio):
+    sequences = _committee(audio)
+    gains = [
+        min(_error_bits(first, second), _error_bits(second, first))
+        for n, first in enumerate(sequences) for second in sequences[n + 1:]
+    ]
+    return float(np.mean(gains))
 
 
 def _stretch_rate(tempo_out, tempo_in):
@@ -257,8 +332,8 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
     song_in = _region(path_in, b_start, lead + LOOK_SECONDS + 2.0)
     tempo_out, beats_out = _beats(song_out)
     tempo_in, beats_after = _beats(song_in[int(round(lead * RATE)):])
-    locked = bool(tempos_match(tempo_out, tempo_in))
     rate = _stretch_rate(tempo_out, tempo_in)
+    locked = bool(tempos_match(tempo_out, tempo_in))
     beat = 60.0 / tempo_out
     before = np.arange(beats_after[0] - 60.0 / tempo_in, -lead, -60.0 / tempo_in)[::-1]
     grid = np.concatenate([before, beats_after]) + lead
@@ -273,13 +348,16 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
     first_in, (beats, usable) = max(fits, key=lambda item: item[1][0])
     overlap = beats * beat
     mix_at = float(usable[np.argmin(np.abs(usable - (out_seconds - a_start - overlap)))])
-    locked = locked and _in_step(song_out, mix_at, song_in, first_in, overlap, rate, beat)
+    locked = (locked and _in_step(song_out, mix_at, song_in, first_in, overlap, rate, beat)
+              and _agreement(song_out) >= MIN_AGREEMENT_BITS and _agreement(song_in[int(round(lead * RATE)):]) >= MIN_AGREEMENT_BITS)
     if not locked:
         rate = 1.0
         beats = max(1, min(beats, math.ceil(MIN_MIX_SECONDS / beat), int((song_in.size / RATE - first_in) / beat)))
         overlap = beats * beat
         usable = beats_out[beats_out + overlap <= song_out.size / RATE]
         mix_at = float(usable[np.argmin(np.abs(usable - (out_seconds - a_start - overlap)))])
+        ending, starting = _levels(path_out), _levels(path_in)
+        mix_at = _fuller_start(ending, a_start, usable, mix_at, starting, b_start + first_in, overlap)
     resume_in = first_in + overlap * rate
     if not locked:
         style = 'fade'
@@ -299,5 +377,5 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
         'swap_at': round(a_start + mix_at + beats // 2 * beat, 4),
         'beat_seconds': round(beat, 4),
     }
-    plan['confidence'] = 'high' if locked else _confidence(_levels(path_out), a_start + mix_at, _levels(path_in), b_start + first_in, overlap, overlap * rate, locked)
+    plan['confidence'] = 'high' if locked else _confidence(ending, a_start + mix_at, starting, b_start + first_in, overlap, overlap * rate, locked)
     return plan

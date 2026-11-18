@@ -532,22 +532,22 @@ def recording_search_transition_api():
           by stretch, pitch kept, so its beats land on the first song's) and
           fades in; then the next song plays on alone from resume_at.
           tempo_from and tempo_to are the measured tempos. style says how to
-          mix: 'blend' (tempos match: the bass of the next song comes in and
-          the first song's goes out around swap_at, the middle beat of the
-          mix), 'rise'
-          (tempos match and the next song is louder: it comes in from the
-          treble up), 'fade' (tempos do not match, or the two songs' beats
-          would not line up: a shorter mix of about 10 seconds with
-          stretch 1, the first song muffled as it fades, the bass swapping
-          at swap_at). beat_seconds is one beat of the first song.
+          mix: 'blend' (a confirmed beat lock: tempos within 8%, drum hits
+          lining up and several beat trackers agreeing on both songs; the
+          bass of the next song comes in and the first song's goes out
+          around swap_at, the middle beat of the mix), 'rise' (the same lock
+          and the next song is louder: it comes in from the treble up),
+          'fade' (no confirmed lock: about 10 seconds with stretch 1, from a
+          beat of the first song into the next song's section start, which
+          the shared player plays as its default crossfade, no filters).
+          beat_seconds is one beat of the first song.
           A caller may ignore these three: the other fields alone still
           describe a plain crossfade.
           confidence says how sure the plan is: 'high' (the beats lock),
           'medium' (a fade at similar loudness) or 'low' (a fade where the
           first song is still at full level and the next comes in quieter,
-          each against its own loudness); the shared player plays a 'low'
-          plan as its plain crossfade. A caller may ignore it too; the other
-          fields keep their meaning.
+          each against its own loudness). A caller may ignore it too; the
+          other fields keep their meaning.
         content:
           application/json:
             schema:
