@@ -32,13 +32,12 @@ Main Features:
   a background app context and a request rejected before our before_request ran
   both leave a live request's count alone, and wiring it either of the two wrong
   ways is shown to steal that live request's count
-* No armed timer outlives a test in this file. The idle-trim cases install a REAL
-  IdleUnloadTimer, and monkeypatch restores the real release_memory_to_os when a
-  test ends but cannot stop a thread already armed. Such a thread fired during a
-  LATER test, ran the real _resolve_heap_trim, and raced the ctypes.CDLL call
-  counter in the unresolvable-symbol case, which failed in a full-suite run and
-  passed on its own. The autouse teardown clears the timer's expiry, which is
-  what its worker loop breaks on, and joins the thread
+* No armed timer outlives a test in this file: the autouse teardown clears the
+  timer's expiry, which its worker loop breaks on, and joins the thread. Other
+  modules' idle timers (recording search, hyperbolic tree, indexes) can still
+  run release_memory_to_os mid-test, so the unresolvable-symbol case counts only
+  its own thread's ctypes.CDLL calls; a shared counter failed full-suite runs
+  and passed on its own
 """
 
 import gc
@@ -574,10 +573,10 @@ class TestIdleHeapTrim:
     def test_an_unresolvable_symbol_is_logged_and_cached_as_unavailable(self, monkeypatch):
         import ctypes
         import platform
+        import threading
 
         from tasks import memory_utils
 
-        monkeypatch.setattr(memory_utils, '_HEAP_TRIM', None, raising=False)
         monkeypatch.setattr(platform, 'system', lambda: 'Linux')
         builds = []
 
@@ -586,14 +585,17 @@ class TestIdleHeapTrim:
                 raise AttributeError(name)
 
         def _build(*args, **kwargs):
-            builds.append(1)
+            builds.append(threading.get_ident())
             return _Empty()
 
         monkeypatch.setattr(ctypes, 'CDLL', _build)
+        monkeypatch.setattr(memory_utils, '_HEAP_TRIM', None, raising=False)
 
         assert memory_utils.release_memory_to_os() is False
         assert memory_utils.release_memory_to_os() is False
-        assert builds == [1]
+        assert memory_utils._HEAP_TRIM is False
+        assert builds
+        assert builds.count(threading.get_ident()) <= 1
 
 
 
