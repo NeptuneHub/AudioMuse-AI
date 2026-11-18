@@ -84,12 +84,12 @@ def _load(path, rate, start=0.0, seconds=None):
 
     try:
         audio, _sr = librosa.load(path, sr=rate, mono=True, offset=max(0.0, start), duration=seconds)
-    except soundfile.SoundFileRuntimeError:
+    except soundfile.SoundFileRuntimeError as err:
         from tasks.analysis.song import robust_load_audio_with_fallback
 
         audio, _sr = robust_load_audio_with_fallback(path, target_sr=rate)
         if audio is None:
-            raise RuntimeError(f'{os.path.basename(path)} could not be decoded.')
+            raise RuntimeError(f'{os.path.basename(path)} could not be decoded.') from err
         begin = int(round(max(0.0, start) * rate))
         audio = audio[begin:] if seconds is None else audio[begin:begin + int(round(seconds * rate))]
     return np.asarray(audio, dtype=np.float32)
