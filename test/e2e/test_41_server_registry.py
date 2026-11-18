@@ -121,7 +121,7 @@ def test_second_instance_lifecycle(stack, api, db, library, analyzed_library):
         for worker in stack.workers.values():
             worker.wait_ready(180)
         assert _default_id(db) == server_id
-        assert api.json('GET', f'/api/track?item_id={next(iter(second_songs))}')['title']
+        assert api.json('GET', f'/api/track?item_id={second_ids[0]}')['title']
         restored = api.json('POST', f'/api/servers/{original_default}/default')
         assert restored.get('restart_acknowledged', True) is True, restored
         if restored.get('sweep_task_id'):
