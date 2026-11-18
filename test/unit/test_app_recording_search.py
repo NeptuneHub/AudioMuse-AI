@@ -29,7 +29,9 @@ Main Features:
   and cuts, stretches and fades the decoded songs on one audio clock started
   in the Play click, never on an audio element (Safari); the playing row fills
   with the progress and seeks up to its fade; it mixes in the plan's style
-  (bass swap, rise or filtered fade)
+  (bass swap, rise or filtered fade); every source starts on a whole sample at
+  a whole-sample offset and after every mix the next song plays on from a
+  fresh source, so outside a transition the song is played as decoded
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
@@ -419,7 +421,7 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
     start = source.index('async function startPlayback(row) {')
     assert source.index('unlockAudio();', start) < source.index('stopAll();', start)
     assert "navigator.audioSession.type = 'playback'" in source
-    assert 'audioCtx.decodeAudioData(data)' in source and 'source.start(when, node.offset)' in source
+    assert 'audioCtx.decodeAudioData(data)' in source and 'source.start(node.when, node.offset)' in source
     for code in (source, page):
         assert 'new Audio(' not in code and '.currentTime =' not in code and '.volume =' not in code
         assert 'X-Switch-At' not in code
@@ -460,6 +462,22 @@ def test_the_player_mixes_in_the_plan_style_bass_swap_rise_or_filtered_fade():
     assert 'startSource(state.next, state.handoverAt, mix.in_at, false)' in source
     assert "const glide = next && mix && mix.style !== 'fade' ? tempoGlide(mix) : null;" in source
     assert 'createDelay(' not in source
+
+
+def test_every_source_starts_on_a_whole_sample_and_each_mix_hands_over_to_a_fresh_source():
+    source = _repo_file('static', 'song_player.js')
+    assert 'return Math.round(seconds * audioCtx.sampleRate) / audioCtx.sampleRate;' in source
+    assert 'when: onGrid(when), offset: onGrid(Math.max(0, Math.min(offset, buffer.duration)))' in source
+    assert 'const at = second => onGrid(state.node.when + second - state.node.offset);' in source
+    mix = source[source.index('} else if (mix && at(mix.mix_at) > now + 0.1) {'):source.index('swapView = {\n')]
+    assert 'const resume = onGrid(state.handoverAt + (direct ? mix.mix_seconds : mix.glide.seconds));' in mix
+    assert 'const length = resume - state.handoverAt;' in mix
+    assert 'if (direct) blend.source.stop(resume);' in mix
+    assert '[outgoing, blend].forEach(node => node.gain.gain.setValueAtTime(0, resume + 1 / audioCtx.sampleRate));' in mix
+    assert 'const entry = startSource(state.next, resume, direct ? blend.offset + length : mix.glide.next(mix.buffer.length / mix.buffer.sampleRate), false);' in mix
+    assert 'state.scheduled = direct ? [blend, entry] : [outgoing, blend, entry];' in mix
+    stretch = source[source.index('function stretchSegment(buffer, inputAt, seconds) {'):source.index('function powerCurve(')]
+    assert 'const resume = Math.round(inputAt(count / rate) * rate);' in stretch
 
 
 def test_a_beat_matched_mix_glides_the_tempo_from_one_song_to_the_next():

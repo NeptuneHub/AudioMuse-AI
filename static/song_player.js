@@ -57,7 +57,13 @@
  * Songs are fetched whole and decoded into Web Audio buffers; every cut, fade
  * and stretch is scheduled on one AudioContext clock made in the first Play
  * click, never on an audio element (Safari refuses play() outside a click and
- * seeks VBR MP3 inaccurately). One list plays at a time. The playing row fills
+ * seeks VBR MP3 inaccurately). Every source starts on a whole sample of that
+ * clock at a whole-sample offset (onGrid): Chrome and Safari interpolate a
+ * source started between two samples for its whole length, which dulls the
+ * highs. After a mix the next song goes on from a fresh source with flat
+ * filters and the mix's sources are muted (no filter tail rings on), so
+ * outside its transitions a song plays exactly as decoded.
+ * One list plays at a time. The playing row fills
  * with the progress and a click or drag on it moves in the song, up to the line
  * where it fades.
  */
@@ -133,6 +139,10 @@
         }
         if (audioCtx) audioCtx.resume().catch(() => {});
         return !!audioCtx;
+    }
+
+    function onGrid(seconds) {
+        return Math.round(seconds * audioCtx.sampleRate) / audioCtx.sampleRate;
     }
 
     async function decode(data) {
@@ -402,7 +412,7 @@
             const tone = audioCtx.createBiquadFilter();
             const mid = audioCtx.createBiquadFilter();
             const gain = audioCtx.createGain();
-            const node = { source, air, tone, mid, gain, when, offset: Math.max(0, Math.min(offset, buffer.duration)) };
+            const node = { source, air, tone, mid, gain, when: onGrid(when), offset: onGrid(Math.max(0, Math.min(offset, buffer.duration))) };
             air.type = 'lowpass';
             air.frequency.value = audioCtx.sampleRate / 2;
             tone.type = filter || 'lowshelf';
@@ -419,11 +429,11 @@
             mid.connect(gain);
             gain.connect(audioCtx.destination);
             if (fadeIn) {
-                gain.gain.setValueAtTime(0, when);
-                gain.gain.linearRampToValueAtTime(1, when + fadeIn);
+                gain.gain.setValueAtTime(0, node.when);
+                gain.gain.linearRampToValueAtTime(1, node.when + fadeIn);
             }
             source.onended = () => playNodes.delete(node);
-            source.start(when, node.offset);
+            source.start(node.when, node.offset);
             playNodes.add(node);
             return node;
         }
@@ -494,7 +504,7 @@
                 state.scheduled = [];
                 swapView = null;
                 const now = audioCtx.currentTime;
-                const at = second => state.node.when + second - state.node.offset;
+                const at = second => onGrid(state.node.when + second - state.node.offset);
                 const mix = state.mix;
                 if (!state.next) {
                     const ending = fadeEnd !== null && playMode.stopAtEnd;
@@ -511,8 +521,8 @@
                 } else if (mix && at(mix.mix_at) > now + 0.1) {
                     state.handoverAt = at(mix.mix_at);
                     const direct = !mix.buffer;
-                    const length = direct ? mix.mix_seconds : mix.glide.seconds;
-                    const resume = state.handoverAt + length;
+                    const resume = onGrid(state.handoverAt + (direct ? mix.mix_seconds : mix.glide.seconds));
+                    const length = resume - state.handoverAt;
                     const swap = direct ? at(mix.swap_at) : state.handoverAt + mix.glide.swap;
                     const rise = mix.style === 'rise';
                     if (!mix.curves) mix.curves = direct ? safeCurves(buffer, mix.mix_at, state.next, mix.in_at, length) : safeCurves(mix.lead, 0, mix.buffer, 0, length);
@@ -527,6 +537,7 @@
                     }
                     outgoing.source.stop(resume);
                     const blend = direct ? startSource(state.next, state.handoverAt, mix.in_at, false) : startSource(mix.buffer, state.handoverAt, 0, false, rise ? 'highpass' : 'lowshelf');
+                    if (direct) blend.source.stop(resume);
                     blend.gain.gain.setValueCurveAtTime(mix.curves[1], state.handoverAt, length);
                     fadeMids(blend, state.handoverAt, swap, false);
                     if (rise) {
@@ -535,7 +546,9 @@
                     } else {
                         swapBass(blend, swap - length / 4, length / 2, false);
                     }
-                    state.scheduled = direct ? [blend] : [outgoing, blend, startSource(state.next, resume, mix.resume_at, false)];
+                    [outgoing, blend].forEach(node => node.gain.gain.setValueAtTime(0, resume + 1 / audioCtx.sampleRate));
+                    const entry = startSource(state.next, resume, direct ? blend.offset + length : mix.glide.next(mix.buffer.length / mix.buffer.sampleRate), false);
+                    state.scheduled = direct ? [blend, entry] : [outgoing, blend, entry];
                     swapView = {
                         from: swap,
                         row: playQueue[index + 1].row,

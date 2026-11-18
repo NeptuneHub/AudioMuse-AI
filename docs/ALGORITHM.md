@@ -3256,9 +3256,16 @@ it plays to the end of its file and the next song starts right after.
    16th-note peaks).
 4. **The page's mix** (`static/song_player.js`). The page decodes both songs
    with the browser's Web Audio, in one audio context made in the Play click,
-   and starts every piece as a buffer source at its exact sample on that one
-   audio clock; Skip restarts the ending song's source and plans the mix
-   again. No audio element is ever seeked: Safari seeks MP3 files without a
+   and starts every piece as a buffer source on a whole sample of that one
+   audio clock, at a whole-sample offset in the song; Skip restarts the
+   ending song's source and plans the mix again. Chrome and Safari play a
+   source started between two samples by interpolating between them for its
+   whole length (Firefox rounds it), which took up to 5 dB off a song's highs
+   at 15 kHz (6 dB on a 44.1 kHz output, 2 dB at 10 kHz) for the rest of
+   every song after a transition. After a mix the next song plays on from a
+   fresh source with flat filters, from the sample where the mix ends, and
+   the mix's sources are muted there so no filter tail rings on.
+   No audio element is ever seeked: Safari seeks MP3 files without a
    seek table several seconds off while reporting the right time, which
    played the end of a song, jumped back and played it again.
    - **Tempo glide.** In a blend or a rise the tempo glides beat by beat from
@@ -3306,7 +3313,12 @@ it plays to the end of its file and the next song starts right after.
      the sample, and on 10 real stretched pairs the page's stretch placed the
      next song within 12 ms of the plan for the whole mix. On 4 blends and
      4 crossfades the highlight moved once each, in the middle, and never
-     showed the quieter song.
+     showed the quieter song. Recorded through the page in Chromium 148 and
+     Firefox 150 with synthetic songs, each song outside its transitions
+     (before the first, and after a blend, a rise, a filtered fade and a
+     plain crossfade) came out as decoded: bit for bit, or in Chromium off
+     by less than -185 dBFS on under 1% of near-silent samples (its rounding
+     of the start time), with 0.00 dB change at 15 kHz.
 5. **Measured and not kept.**
    - **A loop of the ending song** (some streaming players repeat a bar to
      stretch a short ending; Apple Music's AutoMix "repeats sections where
