@@ -726,7 +726,24 @@ def get_playlist_by_name(playlist_name, user_creds=None):
         return None
 
 
-def create_playlist(playlist_name, item_ids, user_creds=None):
+def _set_playlist_overview(playlist_id, overview, user_id, user_creds=None):
+    """Write ``overview`` into the playlist's metadata. Emby updates an item from its full record, so the record is read first."""
+    base = _emby_base_url(user_creds)
+    headers = _emby_headers_from_creds(user_creds)
+    try:
+        r = requests.get(f"{base}/emby/Users/{user_id}/Items/{playlist_id}", headers=headers, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        item = r.json()
+        item["Overview"] = overview
+        r = requests.post(f"{base}/emby/Items/{playlist_id}", headers=headers, json=item, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        return True
+    except Exception:
+        logger.exception(f"Emby: could not set the overview of playlist {playlist_id}")
+        return False
+
+
+def create_playlist(playlist_name, item_ids, user_creds=None, description=None):
     user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
@@ -755,7 +772,11 @@ def create_playlist(playlist_name, item_ids, user_creds=None):
         r.raise_for_status()
 
         logger.info("Successfully created playlist '%s' for user %s.", final_playlist_name, user_id)
-        return r.json()
+        created = r.json()
+        playlist_id = created.get('Id') if isinstance(created, dict) else None
+        if playlist_id and description and _set_playlist_overview(playlist_id, description, user_id, user_creds):
+            created['Description'] = description
+        return created
 
     except requests.exceptions.RequestException:
         logger.exception(
@@ -778,11 +799,11 @@ def get_all_playlists(user_creds=None):
     user_creds = context.active_creds(user_creds)
     user_id = user_creds.get('user_id') if user_creds else config.EMBY_USER_ID
     url = f"{_emby_base_url(user_creds)}/emby/Users/{user_id}/Items"
-    params = {"IncludeItemTypes": "Playlist", "Recursive": True}
+    params = {"IncludeItemTypes": "Playlist", "Recursive": True, "Fields": "Overview"}
     try:
         r = requests.get(url, headers=_emby_headers_from_creds(user_creds), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        return r.json().get("Items") or []
+        return [{**p, 'Description': p.get('Overview') or ''} for p in r.json().get("Items") or []]
     except Exception:
         logger.exception("Emby get_all_playlists failed")
         return []

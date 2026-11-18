@@ -185,7 +185,7 @@ class TestPerServerPersistence:
             },
             'NONE', '', '', '', '', '', '', '', '', '',
         )
-        assert list(built) == ['Rock_automatic']
+        assert list(built) == ['Rock']
 
         _result, events, _statuses, raised = _run_clustering(
             monkeypatch,
@@ -199,8 +199,8 @@ class TestPerServerPersistence:
         assert [
             (server_id, sorted(playlists)) for _kind, server_id, playlists in _persists(events)
         ] == [
-            ('s1', ['Rock_automatic']),
-            ('s2', ['Rock_automatic']),
+            ('s1', ['Rock']),
+            ('s2', ['Rock']),
         ]
 
     def test_legacy_none_server_persists_under_null_server_id_without_pruning(self, monkeypatch):

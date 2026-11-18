@@ -480,17 +480,50 @@ def get_playlist_by_name(playlist_name):
         return None
 
 
-def create_playlist(base_name, item_ids):
-    return _create_fresh_playlist(base_name, item_ids)
+def _set_playlist_overview(playlist_id, overview):
+    """Write ``overview`` into the playlist's metadata.
+
+    Jellyfin updates an item from its full record, so the record is read first. Jellyfin 10.9 reads it at ``/Items/{id}``; earlier versions at ``/Users/{userId}/Items/{id}``.
+    """
+    base = _jellyfin_base_url()
+    headers = _jellyfin_headers_from_creds()
+    user_id = _jellyfin_user_id()
+    try:
+        r = requests.get(
+            f"{base}/Items/{playlist_id}", headers=headers, params={"userId": user_id}, timeout=REQUESTS_TIMEOUT
+        )
+        if r.status_code == 404:
+            r = requests.get(f"{base}/Users/{user_id}/Items/{playlist_id}", headers=headers, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        item = r.json()
+        item["Overview"] = overview
+        r = requests.post(f"{base}/Items/{playlist_id}", headers=headers, json=item, timeout=REQUESTS_TIMEOUT)
+        r.raise_for_status()
+        return True
+    except Exception:
+        logger.exception(f"Jellyfin: could not set the overview of playlist {playlist_id}")
+        return False
+
+
+def create_playlist(base_name, item_ids, description=None):
+    created = _create_fresh_playlist(base_name, item_ids)
+    if created and description and _set_playlist_overview(created['Id'], description):
+        created['Description'] = description
+    return created
 
 
 def get_all_playlists():
     url = f"{_jellyfin_base_url()}/Items"
-    params = {"userId": _jellyfin_user_id(), "IncludeItemTypes": "Playlist", "Recursive": True}
+    params = {
+        "userId": _jellyfin_user_id(),
+        "IncludeItemTypes": "Playlist",
+        "Recursive": True,
+        "Fields": "Overview",
+    }
     try:
         r = requests.get(url, headers=_jellyfin_headers_from_creds(), params=params, timeout=REQUESTS_TIMEOUT)
         r.raise_for_status()
-        return r.json().get("Items") or []
+        return [{**p, 'Description': p.get('Overview') or ''} for p in r.json().get("Items") or []]
     except Exception:
         logger.exception("Jellyfin get_all_playlists failed")
         return []
