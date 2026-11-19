@@ -238,7 +238,7 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 > Read the [release note](https://github.com/NeptuneHub/AudioMuse-AI/releases) before any update especially for Major and Minor release.
 
 ## **AudioMuse-AI Supported Clients**
-- **[Lumae Music](https://lumaemusic.app):** a **free** player for Android and iPhone, with Android Auto and CarPlay, for Navidrome and Jellyfin, built around **AudioMuse-AI from the start**. The goal is to bring AudioMuse-AI features natively to your phone, like: similar-song queues that keep working offline, search by title, lyrics or recording, chat with AI, and **crossfades**.
+- **[Lumae Music](https://lumaemusic.app):** a **free** player for Android and iPhone, with Android Auto and CarPlay, for Navidrome and Jellyfin, built around **AudioMuse-AI from the start**. The goal is to bring AudioMuse-AI features natively to your phone, like: (offline) similar-song queues, search by lyrics or recording, chat with AI, and **crossfades**.
 
 ## **How To Contribute**
 
