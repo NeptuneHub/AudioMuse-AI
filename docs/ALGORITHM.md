@@ -3151,15 +3151,16 @@ same way. With the neural fingerprint off both answer 503.
        - `gain`: the multiplier for the whole song, every second of it
          (-14 LUFS; a quiet song is raised only until its peak reaches
          -1 dBFS). A song gets the same gain as `from` and as `to`.
-       - `position`: the second of the song that plays at each point. In a
-         beat mix it does not move one second per second: stretch the song
-         along it, pitch kept.
+       - `speed`: the playback rate at each point (1 = normal); play the
+         song's own audio at it (Web Audio `playbackRate`), `from` from
+         `start` and `to` from its own `start`; 1 all along in a crossfade.
        - `volume`: the fader, a multiplier from 1 to 0 for `from` and from 0
          to 1 for `to`; in a beat mix it only fades the two ends, and it
          carries the steady-level correction and the clip guard.
        - `high_db`, `mid_db`, `bass_db`: the filter gains in dB, all 0 for a
          crossfade.
-       - `to` only: `highpass_hz` (a `beat_rise` sweeps a 2nd-order
+       - `to` only: `start` (the second of the next song where it comes
+         in), `highpass_hz` (a `beat_rise` sweeps a 2nd-order
          high-pass instead of the low shelf; else `null`) and
          `continue_from` (the second where the next song plays on alone
          once the transition ends).
@@ -3412,8 +3413,16 @@ the end of its file and the next song starts right after.
    `transition`, the endpoint's answer). Every number of a transition is
    computed on the server, so any frontend only schedules it; the shared page
    (`static/song_player.js`) computes nothing of its own. The page decodes both songs
-   with the browser's Web Audio, in one audio context made in the Play click,
-   and starts every piece as a buffer source on a whole sample of that one
+   with the browser's Web Audio, in one audio context made in the Play click
+   at the output device's own rate, never a whole song at once: the play
+   route sends pieces cut on the sample (30 s on a grid of whole seconds, 1 s
+   more on each side, where the browser's resampling of a piece differs from
+   the whole song's; inside that, a piece equals the whole decode within
+   -150 dBFS at every pair of song and device rates tested). Consecutive
+   pieces join inside that margin through a 23 ms blend of identical audio,
+   and a mix plays one piece per song that covers it whole, so two 15 minute
+   192 kHz songs take about 400 MB in the browser instead of 7 GB. The page
+   starts every piece as a buffer source on a whole sample of that one
    audio clock, at a whole-sample offset in the song; Skip restarts the
    ending song's source and plans the mix again. Chrome and Safari play a
    source started between two samples by interpolating between them for its
@@ -3425,7 +3434,7 @@ the end of its file and the next song starts right after.
    No audio element is ever seeked: Safari seeks MP3 files without a
    seek table several seconds off while reporting the right time, which
    played the end of a song, jumped back and played it again.
-   - **Tempo glide** (`time_maps`, sent as each song's `position`). In a blend
+   - **Tempo glide** (`time_maps`, sent as each song's `speed`). In a blend
      or a rise the tempo glides beat by beat from the ending song's to the
      next song's, as Spotify's DJ transitions do (ISMIR 2017): both songs are
      stretched onto that gliding grid, each half the difference off in the
@@ -3434,12 +3443,23 @@ the end of its file and the next song starts right after.
      jumps in tempo when the mix starts or when the next song plays on alone;
      the mix then lasts the mean of the two parts (`seconds`). The default
      crossfade plays both songs as they are.
-   - **Stretch** (in the page, along each song's `position`). WSOLA, a waveform-similarity overlap-add (46 ms Hann
-     frames, half overlap, each frame placed where it best continues the last
-     one within 11.5 ms either way, pitch kept), which only ever copies pieces
-     of the original audio and so keeps the song's peaks exactly. The
-     stretched part's last 23 ms are blended into the real song at the resume
-     second, so the hand-over has no click.
+   - **Speed, no time-stretch** (sent as each song's `speed`, the slope of
+     its time map). The page plays each song's own audio at that playback
+     rate, as a DJ deck without key lock does: the pitch follows the tempo
+     glide (at most the 8% stretch limit, usually 1 to 4%, under a semitone,
+     for the 15 to 21 seconds of the mix), and nothing is cut or re-joined.
+     The speeds, joined by straight lines as Web Audio plays them, land
+     within 2 ms of the time map; after the mix the next song goes on from a
+     fresh source at `continue_from`, blended in over 23 ms, so the
+     hand-over has no click. The server's simulation resamples the same way,
+     so it now hears exactly what the page plays.
+     Before, the page time-stretched both songs with WSOLA (46 ms frames
+     re-joined every 23 ms, pitch kept). On dense, loud rock it added a
+     roughness at the 43.5 Hz join rate that listeners heard as distortion
+     in every beat mix: recorded through the page on three beat mixes of a
+     rock similar list, the envelope modulation at 43.5 Hz sat 3.2, 7.5 and
+     0.2 dB above the same mixes rendered without WSOLA, while outside the
+     mixes the two matched exactly.
    - **Three bands, moved like a DJ's EQ** (`mix_shapes`, sent as
      `high_db`, `mid_db`, `bass_db` and each song's `volume`). Every song in
      the page plays through a low-pass that stays fully open, a low shelf, a
@@ -3503,7 +3523,7 @@ the end of its file and the next song starts right after.
      mix starts on the next song's section start and lasts whole 8-beat
      steps, so its middle beat starts a bar of the next song. The server
      measures the next song's own bass (under 180 Hz, a 2nd-order low-pass,
-     along its `position`) in every 4-beat bar of the mix and swaps on the
+     along its time map) in every 4-beat bar of the mix and swaps on the
      bar fewest beats from the middle where that bass reaches 25% of its
      loudest bar, inside 30 to 70% of the mix, the later of two equally
      near; with no such bar, on the last bar of that window. A swap into a
@@ -3552,7 +3572,7 @@ the end of its file and the next song starts right after.
      3 seconds before the mix and of the next song over the 3 seconds after
      it: the target is the straight line, in dB, from the first level to the
      second. It then plays the mix in advance at 44.1 kHz, every channel,
-     sample by sample: both songs along their `position`, under the
+     sample by sample: both songs along their time maps, under the
      equal-power curves, through the mix's own bass and mid filters (and the
      rise's high-pass), summed and K-weighted, in 400 ms blocks. So the filters and
      any correlation between the two songs count, not only their two
@@ -3618,7 +3638,7 @@ the end of its file and the next song starts right after.
      against 1.85 dB), but on real loudness-limited masters rebuilding the
      phases raised the peaks by 3 to 4 dB (1.04 to 1.50) and clipped hundreds
      of samples in every mix, and in a listening test it sounded the same as
-     WSOLA.
+     WSOLA (itself since replaced by a plain speed change, see Speed above).
    - **Shorter mixes.** 8 beats, an echo out and then 16 beats all sounded
      like a jump on a phone. Real DJ transitions peak at 32 and 64 beats, 15
      and 30 seconds at 128 BPM (ISMIR 2020, 20,765 transitions of 1,557

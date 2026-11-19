@@ -25,7 +25,9 @@ Main Features:
 * ``dispatch_child_invocation`` is the one entry the three launchers share: a
   spawn payload, a ``--run-restore`` runner, a ``--decode-audio`` child (the
   analysis PyAV decode, kept out of the worker so a decoder crash cannot end
-  it) or a ``--role=`` child, in that order, so no platform can forget one.
+  it), a ``--transcode-flac`` child (the player's FLAC conversion, kept out of
+  Flask the same way) or a ``--role=`` child, in that order, so no platform can
+  forget one.
 * Only ``multiprocessing`` and ``joblib.externals.loky`` targets are accepted.
 * The child sees the argv tail its parent passed, without the spawn switch.
 * ``-m`` payloads run with ``alter_sys=False`` so ``sys.modules["__main__"]``
@@ -168,6 +170,12 @@ def dispatch_child_invocation(run_role):
         from tasks.pyav_decode import run
 
         sys.exit(run(sys.argv[index + 1:index + 5]))
+
+    if "--transcode-flac" in sys.argv:
+        index = sys.argv.index("--transcode-flac")
+        from tasks.flac_stream import run
+
+        sys.exit(run(sys.argv[index + 1:index + 4]))
 
     role = service_roles.role_from_argv()
     if role:

@@ -28,8 +28,8 @@ Main Features:
   measures like the same audio as a stereo WAV
 * transition on real files: the answer's keys in their order (type, start,
   duration, middle, step, filters, from, to, info), one value per
-  point in every list, volumes from exactly 1 and 0 to 0 and 1, positions
-  on the plan's seconds, filters only for a beat mix (all 0 for a
+  point in every list, volumes from exactly 1 and 0 to 0 and 1, speeds
+  that integrate from start to the plan's seconds, filters only for a beat mix (all 0 for a
   crossfade); a next song with a louder bass gets the first song's bass
   raised before the swap and its own lowered after; a boost over quiet clicks is lowered wherever the sum would
   peak above the louder song; crossfade_plan is the default crossfade at
@@ -193,20 +193,26 @@ def test_each_song_gets_the_gain_that_brings_it_to_the_target_without_passing_th
 
 def _assert_executable(plan, answer):
     assert list(answer) == ['type', 'start', 'duration', 'middle', 'step', 'filters', 'from', 'to', 'info']
-    assert list(answer['from']) == ['gain', 'position', 'volume', 'high_db', 'mid_db', 'bass_db']
-    assert list(answer['to']) == ['gain', 'position', 'volume', 'high_db', 'mid_db', 'bass_db', 'highpass_hz', 'continue_from']
+    assert list(answer['from']) == ['gain', 'speed', 'volume', 'high_db', 'mid_db', 'bass_db']
+    assert list(answer['to']) == ['gain', 'start', 'speed', 'volume', 'high_db', 'mid_db', 'bass_db', 'highpass_hz', 'continue_from']
     assert list(answer['info']) == ['tempo_from', 'tempo_to', 'confidence', 'loudness_from', 'loudness_to']
     assert list(answer['filters'].items()) == [('high_hz', levels.HIGH_HZ), ('mid_hz', levels.MID_HZ), ('mid_q', levels.MID_Q), ('bass_hz', levels.BASS_HZ)]
     current, upcoming = answer['from'], answer['to']
     count = len(current['volume'])
     lists = ('volume', 'high_db', 'mid_db', 'bass_db')
-    assert all(len(song[key]) == count for song in (current, upcoming) for key in ('position',) + lists)
+    assert all(len(song[key]) == count for song in (current, upcoming) for key in ('speed',) + lists)
     assert not any(v == 0.0 and np.signbit(v) for song in (current, upcoming) for key in lists for v in song[key])
     assert (count - 1) * answer['step'] == pytest.approx(answer['duration'], abs=1e-3)
     assert (current['volume'][0], upcoming['volume'][0], upcoming['volume'][-1]) == (1.0, 0.0, 1.0) and abs(current['volume'][-1]) < 1e-3
-    assert answer['start'] == current['position'][0] == pytest.approx(plan['mix_at'], abs=1e-4)
-    assert upcoming['position'][0] == pytest.approx(plan['in_at'], abs=1e-4)
-    assert upcoming['continue_from'] == pytest.approx(upcoming['position'][-1], abs=1e-4) == pytest.approx(plan['resume_at'], abs=1e-3)
+    _, _, lead, follow, _ = levels.time_maps(plan)
+    points = np.arange(count) * answer['step']
+    for song, first, truth in ((current, answer['start'], lead), (upcoming, upcoming['start'], follow)):
+        played = first + np.concatenate([[0.0], np.cumsum((np.array(song['speed'][1:]) + song['speed'][:-1]) / 2 * answer['step'])])
+        assert np.abs(played - truth(points)).max() < 0.002
+        assert min(song['speed']) > 1.0 - mix.MAX_STRETCH - 0.01 and max(song['speed']) < 1.0 + mix.MAX_STRETCH + 0.01
+    assert answer['start'] == pytest.approx(plan['mix_at'], abs=1e-4)
+    assert upcoming['start'] == pytest.approx(plan['in_at'], abs=1e-4)
+    assert upcoming['continue_from'] == pytest.approx(played[-1], abs=0.002) == pytest.approx(plan['resume_at'], abs=1e-3)
     assert answer['info']['tempo_from'] == plan['tempo_from'] and answer['info']['confidence'] == plan['confidence']
 
 
@@ -225,7 +231,9 @@ def test_a_beat_mix_and_a_crossfade_give_every_list_a_player_executes_in_order(t
     _assert_executable(fade, flat)
     assert flat['type'] == 'crossfade' and flat['to']['highpass_hz'] is None
     assert all(set(flat[song][key]) == {0.0} for song in ('from', 'to') for key in ('high_db', 'mid_db', 'bass_db'))
-    assert np.allclose(np.diff(flat['to']['position']), flat['step'], atol=1e-4)
+    assert set(flat['from']['speed']) == set(flat['to']['speed']) == {1.0}
+    assert max(abs(v - 1.0) for v in answer['to']['speed']) > 0.01
+    assert flat['to']['continue_from'] - flat['to']['start'] == pytest.approx(flat['duration'], abs=1e-3)
 
 
 def test_each_band_is_fitted_to_the_two_songs_so_a_louder_next_bass_does_not_jump_in(tmp_path):

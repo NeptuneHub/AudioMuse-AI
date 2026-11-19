@@ -11,18 +11,18 @@
 tasks.smart_fade_mix plans where two songs mix; transition turns that plan
 into the transition endpoint's answer, numbers only, every STEP_SECONDS of
 the mix, so any frontend just schedules them: type, start, duration,
-middle, step, filters, then from (from_id) and to (to_id): gain, position,
-volume, high_db, mid_db, bass_db, plus to's highpass_hz and continue_from;
-then info.
+middle, step, filters, then from (from_id) and to (to_id): gain, speed,
+volume, high_db, mid_db, bass_db, plus to's start (its first second),
+highpass_hz and continue_from; then info.
 
 Main Features:
-* song_level: one streaming pass at the song's own rate, K-weighted and
-  gated (BS.1770) loudness plus sample peak; the gain brings it to
-  TARGET_LUFS and raises a quiet song only until its peak hits
-  PEAK_CEILING. AAC (no libsndfile) is read as mono, two equal channels.
-* time_maps: the second of each song at each point. A fade plays both as
-  they are; a blend or a rise glides the tempo beat by beat from the first
-  song's to the next song's, so the mix lasts the mean of the two parts.
+* song_level: BS.1770 loudness and sample peak in one streaming pass; the
+  gain brings it to TARGET_LUFS, a quiet song only up to PEAK_CEILING.
+* time_maps: the second of each song at each point; speed is its slope,
+  the playback rate a player sets (no time-stretch, the pitch
+  moves with the tempo like a DJ deck without key lock, as the simulation
+  here resamples). A fade plays both as they are; a blend or a rise glides
+  the tempo beat by beat, so the mix lasts the mean of the two parts.
 * mix_shapes, a DJ's 3-band EQ mix, every move an S-curve (ease): the next
   song's highs (shelf at HIGH_HZ) come in first, its mids (peak at MID_HZ)
   next, the bass lines swap in one equal-power move over two beats (shelf
@@ -454,7 +454,7 @@ def transition(path_out, path_in, plan):
         'filters': {'high_hz': HIGH_HZ, 'mid_hz': MID_HZ, 'mid_q': MID_Q, 'bass_hz': BASS_HZ},
         'from': {
             'gain': round(gain_a, 4),
-            'position': _rounded(lead(points), 5),
+            'speed': _rounded(np.gradient(lead(points), step), 5),
             'volume': _rounded(fade_from, 4),
             'high_db': curve('from_high_db'),
             'mid_db': curve('from_mid_db'),
@@ -462,7 +462,8 @@ def transition(path_out, path_in, plan):
         },
         'to': {
             'gain': round(gain_b, 4),
-            'position': _rounded(follow(points), 5),
+            'start': round(float(follow(0.0)), 4),
+            'speed': _rounded(np.gradient(follow(points), step), 5),
             'volume': _rounded(fade_to, 4),
             'high_db': curve('to_high_db'),
             'mid_db': curve('to_mid_db'),

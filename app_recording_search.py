@@ -20,8 +20,12 @@ Main Features:
   duplicates left out), `/api/recording_search/smart_fade` (JSON: any list of song ids,
   returned in smart fade order with where to start and end each, or in the
   order sent with keep_order), `/api/recording_search/play/<id>` (the song's
-  audio from the media server, for the shared song player of every song list;
-  it answers with the neural fingerprint off too), `/api/recording_search/transition` (JSON:
+  audio from the media server, for the shared song player of every song list:
+  FLAC, MP3 and AAC as they are, any other format converted to lossless FLAC
+  by tasks.flac_stream while it is sent; with start and seconds only that
+  piece, cut on the sample; each song downloaded once into app_play_cache;
+  it answers with the neural
+  fingerprint off too), `/api/recording_search/transition` (JSON:
   everything a player executes to mix the current song into the next) and
   `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
@@ -40,14 +44,15 @@ Main Features:
 """
 
 from flask import Blueprint, Response, render_template, request, jsonify
+import contextlib
 import json
 import logging
 import math
-import mimetypes
 import os
 import shutil
 import tempfile
 
+import app_play_cache
 import app_server_context
 from error.error_dictionary import (
     ERR_CACHE_REFRESH_FAILED,
@@ -59,10 +64,14 @@ from error.error_dictionary import (
     ERR_RECORDING_INDEX_UNAVAILABLE,
     ERR_RECORDING_REJECTED,
     ERR_SEARCH_FAILED,
+    ERR_TRACK_NOT_ANALYZABLE,
 )
 from error.responses import json_error, json_exception
+from tasks import flac_stream
 
 logger = logging.getLogger(__name__)
+
+PIECE_MAX_SECONDS = 600
 
 recording_search_bp = Blueprint('recording_search_bp', __name__, template_folder='../templates')
 
@@ -448,26 +457,132 @@ def recording_search_play_api(item_id):
         schema:
           type: string
         description: The song, as an id of the selected server.
+      - in: query
+        name: start
+        required: false
+        schema:
+          type: number
+        description: >-
+          Optional, with seconds: send only the piece of the song from this
+          second (0 or more).
+      - in: query
+        name: seconds
+        required: false
+        schema:
+          type: number
+        description: Optional, with start - the length of the piece, in seconds (more than 0, at most 600).
     responses:
       200:
-        description: The audio file as the media server delivers it.
+        description: >-
+          Without start and seconds, the whole song, sent while the media server
+          still delivers it (chunked, no Content-Length): FLAC, MP3 and AAC as
+          they are, any other format (WAV, AIFF, ALAC, WavPack, WMA, Ogg, ...)
+          as lossless FLAC (audio/flac, 16-bit or 24-bit at the song's own
+          rate), converted while it is sent; a file the server cannot convert
+          as it is. With start and seconds, that piece cut on the sample at
+          the song's own rate and channels - audio/flac (16 or 24-bit) for
+          integer audio, audio/wav (32-bit float) for float audio such as MP3 -
+          with X-Song-Seconds, the whole song's length, when it is known. Each
+          song is downloaded once and kept a while for the next requests.
+      400:
+        description: start or seconds is not a number in range, or only one of them is given.
       404:
         description: The id is not a song of the library.
+      422:
+        description: The server could not read the song to cut the piece.
       502:
         description: The media server did not deliver the song.
     """
     # The player of every song list uses this route; it needs no fingerprint,
     # so it answers whether or not NEURAL_FINGERPRINT_ENABLED is on.
-    folder = tempfile.mkdtemp(prefix='audiomuse_play_')
-    path, failure = _fetch_song(item_id, folder)
+    failure = _library_failure(item_id)
     if failure is not None:
-        shutil.rmtree(folder, ignore_errors=True)
         return failure
-    return Response(
-        _stream_then_remove(path, folder),
-        mimetype=mimetypes.guess_type(path)[0] or 'application/octet-stream',
-        headers={'Content-Length': str(os.path.getsize(path))},
-    )
+    asked = (request.args.get('start'), request.args.get('seconds'))
+    piece = None
+    if asked != (None, None):
+        try:
+            piece = (float(asked[0]), float(asked[1]))
+        except (TypeError, ValueError):
+            piece = (float('nan'), float('nan'))
+        if not (math.isfinite(piece[0]) and math.isfinite(piece[1]) and piece[0] >= 0 and 0 < piece[1] <= PIECE_MAX_SECONDS):
+            return json_error(ERR_INVALID_REQUEST, f'Give start (0 or more) and seconds (more than 0, at most {PIECE_MAX_SECONDS}) together, or neither.')
+    entry = _acquire_song(item_id)
+    download = entry.download
+    head = download.head(flac_stream.SNIFF_BYTES)
+    if len(head) >= flac_stream.SNIFF_BYTES:
+        head = download.head(flac_stream.needed_bytes(head))
+    if not head:
+        app_play_cache.release(entry)
+        return json_error(ERR_MEDIASERVER_UNREACHABLE, 'The media server did not deliver this song.', http_status=502)
+    if piece is not None:
+        return _piece_response(entry, item_id, head, *piece)
+    kind = flac_stream.kind(head)
+    flac = None
+    try:
+        if kind == flac_stream.KIND_CONVERT:
+            flac = flac_stream.flac_chunks(download.chunks(), _log_path(entry), item_id)
+        elif kind == flac_stream.KIND_MP4:
+            download.done.wait()
+            if download.file():
+                flac = flac_stream.flac_chunks(download.file(), _log_path(entry), item_id)
+    except Exception:
+        logger.exception('Could not start the FLAC conversion for %s; sending the file as it is', item_id)
+        flac = None
+    if flac is not None:
+        return Response(_send_then_release(flac, entry), mimetype='audio/flac')
+    return Response(_send_then_release(download.chunks(), entry), mimetype=flac_stream.mimetype(head))
+
+
+def _acquire_song(item_id):
+    try:
+        server_id = app_server_context.resolve_request_server_id()
+    except ValueError:
+        server_id = None
+    with app_server_context.use_request_server():
+        return app_play_cache.acquire((server_id, item_id), item_id)
+
+
+def _log_path(entry):
+    handle, path = tempfile.mkstemp(dir=entry.folder, suffix='.log')
+    os.close(handle)
+    return path
+
+
+def _piece_response(entry, item_id, head, start, seconds):
+    download = entry.download
+    log_path = _log_path(entry)
+    try:
+        if download.done.is_set() or flac_stream.kind(head) == flac_stream.KIND_MP4:
+            download.done.wait()
+            source = download.file()
+        else:
+            source = download.chunks()
+        cut = flac_stream.cut_piece(source, start, seconds, log_path, item_id) if source else None
+    except Exception:
+        logger.exception('Could not cut a piece of %s', item_id)
+        cut = None
+    finally:
+        app_play_cache.release(entry)
+        with contextlib.suppress(OSError):
+            os.remove(log_path)
+    if cut is None:
+        return json_error(ERR_TRACK_NOT_ANALYZABLE, 'The server could not read this song.', http_status=422)
+    header, body = cut
+    headers = {'X-Song-Seconds': f"{header['seconds']:.6f}"} if header.get('seconds') else {}
+    return Response(body, mimetype='audio/wav' if header['format'] == 'wav' else 'audio/flac', headers=headers)
+
+
+def _library_failure(item_id):
+    from tasks.commons import fetch_track_metadata_map
+
+    try:
+        canonical_id = app_server_context.resolve_input_item_id(item_id)
+    except ValueError as exc:
+        return json_exception(exc, ERR_INVALID_REQUEST)
+    if not fetch_track_metadata_map([canonical_id]):
+        return json_error(ERR_NOT_FOUND, 'This song is not in the library.')
+    return None
 
 
 def _fetch_song(item_id, folder):
@@ -547,9 +662,11 @@ def recording_search_transition_api():
           loud (-14 LUFS): 1 = as decoded, 0.5 = half (-6 dB). A quiet song is
           raised only until its loudest peak reaches -1 dBFS; a song gets the
           same gain as from and as to.
-          position: the second of the song to play at each point (in a beat mix
-          it does not move one second per second: stretch the song along it,
-          pitch kept).
+          speed: the playback rate at each point (1 = normal, 1.02 = 2%
+          faster; Web Audio playbackRate). Play the song's own audio at it:
+          the pitch moves with the tempo like a DJ deck without key lock, no
+          time-stretch. 1 all along in a crossfade. from plays from start, to
+          from its own start.
           volume: the fader, the number to multiply the song by at each point,
           on top of gain: 0 = silent, 1 = full; from goes from 1 to 0, to from 0
           to 1. In a beat mix it only fades the two ends and keeps the mix at a
@@ -557,7 +674,8 @@ def recording_search_transition_api():
           high_db, mid_db and bass_db: how much to turn down the highs (high
           shelf), the mids (peaking filter) and the bass (low shelf) at each
           point, in dB: 0 = unchanged, -40 = almost gone; all 0 in a crossfade.
-          to also has highpass_hz (beat_rise only: the corner of a high-pass
+          to also has start (the second of the to_id song where it comes in),
+          highpass_hz (beat_rise only: the corner of a high-pass
           used instead of its low shelf, removing what is below it; else null)
           and continue_from (the second where it plays on alone once the
           transition ends).
@@ -596,7 +714,7 @@ def recording_search_transition_api():
                   properties:
                     gain:
                       type: number
-                    position:
+                    speed:
                       type: array
                       items:
                         type: number
@@ -621,7 +739,9 @@ def recording_search_transition_api():
                   properties:
                     gain:
                       type: number
-                    position:
+                    start:
+                      type: number
+                    speed:
                       type: array
                       items:
                         type: number
@@ -709,15 +829,14 @@ def recording_search_transition_api():
     return Response(json.dumps(answer), mimetype='application/json')
 
 
-def _stream_then_remove(path, folder):
-    # send_file's direct passthrough skips call_on_close, so the copy is
-    # removed here, when the server closes the stream (sent or abandoned).
+def _send_then_release(chunks, entry):
+    # send_file's direct passthrough skips call_on_close, so the song is
+    # released here, when the server closes the stream (sent or abandoned).
     try:
-        with open(path, 'rb') as handle:
-            while chunk := handle.read(1024 * 1024):
-                yield chunk
+        yield from chunks
     finally:
-        shutil.rmtree(folder, ignore_errors=True)
+        chunks.close()
+        app_play_cache.release(entry)
 
 
 @recording_search_bp.route('/api/recording_search/warmup', methods=['POST'])
