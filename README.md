@@ -93,6 +93,7 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 - [Native Deployment](#native-deployment)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
+- [AudioMuse-AI Supported Clients](#audiomuse-ai-supported-clients)
 - [How To Contribute](#how-to-contribute)
 - [Code Mirror](#code-mirror)
 
@@ -235,6 +236,9 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 
 > Versioning is Major.Minor.Patch release. Eventually (rare) model change that could require a new analysis could happen in Major and Minor release.
 > Read the [release note](https://github.com/NeptuneHub/AudioMuse-AI/releases) before any update especially for Major and Minor release.
+
+## **AudioMuse-AI Supported Clients**
+- **[Lumae Music](https://lumaemusic.app):** a **free** player for Android and iPhone, with Android Auto and CarPlay, for Navidrome and Jellyfin, built around **AudioMuse-AI from the start**. The goal is to bring AudioMuse-AI features natively to your phone, like: (offline) similar-song queues, search by lyrics or recording, chat with AI, and **crossfades**.
 
 ## **How To Contribute**
 
