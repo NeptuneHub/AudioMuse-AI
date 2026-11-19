@@ -310,13 +310,13 @@ def _feed(child, chunks):
     try:
         for chunk in chunks:
             child.stdin.write(chunk)
-    except (BrokenPipeError, OSError, ValueError):
+    except (OSError, ValueError):
         pass
     finally:
         chunks.close()
         try:
             child.stdin.close()
-        except (BrokenPipeError, OSError):
+        except OSError:
             pass
 
 
