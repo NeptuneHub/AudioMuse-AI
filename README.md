@@ -95,6 +95,7 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
 - [How To Contribute](#how-to-contribute)
 - [Code Mirror](#code-mirror)
+- [AudioMuse-AI Supported Clients](#audiomuse-ai-supported-clients)
 
 ## Quick Start Deployment (Containerized)
 
@@ -248,3 +249,6 @@ For more details on how to contribute please follow the [Contributing Guidelines
 - https://codeberg.org/NeptuneHub/AudioMuse-AI
 
 DO **NOT** USE MIRROR TO RAISE ISSUE, PR OTHER ACTION DIFFERENT FROM GET THE CODE
+
+## **AudioMuse-AI Supported Clients**
+- **[Lumae Music](https://lumaemusic.app):** a **free** player for Android and iPhone, with Android Auto and CarPlay, for Navidrome and Jellyfin, built around **AudioMuse-AI from the start**. Similar-song queues that keep working offline, search by title, lyrics or recording, chat with AI about what to play, and **crossfades** shaped by how each song begins and ends. Lumae is a passion project that brings AudioMuse-AI’s features natively to your phone.
