@@ -21,8 +21,8 @@ Main Features:
   returned in smart fade order with where to start and end each, or in the
   order sent with keep_order), `/api/recording_search/play/<id>` (the song's
   audio from the media server, for the shared song player of every song list;
-  it answers with the neural fingerprint off too), `/api/recording_search/transition` (JSON: where the
-  page cuts and mixes two songs on the beat at their smart fade points) and
+  it answers with the neural fingerprint off too), `/api/recording_search/transition` (JSON:
+  everything a player executes to mix the current song into the next) and
   `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
@@ -40,6 +40,7 @@ Main Features:
 """
 
 from flask import Blueprint, Response, render_template, request, jsonify
+import json
 import logging
 import math
 import mimetypes
@@ -493,97 +494,184 @@ def _fetch_song(item_id, folder):
 @recording_search_bp.route('/api/recording_search/transition', methods=['GET'])
 def recording_search_transition_api():
     """
-    Plan a beat-matched transition between two songs.
+    Everything a player executes to mix the current song into the next.
     ---
     tags:
       - Recording Search
-    summary: Say where the page cuts and mixes the end of one song into the next on the beat, at the smart fade points.
+    summary: The smart fade transition from the current song into the next, as numbers a player schedules.
     parameters:
       - in: query
         name: from_id
         required: true
         schema:
           type: string
-        description: The song that ends, as an id of the selected server.
+        description: The song playing now (the answer's from), as an id of the selected server.
       - in: query
         name: to_id
         required: true
         schema:
           type: string
-        description: The song that starts.
+        description: The song that comes next (the answer's to).
       - in: query
         name: out
         required: true
         schema:
           type: number
-        description: The smart fade end of the first song, in seconds.
+        description: Where the current song should end, in seconds (its fade_out_seconds from the smart fade order).
       - in: query
         name: in
         required: true
         schema:
           type: number
-        description: The smart fade start of the next song, in seconds.
+        description: Where the next song should start, in seconds (its fade_in_seconds from the smart fade order).
     responses:
       200:
         description: |
-          The plan, in seconds of each song; no audio. The first song plays
-          until mix_at and fades out over mix_seconds; the next song's
-          stretch of in_at to resume_at plays over those mix_seconds (sped up
-          by stretch, pitch kept, so its beats land on the first song's) and
-          fades in; then the next song plays on alone from resume_at.
-          tempo_from and tempo_to are the measured tempos. style says how to
-          mix: 'blend' (a confirmed beat lock: tempos within 8%, drum hits
-          lining up and several beat trackers agreeing on both songs; the
-          bass of the next song comes in and the first song's goes out
-          around swap_at, the middle beat of the mix), 'rise' (the same lock
-          and the next song is louder: it comes in from the treble up),
-          'fade' (no confirmed lock: about 10 seconds with stretch 1, from a
-          beat of the first song into the next song's section start, which
-          the shared player plays as its default crossfade, no filters).
-          beat_seconds is one beat of the first song.
-          A caller may ignore these three: the other fields alone still
-          describe a default crossfade.
-          confidence says how sure the plan is: 'high' (the beats lock),
-          'medium' (a fade at similar loudness) or 'low' (a fade where the
-          first song is still at full level and the next comes in quieter,
-          each against its own loudness). A caller may ignore it too; the
-          other fields keep their meaning.
+          Everything to play, in the order a player uses it. Every list holds
+          the curve measured for these two songs, one value per point, step
+          seconds apart from start; points are close enough that joining them
+          with straight lines (Web Audio setValueCurveAtTime) plays the curve.
+          type: beat_mix (the beats lock: the tempo glides and the bass lines
+          swap), beat_rise (the same, and the next song is louder: it comes in
+          from the treble down) or crossfade (everything else: no filters).
+          start: the second of the current song where the transition starts.
+          duration: how many seconds both songs play together.
+          middle: seconds after start where the next song takes over.
+          step: seconds between two points of every list below.
+          filters: high_hz (corner of the high shelf that high_db drives),
+          mid_hz and mid_q (centre and width of the peaking filter that mid_db
+          drives), bass_hz (corner of the low shelf that bass_db drives).
+          from (the from_id song) and to (the to_id song):
+          gain: the number to multiply the whole song by, from its first second
+          to its last (not only in the transition), so every song plays equally
+          loud (-14 LUFS): 1 = as decoded, 0.5 = half (-6 dB). A quiet song is
+          raised only until its loudest peak reaches -1 dBFS; a song gets the
+          same gain as from and as to.
+          position: the second of the song to play at each point (in a beat mix
+          it does not move one second per second: stretch the song along it,
+          pitch kept).
+          volume: the fader, the number to multiply the song by at each point,
+          on top of gain: 0 = silent, 1 = full; from goes from 1 to 0, to from 0
+          to 1. In a beat mix it only fades the two ends and keeps the mix at a
+          steady loudness (it never clips); the three filters hand the song over.
+          high_db, mid_db and bass_db: how much to turn down the highs (high
+          shelf), the mids (peaking filter) and the bass (low shelf) at each
+          point, in dB: 0 = unchanged, -40 = almost gone; all 0 in a crossfade.
+          to also has highpass_hz (beat_rise only: the corner of a high-pass
+          used instead of its low shelf, removing what is below it; else null)
+          and continue_from (the second where it plays on alone once the
+          transition ends).
+          info, not needed to play: tempo_from and tempo_to (BPM, null
+          without a steady beat), confidence (high, medium or low),
+          loudness_from and loudness_to (LUFS, whole songs).
         content:
           application/json:
             schema:
               type: object
               properties:
-                mix_at:
-                  type: number
-                mix_seconds:
-                  type: number
-                in_at:
-                  type: number
-                resume_at:
-                  type: number
-                stretch:
-                  type: number
-                tempo_from:
-                  type: number
-                tempo_to:
-                  type: number
-                style:
+                type:
                   type: string
-                  enum: [blend, rise, fade]
-                swap_at:
+                  enum: [beat_mix, beat_rise, crossfade]
+                start:
                   type: number
-                beat_seconds:
+                duration:
                   type: number
-                confidence:
-                  type: string
-                  enum: [high, medium, low]
+                middle:
+                  type: number
+                step:
+                  type: number
+                filters:
+                  type: object
+                  properties:
+                    high_hz:
+                      type: number
+                    mid_hz:
+                      type: number
+                    mid_q:
+                      type: number
+                    bass_hz:
+                      type: number
+                from:
+                  type: object
+                  properties:
+                    gain:
+                      type: number
+                    position:
+                      type: array
+                      items:
+                        type: number
+                    volume:
+                      type: array
+                      items:
+                        type: number
+                    high_db:
+                      type: array
+                      items:
+                        type: number
+                    mid_db:
+                      type: array
+                      items:
+                        type: number
+                    bass_db:
+                      type: array
+                      items:
+                        type: number
+                to:
+                  type: object
+                  properties:
+                    gain:
+                      type: number
+                    position:
+                      type: array
+                      items:
+                        type: number
+                    volume:
+                      type: array
+                      items:
+                        type: number
+                    high_db:
+                      type: array
+                      items:
+                        type: number
+                    mid_db:
+                      type: array
+                      items:
+                        type: number
+                    bass_db:
+                      type: array
+                      items:
+                        type: number
+                    highpass_hz:
+                      type: array
+                      nullable: true
+                      items:
+                        type: number
+                    continue_from:
+                      type: number
+                info:
+                  type: object
+                  properties:
+                    tempo_from:
+                      type: number
+                      nullable: true
+                    tempo_to:
+                      type: number
+                      nullable: true
+                    confidence:
+                      type: string
+                      enum: [high, medium, low]
+                    loudness_from:
+                      type: number
+                    loudness_to:
+                      type: number
       400:
-        description: Bad parameters, or the songs have no steady beat to match.
+        description: Bad parameters, or no room even for a crossfade at these points.
       404:
         description: An id is not a song of the library.
       502:
         description: The media server did not deliver a song.
     """
+    from tasks.smart_fade_levels import crossfade_plan, transition
     from tasks.smart_fade_mix import plan_transition
 
     if disabled := _disabled_response():
@@ -606,15 +694,19 @@ def recording_search_transition_api():
                 return failure
             paths.append(path)
         try:
-            plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
+            try:
+                plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
+            except ValueError:
+                plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds)
+            answer = transition(paths[0], paths[1], plan)
         except ValueError:
-            return json_error(ERR_INVALID_REQUEST, 'These two songs have no steady beat to match at the fade points.')
+            return json_error(ERR_INVALID_REQUEST, 'These two songs have no room for a crossfade at these points.')
         except Exception as exc:
             logger.exception('Smart fade transition failed')
             return json_exception(exc, ERR_SEARCH_FAILED, 'The transition could not be made. Check the container logs.')
     finally:
         shutil.rmtree(folder, ignore_errors=True)
-    return jsonify(plan)
+    return Response(json.dumps(answer), mimetype='application/json')
 
 
 def _stream_then_remove(path, folder):

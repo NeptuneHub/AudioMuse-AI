@@ -22,23 +22,24 @@ Main Features:
   server's ids and the echoed id goes through provider_echo_id
 * by_track ignores a smart_fade field; the shared static/song_player.js
   reorders through the smart_fade endpoint and cuts, stretches and fades the
-  decoded songs on one audio clock started in the Play click, never an audio
-  element (Safari); the playing row fills and seeks up to its fade; it mixes
-  in the plan's style; sources start on whole samples and after a mix a fresh
-  source plays on (outside a transition, as decoded)
-* With Smart fade every song plays at TARGET_LUFS (K-weighted, gated; a quiet
-  song raised only up to PEAK_CEILING); without a beat lock, plan or no plan,
-  it is the one "Default crossfade" (no filters, the plan's points if any);
-  only the playing song's transition is planned (play takes a copy),
-  the next row shows an icon for how its song comes in, the bar counts them
+  decoded songs on one audio clock started in the Play click (Safari); the
+  playing row seeks up to its fade; it mixes in the plan's style; sources
+  start on whole samples, then a fresh source plays on as decoded
+* With Smart fade every song plays at the gain the transition gives; without
+  a beat lock it is the one "Default crossfade"; only the playing song's
+  transition is planned, the next row's icon says how its song comes in; the
+  page only executes the answer (gains, positions, volumes, filters),
+  computing none of it, and uses none of the old names
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
 * play (also with the fingerprint off) sends a library song and removes the
   temporary copy; outside the library 404, a failed download 502
-* transition answers 400 for missing or bad seconds, 404 outside the library,
-  plans from both downloads, answers only the JSON plan (no audio), removes
-  them, and answers 400 without a steady beat
+* transition answers 400 for missing or bad from_id, to_id, out or in (the
+  inputs it always had; other names are refused), 404 outside the library,
+  plans from both downloads, answers the JSON in its order (type, start,
+  duration, middle, step, filters, from, to, info), removes them; a
+  pair without a steady beat gets the crossfade, 400 only without room
 * warmup relays the manager status; with NEURAL_FINGERPRINT_ENABLED false
   every route but play answers 503 naming the flag and the page says so
 * The page gets the built-in HTTPS port, or zero when the listener is
@@ -47,6 +48,7 @@ Main Features:
 
 import importlib.util
 import io
+import json
 import os
 import sys
 
@@ -421,43 +423,44 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
     for code in (source, page):
         assert 'new Audio(' not in code and '.currentTime =' not in code and '.volume =' not in code
         assert 'X-Switch-At' not in code
-    assert '{ glide, lead: stretchSegment(buffer, glide.lead, glide.seconds), buffer: stretchSegment(next, glide.next, glide.seconds) }' in source
+    assert '{ follow: follower, lead: stretchSegment(buffer, lead, mix.duration), buffer: stretchSegment(next, follower, mix.duration) }' in source
     assert 'separatedStretch' not in source
-    assert 'outgoing.gain.gain.setValueCurveAtTime(mix.curves[0], state.handoverAt, length);' in source
-    assert 'blend.gain.gain.setValueCurveAtTime(mix.curves[1], state.handoverAt, length);' in source
-    assert 'safeCurves(buffer, mix.mix_at, state.next, mix.in_at, length) : safeCurves(mix.lead, 0, mix.buffer, 0, length);' in source
+    assert 'follow(node.gain.gain, song.volume, state.handoverAt, length);' in source
+    assert 'if (values) param.setValueCurveAtTime(Float32Array.from(values), from, length);' in source
     assert 'const outgoing = direct ? state.node : startSource(mix.lead, state.handoverAt, 0, false);' in source
     assert 'if (!direct) state.node.source.stop(state.handoverAt);' in source
-    safe = source[source.index('function safeCurves('):source.index('function bassCurve(')]
-    assert 'ceiling = Math.max(ceiling, Math.abs(sa), Math.abs(sb));' in safe and 'Math.min(1, ceiling / Math.max(peaks[k] * MIX_HEADROOM, 1e-9))' in safe
-    assert 'for (let j = 1; j < segments; j++) {' in safe
     assert 'AudioMusePlayer.show(resultsList);' in page and 'function startSource(' not in page
     assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
 
 
-def test_the_player_mixes_in_the_plan_style_bass_swap_rise_or_default_crossfade():
+def test_the_player_mixes_with_the_filter_and_fader_curves_the_api_gives():
     source = _repo_file('static', 'song_player.js')
-    assert 'source.connect(air);' in source and 'air.connect(tone);' in source and 'tone.connect(mid);' in source and 'mid.connect(gain);' in source
+    assert 'source.connect(air);' in source and 'air.connect(tone);' in source and 'tone.connect(mid);' in source
+    assert 'mid.connect(high);' in source and 'high.connect(gain);' in source and 'mid.connect(gain);' not in source
     assert "air.type = 'lowpass';" in source and 'air.frequency.value = audioCtx.sampleRate / 2;' in source
-    assert "mid.type = 'peaking';" in source and 'mid.gain.value = 0;' in source
-    assert 'fadeMids(outgoing, swap, resume, true);' in source and 'fadeMids(blend, state.handoverAt, swap, false);' in source
-    assert "tone.type = filter || 'lowshelf';" in source
-    assert 'swapBass(outgoing, swap - length / 4, length / 2, true);' in source
-    assert 'swapBass(blend, swap - length / 4, length / 2, false);' in source
-    assert 'node.tone.gain.setValueCurveAtTime(bassCurve(!dropping), from, length);' in source
+    assert "mid.type = 'peaking';" in source and 'mid.gain.value = 0;' in source and "tone.type = filter || 'lowshelf';" in source
+    assert "high.type = 'highshelf';" in source and 'high.gain.value = 0;' in source
+    mix = source[source.index('} else if (mix && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
+    for line in ('[[outgoing, mix.from], [blend, mix.to]].forEach(([node, song]) => {',
+                 'node.tone.frequency.value = mix.filters.bass_hz;', 'node.mid.frequency.value = mix.filters.mid_hz;', 'node.mid.Q.value = mix.filters.mid_q;',
+                 'node.high.frequency.value = mix.filters.high_hz;',
+                 'follow(node.high.gain, song.high_db, state.handoverAt, length);',
+                 'follow(node.tone.gain, song.bass_db, state.handoverAt, length);',
+                 'follow(node.mid.gain, song.mid_db, state.handoverAt, length);',
+                 'follow(blend.tone.frequency, mix.to.highpass_hz, state.handoverAt, length);'):
+        assert line in mix, line
+    assert "startSource(mix.buffer, state.handoverAt, 0, false, mix.to.highpass_hz ? 'highpass' : 'lowshelf')" in mix
+    assert 'startSource(state.next, state.handoverAt, mix.to.position[0], false)' in mix
+    assert "const stretched = planned && mix.type !== 'crossfade';" in source
     fallback = source[source.index('const span = crossfadeSeconds();'):]
     fallback = fallback[:fallback.index('state.scheduled = [entry];')]
-    assert 'if (smooth) entry.gain.gain.setValueCurveAtTime(curves[1], state.handoverAt, span);' in fallback
-    assert 'state.node.gain.gain.setValueCurveAtTime(curves[0], state.handoverAt, span);' in fallback
-    assert 'safeCurves(buffer, state.node.offset + state.handoverAt - state.node.when, state.next, entryOffset(index + 1), span)' in fallback
+    assert 'state.node.gain.gain.setValueCurveAtTime(FADE_OUT, state.handoverAt, span);' in fallback
+    assert 'const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading ? span : 0);' in fallback
+    assert 'if (fadeIn) gain.gain.setValueCurveAtTime(FADE_IN, node.when, fadeIn);' in source
+    assert 'const FADE_OUT = FADE_IN.slice().reverse();' in source and 'linearRampToValueAtTime' not in source
     assert 'return playMode.beatMatch ? SMART_CROSSFADE_SECONDS : CROSSFADE_SECONDS;' in source
     assert 'const SMART_CROSSFADE_SECONDS = 10;' in source
-    assert "startSource(mix.buffer, state.handoverAt, 0, false, rise ? 'highpass' : 'lowshelf')" in source
-    assert 'blend.tone.frequency.exponentialRampToValueAtTime(RISE_TO_HZ, resume);' in source
-    assert 'MUFFLE_TO_HZ' not in source and 'Filtered fade' not in source
-    assert 'startSource(state.next, state.handoverAt, mix.in_at, false)' in source
-    assert "const glide = next && mix && mix.style !== 'fade' ? tempoGlide(mix) : null;" in source
-    assert 'createDelay(' not in source
+    assert 'MUFFLE_TO_HZ' not in source and 'Filtered fade' not in source and 'createDelay(' not in source
 
 
 def test_every_source_starts_on_a_whole_sample_and_each_mix_hands_over_to_a_fresh_source():
@@ -465,46 +468,48 @@ def test_every_source_starts_on_a_whole_sample_and_each_mix_hands_over_to_a_fres
     assert 'return Math.round(seconds * audioCtx.sampleRate) / audioCtx.sampleRate;' in source
     assert 'when: onGrid(when), offset: onGrid(Math.max(0, Math.min(offset, buffer.duration)))' in source
     assert 'const at = second => onGrid(state.node.when + second - state.node.offset);' in source
-    mix = source[source.index('} else if (mix && at(mix.mix_at) > now + 0.1) {'):source.index('swapView = {\n')]
-    assert 'const resume = onGrid(state.handoverAt + (direct ? mix.mix_seconds : mix.glide.seconds));' in mix
+    mix = source[source.index('} else if (mix && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
+    assert 'const resume = onGrid(state.handoverAt + mix.duration);' in mix
     assert 'const length = resume - state.handoverAt;' in mix
     assert 'if (direct) blend.source.stop(resume);' in mix
     assert '[outgoing, blend].forEach(node => node.gain.gain.setValueAtTime(0, resume + 1 / audioCtx.sampleRate));' in mix
-    assert 'const entry = startSource(state.next, resume, direct ? blend.offset + length : mix.glide.next(mix.buffer.length / mix.buffer.sampleRate), false);' in mix
+    assert 'const entry = startSource(state.next, resume, direct ? blend.offset + length : mix.follow(mix.buffer.length / mix.buffer.sampleRate), false);' in mix
     assert 'state.scheduled = direct ? [blend, entry] : [outgoing, blend, entry];' in mix
-    stretch = source[source.index('function stretchSegment(buffer, inputAt, seconds) {'):source.index('function powerCurve(')]
+    stretch = source[source.index('function stretchSegment(buffer, inputAt, seconds) {'):source.index('function create(')]
     assert 'const resume = Math.round(inputAt(count / rate) * rate);' in stretch
 
 
-def test_with_smart_fade_every_song_plays_at_the_same_loudness():
+def test_the_page_takes_every_number_of_a_transition_from_the_api_and_computes_none():
     source = _repo_file('static', 'song_player.js')
-    assert 'const TARGET_LUFS = -14;' in source and 'const PEAK_CEILING = 0.891;' in source
+    plan = source[source.index('function requestPlan(from, to) {'):source.index('function paintMark(')]
+    assert 'new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });' in plan
+    assert 'return response.ok && plan && plan.duration > 0 ? plan : null;' in plan
+    play = source[source.index('async function playSong(index) {'):source.index('async function startPlayback(')]
+    assert 'const [buffer, plan] = await Promise.all([loadSong(index), loadTransition(index)]);' in play
+    assert 'if (plan) levels.set(buffer, plan.from.gain);' in play
+    assert 'if (planned) levels.set(next, mix.to.gain);' in source
     load = source[source.index('async function loadSong(index) {'):source.index('function markPlaying(')]
-    assert 'if (playMode.beatMatch) levels.set(buffer, loudnessGain(buffer));' in load
+    assert 'return decode(await response.arrayBuffer());' in load
     start = source[source.index('function startSource('):source.index('function halt(')]
     assert 'level.gain.value = levelOf(buffer);' in start and 'gain.connect(level);' in start and 'level.connect(audioCtx.destination);' in start
-    safe = source[source.index('function safeCurves('):source.index('function bassCurve(')]
-    assert '[a0 + i] || 0) * la;' in safe and '[b0 + i] || 0) * lb;' in safe
-    loud = source[source.index('function loudnessGain(buffer) {'):source.index('function tempoGlide(')]
-    assert 'lufs(energy) > -70' in loud and 'const gate = lufs(mean(loud)) - 10;' in loud and 'sum += z * z;' in loud
-    assert 'return gain > 1 ? Math.max(1, Math.min(gain, PEAK_CEILING / Math.max(peak, 1e-9))) : gain;' in loud
     assert 'levels.set(state.mix.lead, levelOf(buffer));' in source and 'levels.set(state.mix.buffer, levelOf(next));' in source
+    for gone in ('loudnessGain', 'kWeighting', 'safeCurves', 'shapeCurves', 'mixLevels', 'tempoGlide', 'swapBass', 'fadeMids', 'powerCurve',
+                 'TARGET_LUFS', 'PEAK_CEILING', 'MIX_HEADROOM', 'BASS_CUT_DB', 'MID_CUT_DB', 'RISE_FROM_HZ', 'SHAPE_LIMIT_DB', 'ANCHOR_SECONDS',
+                 'levels: ', 'mix_at', 'current_id', 'in_at', 'mix.current', 'mix.next', 'tempo_current'):
+        assert gone not in source, gone
 
 
 def test_a_plan_without_a_beat_lock_plays_the_labelled_default_crossfade_on_its_beat_and_section_points():
     source = _repo_file('static', 'song_player.js')
-    load = source[source.index('async function loadTransition(index) {'):source.index('function entryOffset(')]
-    assert 'return response.ok && plan && plan.mix_seconds > 0 ? plan : null;' in load and '            return null;\n            const from' not in load
-    mix = source[source.index('} else if (mix && at(mix.mix_at) > now + 0.1) {'):source.index('swapView = {\n')]
-    assert 'if (!direct) {\n                        swapBass(outgoing, swap - length / 4, length / 2, true);\n                        fadeMids(outgoing, swap, resume, true);' in mix
-    assert '} else if (!direct) {\n                        fadeMids(blend, state.handoverAt, swap, false);\n                        swapBass(blend, swap - length / 4, length / 2, false);' in mix
+    mix = source[source.index('} else if (mix && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
     assert 'outgoing.air.frequency' not in mix
-    assert "const kind = direct ? 'Default crossfade' : `Beat-matched ${rise ? 'rise' : 'mix with a bass swap'}`;" in source
-    assert 'const tempos = direct ? `${mix.tempo_from} and ${mix.tempo_to} BPM`' in source
-    assert "if (!plan) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };" in source
+    assert "const kind = direct ? 'Default crossfade' : `Beat-matched ${mix.type === 'beat_rise' ? 'rise' : 'mix with a bass swap'}`;" in source
+    assert "const tempos = !tempo.tempo_from ? '' : direct ? ` (${tempo.tempo_from} and ${tempo.tempo_to} BPM)`" in source
+    assert "if (plan && plan.type === 'beat_mix') return { kind: 'blend'," in source and "if (plan && plan.type === 'beat_rise') return { kind: 'rise'," in source
+    assert "if (!tempo.tempo_from) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };" in source
     assert 'no transition plan' not in source and "'plain'" not in source
     fallback = source[source.index('const span = crossfadeSeconds();'):]
-    assert 'if (smooth) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title}`; });' in fallback
+    assert 'if (fading && playMode.beatMatch) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title}`; });' in fallback
     assert 'handsOver' not in source and 'handover_at' not in source and 'Natural hand-over' not in source
 
 
@@ -527,13 +532,13 @@ def test_only_the_playing_song_is_planned_and_its_next_row_shows_how_it_comes_in
     assert '.play-mark[data-mark="blend"]' in css and '.song-player .play-summary:empty' in css
 
 
-def test_a_beat_matched_mix_glides_the_tempo_from_one_song_to_the_next():
+def test_a_beat_matched_mix_stretches_both_songs_along_the_api_positions():
     source = _repo_file('static', 'song_player.js')
-    glide = source[source.index('function tempoGlide(mix) {'):source.index('function stretchSegment(')]
-    assert 'const second = (mix.resume_at - mix.in_at) / beats;' in glide
-    assert 'times.push(times[k] + first + (second - first) * (k + 0.5) / beats);' in glide
-    assert 'lead: map(mix.mix_at, first), next: map(mix.in_at, second)' in glide
-    stretch = source[source.index('function stretchSegment(buffer, inputAt, seconds) {'):source.index('function powerCurve(')]
+    helper = source[source.index('function along(points, step) {'):source.index('function follow(')]
+    assert 'return points[k] + (points[k + 1] - points[k]) * (x - k);' in helper
+    assert 'const lead = stretched ? along(mix.from.position, mix.step) : null;' in source
+    assert 'const follower = stretched ? along(mix.to.position, mix.step) : null;' in source
+    stretch = source[source.index('function stretchSegment(buffer, inputAt, seconds) {'):source.index('function create(')]
     assert 'targets[c][i] += (data[start + i] || 0) * shape[hop + i];' in stretch
     assert 'Math.round(inputAt(k * hop / rate) * rate) - base' in stretch
 
@@ -545,8 +550,8 @@ def test_the_highlight_jumps_to_the_next_song_in_the_middle_of_a_transition():
     assert "if (view) list.querySelectorAll('.result-item').forEach((item, n) => item.classList.toggle('playing', n === view.row));" in tick
     assert 'const second = view ? view.at(now) :' in tick
     mix = source[source.index('swapView = {'):source.index("after(state.handoverAt, () => {\n                        const kind")]
-    assert 'from: swap,' in mix and 'row: playQueue[index + 1].row,' in mix
-    assert 'at: direct ? t => mix.in_at + t - state.handoverAt : t => mix.glide.next(t - state.handoverAt)' in mix
+    assert 'from: state.handoverAt + mix.middle,' in mix and 'row: playQueue[index + 1].row,' in mix
+    assert 'at: direct ? t => mix.to.position[0] + t - state.handoverAt : t => mix.follow(t - state.handoverAt)' in mix
     assert 'after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, state.scheduled[0]));' in source
     assert source.count('swapView = null;') == 4 and 'mix-in' not in source
     assert 'playCurrent = state;\n            markPlaying(index);\n            tick();' in source
@@ -559,7 +564,7 @@ def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
     style = style[:style.index('}')]
     assert 'var(--play-fill) var(--play-progress, 0%)' in style and 'var(--play-limit-color)' in style
     assert '--play-fill: #DBEAFE;' in css and 'touch-action: pan-y;' in style
-    assert 'if (state.mix) return state.mix.mix_at;' in source
+    assert 'if (state.mix) return state.mix.start;' in source
     assert 'Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1)' in source
     assert "if (!item || item.classList.contains('playing') || bar.classList.contains('hidden')) return;" in source
     assert "skipBtn.addEventListener('click', () => skipToFade(playCurrent));" in source
@@ -659,38 +664,64 @@ def test_play_refuses_a_song_outside_the_library_and_reports_a_failed_download(c
     assert not os.path.exists(seen['folder'])
 
 
-def test_transition_downloads_both_songs_answers_only_the_plan_and_cleans_up(client, monkeypatch, tmp_path):
+def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets_the_crossfade(client, monkeypatch, tmp_path):
     import tasks.commons
+    import tasks.smart_fade_levels
     import tasks.smart_fade_mix
 
     seen = _fake_media(monkeypatch, tmp_path, b'audio')
     monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song'} for i in ids if i in ('fp_42', 'fp_43')})
-    planned = {}
-    plan = {'mix_at': 191.5, 'mix_seconds': 4.0, 'in_at': 27.41, 'resume_at': 31.25, 'stretch': 0.96, 'tempo_from': 120.0, 'tempo_to': 125.0}
+    plan = {'mix_at': 191.5, 'style': 'fade'}
+    answer = {'type': 'crossfade', 'start': 191.5, 'duration': 10.0, 'middle': 5.0, 'step': 0.1, 'filters': {'bass_hz': 180.0},
+              'from': {'gain': 0.5}, 'to': {'gain': 0.7}, 'info': {'tempo_from': None}}
+    calls = []
 
     def make_plan(path_out, out_seconds, path_in, in_seconds):
-        planned.update(paths=(os.path.basename(path_out), os.path.basename(path_in)), out=out_seconds, inn=in_seconds,
-                       folder_alive=os.path.isdir(seen['folder']))
-        return plan
+        calls.append(('plan', os.path.basename(path_out), out_seconds, in_seconds, os.path.isdir(seen['folder'])))
+        return dict(plan)
+
+    def make_crossfade(path_out, out_seconds, path_in, in_seconds):
+        calls.append(('crossfade', out_seconds, in_seconds))
+        return dict(plan, beatless=True)
+
+    def make_answer(path_out, path_in, planned):
+        calls.append(('answer', planned.get('beatless', False)))
+        return answer
 
     monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', make_plan)
-    for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1', '?from_id=42&out=1&in=1'):
-        assert client.get('/api/recording_search/transition' + query).status_code == 400
-    assert client.get('/api/recording_search/transition?from_id=42&to_id=7&out=200&in=20').status_code == 404
+    monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', make_crossfade)
+    monkeypatch.setattr(tasks.smart_fade_levels, 'transition', make_answer)
+    url = '/api/recording_search/transition'
+    for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1',
+                  '?from_id=42&out=1&in=1', '?current_id=42&next_id=43&current_end=200&next_start=20'):
+        response = client.get(url + query)
+        assert response.status_code == 400 and 'from_id, to_id, out and in' in response.get_json()['error']
+    assert client.get(url + '?from_id=42&to_id=7&out=200&in=20').status_code == 404
+    assert calls == []
 
-    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20.5')
-    assert response.status_code == 200
-    assert response.mimetype == 'application/json' and response.get_json() == plan
-    assert planned == {'paths': ('42.mp3', '42.mp3'), 'out': 200.0, 'inn': 20.5, 'folder_alive': True}
+    response = client.get(url + '?from_id=42&to_id=43&out=200&in=20.5')
+    assert response.status_code == 200 and response.mimetype == 'application/json'
+    assert list(json.loads(response.data)) == ['type', 'start', 'duration', 'middle', 'step', 'filters', 'from', 'to', 'info']
+    assert response.get_json() == answer
+    assert calls == [('plan', '42.mp3', 200.0, 20.5, True), ('answer', False)]
     assert not os.path.exists(seen['folder'])
+    calls.clear()
 
     def no_beat(*args):
+        calls.append(('plan',))
         raise ValueError('No steady beat to match.')
 
     monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', no_beat)
-    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20')
-    assert response.status_code == 400
-    assert 'steady beat' in response.get_json()['error']
+    response = client.get(url + '?from_id=42&to_id=43&out=200&in=20')
+    assert response.status_code == 200 and response.get_json() == answer
+    assert calls == [('plan',), ('crossfade', 200.0, 20.0), ('answer', True)]
+
+    def no_room(*args):
+        raise ValueError('No room for a crossfade at the fade points.')
+
+    monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', no_room)
+    response = client.get(url + '?from_id=42&to_id=43&out=200&in=20')
+    assert response.status_code == 400 and 'no room' in response.get_json()['error']
 
 
 def test_a_disabled_feature_answers_503_on_every_route_but_play_and_the_page_says_so(client, bp_mod, monkeypatch, tmp_path):

@@ -3030,7 +3030,10 @@ the neural fingerprint.
 2. **Play** plays each song from its start time to its end time (the first
    one from the beginning, the last one to its end) and mixes it into the
    next with one of the three transitions below. Every song plays at the same
-   loudness (-14 LUFS; a quiet song is raised only as far as its peaks allow).
+   loudness (-14 LUFS; a quiet song is raised only as far as its peaks allow),
+   and in every transition the two volume curves follow both songs' own
+   levels, so a song already fading on its own or a quiet intro leaves no
+   hole in the middle.
    The line under the player names the transition while it plays.
 3. **One highlighted row, the louder song.** During a transition the
    highlight and the clock stay on the ending song until the middle of the mix
@@ -3063,30 +3066,33 @@ confirmed beat lock, when the server is sure of the beats of both songs.
    - How it sounds: both songs play together for at least 15 seconds, in whole
      steps of 8 beats (15 to 21 seconds), shortened 8 beats at a time down to
      10 seconds when there is no room. The tempo glides beat by beat from the
-     first song's to the next song's. The ending song loses its bass around
-     the middle, its mids over the second half and its highs last; the next
-     song brings its highs first, its mids over the first half and its bass in
-     around the middle.
+     first song's to the next song's. Mixed the way a DJ mixes with a 3-band
+     EQ, every move a smooth S-curve, one band after the other: the next
+     song's highs come in first, then its mids, then the two bass lines swap
+     in one quick move over 2 beats, on the bar nearest the middle where the
+     next song's own bass is playing; after the swap the ending song's mids
+     go out, its highs last. The faders only fade the two ends in and out.
 2. **Beat-matched rise**
    - Label: `Beat-matched rise into <next song> (tempo gliding from X to Y BPM)`
    - When: the same confirmed lock, and the next song is at least 6 dB louder
      during the mix.
    - How it sounds: the same length and tempo glide as the blend. The next
      song comes in from the treble down (a high-pass opens from 800 Hz to
-     10 Hz over the mix, so its bass arrives last); the ending song goes out
-     as in the blend.
+     10 Hz until the swap, so its bass arrives last); the ending song goes
+     out as in the blend.
 3. **Default crossfade**
    - Label: `Default crossfade into <next song> (X and Y BPM)`, or just
      `Default crossfade into <next song>` when there is no plan and so no
      measured tempos; the line then switches to
      `Playing <next song> from m:ss until m:ss`.
    - When: every other case. There is a plan but no confirmed lock
-     (`style: "fade"`: the tempos are too far apart, the drum hits would not
+     (`type: "crossfade"`: the tempos are too far apart, the drum hits would not
      line up, or the beat trackers disagree on either song), or there is no
      plan at all (an error, no answer, or an answer after its mix point).
-   - How it sounds: an equal-power volume crossfade of about 10 seconds, one
-     song going down while the next comes up, no filters, nothing stretched;
-     each song keeps its own tempo.
+   - How it sounds: a volume crossfade of about 10 seconds, one song going
+     down while the next comes up, no filters, nothing stretched; each song
+     keeps its own tempo. The two curves start equal-power and follow both
+     songs' levels (section 19.3).
    - Where: with a plan it starts on a beat of the ending song and the next
      song comes in on its section start, the points the plan found, over the
      fewest whole beats of the ending song that reach 10 seconds. Without a
@@ -3118,70 +3124,94 @@ same way. With the neural fingerprint off both answer 503.
      {"item_id": "id-B", "fade_in_seconds": 18.0, "fade_out_seconds": 256.0, "duration_seconds": 256.0}]}
    ```
 
-2. **Transition plan**:
+2. **Transition**:
    `GET /api/recording_search/transition?from_id=...&to_id=...&out=...&in=...`
-   - Called once per pair while the ending song plays: `out` is the ending
-     song's `fade_out_seconds` and `in` the next song's `fade_in_seconds`.
-   - Returns the plan, in seconds of each song: `mix_at` (where the mix starts
-     in the ending song, on one of its beats), `mix_seconds` (how long both
-     songs play together), `in_at` (where the next song comes in, on one of
-     its beats or a section start), `resume_at` (where the next song plays on
-     alone), `stretch` (how much the next song is sped up or slowed down
-     during the mix, 1.0 for none), `tempo_from` and `tempo_to` (the two
-     measured tempos), `style` (`blend`, `rise` or `fade`), `swap_at` (the
-     middle of the mix, where the bass lines trade places and the highlight
-     jumps), `beat_seconds` (one beat of the ending song) and `confidence`
-     (`high` when the beats lock, `low` for a fade into a next song that
-     comes in quieter, else `medium`). A caller that ignores `confidence`
-     gets exactly the plan it got before.
-   - A blend or a rise has `resume_at - in_at` = `mix_seconds` x `stretch`; a
-     fade has `stretch` 1.0 and `mix_seconds` = `ceil(10 / beat_seconds)`
-     beats.
+   - Called once per pair while the current song plays, with the inputs it
+     always had: `from_id` (the current song), `to_id` (the next one), `out`
+     (the current song's `fade_out_seconds`) and `in` (the next song's
+     `fade_in_seconds`).
+   - Answers everything a player executes, numbers only, in the order a
+     player uses them; a frontend computes nothing:
+     - `type`: `beat_mix` (a confirmed beat lock: the tempo glides and the
+       bass lines swap), `beat_rise` (the same lock, the next song at least
+       6 dB louder: it comes in from the treble down) or `crossfade`
+       (everything else, no filters).
+     - `start`: the second of the current song where the transition starts.
+     - `duration`: how many seconds both songs play together.
+     - `middle`: seconds after `start` where the next song takes over, in a
+       beat mix the bass swap (the page moves the highlight there).
+     - `step`: seconds between two points of every list below (about 0.1).
+       The lists are the curves measured for these two songs; their points
+       are close enough that joining them with straight lines (what Web
+       Audio's `setValueCurveAtTime` does) plays the curve.
+     - `filters`: `high_hz` (high shelf, 4000), `mid_hz` and `mid_q` (mid
+       peak, 1000 and 0.5) and `bass_hz` (low shelf, 180), the filters the
+       `high_db`, `mid_db` and `bass_db` lists drive.
+     - `from` (the `from_id` song) and `to` (the `to_id` song):
+       - `gain`: the multiplier for the whole song, every second of it
+         (-14 LUFS; a quiet song is raised only until its peak reaches
+         -1 dBFS). A song gets the same gain as `from` and as `to`.
+       - `position`: the second of the song that plays at each point. In a
+         beat mix it does not move one second per second: stretch the song
+         along it, pitch kept.
+       - `volume`: the fader, a multiplier from 1 to 0 for `from` and from 0
+         to 1 for `to`; in a beat mix it only fades the two ends, and it
+         carries the steady-level correction and the clip guard.
+       - `high_db`, `mid_db`, `bass_db`: the filter gains in dB, all 0 for a
+         crossfade.
+       - `to` only: `highpass_hz` (a `beat_rise` sweeps a 2nd-order
+         high-pass instead of the low shelf; else `null`) and
+         `continue_from` (the second where the next song plays on alone
+         once the transition ends).
+     - `info`, not needed to play: `tempo_from` and `tempo_to` (BPM,
+       `null` without a steady beat), `confidence` (`high` when the beats
+       lock, `low` for a crossfade from a song still at full level into one
+       that comes in quieter, else `medium`), `loudness_from` and
+       `loudness_to` (whole songs, LUFS).
+   - A pair without a steady beat, or without room for a beat mix, still
+     gets a `crossfade` at the two given points: `start` = `out` - 10,
+     `duration` 10 (less when a song is shorter), `to` from `in`, tempos
+     `null`. Every list has one value per point.
 
-   ```json
-   {"mix_at": 192.4, "mix_seconds": 16.0, "in_at": 21.0, "resume_at": 36.36, "stretch": 0.96,
-    "tempo_from": 120.0, "tempo_to": 125.0, "style": "blend", "swap_at": 200.4, "beat_seconds": 0.5,
-    "confidence": "high"}
+   ```
+   {"type": "beat_mix", "start": 147.3626, "duration": 16.0875, "middle": 8.0216, "step": 0.099922,
+    "filters": {"high_hz": 4000.0, "mid_hz": 1000.0, "mid_q": 0.5, "bass_hz": 180.0},
+    "from": {"gain": 0.4728, "position": [147.3626, 147.4625, ...], "volume": [1.0, 1.0009, ...],
+             "high_db": [0.0, 0.0, ...], "mid_db": [0.0, 0.0, ...], "bass_db": [0.0, 0.0, ...]},
+    "to": {"gain": 0.5445, "position": [23.6997, 23.8007, ...], "volume": [0.0, 0.0137, ...],
+           "high_db": [-40.0, -40.0, ...], "mid_db": [-27.0, -27.0, ...], "bass_db": [-40.0, -40.0, ...],
+           "highpass_hz": null, "continue_from": 39.8759},
+    "info": {"tempo_from": 90.0, "tempo_to": 89.0, "confidence": "high",
+             "loudness_from": -7.49, "loudness_to": -8.72}}
    ```
 
-   ```json
-   {"mix_at": 210.0, "mix_seconds": 10.4132, "in_at": 18.5, "resume_at": 28.9132, "stretch": 1.0,
-    "tempo_from": 121.0, "tempo_to": 92.0, "style": "fade", "swap_at": 214.9587, "beat_seconds": 0.4959,
-    "confidence": "medium"}
-   ```
+   - Errors: `400` "Give from_id, to_id, out and in (seconds)." (bad or
+     missing parameters), `400` "These two songs have no
+     room for a crossfade at these points.", `404` "This song is not in the
+     library.", `502` "The media server did not deliver this song." and
+     `500` "The transition could not be made. Check the container logs."
+     (an unexpected error, such as a file it cannot decode).
 
-   - Errors: `400` "These two songs have no steady beat to match at the fade
-     points." (fewer than 4 beats near a fade point, or no room for a mix of
-     at least 10 seconds: both give this message), `404` "This song is not in
-     the library.", `502` "The media server did not deliver this song.",
-     `500` "The transition could not be made. Check the container logs." (an
-     unexpected planner error, such as a file it cannot decode) and `400`
-     "Give from_id, to_id, out and in (seconds)." (bad parameters).
+**From the answer to the transition**
 
-**From the answers to the transition**
-
-| Transition plan | Transition played |
+| Answer | Transition played |
 |---|---|
-| `style: "blend"` | 1. Beat-matched mix with a bass swap |
-| `style: "rise"` | 2. Beat-matched rise |
-| `style: "fade"` (`confidence` `medium` or `low`) | 3. Default crossfade, on the plan's points |
-| an error, no answer, or an answer after its `mix_at` | 3. Default crossfade, on the order times |
+| `type: "beat_mix"` | 1. Beat-matched mix with a bass swap |
+| `type: "beat_rise"` | 2. Beat-matched rise |
+| `type: "crossfade"` | 3. Default crossfade, on the answer's points |
+| an error, no answer, or an answer after its `start` | 3. Default crossfade, on the order times |
 
-Without a plan the default crossfade uses only the order endpoint's two times:
-
-| Instead of the plan's | the page uses |
-|---|---|
-| `mix_at` | the ending song's `fade_out_seconds` minus 10 seconds |
-| `mix_seconds` | always 10 seconds |
-| `in_at` | the next song's `fade_in_seconds` |
-| `resume_at` | the next song's `fade_in_seconds` plus 10 seconds |
-| `stretch`, `style`, `swap_at`, `beat_seconds`, `confidence` | nothing: no stretch, no filters, the highlight jumps after 5 seconds |
-
-With the order above, `id-A` fades out from 3:18.5 to 3:28.5 while `id-C`
-starts from 0:20.0 and fades in until 0:30.0, then plays on alone. A song with
-`null` times gets no plan: when the next song has none, the crossfade still
-happens with the next song from its beginning; when the ending song has none,
-it plays to the end of its file and the next song starts right after.
+Without an answer the default crossfade is a plain one (the page has no level
+data then): two S-curves whose volumes always add up to 1, so it never
+clips, on the order
+endpoint's two times: the current song fades out over the 10 seconds before
+its `fade_out_seconds`, the next song starts from its `fade_in_seconds` at
+its own gain of 1, and the highlight jumps after 5 seconds. With the order
+above, `id-A` fades out from 3:18.5 to 3:28.5 while `id-C` starts from 0:20.0
+and fades in until 0:30.0, then plays on alone. A song with `null` times gets
+no transition: when the next song has none, the crossfade still happens with
+the next song from its beginning; when the current song has none, it plays to
+the end of its file and the next song starts right after.
 
 ### 19.3. Technical Analysis (Algorithm-Level)
 
@@ -3282,11 +3312,13 @@ it plays to the end of its file and the next song starts right after.
    ends on its beat nearest its fade-out time; when the regions have no room
    (the next song's first beat comes late) it loses 8 beats at a time down to
    10 seconds, and without room for that it raises `ValueError` too, which the
-   endpoint answers with 400. `swap_at` is the middle beat of the mix and the
-   next song resumes alone the mix length times the stretch after its entry.
-   A pair whose tempos match then goes through the beat check (step 3); a
-   pair that passes is a `rise` when the next song's part is at least 6 dB
-   louder (RMS) than the ending song's, else a `blend`.
+   endpoint turns into the plain `crossfade` at the two given points. The
+   middle beat of the mix is where the bass lines swap unless the next song
+   has no bass there (step 5), and the next song resumes alone the mix
+   length times the stretch after its entry. A pair
+   whose tempos match then goes through the beat check (step 3); a pair that
+   passes is a `beat_rise` when the next song's part is at least 6 dB louder
+   (RMS) than the ending song's, else a `beat_mix`.
 3. **Beat check** (`_in_step`). Before a beat match is kept, the server
    cross-correlates the onset curves of the two planned parts (the next
    song's curve stretched by the plan) over half a beat either way, and keeps
@@ -3376,7 +3408,10 @@ it plays to the end of its file and the next song starts right after.
    intensity step, so they do not decide the confidence. A fade's plan now
    takes up to about 1 s more; the page asks for it while the previous song
    plays.
-5. **The page's mix** (`static/song_player.js`). The page decodes both songs
+5. **What a player executes** (`tasks/smart_fade_levels.py`,
+   `transition`, the endpoint's answer). Every number of a transition is
+   computed on the server, so any frontend only schedules it; the shared page
+   (`static/song_player.js`) computes nothing of its own. The page decodes both songs
    with the browser's Web Audio, in one audio context made in the Play click,
    and starts every piece as a buffer source on a whole sample of that one
    audio clock, at a whole-sample offset in the song; Skip restarts the
@@ -3390,54 +3425,143 @@ it plays to the end of its file and the next song starts right after.
    No audio element is ever seeked: Safari seeks MP3 files without a
    seek table several seconds off while reporting the right time, which
    played the end of a song, jumped back and played it again.
-   - **Tempo glide.** In a blend or a rise the tempo glides beat by beat from
-     the ending song's to the next song's, as Spotify's DJ transitions do
-     (ISMIR 2017): both songs are stretched onto that
-     gliding grid, each half the difference off in the middle (splitting the
-     change between the two songs is more comfortable than putting it all on
-     one, 96 listeners, ISMIR 2009), so neither song jumps in tempo when the
-     mix starts or when the next song plays on alone. The default crossfade
-     plays both songs as they are.
-   - **Stretch.** WSOLA, a waveform-similarity overlap-add (46 ms Hann
+   - **Tempo glide** (`time_maps`, sent as each song's `position`). In a blend
+     or a rise the tempo glides beat by beat from the ending song's to the
+     next song's, as Spotify's DJ transitions do (ISMIR 2017): both songs are
+     stretched onto that gliding grid, each half the difference off in the
+     middle (splitting the change between the two songs is more comfortable
+     than putting it all on one, 96 listeners, ISMIR 2009), so neither song
+     jumps in tempo when the mix starts or when the next song plays on alone;
+     the mix then lasts the mean of the two parts (`seconds`). The default
+     crossfade plays both songs as they are.
+   - **Stretch** (in the page, along each song's `position`). WSOLA, a waveform-similarity overlap-add (46 ms Hann
      frames, half overlap, each frame placed where it best continues the last
      one within 11.5 ms either way, pitch kept), which only ever copies pieces
      of the original audio and so keeps the song's peaks exactly. The
      stretched part's last 23 ms are blended into the real song at the resume
      second, so the hand-over has no click.
-   - **Three bands.** Every song plays through a low-pass that stays fully
-     open, a low shelf at 180 Hz and a wide mid peak at 1 kHz that stay flat
-     until a mix. In a mix the ending song loses its bass over the middle half
-     (an equal-power curve down to -40 dB, centred on `swap_at`), its mids
-     over the second half (down to -27 dB) and its highs last, with the fader;
-     the next song brings its highs first, with the fader, its mids over the
-     first half and its bass over the same middle half, so the bass lines
-     cross smoothly instead of switching. Real DJ transitions are reproduced
-     better by a fader plus a 3-band EQ than by a crossfade (DAFx 2022, 50,742
-     transitions of 5,040 mixes), and that order (low, then mid, then high
-     out; the reverse in) is the one measured on real DJ transitions
-     (NIME 2021, sub-band analysis of 3,930 transition regions). A rise
-     sweeps a high-pass on the next song from 800 Hz down to 10 Hz instead of
-     its bass curve. The default crossfade leaves every filter flat: only the
-     two volume curves move.
-   - **No clipping.** Before a mix or a crossfade the page sums the two
-     songs' samples under the fade curves and, wherever that sum would peak
-     above the louder of the two songs alone, lowers both curves there just
-     enough, with about 1 dB of margin because the mix filters can raise a
-     peak a little: two loud masters at about -3 dB each in the middle of a
-     mix otherwise pass full scale and clip (measured up to 1.22, hundreds of
-     clipped samples in one mix). Peaks a song already has on its own
-     (decoded lossy files can pass 1.0) are left as they are, and outside a
-     mix every song plays exactly as decoded.
-   - **Default crossfade without a plan.** Equal-power curves over the 10
+   - **Three bands, moved like a DJ's EQ** (`mix_shapes`, sent as
+     `high_db`, `mid_db`, `bass_db` and each song's `volume`). Every song in
+     the page plays through a low-pass that stays fully open, a low shelf, a
+     mid peak and a high shelf that stay flat until a mix, set from
+     `bass_hz` (180 Hz), `mid_hz` (1 kHz), `mid_q` (0.5, wide) and
+     `high_hz` (4 kHz). In a blend every move is a raised cosine, an S-curve
+     that starts and ends slowly, and the bands hand over one after the
+     other the way DJ guides teach a 3-band EQ mix: the next song's highs
+     come in over the first third of the time before the swap (from
+     -40 dB), its mids from -27 dB until a beat before the swap, the two bass
+     lines swap in one equal-power move over 2 beats (one bass line at a
+     time; DJs drill the swap as one move on a beat), then the ending song's
+     mids go down over two thirds of the time left and its highs over the
+     last two thirds. The faders only fade the two ends in and out over
+     2 beats, while the bands are cut, and carry the steady-level
+     correction below. Before, the highs had no list of their own and rode
+     on the faders at the same moments; on the same 10 recorded pop
+     transitions the mix stays as steady (beat mixes 1.06 dB off the line,
+     1.08 before, 0 clipped samples). A rise sweeps a high-pass on the next
+     song from 800 Hz down to 10 Hz (log scale) from the end of its highs
+     move to a beat after the swap, instead of its bass. The default
+     crossfade keeps equal-power faders and flat filters. Real DJ
+     transitions are reproduced better by a fader plus a 3-band EQ than by a
+     crossfade, and in them each knob moves one way only, in short steps,
+     about one change at a time (DAFx 2022, 50,742 transitions of 5,040
+     mixes); sub-band gains fitted to each real transition beat a fixed
+     linear crossfade (NIME 2021, 3,930 transition regions); and in a
+     listening test of generated transitions, changes that came too fast
+     were the main complaint (ICASSP 2022). The curves used before crossed
+     the two bass lines over the whole middle half of the mix, so both
+     played together for about half of it.
+   - **Where the bass swaps** (`swap_point`, sent as `middle`). The plan's
+     mix starts on the next song's section start and lasts whole 8-beat
+     steps, so its middle beat starts a bar of the next song. The server
+     measures the next song's own bass (under 180 Hz, a 2nd-order low-pass,
+     along its `position`) in every 4-beat bar of the mix and swaps on the
+     bar fewest beats from the middle where that bass reaches 25% of its
+     loudest bar, inside 30 to 70% of the mix, the later of two equally
+     near; with no such bar, on the last bar of that window. A swap into a
+     bar where the next song has no bass yet (a quiet intro) leaves the mix
+     with no bass line at all until the next song's comes in. Measured on
+     14 real beat mixes of the pop, Italian rock and synthwave lists, each
+     answer played offline through its own filters and faders: 12 keep the
+     middle beat (the next song's bass already plays there), 2 rock pairs
+     whose next song enters on a quiet intro move one bar (4 beats) later, and
+     there the deepest dip of the mix's bass (under 180 Hz, against the line
+     from one song's bass to the other's) goes from -3.8 to -0.4 dB and from
+     -11.6 to -9.0 dB (more than 6 dB under it for 2.8 s, now 1.7 s). On the
+     5 pop beat mixes both bass lines played within 12 dB of full for 3.7
+     to 4.5 s of each mix with the straight lines, 0.3 to 0.6 s with the
+     swap. Recorded through the page (10 transitions of the pop list), the
+     beat mixes stay as close to the level line as before (median 1.08 dB
+     off it, 1.10 with the straight lines), with 1 mix more than 3 dB under
+     it instead of 2 (a crossfade, untouched) and 0 clipped samples.
+   - **No clipping** (in each song's `volume`). After shaping, the
+     server sums the two songs' samples (at their gains, through the
+     filters) under the faders and, wherever that sum would peak above the
+     louder of the two songs alone, lowers both faders there just enough,
+     with about 1 dB of margin (the filters, and a browser's decoder that
+     differs slightly from the server's): two loud masters at about -3 dB
+     each in the middle of a mix otherwise pass full scale and clip
+     (measured up to 1.22, hundreds of clipped samples in one mix). Peaks a
+     song already has on its own (decoded lossy files can pass 1.0) are left
+     as they are, and outside a mix every song plays exactly as decoded.
+   - **Default crossfade without a plan.** A plain crossfade over the 10
      seconds before the ending song's fade-out time, the next song from its
-     fade-in time.
-   - **Same loudness.** Each decoded song's integrated loudness is measured
-     in the page the same way (K-weighted, every channel, gated) and a gain
-     after all the mix filters brings it to -14 LUFS, as streaming players
-     do; a quieter song is raised only until its peak reaches 0.891 (-1 dBFS),
-     never limited. The stretched pieces of a mix keep their song's gain, and
-     the no-clipping check sums the songs at their gains. Plain Play and Demo
-     keep every song as decoded.
+     fade-in time: without a plan the page has no level data, so it uses two
+     raised-cosine S-curves (slow at both ends, like every move of a mix)
+     whose volumes add up to exactly 1 at every instant, which never clips.
+     The demo crossfade uses the same curves.
+   - **Volume curves on the two songs' levels** (`fader_scale`). A fixed equal-power curve
+     only adds up to a steady level when both songs stay steady. An ending
+     song that is already fading out on its own, under a fade-out of its
+     own, or a next song that starts with a quiet build-up, under a fade-in,
+     leaves a hole in the middle of the transition. Real DJ mixes keep a
+     roughly constant energy through their transitions (DAFx 2022, 50,742
+     transitions of 5,040 mixes), and the power of a sum depends on how
+     correlated the two signals are, so no fixed curve keeps it steady
+     (DAFx 2016: equal power is exact only for uncorrelated signals). So
+     for every planned transition the server measures, on both songs at
+     their -14 LUFS gains, the K-weighted level of the ending song over the
+     3 seconds before the mix and of the next song over the 3 seconds after
+     it: the target is the straight line, in dB, from the first level to the
+     second. It then plays the mix in advance at 44.1 kHz, every channel,
+     sample by sample: both songs along their `position`, under the
+     equal-power curves, through the mix's own bass and mid filters (and the
+     rise's high-pass), summed and K-weighted, in 400 ms blocks. So the filters and
+     any correlation between the two songs count, not only their two
+     separate levels. Both curves are scaled together by the difference to
+     the line: at most 6 dB up or down (the same twice-the-level bound the
+     DAFx 2022 mixer model gives a fader), smoothed over 1 second, and faded
+     to nothing over the first and last tenth of the mix, so each song still
+     starts and ends exactly as it played alone. A song with a silent
+     neighbour (under -60 dB) keeps the plain curves. The clipping check runs
+     after it, on the shaped curves, so a boost never makes a peak. With all
+     of this an answer takes 2 to 3.4 seconds on the live test server (the
+     plan alone 0.7 to 2.6), asked while the song before plays. Measured on the
+     same 30 real transitions of three similar-song lists, recorded through
+     the page (executing these lists) before and after: the mixes that fell
+     more than 3 dB under the line went from 10 to 4 and those more than 6 dB
+     from 3 to 0 (deepest -7.3 to -5.3 dB), the median distance from the line
+     from 1.18 to 0.61 dB (beat-matched mixes 1.52 to 0.98, crossfades 0.86
+     to 0.43), with 0 clipped samples and no click before or after. Three of
+     the four left are short dips in the last 6% of the mix, where the next
+     song itself is quiet just before it plays on alone (the same dip was
+     there before); the fourth sits on the -3 dB line. The same rule run in
+     the page instead of the server gave every transition within 0.3 dB.
+     Adding the two songs' separate levels instead of playing the mix in
+     advance left 7 such mixes and 0.86 dB: as good on crossfades (0.45 dB),
+     so two different songs barely correlate, but blind to the bass swap and
+     the mid cut of a beat-matched mix.
+   - **Same loudness** (`song_level`, sent as each song's `gain`).
+     Each song is read once, in blocks at its own rate, every channel
+     K-weighted and gated (BS.1770), with its sample peak; the gain brings
+     it to -14 LUFS, as streaming players do, and raises a quieter song only
+     until its peak reaches 0.891 (-1 dBFS), never limited. A file libsndfile
+     cannot open (an AAC `.m4a`) is read as mono by the analysis loader, so it
+     counts as two equal channels and its peak gets a 3 dB margin. The page
+     applies the gain after all the mix filters; the first song of a play
+     waits for its own plan, which carries its gain, and each next song takes
+     the one its incoming plan gives. Plain Play and Demo keep every song as
+     decoded.
    - **Measured live** in Chromium and Firefox on 13 mixes with Play, Skip
      and Skip during the mix: the recorded output was where the plan said to
      the sample, and on 10 real stretched pairs the page's stretch placed the
@@ -3476,6 +3600,13 @@ it plays to the end of its file and the next song starts right after.
      the bass lines swapped): on a pop similar-song list the plain crossfade
      sounded better on average, so pairs without a confirmed lock now get the
      default crossfade.
+   - **The bass swap on an 8-beat phrase** of the next song before any
+     other bar. On the 24-beat mixes the phrases fall at a third and two
+     thirds of the mix, never in the middle. Recorded through the page, the
+     three such pop mixes swapped at two thirds sat 1.18, 0.96 and 1.49 dB
+     off the level line against 1.09, 0.74 and 1.08 with the middle swap: the
+     ending song's mids and fader then go down within the last 5 seconds,
+     the fast change listeners object to.
    - **A radio-style hand-over** for `low` pairs (the ending song plays to
      where it falls 8 LU under its own loudness and fades in 2.5 seconds
      while the next one starts from its first sound): rejected after

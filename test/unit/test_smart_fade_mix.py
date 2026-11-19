@@ -14,33 +14,23 @@ Main Features:
   first song that last MIX_SECONDS, on its beat grid and ending at its fade
   point, the second song entering on one of its own beats and resuming
   exactly where the stretched part ends; style 'blend', swap_at on the middle
-  beat of the mix; a late first beat in the next song shortens the mix by
-  whole steps, never under MIN_MIX_SECONDS (else ValueError)
-* The next song enters on a section start a few beats after its fade point
-  (a chord coming in over the clicks), and never more than PHRASE_REACH_BEATS
-  beats away from it
-* A next song RISE_DB louder at the same tempos rises in instead
-* Tempos too far apart (120 and 150 BPM, no half or double time near) are not
-  stretched and fade over only MIN_MIX_SECONDS of whole beats ending at the
-  fade point, swap_at in its middle; tempos_match is the same rule on numbers
-  and arrays
-* A beat grid 150 ms off the next song's clicks fades the same way although
-  the tempos match; the onset check takes clicks on the beat (stretched too)
-  and refuses them 100 ms off
-* A tempo whose beat gap falls between the tracker's frames is measured to a
-  fraction of a BPM, not to the nearest frame
-* Songs without a beat raise ValueError
+  beat; a late first beat shortens the mix by whole steps, never under
+  MIN_MIX_SECONDS (else ValueError)
+* The next song enters on a section start a few beats after its fade point,
+  never more than PHRASE_REACH_BEATS away; RISE_DB louder, it rises in
+* Tempos too far apart (120 and 150 BPM) or a beat grid 150 ms off fade
+  unstretched over MIN_MIX_SECONDS of whole beats, swap_at in the middle;
+  tempos_match is the same rule on numbers and arrays; the onset check takes
+  clicks on the beat (stretched too) and refuses them 100 ms off
+* A tempo between the tracker's frames is measured to a fraction of a BPM;
+  songs without a beat raise ValueError
 * Beat agreement (information gain) is full for the same beats, high for half
   of them, low for random ones; a click track's committee agrees, noise's
-  does not. Only a confirmed lock mixes: a committee under
-  MIN_AGREEMENT_BITS gets the fade plan although tempos and onsets match
+  does not; under MIN_AGREEMENT_BITS the plan is the fade
 * A default crossfade over a quiet ending into a quiet intro starts on an
-  earlier beat whose equal-power mix dips FLOOR_GAIN_DB less, never past the
-  last EDGE_SECONDS, and steady songs keep their start
-* A full-scale 997 Hz tone measures -3.01 LUFS
-* An unstretched fade from a song at full level into a next song that starts
-  quieter than its own level is 'low' (a steady next song 'medium', a beat
-  lock 'high'), on curves and on real files
+  earlier beat dipping FLOOR_GAIN_DB less, within the last EDGE_SECONDS
+* A full-scale 997 Hz tone measures -3.01 LUFS; a fade from full level into
+  a quieter next song is 'low' ('medium' steady, 'high' locked)
 * A real AAC .m4a, which libsndfile cannot open, plans like a WAV
 """
 

@@ -18,31 +18,27 @@ Main Features:
   libsndfile cannot open (AAC .m4a) goes through the analysis PyAV loader.
 * Beats come from librosa's tracker, tempo and grid from a line fitted through
   the beat times. The next song takes the first song's tempo in the mix
-  (stretch, pitch kept by the page, half or double time too, none past
-  MAX_STRETCH); tempos_match is that rule, shared with the smart fade order.
-* The mix lasts at least MIX_SECONDS in whole BEAT_STEP steps (real DJ
-  transitions peak at 32 and 64 beats) and ends on the beat nearest the fade
-  point; without room it loses steps down to MIN_MIX_SECONDS. No steady beat
-  or no room raises ValueError.
+  (stretch, half or double time too, none past MAX_STRETCH); tempos_match is
+  that rule, shared with the smart fade order.
+* The mix lasts at least MIX_SECONDS in whole BEAT_STEP steps, ending on the
+  beat nearest the fade point; without room it loses steps down to
+  MIN_MIX_SECONDS. No steady beat or no room raises ValueError.
 * The next song enters on a section start: the beat nearest the highest peak,
   within PHRASE_REACH_BEATS, of a Foote novelty curve (PHRASE_KERNEL_BEATS
-  checkerboard on beat-synchronous chroma, MFCC and loudness) from
-  PHRASE_LEAD_SECONDS before the point (3x more real section starts).
-* A beat lock needs all of: tempos_match, onsets lining up within MATCH_MS
-  at MATCH_SHARE, and on both parts a committee of beat sequences (librosa's
-  tracker on full-band, bass-band and treble-band onsets, plus its pulse
-  curve) agreeing by MIN_AGREEMENT_BITS of mean information gain
-  (AGREEMENT_BINS-bin beat error histograms, ISMIR 2012). The thresholds put
-  about half of a 50-song pop similar list on a beat-matched mix.
+  checkerboard on beat-synchronous chroma, MFCC and loudness).
+* A beat lock needs tempos_match, onsets lining up within MATCH_MS at
+  MATCH_SHARE, and on both parts a committee of beat sequences (full, bass
+  and treble band onsets, plus the pulse curve) agreeing by
+  MIN_AGREEMENT_BITS of mean information gain (ISMIR 2012); about half of a
+  50-song pop similar list locks.
 * style: 'blend' (locked, bass crossing at swap_at) or 'rise' (also RISE_DB
-  louder, in from the treble); else 'fade', the page's default crossfade:
-  MIN_MIX_SECONDS unstretched from a beat of the first song into the next
-  song's section start; the beat moves to where the equal-power mix of the
-  two loudness curves dips least when that lifts the floor FLOOR_GAIN_DB
-  (quiet regions sound abrupt, ISMIR 2017), never past EDGE_SECONDS.
-* confidence: 'high' locked, 'low' a fade where the first song is FULL_LU
-  over its own loudness and the next comes in DROP_LU lower, else 'medium';
-  loudness is BS.1770 of the whole song at LEVEL_RATE, only for a fade.
+  louder); else 'fade', the default crossfade: MIN_MIX_SECONDS unstretched,
+  from the beat where the equal-power mix of the two loudness curves dips
+  least when that lifts it FLOOR_GAIN_DB, never past EDGE_SECONDS.
+* confidence: 'high' locked, 'low' a fade from FULL_LU into a next song
+  DROP_LU lower (each against its own BS.1770 loudness), else 'medium'.
+* k_filters is the BS.1770 K-weighting, shared with tasks.smart_fade_levels,
+  which turns a plan into the curves a player executes.
 """
 
 import math
@@ -111,9 +107,7 @@ def _region(path, start, seconds):
     return _load(path, RATE, start, seconds)
 
 
-def _k_weighted(audio, rate):
-    from scipy.signal import lfilter
-
+def k_filters(rate):
     angle = 2.0 * math.pi * K_SHELF_HZ / rate
     gain = 10.0 ** (K_SHELF_DB / 40.0)
     root = math.sqrt(2.0 * gain) * math.sin(angle)
@@ -124,8 +118,15 @@ def _k_weighted(audio, rate):
     cos, sin = math.cos(angle), math.sin(angle)
     pass_b = [(1 + cos) / 2, -(1 + cos), (1 + cos) / 2]
     pass_a = [1 + sin, -2 * cos, 1 - sin]
-    shelved = lfilter(np.float32(shelf_b), np.float32(shelf_a), audio.astype(np.float32))
-    return lfilter(np.float32(pass_b), np.float32(pass_a), shelved)
+    return (np.float32(shelf_b), np.float32(shelf_a)), (np.float32(pass_b), np.float32(pass_a))
+
+
+def _k_weighted(audio, rate):
+    from scipy.signal import lfilter
+
+    (shelf_b, shelf_a), (pass_b, pass_a) = k_filters(rate)
+    shelved = lfilter(shelf_b, shelf_a, audio.astype(np.float32))
+    return lfilter(pass_b, pass_a, shelved)
 
 
 def _lufs(energy):
