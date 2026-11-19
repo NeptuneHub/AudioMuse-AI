@@ -360,14 +360,21 @@ def transition(path_out, path_in, plan):
     eq = shapes['eq']
     sa, sb = raw_a * gain_a, raw_b * gain_b
     if eq is not None:
-        value = lambda key, at: float(np.interp(at, points, eq[key]))
-        sa = _filtered(sa, t, lambda at: [_low_shelf(rate, value('from_bass_db', at)), _mid_peak(rate, value('from_mid_db', at)),
-                                          _high_shelf(rate, value('from_high_db', at))])
-        if eq['to_highpass_hz'] is not None:
-            low = lambda at: _high_pass(rate, value('to_highpass_hz', at))
-        else:
-            low = lambda at: _low_shelf(rate, value('to_bass_db', at))
-        sb = _filtered(sb, t, lambda at: [low(at), _mid_peak(rate, value('to_mid_db', at)), _high_shelf(rate, value('to_high_db', at))])
+        def value(key, at):
+            return float(np.interp(at, points, eq[key]))
+
+        def from_filters(at):
+            return [_low_shelf(rate, value('from_bass_db', at)), _mid_peak(rate, value('from_mid_db', at)), _high_shelf(rate, value('from_high_db', at))]
+
+        def to_filters(at):
+            if eq['to_highpass_hz'] is not None:
+                low = _high_pass(rate, value('to_highpass_hz', at))
+            else:
+                low = _low_shelf(rate, value('to_bass_db', at))
+            return [low, _mid_peak(rate, value('to_mid_db', at)), _high_shelf(rate, value('to_high_db', at))]
+
+        sa = _filtered(sa, t, from_filters)
+        sb = _filtered(sb, t, to_filters)
     fall, rise = shapes['from_volume'], shapes['to_volume']
     mixed = _block_energy(sa * np.interp(t, points, fall) + sb * np.interp(t, points, rise), zero, points)
     before = _span_energy(a_audio, a_begin, plan['mix_at'] - ANCHOR_SECONDS, ANCHOR_SECONDS)
