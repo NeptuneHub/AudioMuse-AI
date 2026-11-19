@@ -93,9 +93,9 @@ We are **not affiliated with, endorsed by, or sponsored by** the owners of `audi
 - [Native Deployment](#native-deployment)
 - [Hardware Requirements](#hardware-requirements)
 - [Docker Image Tagging Strategy](#docker-image-tagging-strategy)
+- [AudioMuse-AI Supported Clients](#audiomuse-ai-supported-clients)
 - [How To Contribute](#how-to-contribute)
 - [Code Mirror](#code-mirror)
-- [AudioMuse-AI Supported Clients](#audiomuse-ai-supported-clients)
 
 ## Quick Start Deployment (Containerized)
 
@@ -237,6 +237,9 @@ Our GitHub Actions workflow automatically builds and publishes Docker images wit
 > Versioning is Major.Minor.Patch release. Eventually (rare) model change that could require a new analysis could happen in Major and Minor release.
 > Read the [release note](https://github.com/NeptuneHub/AudioMuse-AI/releases) before any update especially for Major and Minor release.
 
+## **AudioMuse-AI Supported Clients**
+- **[Lumae Music](https://lumaemusic.app):** a **free** player for Android and iPhone, with Android Auto and CarPlay, for Navidrome and Jellyfin, built around **AudioMuse-AI from the start**. The goal is to bring AudioMuse-AI features natively to your phone, like: similar-song queues that keep working offline, search by title, lyrics or recording, chat with AI, and **crossfades**.
+
 ## **How To Contribute**
 
 Contributions, issues, and feature requests are welcome\!  
@@ -249,6 +252,3 @@ For more details on how to contribute please follow the [Contributing Guidelines
 - https://codeberg.org/NeptuneHub/AudioMuse-AI
 
 DO **NOT** USE MIRROR TO RAISE ISSUE, PR OTHER ACTION DIFFERENT FROM GET THE CODE
-
-## **AudioMuse-AI Supported Clients**
-- **[Lumae Music](https://lumaemusic.app):** a **free** player for Android and iPhone, with Android Auto and CarPlay, for Navidrome and Jellyfin, built around **AudioMuse-AI from the start**. Similar-song queues that keep working offline, search by title, lyrics or recording, chat with AI about what to play, and **crossfades** shaped by how each song begins and ends. Lumae is a passion project that brings AudioMuse-AI’s features natively to your phone.
