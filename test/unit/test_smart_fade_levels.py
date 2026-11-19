@@ -30,7 +30,8 @@ Main Features:
   duration, middle, step, filters, from, to, info), one value per
   point in every list, volumes from exactly 1 and 0 to 0 and 1, positions
   on the plan's seconds, filters only for a beat mix (all 0 for a
-  crossfade); a boost over quiet clicks is lowered wherever the sum would
+  crossfade); a next song with a louder bass gets the first song's bass
+  raised before the swap and its own lowered after; a boost over quiet clicks is lowered wherever the sum would
   peak above the louder song; crossfade_plan is the default crossfade at
   the fade points, its tempos null
 """
@@ -225,6 +226,22 @@ def test_a_beat_mix_and_a_crossfade_give_every_list_a_player_executes_in_order(t
     assert flat['type'] == 'crossfade' and flat['to']['highpass_hz'] is None
     assert all(set(flat[song][key]) == {0.0} for song in ('from', 'to') for key in ('high_db', 'mid_db', 'bass_db'))
     assert np.allclose(np.diff(flat['to']['position']), flat['step'], atol=1e-4)
+
+
+def test_each_band_is_fitted_to_the_two_songs_so_a_louder_next_bass_does_not_jump_in(tmp_path):
+    t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
+    hum = np.sin(2 * np.pi * 60.0 * t).astype(np.float32)
+    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + 0.05 * hum)
+    song_in = _write(tmp_path / 'b.wav', _click_audio(125, 40.0, first=0.2) + 0.2 * hum)
+    plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
+    answer = levels.transition(song_out, song_in, plan)
+    _assert_executable(plan, answer)
+    points = np.arange(len(answer['from']['volume'])) * answer['step']
+    before, after = points < answer['middle'] - 1.0, points > answer['middle'] + 1.0
+    assert max(np.array(answer['from']['bass_db'])[before]) > 1.0
+    assert min(np.array(answer['to']['bass_db'])[after]) < -1.0
+    assert max(answer['from']['bass_db'] + answer['to']['bass_db']) <= levels.BAND_LIMIT_DB
+    assert answer['from']['bass_db'][0] == 0.0 and answer['to']['bass_db'][-1] == 0.0
 
 
 def test_a_boost_is_lowered_wherever_the_sum_would_peak_above_the_louder_song(tmp_path):

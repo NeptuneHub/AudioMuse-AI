@@ -3461,7 +3461,35 @@ the end of its file and the next song starts right after.
      1.08 before, 0 clipped samples). A rise sweeps a high-pass on the next
      song from 800 Hz down to 10 Hz (log scale) from the end of its highs
      move to a beat after the swap, instead of its bass. The default
-     crossfade keeps equal-power faders and flat filters. Real DJ
+     crossfade keeps equal-power faders and flat filters.
+   - **Each band fitted to the two songs** (`band_shifts`, folded into
+     `high_db`, `mid_db` and `bass_db`). The S-curves above only fix the
+     order and timing; how far each band goes depends on the songs. The
+     server splits the mix it plays in advance into bass (under 180 Hz),
+     mids (300 to 3000 Hz) and highs (over 4 kHz) and, at every point,
+     compares each band with a target: the blend, in dB, of the two songs'
+     own levels in that band at that moment, all the first song's at the
+     start and all the next song's at the end. Both songs' band gains are
+     raised or lowered together by the difference (at most 6 dB, smoothed
+     over 1 second, none at the two ends), so a band neither jumps nor
+     doubles when it changes hands, for example a next song with a louder
+     bass gets the first song's bass raised before the swap and its own
+     lowered after it, while each song keeps its own breaks and drops.
+     Real transitions carry gains of their own per band and per pair
+     (DAFx 2022, NIME 2021), and the learned DJ models predict them from
+     the two songs' audio (ICASSP 2022). On 7 real beat mixes (pop and rock
+     lists), played back offline through their filters, each band's
+     distance from that target fell from 2.10 to 1.26 dB for the bass and
+     from 1.59 to 1.32 dB for the highs (median), the mids stayed about the
+     same (1.30, then 1.40) and the whole mix too (0.32 dB off its line);
+     an answer still takes 2.3 to 3.0 seconds on the live test server.
+     Recorded through the page on 10 pop transitions, the beat mixes went
+     from 1.06 to 0.90 dB off the level line, 0 clipped samples.
+     Tried and dropped: a straight line from the first song's band level
+     to the next song's as the target (it flattened each song's own bass
+     and highs by up to 6 dB, which a DJ does not do), two correction
+     passes instead of one (no better), and fitting only bass and highs
+     (the mids got worse). Real DJ
      transitions are reproduced better by a fader plus a 3-band EQ than by a
      crossfade, and in them each knob moves one way only, in short steps,
      about one change at a time (DAFx 2022, 50,742 transitions of 5,040

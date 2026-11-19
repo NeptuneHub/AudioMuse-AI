@@ -30,19 +30,19 @@ Main Features:
   only fade the two ends in and out over EDGE_BEATS. A rise sweeps a
   high-pass from RISE_FROM_HZ to RISE_TO_HZ instead of the next song's
   bass. A crossfade keeps equal-power faders.
-* swap_point fits the swap to the songs: the 4-beat bar fewest beats from
-  the middle beat (a bar of the next song, as the mix starts on its section
-  start in whole 8-beat steps) where the next song's own bass plays
-  (SWAP_PRESENT of its loudest bar), inside SWAP_RANGE, the later on a
-  tie; none plays there, the last bar of SWAP_RANGE.
-* transition plays the mix in advance at RATE: both songs at their gains,
-  along the time maps, through the filters and faders, K-weighted in
-  400 ms blocks. fader_scale moves both faders together so the mix follows
-  the line from the first song's level over the ANCHOR_SECONDS before the
-  mix to the next song's after it (DAFx 2022: real DJ mixes keep a steady
-  energy), at most SHAPE_LIMIT_DB, smoothed over SHAPE_SMOOTH_SECONDS, none
-  at the two ends. Then the faders drop only where the sum would peak above
-  the louder song (MIX_HEADROOM).
+* swap_point: the 4-beat bar nearest the middle beat where the next
+  song's bass plays (SWAP_PRESENT of its loudest bar) in SWAP_RANGE.
+* transition plays the mix in advance at RATE (gains, time maps, filters,
+  faders); toward_db is a correction toward a target, smoothed over
+  SHAPE_SMOOTH_SECONDS, none at the two ends. band_shifts: per band (bass,
+  MID_BAND_HZ, highs) the target blends the two songs' own levels in that
+  band at each point, from the first's to the next's, so a band neither
+  jumps nor doubles when it changes hands and each song keeps its own
+  dynamics; added to both songs' band lists, up to BAND_LIMIT_DB. Then
+  fader_scale: the K-weighted whole mix follows the line from the first
+  song's level over the ANCHOR_SECONDS before the mix to the next song's
+  after it (SHAPE_LIMIT_DB), and the faders drop only where the sum would
+  peak above the louder song (MIX_HEADROOM).
 * crossfade_plan: the default crossfade at the two fade points, for a pair
   without a steady beat.
 """
@@ -65,6 +65,9 @@ MID_CUT_DB = -27.0
 HIGH_HZ = 4000.0
 HIGH_CUT_DB = -40.0
 EDGE_BEATS = 2
+MID_BAND_HZ = (300.0, 3000.0)
+BANDS = {'bass': BASS_CUT_DB, 'mid': MID_CUT_DB, 'high': HIGH_CUT_DB}
+BAND_LIMIT_DB = 6.0
 RISE_FROM_HZ = 800.0
 RISE_TO_HZ = 10.0
 HIGHPASS_Q_DB = 1.0
@@ -319,16 +322,71 @@ def _segment_max(values, edges):
     return np.where(np.diff(np.append(edges, values.size)) > 0, out, 0.0)
 
 
-def fader_scale(mixed, before, after, step):
+def toward_db(mixed, target_db, step, limit):
     mixed = np.asarray(mixed, dtype=np.float64)
     share = np.linspace(0.0, 1.0, mixed.size) if mixed.size > 1 else np.zeros(1)
-    if min(before, after) <= 10.0 ** (SILENT_DB / 10.0):
-        return np.ones(mixed.size)
-    start, end = 10.0 * math.log10(before), 10.0 * math.log10(after)
-    wanted = np.clip(start + (end - start) * share - 10.0 * np.log10(np.maximum(mixed, 1e-12)), -SHAPE_LIMIT_DB, SHAPE_LIMIT_DB)
+    wanted = np.clip(np.asarray(target_db, dtype=np.float64) - 10.0 * np.log10(np.maximum(mixed, 1e-12)), -limit, limit)
     reach = max(1, int(round(SHAPE_SMOOTH_SECONDS / 2 / step)))
     smooth = np.array([wanted[max(0, j - reach):j + reach + 1].mean() for j in range(wanted.size)])
-    return 10.0 ** (np.minimum(1.0, np.minimum(share, 1.0 - share) / SHAPE_EDGE) * smooth / 20.0)
+    return np.minimum(1.0, np.minimum(share, 1.0 - share) / SHAPE_EDGE) * smooth
+
+
+def fader_scale(mixed, before, after, step):
+    size = np.asarray(mixed).size
+    if min(before, after) <= 10.0 ** (SILENT_DB / 10.0):
+        return np.ones(size)
+    share = np.linspace(0.0, 1.0, size) if size > 1 else np.zeros(1)
+    line = 10.0 * math.log10(before) + 10.0 * math.log10(after / before) * share
+    return 10.0 ** (toward_db(mixed, line, step, SHAPE_LIMIT_DB) / 20.0)
+
+
+def band_shifts(heard, own_from, own_to, step):
+    shifts = []
+    for level, first, last in zip(heard, own_from, own_to):
+        first, last = np.asarray(first, dtype=np.float64), np.asarray(last, dtype=np.float64)
+        share = np.linspace(0.0, 1.0, first.size) if first.size > 1 else np.zeros(1)
+        floor = 10.0 ** (SILENT_DB / 10.0)
+        if max(first.mean(), last.mean()) <= floor:
+            shifts.append(np.zeros(first.size))
+            continue
+        target = (1.0 - share) * 10.0 * np.log10(np.maximum(first, floor)) + share * 10.0 * np.log10(np.maximum(last, floor))
+        shifts.append(toward_db(level, target, step, BAND_LIMIT_DB))
+    return shifts
+
+
+def _band_filters():
+    from scipy.signal import butter
+
+    return [butter(2, BASS_HZ, btype='lowpass', fs=mix.RATE, output='sos'),
+            butter(2, MID_BAND_HZ, btype='bandpass', fs=mix.RATE, output='sos'),
+            butter(2, HIGH_HZ, btype='highpass', fs=mix.RATE, output='sos')]
+
+
+def _band_powers(signal, zero, centers):
+    from scipy.signal import sosfilt
+
+    return [_block_power(sosfilt(sos, signal, axis=1), zero, centers) for sos in _band_filters()]
+
+
+
+
+def _through(eq, sa, sb, t, points):
+    rate = mix.RATE
+
+    def value(key, at):
+        return float(np.interp(at, points, eq[key]))
+
+    def from_filters(at):
+        return [_low_shelf(rate, value('from_bass_db', at)), _mid_peak(rate, value('from_mid_db', at)), _high_shelf(rate, value('from_high_db', at))]
+
+    def to_filters(at):
+        if eq['to_highpass_hz'] is not None:
+            low = _high_pass(rate, value('to_highpass_hz', at))
+        else:
+            low = _low_shelf(rate, value('to_bass_db', at))
+        return [low, _mid_peak(rate, value('to_mid_db', at)), _high_shelf(rate, value('to_high_db', at))]
+
+    return _filtered(sa, t, from_filters), _filtered(sb, t, to_filters)
 
 
 def _rounded(values, digits):
@@ -358,24 +416,18 @@ def transition(path_out, path_in, plan):
         beat = float(np.median(np.diff(beat_times)))
     shapes = mix_shapes(plan['style'], seconds, swap, beat, points)
     eq = shapes['eq']
+    fall, rise = shapes['from_volume'], shapes['to_volume']
     sa, sb = raw_a * gain_a, raw_b * gain_b
     if eq is not None:
-        def value(key, at):
-            return float(np.interp(at, points, eq[key]))
-
-        def from_filters(at):
-            return [_low_shelf(rate, value('from_bass_db', at)), _mid_peak(rate, value('from_mid_db', at)), _high_shelf(rate, value('from_high_db', at))]
-
-        def to_filters(at):
-            if eq['to_highpass_hz'] is not None:
-                low = _high_pass(rate, value('to_highpass_hz', at))
-            else:
-                low = _low_shelf(rate, value('to_bass_db', at))
-            return [low, _mid_peak(rate, value('to_mid_db', at)), _high_shelf(rate, value('to_high_db', at))]
-
-        sa = _filtered(sa, t, from_filters)
-        sb = _filtered(sb, t, to_filters)
-    fall, rise = shapes['from_volume'], shapes['to_volume']
+        heard = _through(eq, sa, sb, t, points)
+        bands = _band_powers(heard[0] * np.interp(t, points, fall) + heard[1] * np.interp(t, points, rise), zero, points)
+        shifts = band_shifts(bands, _band_powers(sa, zero, points), _band_powers(sb, zero, points), step)
+        for (name, floor), shift in zip(BANDS.items(), shifts):
+            for side in ('from', 'to'):
+                key = f'{side}_{name}_db'
+                if eq[key] is not None:
+                    eq[key] = np.clip(eq[key] + shift, floor, BAND_LIMIT_DB)
+        sa, sb = _through(eq, sa, sb, t, points)
     mixed = _block_energy(sa * np.interp(t, points, fall) + sb * np.interp(t, points, rise), zero, points)
     before = _span_energy(a_audio, a_begin, plan['mix_at'] - ANCHOR_SECONDS, ANCHOR_SECONDS)
     after = _span_energy(b_audio, b_begin, float(follow(seconds)), ANCHOR_SECONDS)
