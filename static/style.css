@@ -1601,6 +1601,44 @@ html.dark-mode body .playable-list {
     border-radius: 0.2rem;
     background: var(--color-primary);
 }
+.play-mark {
+    flex: none;
+    display: inline-flex;
+    width: 0.8rem;
+    height: 0.8rem;
+    color: var(--text-muted);
+    vertical-align: -0.1rem;
+}
+.play-mark svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.play-mark[data-mark="blend"],
+.play-mark[data-mark="rise"] {
+    color: var(--color-primary);
+}
+.play-mark[data-mark="pending"] {
+    opacity: 0.45;
+}
+.play-mark[data-mark="none"] {
+    visibility: hidden;
+}
+.song-player .play-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.song-player .play-summary:empty {
+    display: none;
+}
+.song-player .play-summary .play-mark + .play-mark,
+.song-player .play-summary .play-mark:not(:first-child) {
+    margin-left: 0.35rem;
+}
 .similarity-badge {
     color: white;
     padding: 0.4rem 0.8rem;

@@ -32,10 +32,11 @@ Main Features:
   than 30 s before the end, never fades through silent rows (consecutive rows
   that are nearly identical), lets the last song play to its end and puts songs
   without a fingerprint last; a close fingerprint match goes to the song whose
-  stored tempo can be stretched to the current one (half or double time too),
-  a clearly better match still wins and an unknown tempo is never penalised;
-  smart_fade_playlist reads only the stored edges and tempos of the given
-  songs and orders them from the first one
+  stored tempo can be stretched (half or double time too), whose intensity is
+  nearer or whose MusiCNN sound is closer; a clearly better match still wins,
+  unknown values never count, and one path through all the songs replaces the
+  greedy chain's weak last step; smart_fade_playlist reads only the stored
+  edges, tempos and traits (one query) of the given songs
 * with keep_order (a path, an album) the order is kept and only each pair is
   timed: a song without a fingerprint keeps its place, its neighbours play to
   their end or start at 0, and no tempo is read
@@ -333,25 +334,90 @@ def _blend(joint, other, share):
     return mixed / np.linalg.norm(mixed)
 
 
-def test_smart_fade_breaks_a_close_fingerprint_match_on_the_stored_tempo():
-    rng = np.random.default_rng(11)
+def _rivals(rng, near):
     joint, other = _motif(rng), _motif(rng)
     other -= (other @ joint) * joint
     other /= np.linalg.norm(other)
+    rival = _blend(joint, other, near)
     current = _song(rng, 200, outro=joint)
-    best = _song(rng, 200, intro=joint)
-    close = _song(rng, 200, intro=_blend(joint, other, 0.97))
-    distant = _song(rng, 200, intro=_blend(joint, other, 0.6))
+    return current, _song(rng, 200, intro=joint, outro=rival), _song(rng, 200, intro=rival, outro=joint)
 
-    def order(songs, tempos=None):
-        return [index for index, _fade in rsm.smart_fade_order(_edges(*songs), tempos)]
 
-    assert order((current, best, close)) == [0, 1, 2]
-    assert order((current, best, close), [120.0, 150.0, 123.0]) == [0, 2, 1]
-    assert order((current, best, close), [120.0, 150.0, 246.0]) == [0, 2, 1]
-    assert order((current, best, close), [120.0, None, 123.0]) == [0, 1, 2]
-    assert order((current, best, close), [120.0, 0.0, 123.0]) == [0, 1, 2]
-    assert order((current, best, distant), [120.0, 150.0, 123.0]) == [0, 1, 2]
+def _order(songs, tempos=None, traits=None):
+    return [index for index, _fade in rsm.smart_fade_order(_edges(*songs), tempos, traits=traits)]
+
+
+def test_smart_fade_breaks_a_close_fingerprint_match_on_the_stored_tempo(monkeypatch):
+    monkeypatch.setattr(rsm, '_FADE_INTENSITY_WEIGHT', 0.0)
+    rng = np.random.default_rng(11)
+    close = _rivals(rng, 0.97)
+    distant = _rivals(rng, 0.3)
+    assert _order(close) == [0, 1, 2]
+    assert _order(close, [120.0, 150.0, 123.0]) == [0, 2, 1]
+    assert _order(close, [120.0, 150.0, 246.0]) == [0, 2, 1]
+    assert _order(close, [120.0, None, 123.0]) == [0, 1, 2]
+    assert _order(close, [120.0, 0.0, 123.0]) == [0, 1, 2]
+    assert _order(distant, [120.0, 150.0, 123.0]) == [0, 1, 2]
+
+
+def test_smart_fade_breaks_a_close_match_on_the_intensity_step_and_the_musicnn_sound():
+    rng = np.random.default_rng(14)
+    songs = _rivals(rng, 0.97)
+    assert _order(songs) == [0, 1, 2]
+    steady = [{'energy': 0.5, 'moods': '', 'sound': None}, {'energy': 0.9, 'moods': '', 'sound': None}, {'energy': 0.5, 'moods': '', 'sound': None}]
+    assert _order(songs, traits=steady) == [0, 2, 1]
+    calm = [{'energy': 0.5, 'moods': 'party:0.1,relaxed:0.9', 'sound': None}] * 3
+    assert _order(songs, traits=calm) == [0, 1, 2]
+    axis = np.eye(200, dtype=np.float32)
+    sound = [{'energy': None, 'moods': '', 'sound': axis[0]}, {'energy': None, 'moods': '', 'sound': axis[1]}, {'energy': None, 'moods': '', 'sound': axis[0]}]
+    assert _order(songs, traits=sound) == [0, 2, 1]
+    assert _order(songs, traits=[None, None, None]) == [0, 1, 2]
+
+
+def test_smart_fade_finds_one_path_instead_of_leaving_the_weak_step_for_the_end():
+    rng = np.random.default_rng(15)
+    start, joint, other, last = _motif(rng), _motif(rng), _motif(rng), _motif(rng)
+    other -= (other @ start) * start
+    other /= np.linalg.norm(other)
+    songs = (
+        _song(rng, 200, outro=start),
+        _song(rng, 200, intro=start, outro=last),
+        _song(rng, 200, intro=_blend(start, other, 0.95), outro=start),
+        _song(rng, 200, intro=last, outro=joint),
+    )
+    profiles = [rsm._fade_profile(edge) for edge in _edges(*songs)]
+    best, _outro, _intro = rsm._pair_matrix(profiles)
+    assert rsm._greedy_path(rsm._path_gain(best)).tolist() == [0, 1, 3, 2]
+    ordered = rsm.smart_fade_order(_edges(*songs))
+    assert [index for index, _fade in ordered] == [0, 2, 1, 3]
+    fades = dict(ordered)
+    assert 0.0 <= _duration(200) - fades[2]['fade_out_seconds'] <= 30.0
+    assert 0.0 <= fades[1]['fade_in_seconds'] <= 30.0
+    assert fades[3]['fade_out_seconds'] == _duration(200)
+
+
+def test_stored_traits_read_energy_moods_and_the_musicnn_vector_in_one_query(monkeypatch):
+    import database
+
+    vector = np.arange(4, dtype=np.float32)
+    seen = []
+
+    class Cursor:
+        def execute(self, sql, params):
+            seen.append((sql, params))
+
+        def fetchall(self):
+            return [('a', 0.7, 'party:0.2', vector.tobytes()), ('b', None, None, None)]
+
+        def close(self):
+            seen.append('closed')
+
+    monkeypatch.setattr(database, 'get_db', lambda: type('Db', (), {'cursor': lambda self: Cursor()})())
+    traits = rsm._stored_traits(['a', 'b', 'a'])
+    assert seen[0][1] == (['a', 'b'],) and 'LEFT JOIN embedding' in seen[0][0] and seen[-1] == 'closed'
+    assert traits['a']['energy'] == 0.7 and traits['a']['moods'] == 'party:0.2'
+    assert traits['a']['sound'].tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert traits['b'] == {'energy': None, 'moods': None, 'sound': None}
 
 
 def test_smart_fade_in_a_fixed_order_only_times_each_pair_and_keeps_every_song_in_place():
@@ -381,10 +447,11 @@ def test_smart_fade_playlist_in_a_fixed_order_reads_no_tempo(monkeypatch):
     stored = {'a': _song(rng, 200), 'b': _song(rng, 200)}
 
     def no_tempo(ids):
-        raise AssertionError('a fixed order never reads the stored tempo')
+        raise AssertionError('a fixed order never reads the stored tempo nor traits')
 
     monkeypatch.setattr(rsm, '_stored_edges', lambda ids: {i: rsm.fade_edges(stored[i]) for i in ids if i in stored})
     monkeypatch.setattr(rsm, '_stored_tempos', no_tempo)
+    monkeypatch.setattr(rsm, '_stored_traits', no_tempo)
     ordered = rsm.smart_fade_playlist(['b', 'a'], keep_order=True)
     assert [index for index, _fade in ordered] == [0, 1]
     assert all(fade is not None for _index, fade in ordered)
@@ -408,10 +475,15 @@ def test_smart_fade_playlist_reads_the_stored_edges_and_orders_from_the_first_so
         asked.append(('tempo', list(ids)))
         return {'song': 120.0, 'other': 121.0}
 
+    def stored_traits(ids):
+        asked.append(('traits', list(ids)))
+        return {'song': {'energy': 0.5, 'moods': '', 'sound': None}}
+
     monkeypatch.setattr(rsm, '_stored_edges', stored_edges)
     monkeypatch.setattr(rsm, '_stored_tempos', stored_tempos)
+    monkeypatch.setattr(rsm, '_stored_traits', stored_traits)
     ordered = rsm.smart_fade_playlist(['song', 'copy', 'ghost', 'other'])
-    assert asked == [['song', 'copy', 'ghost', 'other'], ('tempo', ['song', 'copy', 'ghost', 'other'])]
+    assert asked == [['song', 'copy', 'ghost', 'other'], ('tempo', ['song', 'copy', 'ghost', 'other']), ('traits', ['song', 'copy', 'ghost', 'other'])]
     assert [index for index, _fade in ordered] == [0, 3, 1, 2]
     fades = dict(ordered)
     assert fades[0]['fade_in_seconds'] == 0.0

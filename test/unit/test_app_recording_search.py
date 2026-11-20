@@ -9,48 +9,50 @@
 """Recording search blueprint: request validation and error mapping.
 
 Main Features:
-* A request without a clip or with a bad count answers 400
-* A clip over RECORDING_SEARCH_MAX_UPLOAD_MB answers 413
-* The manager's ValueError answers 400 with its message, the index's
-  IndexUnavailable 503 with its message, any other exception (a plain
-  RuntimeError included) a generic 500 that carries no internal detail
-* A successful search hands the clip to the manager as a stream (never read
-  into memory by the blueprint), passes the count through, scopes the results
-  to the requested count and reports the count
-* The count defaults to the config default
-* The by_track endpoint answers 400 without a song, with a bad count or an
-  unknown song, passes the canonical id through, scopes the results and maps
-  the manager errors like the clip search
-* No response of this API ever carries an internal canonical id: results are
-  translated to the selected server's ids and the echoed song id goes through
-  provider_echo_id, even when the caller sent a canonical id
-* by_track knows nothing of smart fade (a smart_fade field changes nothing);
-  the shared static/song_player.js reorders through the smart_fade endpoint
-  and cuts, stretches and fades the decoded songs on one audio clock started
-  in the Play click, never on an audio element (Safari); the playing row fills
-  with the progress and seeks up to its fade
+* No clip or a bad count answers 400, a clip over
+  RECORDING_SEARCH_MAX_UPLOAD_MB 413
+* The manager's ValueError answers 400 and IndexUnavailable 503 with its
+  message, any other exception (a plain RuntimeError too) a generic 500
+  without internal detail
+* A search streams the clip to the manager (never read into memory here),
+  passes the count (config default when missing) and scopes the results to it
+* by_track answers 400 without a song, with a bad count or an unknown song,
+  passes the canonical id through, scopes the results and maps the errors
+* No response carries an internal canonical id: results use the selected
+  server's ids and the echoed id goes through provider_echo_id
+* by_track ignores a smart_fade field; static/song_player.js reorders through
+  the smart_fade endpoint and plays the decoded songs on one device-rate clock
+  started in the Play click (Safari); the playing row seeks up to its fade;
+  sources start on whole samples, then a fresh source plays on as decoded; a
+  song the browser cannot load is announced and skipped
+* With Smart fade every song plays at the gain the transition gives; without
+  a beat lock it is the one "Default crossfade"; only the playing song's
+  transition is planned, the next row's icon says how its song comes in; the
+  page only executes the answer (gains, speeds, volumes, filters),
+  computing none of it, and uses none of the old names
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
-* The play endpoint (also with the fingerprint off) sends a library song from
-  the media server and removes the temporary copy; an id outside the library
-  is a 404 and a failed download a 502
-* The transition endpoint answers 400 for missing or bad seconds, 404 for a
-  song outside the library, plans the mix from both downloads and answers only
-  that plan as JSON (no audio), removes them, and answers 400 when the songs
-  have no steady beat
-* The warmup endpoint relays the manager status
-* With NEURAL_FINGERPRINT_ENABLED false every route but play answers 503
-  naming the flag and the page is told the feature is disabled
-* The page hands the template the built-in HTTPS port, or zero when the
-  listener is disabled, and the reason when it could not start
+* play (fingerprint off too) streams a song while it downloads, a WAV as
+  bit-exact FLAC, an unreadable file as it is, then removes the copy; outside
+  the library 404, a failed download 502
+* transition answers 400 for missing or bad from_id, to_id, out or in (the
+  inputs it always had; other names are refused), 404 outside the library,
+  plans from both downloads, answers the JSON in its order (type, start,
+  duration, middle, step, filters, from, to, info), removes them; a
+  pair without a steady beat gets the crossfade, 400 only without room
+* warmup relays the manager status; with NEURAL_FINGERPRINT_ENABLED false
+  every route but play answers 503 naming the flag and the page says so
+* The page gets the HTTPS port, zero when it is off, and why it did not start
 """
 
 import importlib.util
 import io
+import json
 import os
 import sys
 
+import numpy as np
 import pytest
 
 
@@ -82,6 +84,15 @@ def client(bp_mod):
     app.register_blueprint(bp_mod.recording_search_bp)
     app.config['TESTING'] = True
     return app.test_client()
+
+
+@pytest.fixture(autouse=True)
+def empty_play_cache():
+    import app_play_cache
+
+    app_play_cache.clear()
+    yield
+    app_play_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -418,14 +429,144 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
     start = source.index('async function startPlayback(row) {')
     assert source.index('unlockAudio();', start) < source.index('stopAll();', start)
     assert "navigator.audioSession.type = 'playback'" in source
-    assert 'audioCtx.decodeAudioData(data)' in source and 'source.start(when, node.offset)' in source
+    assert 'audioCtx.decodeAudioData(data)' in source and 'source.start(when, onGrid(Math.max(0, second - piece.start)));' in source
     for code in (source, page):
         assert 'new Audio(' not in code and '.currentTime =' not in code and '.volume =' not in code
         assert 'X-Switch-At' not in code
-    assert 'stretchSegment(next, mix.in_at, mix.resume_at, mix.mix_seconds)' in source
-    assert 'setValueCurveAtTime(powerCurve(false), state.handoverAt, mix.mix_seconds)' in source
+    assert 'state.mix = planned ? mix : null;' in source
+    assert 'separatedStretch' not in source and 'stretchSegment' not in source
+    assert 'follow(node.gain.gain, side.volume, state.handoverAt, span);' in source
+    assert 'if (values) param.setValueCurveAtTime(Float32Array.from(values), from, length);' in source
+    assert 'const outgoing = state.node;' in source and 'stopVoice(outgoing, resume);' in source
     assert 'AudioMusePlayer.show(resultsList);' in page and 'function startSource(' not in page
     assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
+
+
+def test_the_player_mixes_with_the_filter_and_fader_curves_the_api_gives():
+    source = _repo_file('static', 'song_player.js')
+    assert 'source.connect(fader);' in source and 'fader.connect(voice.air);' in source and 'air.connect(tone);' in source and 'tone.connect(mid);' in source
+    assert 'mid.connect(high);' in source and 'high.connect(gain);' in source and 'mid.connect(gain);' not in source
+    assert "air.type = 'lowpass';" in source and 'air.frequency.value = audioCtx.sampleRate / 2;' in source
+    assert "mid.type = 'peaking';" in source and 'mid.gain.value = 0;' in source and "tone.type = filter || 'lowshelf';" in source
+    assert "high.type = 'highshelf';" in source and 'high.gain.value = 0;' in source
+    mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
+    for line in ('[[outgoing, mix.from, outgoingSource], [blend, mix.to, blend.single.source]].forEach(([node, side, source]) => {',
+                 'node.tone.frequency.value = mix.filters.bass_hz;', 'node.mid.frequency.value = mix.filters.mid_hz;', 'node.mid.Q.value = mix.filters.mid_q;',
+                 'node.high.frequency.value = mix.filters.high_hz;',
+                 'follow(node.high.gain, side.high_db, state.handoverAt, span);',
+                 'follow(node.tone.gain, side.bass_db, state.handoverAt, span);',
+                 'follow(node.mid.gain, side.mid_db, state.handoverAt, span);',
+                 'follow(blend.tone.frequency, mix.to.highpass_hz, state.handoverAt, span);'):
+        assert line in mix, line
+    assert "const blend = startPieceVoice(state.next, state.pieces.to, state.handoverAt, mix.to.start, mix.to.highpass_hz ? 'highpass' : 'lowshelf');" in mix
+    assert 'follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
+    assert 'const outgoingSource = switchToPiece(outgoing, state.pieces.from, state.handoverAt);' in mix
+    fallback = source[source.index('const span = crossfadeSeconds();'):]
+    fallback = fallback[:fallback.index('state.scheduled = [entry];')]
+    assert 'state.node.gain.gain.setValueCurveAtTime(FADE_OUT, state.handoverAt, span);' in fallback
+    assert 'const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading ? span : 0);' in fallback
+    assert 'if (fadeIn) voice.gain.gain.setValueCurveAtTime(FADE_IN, voice.when, fadeIn);' in source
+    assert 'const FADE_OUT = FADE_IN.slice().reverse();' in source and 'linearRampToValueAtTime' not in source
+    assert 'return playMode.beatMatch ? SMART_CROSSFADE_SECONDS : CROSSFADE_SECONDS;' in source
+    assert 'const SMART_CROSSFADE_SECONDS = 10;' in source
+    assert 'MUFFLE_TO_HZ' not in source and 'Filtered fade' not in source and 'createDelay(' not in source
+
+
+def test_every_source_starts_on_a_whole_sample_and_each_mix_hands_over_to_a_fresh_source():
+    source = _repo_file('static', 'song_player.js')
+    assert 'return Math.round(seconds * audioCtx.sampleRate) / audioCtx.sampleRate;' in source
+    assert 'track, air, tone, mid, high, gain, level, when: onGrid(when), offset: onGrid(Math.max(0, offset)),' in source
+    assert 'const joinAt = onGrid(when + piece.until - second);' in source
+    assert 'const at = second => onGrid(state.node.when + second - state.node.offset);' in source
+    mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
+    assert 'const resume = onGrid(state.handoverAt + mix.duration);' in mix
+    assert 'const span = resume - state.handoverAt;' in mix
+    assert 'stopVoice(blend, resume + JOIN_SECONDS);' in mix and 'const JOIN_SECONDS = 0.023;' in source
+    assert 'outgoing.gain.gain.setValueAtTime(0, resume + 1 / audioCtx.sampleRate);' in mix
+    assert 'blend.gain.gain.setValueCurveAtTime(FADE_OUT, resume + 1 / audioCtx.sampleRate, JOIN_SECONDS);' in mix
+    assert 'const entry = startSource(state.next, resume, mix.to.continue_from, JOIN_SECONDS);' in mix
+    assert 'state.scheduled = [blend, entry];' in mix
+
+
+def test_the_page_takes_every_number_of_a_transition_from_the_api_and_computes_none():
+    source = _repo_file('static', 'song_player.js')
+    plan = source[source.index('function requestPlan(from, to) {'):source.index('function paintMark(')]
+    assert 'new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });' in plan
+    assert 'return response.ok && plan && plan.duration > 0 ? plan : null;' in plan
+    play = source[source.index('async function playSong(index) {'):source.index('async function startPlayback(')]
+    assert 'const plan = await Promise.race([planned, new Promise(resolve => setTimeout(resolve, left * 1000))]);' in play
+    assert 'if (plan) levels.set(track, plan.from.gain);' in play
+    assert 'if (plan === undefined) planned.then(late => { if (late && token === playToken) glide(state, late.from.gain); });' in play
+    assert 'if (planned) levels.set(next, mix.to.gain);' in source
+    load = source[source.index('function loadPiece(track, start, seconds) {'):source.index('function pieceAt(')]
+    assert '?start=${start}&seconds=${seconds}`;' in load
+    assert "const length = Number(response.headers.get('X-Song-Seconds'));" in load
+    assert 'const buffer = await decode(await response.arrayBuffer());' in load
+    voice = source[source.index('function makeVoice('):source.index('function endFeed(')]
+    assert 'level.gain.value = levelOf(track);' in voice and 'gain.connect(level);' in voice and 'level.connect(audioCtx.destination);' in voice
+    assert 'state.mix.lead' not in source and 'state.mix.buffer' not in source
+    for gone in ('loudnessGain', 'kWeighting', 'safeCurves', 'shapeCurves', 'mixLevels', 'tempoGlide', 'swapBass', 'fadeMids', 'powerCurve',
+                 'TARGET_LUFS', 'PEAK_CEILING', 'MIX_HEADROOM', 'BASS_CUT_DB', 'MID_CUT_DB', 'RISE_FROM_HZ', 'SHAPE_LIMIT_DB', 'ANCHOR_SECONDS',
+                 'levels: ', 'mix_at', 'current_id', 'in_at', 'mix.current', 'mix.next', 'tempo_current'):
+        assert gone not in source, gone
+
+
+def test_a_plan_without_a_beat_lock_plays_the_labelled_default_crossfade_on_its_beat_and_section_points():
+    source = _repo_file('static', 'song_player.js')
+    mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
+    assert 'outgoing.air.frequency' not in mix
+    assert "const plain = mix.type === 'crossfade';" in mix
+    assert "const kind = plain ? 'Default crossfade' : `Beat-matched ${mix.type === 'beat_rise' ? 'rise' : 'mix with a bass swap'}`;" in source
+    assert "const tempos = !tempo.tempo_from ? '' : plain ? ` (${tempo.tempo_from} and ${tempo.tempo_to} BPM)`" in source
+    assert "if (plan && plan.type === 'beat_mix') return { kind: 'blend'," in source and "if (plan && plan.type === 'beat_rise') return { kind: 'rise'," in source
+    assert "if (!tempo.tempo_from) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };" in source
+    assert 'no transition plan' not in source and "'plain'" not in source
+    fallback = source[source.index('const span = crossfadeSeconds();'):]
+    assert 'if (fading && playMode.beatMatch) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title}`; });' in fallback
+    assert 'handsOver' not in source and 'handover_at' not in source and 'Natural hand-over' not in source
+
+
+def test_only_the_playing_song_is_planned_and_its_next_row_shows_how_it_comes_in():
+    source = _repo_file('static', 'song_player.js')
+    css = _repo_file('static', 'style.css')
+    marks = source[source.index('const MARKS = {'):source.index('function markHtml(')]
+    assert all(kind in marks for kind in ('pending:', 'crossfade:', 'blend:', 'rise:'))
+    assert 'function showSpans(list, songs, label, markOf) {' in source and "+ (markOf ? markHtml(markOf(song)) : '')" in source
+    load = source[source.index('async function loadTransition(index) {'):source.index('function entryOffset(')]
+    assert 'const plan = await requestPlan(from, to);\n            return plan ? Object.assign({}, plan) : null;' in load
+    assert 'planCache.delete(key);' in load and 'paintMark(to, planMarks.get(key));' in load
+    assert "planMarks.set(key, { kind: 'pending', title: 'Planning this transition...' });" in load
+    show = source[source.index('        function show() {'):source.index('        function hide() {')]
+    assert 'smartSpans(songs);\n                trackPairs(songs);' in show
+    assert 'prefetchPlans' not in source and source.count('requestPlan(') == 2
+    assert 'if (queue.beatMatch) smartSpans(playQueue);' in source
+    arrange = source[source.index('async function arrange(rows, options) {'):]
+    assert 'planCache.clear();\n            planMarks.clear();' in arrange[:400]
+    assert '.play-mark[data-mark="blend"]' in css and '.song-player .play-summary:empty' in css
+
+
+def test_a_beat_matched_mix_plays_both_songs_at_the_api_speeds_without_time_stretching():
+    source = _repo_file('static', 'song_player.js')
+    mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('const kind = plain')]
+    assert 'follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
+    assert 'const played = mix.to.continue_from - mix.to.start;' in mix
+    assert 'at: t => mix.to.start + played * Math.min(1, Math.max(0, (t - state.handoverAt) / span))' in mix
+    for gone in ('stretchSegment', 'similarity', 'WSOLA', 'mix.lead', 'mix.buffer', 'mix.follow', 'position', 'function along('):
+        assert gone not in source, gone
+
+
+def test_the_highlight_jumps_to_the_next_song_in_the_middle_of_a_transition():
+    source = _repo_file('static', 'song_player.js')
+    tick = source[source.index('function tick() {'):source.index('function canSeek(')]
+    assert 'const view = swapView && now >= swapView.from ? swapView : null;' in tick
+    assert "if (view) list.querySelectorAll('.result-item').forEach((item, n) => item.classList.toggle('playing', n === view.row));" in tick
+    assert 'const second = view ? view.at(now) :' in tick
+    mix = source[source.index('swapView = {'):source.index("after(state.handoverAt, () => {\n                            const kind")]
+    assert 'from: state.handoverAt + mix.middle,' in mix and 'row: playQueue[index + 1].row,' in mix
+    assert 'at: t => mix.to.start + played * Math.min(1, Math.max(0, (t - state.handoverAt) / span))' in mix
+    assert 'after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, entry));' in source
+    assert source.count('swapView = null;') == 4 and 'mix-in' not in source
+    assert 'playCurrent = state;\n            node.onMove = state.plan;\n            track.onLength = state.plan;\n            markPlaying(index);\n            tick();' in source
 
 
 def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
@@ -435,11 +576,15 @@ def test_the_playing_row_shows_the_progress_and_seeks_only_up_to_the_fade():
     style = style[:style.index('}')]
     assert 'var(--play-fill) var(--play-progress, 0%)' in style and 'var(--play-limit-color)' in style
     assert '--play-fill: #DBEAFE;' in css and 'touch-action: pan-y;' in style
-    assert 'if (state.mix) return state.mix.mix_at;' in source
-    assert 'Math.min(share * scrub.state.buffer.duration, seekLimit(scrub.state) - 1)' in source
+    assert 'if (state.mix) return state.mix.start;' in source
+    assert 'Math.min(share * lengthOf(scrub.state), seekLimit(scrub.state) - 1)' in source
     assert "if (!item || item.classList.contains('playing') || bar.classList.contains('hidden')) return;" in source
-    skip = source[source.index("skipBtn.addEventListener('click'"):]
-    assert 'seekTo(state, target)' in skip[:skip.index('});')]
+    assert "skipBtn.addEventListener('click', () => skipToFade(playCurrent));" in source
+    skip = source[source.index('function skipToFade(state) {'):]
+    skip = skip[:skip.index('\n        }\n')]
+    assert 'state.skipWhenReady = true;' in skip and 'seekTo(state, target)' in skip
+    assert source.index('if (!state.ready) {', source.index('function skipToFade(state) {')) < source.index('const target = seekLimit(state) - 6;')
+    assert source.count('state.plan();\n                        if (state.skipWhenReady) skipToFade(state);') == 2
 
 
 def _post_fade(client, body):
@@ -485,40 +630,104 @@ def test_smart_fade_returns_the_songs_in_order_under_the_ids_as_sent(client, mon
     assert body['count'] == 3
 
 
-def _fake_media(monkeypatch, tmp_path, payload):
+def _fake_media(monkeypatch, tmp_path, payload, release=None, name='42.mp3'):
     import contextlib
 
     import app_server_context
     import tasks.commons
     import tasks.mediaserver
 
-    seen = {}
+    seen = {'downloads': 0}
     monkeypatch.setattr(app_server_context, 'resolve_input_item_id', lambda raw_id, data=None: f'fp_{raw_id}')
     monkeypatch.setattr(app_server_context, 'use_request_server', lambda data=None: contextlib.nullcontext())
     monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song 1'} for i in ids if i == 'fp_42'})
 
     def download(folder, item):
-        seen.update(folder=folder, item=item)
+        seen.update(folder=folder, item=item, downloads=seen['downloads'] + 1)
         if payload is None:
             return None
-        path = os.path.join(folder, '42.mp3')
+        parts = payload if isinstance(payload, list) else [payload]
+        path = os.path.join(folder, name)
         with open(path, 'wb') as handle:
-            handle.write(payload)
+            for n, part in enumerate(parts):
+                handle.write(part)
+                handle.flush()
+                if n == 0 and release is not None:
+                    assert release.wait(10)
         return path
 
     monkeypatch.setattr(tasks.mediaserver, 'download_track', download)
     return seen
 
 
-def test_play_streams_the_song_from_the_media_server_and_cleans_up(client, monkeypatch, tmp_path):
+def _wav(seconds=1.0, rate=44100):
+    import soundfile
+
+    t = np.arange(int(seconds * rate)) / rate
+    samples = np.stack([np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 660 * t)], axis=1)
+    samples = (samples * 20000).astype(np.int16)
+    out = io.BytesIO()
+    soundfile.write(out, samples, rate, format='WAV', subtype='PCM_16')
+    return out.getvalue(), samples
+
+
+def _flac_samples(data):
+    import av
+
+    with av.open(io.BytesIO(data)) as container:
+        stream = container.streams.audio[0]
+        frames = [frame.to_ndarray() for frame in container.decode(stream)]
+    return np.concatenate([f.reshape(-1, 2) if f.shape[0] == 1 else f.T for f in frames])
+
+
+def test_play_streams_the_song_downloads_it_once_and_the_cache_removes_it(client, monkeypatch, tmp_path):
+    import app_play_cache
+
     seen = _fake_media(monkeypatch, tmp_path, b'ID3audio')
     response = client.get('/api/recording_search/play/42')
     assert response.status_code == 200
     assert response.data == b'ID3audio'
     assert response.mimetype == 'audio/mpeg'
-    assert response.headers['Content-Length'] == '8'
+    assert 'Content-Length' not in response.headers
     assert seen['item'] == {'Id': '42', 'id': '42'}
+    assert client.get('/api/recording_search/play/42').data == b'ID3audio'
+    assert seen['downloads'] == 1 and os.path.exists(seen['folder'])
+    monkeypatch.setattr(app_play_cache, 'IDLE_SECONDS', -1)
+    app_play_cache.sweep()
     assert not os.path.exists(seen['folder'])
+
+
+def test_play_sends_the_first_bytes_while_the_media_server_still_delivers_the_rest(client, monkeypatch, tmp_path):
+    import threading
+
+    release = threading.Event()
+    first, rest = b'fLaC' + b'\x00' * 4092, b'\x01' * 8192
+    seen = _fake_media(monkeypatch, tmp_path, [first, rest], release)
+    response = client.get('/api/recording_search/play/42', buffered=False)
+    assert response.status_code == 200 and response.mimetype == 'audio/flac'
+    chunks = iter(response.response)
+    assert next(chunks) == first
+    release.set()
+    assert b''.join(chunks) == rest
+    response.close()
+    assert seen['downloads'] == 1
+
+
+def test_play_converts_a_wav_to_flac_with_every_sample_unchanged(client, monkeypatch, tmp_path):
+    payload, samples = _wav()
+    _fake_media(monkeypatch, tmp_path, payload)
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 200 and response.mimetype == 'audio/flac'
+    assert response.data[:4] == b'fLaC' and len(response.data) < len(payload)
+    assert np.array_equal(_flac_samples(response.data), samples)
+
+
+def test_play_sends_a_file_the_converter_cannot_read_as_it_is(client, monkeypatch, tmp_path):
+    payload = b'RIFF' + b'\x07' * 600
+    _fake_media(monkeypatch, tmp_path, payload)
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 200
+    assert response.data == payload and response.mimetype == 'application/octet-stream'
 
 
 def test_play_refuses_a_song_outside_the_library_and_reports_a_failed_download(client, monkeypatch, tmp_path):
@@ -528,41 +737,67 @@ def test_play_refuses_a_song_outside_the_library_and_reports_a_failed_download(c
     assert 'item' not in seen
     response = client.get('/api/recording_search/play/42')
     assert response.status_code == 502
-    assert not os.path.exists(seen['folder'])
+    assert client.get('/api/recording_search/play/42').status_code == 502 and seen['downloads'] == 2
 
 
-def test_transition_downloads_both_songs_answers_only_the_plan_and_cleans_up(client, monkeypatch, tmp_path):
+def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets_the_crossfade(client, monkeypatch, tmp_path):
     import tasks.commons
+    import tasks.smart_fade_levels
     import tasks.smart_fade_mix
 
     seen = _fake_media(monkeypatch, tmp_path, b'audio')
     monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song'} for i in ids if i in ('fp_42', 'fp_43')})
-    planned = {}
-    plan = {'mix_at': 191.5, 'mix_seconds': 4.0, 'in_at': 27.41, 'resume_at': 31.25, 'stretch': 0.96, 'tempo_from': 120.0, 'tempo_to': 125.0}
+    plan = {'mix_at': 191.5, 'style': 'fade'}
+    answer = {'type': 'crossfade', 'start': 191.5, 'duration': 10.0, 'middle': 5.0, 'step': 0.1, 'filters': {'bass_hz': 180.0},
+              'from': {'gain': 0.5}, 'to': {'gain': 0.7}, 'info': {'tempo_from': None}}
+    calls = []
 
     def make_plan(path_out, out_seconds, path_in, in_seconds):
-        planned.update(paths=(os.path.basename(path_out), os.path.basename(path_in)), out=out_seconds, inn=in_seconds,
-                       folder_alive=os.path.isdir(seen['folder']))
-        return plan
+        calls.append(('plan', os.path.basename(path_out), out_seconds, in_seconds, os.path.isdir(seen['folder'])))
+        return dict(plan)
+
+    def make_crossfade(path_out, out_seconds, path_in, in_seconds):
+        calls.append(('crossfade', out_seconds, in_seconds))
+        return dict(plan, beatless=True)
+
+    def make_answer(path_out, path_in, planned):
+        calls.append(('answer', planned.get('beatless', False)))
+        return answer
 
     monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', make_plan)
-    for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1', '?from_id=42&out=1&in=1'):
-        assert client.get('/api/recording_search/transition' + query).status_code == 400
-    assert client.get('/api/recording_search/transition?from_id=42&to_id=7&out=200&in=20').status_code == 404
+    monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', make_crossfade)
+    monkeypatch.setattr(tasks.smart_fade_levels, 'transition', make_answer)
+    url = '/api/recording_search/transition'
+    for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1',
+                  '?from_id=42&out=1&in=1', '?current_id=42&next_id=43&current_end=200&next_start=20'):
+        response = client.get(url + query)
+        assert response.status_code == 400 and 'from_id, to_id, out and in' in response.get_json()['error']
+    assert client.get(url + '?from_id=42&to_id=7&out=200&in=20').status_code == 404
+    assert calls == []
 
-    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20.5')
-    assert response.status_code == 200
-    assert response.mimetype == 'application/json' and response.get_json() == plan
-    assert planned == {'paths': ('42.mp3', '42.mp3'), 'out': 200.0, 'inn': 20.5, 'folder_alive': True}
+    response = client.get(url + '?from_id=42&to_id=43&out=200&in=20.5')
+    assert response.status_code == 200 and response.mimetype == 'application/json'
+    assert list(json.loads(response.data)) == ['type', 'start', 'duration', 'middle', 'step', 'filters', 'from', 'to', 'info']
+    assert response.get_json() == answer
+    assert calls == [('plan', '42.mp3', 200.0, 20.5, True), ('answer', False)]
     assert not os.path.exists(seen['folder'])
+    calls.clear()
 
     def no_beat(*args):
+        calls.append(('plan',))
         raise ValueError('No steady beat to match.')
 
     monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', no_beat)
-    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20')
-    assert response.status_code == 400
-    assert 'steady beat' in response.get_json()['error']
+    response = client.get(url + '?from_id=42&to_id=43&out=200&in=20')
+    assert response.status_code == 200 and response.get_json() == answer
+    assert calls == [('plan',), ('crossfade', 200.0, 20.0), ('answer', True)]
+
+    def no_room(*args):
+        raise ValueError('No room for a crossfade at the fade points.')
+
+    monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', no_room)
+    response = client.get(url + '?from_id=42&to_id=43&out=200&in=20')
+    assert response.status_code == 400 and 'no room' in response.get_json()['error']
 
 
 def test_a_disabled_feature_answers_503_on_every_route_but_play_and_the_page_says_so(client, bp_mod, monkeypatch, tmp_path):
@@ -613,3 +848,39 @@ def test_warmup_relays_the_manager_status(client, monkeypatch):
     response = client.post('/api/recording_search/warmup')
     assert response.status_code == 200
     assert response.get_json()['models']['neural'] is True
+
+
+def test_an_unsupported_song_is_announced_and_skipped_and_the_clock_runs_at_the_device_rate():
+    source = _repo_file('static', 'song_player.js')
+    assert 'audioCtx = new AudioContext();' in source
+    assert 'sampleRate:' not in source and 'CONTEXT_RATE' not in source
+    assert "throw new Error('Song not supported in the frontend.');" in source
+    nxt = source[source.index('async function prepareNext(state, token) {'):source.index('async function playSong(index) {')]
+    assert 'pieceAt(next, entryOffset(state.index + 1)).catch(error => { notice = skipNotice(song, error); return null; }),' in nxt
+    assert 'playQueue.splice(state.index + 1, 1);' in nxt
+    play = source[source.index('async function playSong(index) {'):source.index('async function startPlayback(')]
+    assert 'while (index < playQueue.length) {' in play and 'playQueue.splice(index, 1);' in play
+    assert 'prepareNext(state, token)' in source
+    for gone in ('state.failed', 'failed: null', 'This browser cannot play this song.'):
+        assert gone not in source, gone
+
+
+def test_play_cuts_an_exact_piece_with_the_song_length_and_refuses_a_bad_range(client, monkeypatch, tmp_path):
+    payload, samples = _wav(seconds=3.0)
+    seen = _fake_media(monkeypatch, tmp_path, payload)
+    url = '/api/recording_search/play/42'
+    for query in ('?start=1', '?seconds=1', '?start=-1&seconds=1', '?start=1&seconds=0', '?start=x&seconds=1', '?start=0&seconds=601'):
+        assert client.get(url + query).status_code == 400, query
+    response = client.get(url + '?start=1&seconds=1.5')
+    assert response.status_code == 200 and response.mimetype == 'audio/flac'
+    assert np.array_equal(_flac_samples(response.data), samples[44100:44100 + 66150])
+    again = client.get(url + '?start=0&seconds=1')
+    assert again.status_code == 200 and seen['downloads'] == 1
+    assert float(again.headers['X-Song-Seconds']) == pytest.approx(3.0)
+    assert np.array_equal(_flac_samples(again.data), samples[:44100])
+
+
+def test_play_answers_422_for_a_piece_of_a_file_the_server_cannot_read(client, monkeypatch, tmp_path):
+    _fake_media(monkeypatch, tmp_path, b'RIFF' + b'\x07' * 600)
+    response = client.get('/api/recording_search/play/42?start=0&seconds=5')
+    assert response.status_code == 422 and 'could not read' in response.get_json()['error']

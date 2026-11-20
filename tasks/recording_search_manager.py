@@ -39,7 +39,7 @@ Main Features:
   song or a kept result (same title and author, or a fingerprint twin: mean
   cosine plus a 20 s alignment) and caps MAX_SONGS_PER_ARTIST, with an index
   margin so the count holds. No audio is decoded and no model runs.
-* smart_fade_order chains songs by end/start match (30 s edges, no silence, BPM tie-break) or keeps a given order
+* smart_fade_order: one path by end/start match, BPM, intensity, MusiCNN (30 s edges, no silence) or a kept order
 * warmup_recording_models maps the index if Flask has not, preloads the encoder
   and arms the idle timer (every search re-arms it) that frees the session and
   the cell cache after RECORDING_SEARCH_WARMUP_DURATION seconds without a query.
@@ -53,10 +53,11 @@ import tempfile
 import numpy as np
 
 import config
+from tasks.album_creation_manager import INTENSITY_WEIGHTS, arousal_of, centered_moods, folded_tempo, zscores
 from tasks.idle_unload import IdleUnloadTimer
 from tasks.memory_utils import release_memory_to_os
 from tasks.search_shaping import name_key_for
-from tasks.smart_fade_mix import tempos_match
+from tasks.smart_fade_mix import EDGE_SECONDS, tempos_match
 
 logger = logging.getLogger(__name__)
 
@@ -204,10 +205,15 @@ def search_neural(audio, sr, n_results):
 _WINDOW_ROWS = 40
 _WINDOW_POSITIONS = (0.2, 0.5, 0.8)
 _FADE_WINDOW_ROWS = 8
-_FADE_EDGE_SECONDS = 30
 _FADE_STEP_ROWS = 2
 _FADE_SILENCE_COSINE = 0.95
-_FADE_TEMPO_PENALTY = 0.1
+_FADE_TEMPO_PENALTY = 0.5
+_FADE_INTENSITY_WEIGHT = 0.04
+_FADE_SOUND_WEIGHT = 0.1
+_FADE_WEAK_WEIGHT = 1.0
+_FADE_SEGMENT = 3
+_FADE_MOVES_PER_SONG = 2
+_FADE_MIN_GAIN = 1e-6
 _TWIN_ALIGN_SCORE = 0.5
 
 
@@ -235,7 +241,7 @@ def fade_edges(rows, decode=None):
     from tasks.neural_fingerprint import HOP_SECONDS
 
     count = int(rows.shape[0])
-    edge = max(1, min(int(_FADE_EDGE_SECONDS / HOP_SECONDS), count // 2))
+    edge = max(1, min(int(EDGE_SECONDS / HOP_SECONDS), count // 2))
     decode = decode or (lambda part: part)
     return decode(rows[:edge]), decode(rows[count - edge:]), count
 
@@ -403,32 +409,138 @@ def _fades_in_order(edges):
     ]
 
 
-def smart_fade_order(edges, tempos=None, keep_order=False):
+def _pair_matrix(profiles):
+    intro_windows = np.vstack([profile['intro_windows'] for profile in profiles])
+    sizes = np.array([profile['intro'].size for profile in profiles])
+    starts = np.concatenate([[0], np.cumsum(sizes)[:-1]])
+    lanes = np.arange(int(sizes.max()))
+    slots = np.where(lanes[None, :] < sizes[:, None], starts[:, None] + lanes[None, :], intro_windows.shape[0])
+    count = len(profiles)
+    every = np.arange(count)
+    best = np.empty((count, count), dtype=np.float32)
+    outro_at = np.empty((count, count), dtype=np.int64)
+    intro_at = np.empty((count, count), dtype=np.int64)
+    for current, profile in enumerate(profiles):
+        sims = profile['outro_windows'] @ intro_windows.T
+        rows = sims.argmax(axis=0)
+        top = np.append(sims[rows, np.arange(sims.shape[1])], -np.inf)
+        cells = top[slots]
+        pick = cells.argmax(axis=1)
+        column = slots[every, pick]
+        best[current] = cells[every, pick]
+        intro_at[current] = pick
+        outro_at[current] = rows[np.minimum(column, rows.size - 1)]
+    return best, outro_at, intro_at
+
+
+def _intensity(traits, tempos):
+    moods = [centered_moods((trait or {}).get('moods') or '') for trait in traits]
+    signals = {
+        'arousal': zscores([arousal_of(mood) for mood in moods]),
+        'energy': zscores([(trait or {}).get('energy') for trait in traits]),
+        'tempo': zscores([folded_tempo(tempo) for tempo in tempos]),
+    }
+    return zscores(list(sum(weight * signals[name] for name, weight in INTENSITY_WEIGHTS.items())))
+
+
+def _sound_matrix(traits):
+    vectors = [(trait or {}).get('sound') for trait in traits]
+    size = next((vector.size for vector in vectors if vector is not None and vector.size), 0)
+    count = len(vectors)
+    known = np.array([vector is not None and vector.size == size > 0 for vector in vectors])
+    if known.sum() < 2:
+        return np.zeros((count, count), dtype=np.float32)
+    rows = np.stack([vector if ok else np.zeros(size, dtype=np.float32) for vector, ok in zip(vectors, known)]).astype(np.float32)
+    rows /= np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1e-9)
+    pairs = known[:, None] & known[None, :] & ~np.eye(count, dtype=bool)
+    sims = rows @ rows.T
+    return np.where(pairs, sims - float(sims[pairs].mean()), 0.0).astype(np.float32)
+
+
+def _path_gain(score):
+    others = ~np.eye(score.shape[0], dtype=bool)
+    others[:, 0] = False
+    floor = float(np.median(score[others])) if others.any() else 0.0
+    return score - _FADE_WEAK_WEIGHT * np.maximum(0.0, floor - score)
+
+
+def _greedy_path(gain):
+    path, left = [0], np.ones(gain.shape[0], dtype=bool)
+    left[0] = False
+    while left.any():
+        following = int(np.argmax(np.where(left, gain[path[-1]], -np.inf)))
+        path.append(following)
+        left[following] = False
+    return np.array(path)
+
+
+def _better_path(path, gain):
+    count = path.size
+    for _move in range(_FADE_MOVES_PER_SONG * count):
+        links = gain[path[:-1], path[1:]]
+        lanes = np.arange(count - 1)[None, :]
+        best, move = _FADE_MIN_GAIN, None
+        for length in range(1, min(_FADE_SEGMENT, count - 2) + 1):
+            starts = np.arange(1, count - length + 1)
+            ends = starts + length - 1
+            firsts, lasts = path[starts], path[ends]
+            tail = ends + 1 < count
+            lift = np.where(tail, gain[path[starts - 1], path[np.minimum(ends + 1, count - 1)]] - links[np.minimum(ends, count - 2)], 0.0) - links[starts - 1]
+            slots = gain[path[:-1][None, :], firsts[:, None]] + gain[lasts[:, None], path[1:][None, :]] - links[None, :]
+            slots[(lanes >= (starts - 1)[:, None]) & (lanes <= ends[:, None])] = -np.inf
+            slots = np.concatenate([slots, np.where(tail, gain[path[-1], firsts], -np.inf)[:, None]], axis=1) + lift[:, None]
+            row, column = np.unravel_index(int(np.argmax(slots)), slots.shape)
+            if slots[row, column] > best:
+                best, move = float(slots[row, column]), (int(starts[row]), length, int(column))
+        if move is None:
+            break
+        start, length, column = move
+        rest = np.concatenate([path[:start], path[start + length:]])
+        place = rest.size if column == count - 1 else column + 1 - (length if column > start else 0)
+        path = np.concatenate([rest[:place], path[start:start + length], rest[place:]])
+    return path
+
+
+def smart_fade_order(edges, tempos=None, keep_order=False, traits=None):
     if keep_order:
         return _fades_in_order(edges)
     usable = [index for index, edge in enumerate(edges) if edge is not None]
     missing = [(index, None) for index in sorted(set(range(len(edges))) - set(usable))]
     if not usable:
         return missing
-    penalty = _tempo_penalty([tempos[index] if tempos else None for index in usable])
+    known_tempos = [tempos[index] if tempos else None for index in usable]
+    known_traits = [traits[index] if traits else None for index in usable]
     profiles = [_fade_profile(edges[index]) for index in usable]
-    intro_windows = np.vstack([profile['intro_windows'] for profile in profiles])
-    owner = np.concatenate([np.full(profile['intro'].size, n) for n, profile in enumerate(profiles)])
-    starts = np.concatenate([profile['intro'] for profile in profiles])
-    open_columns = owner != 0
-    order, fade_in, fade_out = [0], {0: 0}, {}
-    while open_columns.any():
-        current = profiles[order[-1]]
-        sims = current['outro_windows'] @ intro_windows.T - penalty[order[-1]][owner]
-        sims[:, ~open_columns] = -np.inf
-        best_outro, best_column = np.unravel_index(int(np.argmax(sims)), sims.shape)
-        following = int(owner[best_column])
-        fade_out[order[-1]] = int(current['outro'][best_outro]) + current['width'] - 1
-        fade_in[following] = int(starts[best_column])
-        order.append(following)
-        open_columns &= owner != following
-    ordered = [(usable[n], _fade_times(profiles[n], fade_in[n], fade_out.get(n))) for n in order]
+    best, outro_at, intro_at = _pair_matrix(profiles)
+    intensity = _intensity(known_traits, known_tempos)
+    score = (best - _tempo_penalty(known_tempos) - _FADE_INTENSITY_WEIGHT * np.abs(intensity[:, None] - intensity[None, :])
+             + _FADE_SOUND_WEIGHT * _sound_matrix(known_traits))
+    gain = _path_gain(score)
+    path = _better_path(_greedy_path(gain), gain) if len(usable) > 2 else _greedy_path(gain)
+    fade_in, fade_out = {int(path[0]): 0}, {}
+    for current, following in zip(path[:-1].tolist(), path[1:].tolist()):
+        fade_out[current] = int(profiles[current]['outro'][outro_at[current, following]]) + profiles[current]['width'] - 1
+        fade_in[following] = int(profiles[following]['intro'][intro_at[current, following]])
+    ordered = [(usable[n], _fade_times(profiles[n], fade_in[n], fade_out.get(n))) for n in path.tolist()]
     return ordered + missing
+
+
+def _stored_traits(item_ids):
+    from database import get_db
+
+    cur = get_db().cursor()
+    try:
+        cur.execute(
+            'SELECT s.item_id, s.energy, s.other_features, e.embedding FROM score s '
+            'LEFT JOIN embedding e ON e.item_id = s.item_id WHERE s.item_id = ANY(%s)',
+            (list(dict.fromkeys(item_ids)),),
+        )
+        return {
+            item_id: {'energy': energy, 'moods': moods, 'sound': None if blob is None else np.frombuffer(bytes(blob), dtype=np.float32)}
+            for item_id, energy, moods, blob in cur.fetchall()
+        }
+    finally:
+        cur.close()
 
 
 def smart_fade_playlist(item_ids, keep_order=False):
@@ -436,7 +548,11 @@ def smart_fade_playlist(item_ids, keep_order=False):
     if keep_order:
         return smart_fade_order([edges.get(item_id) for item_id in item_ids], keep_order=True)
     tempos = _stored_tempos(item_ids)
-    return smart_fade_order([edges.get(item_id) for item_id in item_ids], [tempos.get(item_id) for item_id in item_ids])
+    traits = _stored_traits(item_ids)
+    return smart_fade_order(
+        [edges.get(item_id) for item_id in item_ids], [tempos.get(item_id) for item_id in item_ids],
+        traits=[traits.get(item_id) for item_id in item_ids],
+    )
 
 
 def search_by_track(item_id, n_results=None):

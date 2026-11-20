@@ -338,6 +338,22 @@ def test_dispatch_child_invocation_runs_the_decode_child_for_decode_argv(
     assert ran == []
 
 
+def test_dispatch_child_invocation_runs_the_flac_child_for_transcode_argv(
+    frozen_children, monkeypatch
+):
+    from tasks import flac_stream
+
+    monkeypatch.setattr(frozen_children, 'run_frozen_child', lambda: False)
+    monkeypatch.setattr(sys, 'argv', [EXE, flac_stream.CHILD_FLAG, '-'], raising=False)
+    calls = []
+    monkeypatch.setattr(flac_stream, 'run', lambda argv: calls.append(argv) or 0)
+    ran = []
+    with pytest.raises(SystemExit):
+        frozen_children.dispatch_child_invocation(lambda role: ran.append(role))
+    assert calls == [['-']]
+    assert ran == []
+
+
 def test_dispatch_child_invocation_returns_false_with_no_spawn_or_role(
     frozen_children, monkeypatch
 ):
