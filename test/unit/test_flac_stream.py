@@ -19,6 +19,11 @@ Main Features:
   those samples: FLAC from 24-bit audio, float WAV from float audio
 * The child is started as python -m tasks.flac_stream, the frozen app with
   CHILD_FLAG, and the frozen launcher routes that flag to run
+* A pipe that claims to seek (Windows reports pipes as seekable) still gives the
+  exact piece: PyAV never sees a seek on stdin
+* A child that exits a moment after its reply keeps its piece and its stream
+  (Windows ends a frozen child some 10 ms after its last byte); one that never
+  exits is killed after EXIT_WAIT_SECONDS
 """
 
 import io
@@ -152,3 +157,81 @@ def test_the_child_command_is_the_module_or_the_frozen_app_with_its_flag(monkeyp
     assert command == [sys.executable, '-m', 'tasks.flac_stream', '/m/a.wav'] and os.path.isdir(cwd)
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     assert flac_stream._command('-') == ([sys.executable, flac_stream.CHILD_FLAG, '-'], None)
+
+
+class _WindowsPipe:
+    def __init__(self, data):
+        self._data = io.BytesIO(data)
+
+    def read(self, size=-1):
+        return self._data.read(size)
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return 0
+
+    def seek(self, offset, whence=0):
+        return 0
+
+
+def _padded(flac, size):
+    position = 4
+    while not flac[position] & 0x80:
+        position += 4 + int.from_bytes(flac[position + 1:position + 4], 'big')
+    end = position + 4 + int.from_bytes(flac[position + 1:position + 4], 'big')
+    data = bytearray(flac)
+    data[position] &= 0x7F
+    return bytes(data[:end]) + bytes([0x81]) + size.to_bytes(3, 'big') + bytes(size) + bytes(data[end:])
+
+
+def test_a_piece_from_a_pipe_that_claims_to_seek_is_still_the_exact_samples(tmp_path, monkeypatch):
+    import soundfile
+
+    rate = 44100
+    samples = np.random.default_rng(11).uniform(-0.9, 0.9, size=(rate * 4, 2))
+    source = _write(str(tmp_path / 'a.flac'), samples, rate, 'PCM_24', fmt='FLAC')
+    whole, _ = soundfile.read(source, dtype='int32', always_2d=True)
+    with open(source, 'rb') as handle:
+        song = _padded(handle.read(), 300000)
+    assert np.array_equal(soundfile.read(io.BytesIO(song), dtype='int32', always_2d=True)[0], whole)
+    monkeypatch.setattr(sys, 'stdin', type('Stdin', (), {'buffer': _WindowsPipe(song)})())
+    reply = io.BytesIO()
+    assert flac_stream.piece(flac_stream.FROM_STDIN, 1.0, 1.5, reply) == 0
+    header, body = reply.getvalue().split(b'\n', 1)
+    piece, _ = soundfile.read(io.BytesIO(body), dtype='int32', always_2d=True)
+    assert b'"piece"' in header and np.array_equal(piece, whole[rate:rate + int(1.5 * rate)])
+
+
+_LATE_EXIT = """import os, sys, time
+out = os.fdopen(os.dup(1), 'wb')
+os.dup2(2, 1)
+out.write(sys.argv[1].encode() + b'\\n' + b'BODY' * 2000)
+out.close()
+time.sleep(float(sys.argv[2]))
+"""
+
+
+def _late_child(monkeypatch, status, seconds):
+    header = '{"status": "%s", "format": "flac", "seconds": 1.0}' % status
+    monkeypatch.setattr(flac_stream, '_command', lambda source, *extra: ([sys.executable, '-c', _LATE_EXIT, header, str(seconds)], None))
+
+
+def test_a_child_that_exits_a_moment_after_its_reply_keeps_its_piece_and_its_stream(tmp_path, monkeypatch, caplog):
+    _late_child(monkeypatch, flac_stream.STATUS_PIECE, 0.5)
+    header, body = flac_stream.cut_piece(str(tmp_path / 'a.wav'), 0.0, 1.0, str(tmp_path / 'p.log'), 'a')
+    assert header['status'] == flac_stream.STATUS_PIECE and body == b'BODY' * 2000
+    _late_child(monkeypatch, flac_stream.STATUS_FLAC, 0.5)
+    assert _read_all(flac_stream.flac_chunks(str(tmp_path / 'a.wav'), str(tmp_path / 'f.log'), 'a')) == b'BODY' * 2000
+    assert 'Could not cut' not in caplog.text and 'failed' not in caplog.text
+
+
+def test_a_child_that_never_exits_after_its_reply_is_killed_after_the_wait(tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(flac_stream, 'EXIT_WAIT_SECONDS', 0.3)
+    _late_child(monkeypatch, flac_stream.STATUS_PIECE, 60)
+    began = time.monotonic()
+    assert flac_stream.cut_piece(str(tmp_path / 'a.wav'), 0.0, 1.0, str(tmp_path / 'p.log'), 'a') is None
+    assert time.monotonic() - began < 20

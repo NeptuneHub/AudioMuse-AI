@@ -16,15 +16,13 @@ piece (an MP3 PREROLL_SECONDS before, its first frame after a seek is not
 whole); a song still downloading is read from its start. The page plays songs
 in pieces, so the browser holds only a few seconds of each decoded song.
 
-The whole song: the play route sends FLAC, MP3 and AAC as they are (every browser decodes them;
-as FLAC an MP3 is 5 times larger and loses the peaks over full scale its decoder
-gives, since FLAC holds integers). Every other format (WAV, AIFF, ALAC, WavPack,
-APE, TTA, WMA, Ogg, DSD, ...) is decoded with PyAV and encoded as FLAC at
-FLAC_LEVEL while it is sent: the child reads the song as the media server
-delivers it (stdin) and writes each encoded block to stdout, which Flask relays
-in CHUNK_BYTES chunks, so download, conversion and transfer overlap. A 15
-minute 192 kHz 24-bit WAV (989 MB) becomes 405 MB; its first chunk leaves after
-about a second.
+The whole song: the play route sends FLAC, MP3 and AAC as they are (as FLAC an
+MP3 is 5 times larger and loses its peaks over full scale). Every other format
+(WAV, AIFF, ALAC, WavPack, APE, TTA, WMA, Ogg, DSD, ...) is decoded with PyAV
+and encoded as FLAC at FLAC_LEVEL while it is sent: the child reads the song as
+the media server delivers it (stdin) and writes each encoded block to stdout,
+which Flask relays in CHUNK_BYTES chunks. A 989 MB 24-bit WAV becomes 405 MB,
+its first chunk out in about a second.
 
 Main Features:
 * Lossless: 8 and 16-bit sources stay 16-bit, everything else is 24-bit, at the
@@ -38,11 +36,14 @@ Main Features:
   (no stderr deadlock), and is relayed when the conversion fails
 * The child answers one JSON line first: flac (FLAC bytes follow), piece (with
   its format and the song's seconds), original (send the file as it is) or
-  unreadable; a packet that fails to decode is
-  skipped. Flask sends the original whenever the child cannot convert, so the
-  page decides (it skips a song it cannot decode)
+  unreadable; a packet that fails to decode is skipped. Flask sends the
+  original whenever the child cannot convert (the page skips what it cannot
+  decode)
 * The child ends itself past WALL_SECONDS; Flask kills it when the download is
-  abandoned. It imports only PyAV and the logging setup, to start fast
+  abandoned or when it has not exited EXIT_WAIT_SECONDS after its last byte (a
+  frozen Windows child exits about 10 ms after it). PyAV reads stdin through
+  a reader without seek (Windows reports a pipe as seekable). It imports only
+  PyAV and the logging setup, to start fast
 """
 
 import ctypes
@@ -62,6 +63,7 @@ FROM_STDIN = '-'
 FLAC_LEVEL = 1
 CHUNK_BYTES = 256 * 1024
 WALL_SECONDS = 1800
+EXIT_WAIT_SECONDS = 10
 LOG_TAIL_CHARS = 4000
 FLAC_MAX_CHANNELS = 8
 KIND_NATIVE = 'native'
@@ -145,6 +147,19 @@ def _frames(container, stream):
             logger.warning("Skipped a packet that does not decode in %s", container.name)
 
 
+class _Stream:
+    name = '<stdin>'
+
+    def __init__(self, raw):
+        self.read = raw.read
+
+
+def _source(source_path, from_stdin):
+    import av
+
+    return av.open(_Stream(sys.stdin.buffer) if from_stdin else source_path)
+
+
 def _status(reply, status):
     reply.write(json.dumps({'status': status}).encode('ascii') + b'\n')
 
@@ -154,7 +169,7 @@ def transcode(source_path, reply):
 
     from_stdin = source_path == FROM_STDIN
     try:
-        source = av.open(sys.stdin.buffer if from_stdin else source_path)
+        source = _source(source_path, from_stdin)
         stream = source.streams.audio[0]
         target = _target(source, stream, from_stdin)
     except Exception:
@@ -242,11 +257,9 @@ def _flac(audio, rate, layout, sample_format):
 
 
 def piece(source_path, start, seconds, reply):
-    import av
-
     from_stdin = source_path == FROM_STDIN
     try:
-        source = av.open(sys.stdin.buffer if from_stdin else source_path)
+        source = _source(source_path, from_stdin)
         stream = source.streams.audio[0]
     except Exception:
         logger.exception("PyAV could not open %s", 'the song' if from_stdin else os.path.basename(source_path))
@@ -320,6 +333,17 @@ def _feed(child, chunks):
             pass
 
 
+def _ended(child, read_all):
+    if read_all:
+        try:
+            return child.wait(timeout=EXIT_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+    if child.poll() is None:
+        child.kill()
+    return child.wait()
+
+
 def _relay(child, log_path, name):
     finished = False
     try:
@@ -327,9 +351,7 @@ def _relay(child, log_path, name):
             yield chunk
         finished = True
     finally:
-        if child.poll() is None:
-            child.kill()
-        code = child.wait()
+        code = _ended(child, finished)
         child.stdout.close()
         if finished and code != 0:
             logger.error("The FLAC conversion of %s failed (exit code %s); the page got a cut song. Child log: %s",
@@ -355,12 +377,13 @@ def _spawn(source, log_path, *extra):
 
 def cut_piece(source, start, seconds, log_path, name):
     child, header = _spawn(source, log_path, repr(float(start)), repr(float(seconds)))
+    body, read_all = b'', False
     try:
-        body = child.stdout.read() if header.get('status') == STATUS_PIECE else b''
+        if header.get('status') == STATUS_PIECE:
+            body = child.stdout.read()
+            read_all = True
     finally:
-        if child.poll() is None:
-            child.kill()
-        code = child.wait()
+        code = _ended(child, read_all)
         child.stdout.close()
     if header.get('status') != STATUS_PIECE or code != 0:
         logger.error("Could not cut %s from %.1f s for %.1f s (exit code %s). Child log: %s",
