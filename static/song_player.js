@@ -16,7 +16,10 @@
  * ticking one unticks the other, so a search plays whole songs, only demos or
  * only smart fade. They are read when a search runs. Every result list gets, right above
  * it, a bar with Play, Skip to the fade (shown only with Smart fade) and Stop, a
- * clock and a status line. A page calls, around its own rendering:
+ * clock and a status line. While a list plays, Play is Pause: it suspends the
+ * AudioContext, so every scheduled source and fade waits with its clock, and
+ * the timers (atTime) wait for that clock too; Play resumes it. A page calls,
+ * around its own rendering:
  *   rows = await AudioMusePlayer.arrange(list, rows, {seed, keepOrder}) before
  *     rendering: with Smart fade the rows come back in smart fade order with
  *     where each one starts and ends (keepOrder keeps a path or an album in its order);
@@ -178,6 +181,15 @@
         }
         if (audioCtx) audioCtx.resume().catch(() => {});
         return !!audioCtx;
+    }
+
+    function atTime(timers, time, action) {
+        const fire = () => {
+            const left = time - audioCtx.currentTime;
+            if (audioCtx.state === 'suspended' && left > 0.02) timers.push(setTimeout(fire, Math.max(250, left * 1000)));
+            else action();
+        };
+        timers.push(setTimeout(fire, Math.max(0, (time - audioCtx.currentTime) * 1000)));
     }
 
     function onGrid(seconds) {
@@ -492,7 +504,7 @@
                 console.error('The rest of the song did not load; it plays as far as it came.', error);
                 learnLength(voice.track, piece.end);
             });
-            voice.timers.push(setTimeout(join, Math.max(0, (joinAt - JOIN_LEAD_SECONDS - audioCtx.currentTime) * 1000)));
+            atTime(voice.timers, joinAt - JOIN_LEAD_SECONDS, join);
         }
 
         function startSource(track, when, offset, fadeIn, filter) {
@@ -576,6 +588,7 @@
             nowPlaying.textContent = '';
             skipBtn.disabled = true;
             stopBtn.disabled = true;
+            playBtn.textContent = 'Play';
         }
 
         async function loadTransition(index) {
@@ -676,9 +689,9 @@
                 index, track, node, fadeEnd, next: null, mix: null, pieces: null, ready: !hasNext, committed: false,
                 handoverAt: Infinity, timers: [], scheduled: []
             };
-            const after = (time, action) => state.timers.push(setTimeout(() => {
+            const after = (time, action) => atTime(state.timers, time, () => {
                 if (token === playToken && playCurrent === state) action();
-            }, Math.max(0, (time - audioCtx.currentTime) * 1000)));
+            });
             state.plan = () => {
                 if (token !== playToken || playCurrent !== state || !state.ready || state.committed) return;
                 state.timers.forEach(clearTimeout);
@@ -898,11 +911,17 @@
             }
             skipBtn.disabled = false;
             stopBtn.disabled = false;
+            playBtn.textContent = 'Pause';
             playTicker = setInterval(tick, 250);
             playSong(index);
         }
 
-        playBtn.addEventListener('click', () => startPlayback());
+        playBtn.addEventListener('click', () => {
+            if (stopBtn.disabled) return startPlayback();
+            const pause = playBtn.textContent === 'Pause';
+            (pause ? audioCtx.suspend() : audioCtx.resume()).catch(() => {});
+            playBtn.textContent = pause ? 'Play' : 'Pause';
+        });
         stopBtn.addEventListener('click', stopPlayback);
         skipBtn.addEventListener('click', () => skipToFade(playCurrent));
         list.addEventListener('click', event => {
