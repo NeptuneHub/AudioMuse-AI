@@ -209,7 +209,7 @@ def _assert_executable(plan, answer):
     for song, first, truth in ((current, answer['start'], lead), (upcoming, upcoming['start'], follow)):
         played = first + np.concatenate([[0.0], np.cumsum((np.array(song['speed'][1:]) + song['speed'][:-1]) / 2 * answer['step'])])
         assert np.abs(played - truth(points)).max() < 0.002
-        assert min(song['speed']) > 1.0 - mix.MAX_STRETCH - 0.01 and max(song['speed']) < 1.0 + mix.MAX_STRETCH + 0.01
+        assert 1200 * np.log2(max(song['speed']) / min(song['speed'])) <= mix.MAX_LOCK_CENTS + 1
     assert answer['start'] == pytest.approx(plan['mix_at'], abs=1e-4)
     assert upcoming['start'] == pytest.approx(plan['in_at'], abs=1e-4)
     assert upcoming['continue_from'] == pytest.approx(played[-1], abs=0.002) == pytest.approx(plan['resume_at'], abs=1e-3)
@@ -218,7 +218,7 @@ def _assert_executable(plan, answer):
 
 def test_a_beat_mix_and_a_crossfade_give_every_list_a_player_executes_in_order(tmp_path):
     song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0))
-    song_in = _write(tmp_path / 'b.wav', _click_audio(125, 40.0, first=0.2))
+    song_in = _write(tmp_path / 'b.wav', _click_audio(122, 40.0, first=0.2))
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     answer = levels.transition(song_out, song_in, plan)
     _assert_executable(plan, answer)
@@ -240,7 +240,7 @@ def test_each_band_is_fitted_to_the_two_songs_so_a_louder_next_bass_does_not_jum
     t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
     hum = np.sin(2 * np.pi * 60.0 * t).astype(np.float32)
     song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + 0.05 * hum)
-    song_in = _write(tmp_path / 'b.wav', _click_audio(125, 40.0, first=0.2) + 0.2 * hum)
+    song_in = _write(tmp_path / 'b.wav', _click_audio(122, 40.0, first=0.2) + 0.2 * hum)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     answer = levels.transition(song_out, song_in, plan)
     _assert_executable(plan, answer)

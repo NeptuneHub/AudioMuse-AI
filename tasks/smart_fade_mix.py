@@ -18,15 +18,18 @@ Main Features:
   libsndfile cannot open (AAC .m4a) goes through the analysis PyAV loader.
 * Beats come from librosa's tracker, tempo and grid from a line fitted through
   the beat times. The next song takes the first song's tempo in the mix
-  (stretch, half or double time too, none past MAX_STRETCH); tempos_match is
-  that rule, shared with the smart fade order.
+  (stretch, half or double time too, none past MAX_LOCK_CENTS); tempos_match is
+  that rule, shared with the smart fade order, so neighbours are picked to mix.
 * The mix lasts at least MIX_SECONDS in whole BEAT_STEP steps, ending on the
   beat nearest the fade point; without room it loses steps down to
   MIN_MIX_SECONDS. No steady beat or no room raises ValueError.
 * The next song enters on a section start: the beat nearest the highest peak,
   within PHRASE_REACH_BEATS, of a Foote novelty curve (PHRASE_KERNEL_BEATS
   checkerboard on beat-synchronous chroma, MFCC and loudness).
-* A beat lock needs tempos_match, onsets lining up within MATCH_MS at
+* A beat lock needs tempos_match: the two songs within MAX_LOCK_CENTS of each
+  other in pitch (the page matches tempo by speed, which moves the pitch: a 3%
+  gap is 50 cents, more puts two songs in one key a semitone apart), onsets
+  lining up within MATCH_MS at
   MATCH_SHARE, and on both parts a committee of beat sequences (full, bass
   and treble band onsets, plus the pulse curve) agreeing by
   MIN_AGREEMENT_BITS of mean information gain (ISMIR 2012); about half of a
@@ -51,7 +54,7 @@ MIX_SECONDS = 15.0
 MIN_MIX_SECONDS = 10.0
 BEAT_STEP = 8
 LOOK_SECONDS = 26.0
-MAX_STRETCH = 0.08
+MAX_LOCK_CENTS = 50.0
 OCTAVES = (1.0, 0.5, 2.0)
 RISE_DB = 6.0
 PHRASE_LEAD_SECONDS = 8.0
@@ -83,7 +86,7 @@ FLOOR_GAIN_DB = 3.0
 
 def tempos_match(tempo_out, tempo_in):
     ratio = np.asarray(tempo_out, dtype=np.float64) / np.asarray(tempo_in, dtype=np.float64)
-    return np.any([np.abs(ratio * octave - 1.0) <= MAX_STRETCH for octave in OCTAVES], axis=0)
+    return np.any([np.abs(1200.0 * np.log2(ratio * octave)) <= MAX_LOCK_CENTS for octave in OCTAVES], axis=0)
 
 
 def _load(path, rate, start=0.0, seconds=None):
@@ -248,7 +251,7 @@ def _agreement(audio):
 def _stretch_rate(tempo_out, tempo_in):
     for octave in OCTAVES:
         rate = tempo_out * octave / tempo_in
-        if abs(rate - 1.0) <= MAX_STRETCH:
+        if abs(1200.0 * math.log2(rate)) <= MAX_LOCK_CENTS:
             return rate
     return 1.0
 

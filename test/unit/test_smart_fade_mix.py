@@ -9,8 +9,8 @@
 """Beat-matched smart fade transition planned from two real audio files.
 
 Main Features:
-* Two click tracks at 120 and 125 BPM give a plan only (no audio): the measured
-  tempos, a stretch of 120/125, a mix of the fewest BEAT_STEP beats of the
+* Two click tracks at 120 and 122 BPM give a plan only (no audio): the measured
+  tempos, a stretch of 120/122, a mix of the fewest BEAT_STEP beats of the
   first song that last MIX_SECONDS, on its beat grid and ending at its fade
   point, the second song entering on one of its own beats and resuming
   exactly where the stretched part ends; style 'blend', swap_at on the middle
@@ -20,10 +20,12 @@ Main Features:
   never more than PHRASE_REACH_BEATS away; RISE_DB louder, it rises in
 * Tempos too far apart (120 and 150 BPM) or a beat grid 150 ms off fade
   unstretched over MIN_MIX_SECONDS of whole beats, swap_at in the middle;
-  tempos_match is the same rule on numbers and arrays; the onset check takes
+  tempos_match (50 cents, half or double time) is one rule on numbers and arrays; the onset check takes
   clicks on the beat (stretched too) and refuses them 100 ms off
 * A tempo between the tracker's frames is measured to a fraction of a BPM;
   songs without a beat raise ValueError
+* Tempos over MAX_LOCK_CENTS apart (120 and 125 BPM, 70 cents) crossfade even
+  when their beats lock; a double-time song within it (244 BPM) still mixes
 * Beat agreement (information gain) is full for the same beats, high for half
   of them, low for random ones; a click track's committee agrees, noise's
   does not; under MIN_AGREEMENT_BITS the plan is the fade
@@ -69,7 +71,7 @@ def _assert_mix_length(plan):
 
 def test_two_click_tracks_mix_on_the_beat_at_the_first_tempo(tmp_path):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
-    song_in = _clicks(tmp_path / 'b.wav', 125, 40.0, first=0.2)
+    song_in = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     assert sorted(plan) == [
         'beat_seconds', 'confidence', 'in_at', 'mix_at', 'mix_seconds', 'resume_at', 'stretch', 'style', 'swap_at', 'tempo_from', 'tempo_to',
@@ -79,12 +81,12 @@ def test_two_click_tracks_mix_on_the_beat_at_the_first_tempo(tmp_path):
     assert plan['beat_seconds'] == pytest.approx(0.5, abs=0.01)
     _assert_mix_length(plan)
     assert plan['tempo_from'] == pytest.approx(120, abs=2)
-    assert plan['tempo_to'] == pytest.approx(125, abs=2)
-    assert plan['stretch'] == pytest.approx(120 / 125, abs=0.01)
+    assert plan['tempo_to'] == pytest.approx(122, abs=2)
+    assert plan['stretch'] == pytest.approx(120 / 122, abs=0.01)
     assert abs(plan['mix_at'] * 2 - round(plan['mix_at'] * 2)) <= 0.08
     assert plan['mix_at'] + plan['mix_seconds'] == pytest.approx(30.0, abs=0.3)
-    beats_in = (plan['in_at'] - 0.2) * 125 / 60
-    assert plan['in_at'] >= 5.0 and abs(beats_in - round(beats_in)) <= 0.08
+    beats_in = (plan['in_at'] - 0.2) * 122 / 60
+    assert abs(plan['in_at'] - 5.0) <= mix.PHRASE_REACH_BEATS * 60 / 122 + 0.01 and abs(beats_in - round(beats_in)) <= 0.08
     assert plan['resume_at'] - plan['in_at'] == pytest.approx(plan['mix_seconds'] * plan['stretch'], abs=0.002)
 
 
@@ -128,10 +130,10 @@ def test_the_next_song_enters_on_a_nearby_section_start(tmp_path):
 
 def test_a_clearly_louder_next_song_rises_in(tmp_path):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0, level=0.1)
-    song_in = _clicks(tmp_path / 'b.wav', 125, 40.0, first=0.2)
+    song_in = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     assert plan['style'] == 'rise'
-    assert plan['stretch'] == pytest.approx(120 / 125, abs=0.01)
+    assert plan['stretch'] == pytest.approx(120 / 122, abs=0.01)
     _assert_mix_length(plan)
 
 
@@ -182,11 +184,11 @@ def test_the_onset_check_accepts_beats_on_the_beat_and_refuses_them_100_ms_off()
     assert mix._in_step(song_out, 10.0, stretched, 9.6, 8.0, 0.96, 0.5)
 
 
-def test_tempos_match_allows_the_stretch_limit_and_half_or_double_time():
-    assert mix.tempos_match(120.0, 125.0)
-    assert not mix.tempos_match(120.0, 150.0)
-    assert mix.tempos_match(120.0, 61.0) and mix.tempos_match(120.0, 246.0)
-    assert mix.tempos_match(np.array([[120.0], [150.0]]), np.array([[125.0, 150.0]])).tolist() == [[True, False], [False, True]]
+def test_tempos_match_allows_50_cents_and_half_or_double_time():
+    assert mix.tempos_match(120.0, 122.0) and mix.tempos_match(120.0, 118.0)
+    assert not mix.tempos_match(120.0, 125.0) and not mix.tempos_match(120.0, 150.0)
+    assert mix.tempos_match(120.0, 60.5) and mix.tempos_match(120.0, 243.0)
+    assert mix.tempos_match(np.array([[120.0], [150.0]]), np.array([[122.0, 150.0]])).tolist() == [[True, False], [False, True]]
 
 
 def test_a_tempo_between_the_tracker_frames_is_measured_finely(tmp_path):
@@ -218,12 +220,23 @@ def test_beat_agreement_is_full_for_the_same_beats_and_low_for_random_ones():
 
 def test_only_a_confirmed_beat_lock_mixes_everything_else_is_the_crossfade_plan(tmp_path, monkeypatch):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
-    near = _clicks(tmp_path / 'c.wav', 125, 40.0, first=0.2)
+    near = _clicks(tmp_path / 'c.wav', 122, 40.0, first=0.2)
     assert mix.plan_transition(song_out, 30.0, near, 5.0)['style'] == 'blend'
     monkeypatch.setattr(mix, '_agreement', lambda audio: mix.MIN_AGREEMENT_BITS - 0.1)
     plan = mix.plan_transition(song_out, 30.0, near, 5.0)
     _assert_short_fade(plan)
     assert plan['confidence'] != 'high'
+
+
+def test_tempos_more_than_50_cents_apart_crossfade_even_when_their_beats_lock(tmp_path):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    apart = _clicks(tmp_path / 'b.wav', 125, 40.0, first=0.2)
+    assert not mix.tempos_match(120.0, 125.0) and 1200 * np.log2(125 / 120) > mix.MAX_LOCK_CENTS
+    plan = mix.plan_transition(song_out, 30.0, apart, 5.0)
+    _assert_short_fade(plan)
+    assert plan['confidence'] != 'high'
+    double = mix.plan_transition(song_out, 30.0, _clicks(tmp_path / 'c.wav', 244, 40.0, first=0.2), 5.0)
+    assert double['style'] == 'blend' and double['stretch'] == pytest.approx(240 / 244, abs=0.01)
 
 
 def test_a_full_scale_997_hz_tone_measures_minus_3_lufs(tmp_path):

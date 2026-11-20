@@ -3060,8 +3060,9 @@ confirmed beat lock, when the server is sure of the beats of both songs.
 
 1. **Beat-matched mix with a bass swap**
    - Label: `Beat-matched mix with a bass swap into <next song> (tempo gliding from X to Y BPM)`
-   - When: a confirmed beat lock: the tempos are within 8% (or half or double
-     time), the two songs' drum hits line up within 30 ms, and on both songs
+   - When: a confirmed beat lock: the tempos are within 2.9% (or half or
+     double time), so the two songs end up at most 50 cents apart in pitch,
+     the two songs' drum hits line up within 30 ms, and on both songs
      several beat trackers agree on where the beats are (section 19.3).
    - How it sounds: both songs play together for at least 15 seconds, in whole
      steps of 8 beats (15 to 21 seconds), shortened 8 beats at a time down to
@@ -3244,8 +3245,9 @@ the end of its file and the next song starts right after.
    fade-out is not silence to the fingerprint, which brings every half second
    to its own level, so it can still be picked. The fingerprint knows nothing
    of tempo, so the stored tempo breaks near ties: a next song whose tempo
-   cannot be stretched to the current one (more than 8% apart, half or double
-   time allowed) loses 0.5 of cosine. That weight is set so about half of
+   cannot be beat-matched in tune with the current one (more than 50 cents,
+   2.9%, apart, half or double time allowed; it was 8% until the page matched
+   tempo by speed, which moves the pitch) loses 0.5 of cosine. That weight is set so about half of
    the hand-overs of a 50-song similar list can be beat-matched: on three such
    lists (pop, Italian rock, synthwave) neighbours with compatible stored
    tempos went from 64-70% at 0.1 to 96-100% at 0.5, for 10 to 14% less mean
@@ -3295,9 +3297,9 @@ the end of its file and the next song starts right after.
    by up to 2%, and on real stretched pairs that left the beats drifting a
    median 110 ms apart over the mix, 35 ms with the fit). Fewer than 4 beats
    in either region raise `ValueError`. The stretch is the ending song's tempo
-   over the next one's, half or double time allowed; past 8% the next song is
-   not stretched (`tempos_match`, the same rule the order uses on the stored
-   tempo). The next song enters on its first beat after its fade-in time, or
+   over the next one's, half or double time allowed; past 50 cents (2.9%) the
+   next song is not stretched (`tempos_match`, the same rule the order uses on
+   the stored tempo). The next song enters on its first beat after its fade-in time, or
    on a section start within 8 beats of it: a novelty curve (an 8-beat
    checkerboard kernel on the beat-synchronous chroma, MFCC and loudness
    self-similarity) is computed over the region and the entry moves to the
@@ -3446,8 +3448,14 @@ the end of its file and the next song starts right after.
    - **Speed, no time-stretch** (sent as each song's `speed`, the slope of
      its time map). The page plays each song's own audio at that playback
      rate, as a DJ deck without key lock does: the pitch follows the tempo
-     glide (at most the 8% stretch limit, usually 1 to 4%, under a semitone,
-     for the 15 to 21 seconds of the mix), and nothing is cut or re-joined.
+     glide, and nothing is cut or re-joined. So the two songs sit apart in
+     pitch by their whole tempo ratio for the 15 to 21 seconds of the mix (a
+     6% gap is about a semitone: two songs in one key clash like a minor
+     second). A beat mix therefore needs the tempos within `MAX_LOCK_CENTS`
+     (50 cents, 2.9%); on an 11-transition pop list the mixes at 90 to 117
+     cents were the ones that sounded wrong, those at 4 and 19 cents clean.
+     `tempos_match`, which also steers the smart fade order, is that 50-cent
+     rule, so the order picks neighbours that can mix in tune.
      The speeds, joined by straight lines as Web Audio plays them, land
      within 2 ms of the time map; after the mix the next song goes on from a
      fresh source at `continue_from`, blended in over 23 ms, so the
@@ -3674,7 +3682,7 @@ the end of its file and the next song starts right after.
   the option is not shown and the two endpoints answer 503.
 - Nothing else is configurable: the lengths and limits are constants of
   `tasks/smart_fade_mix.py` (`MIX_SECONDS` 15, `MIN_MIX_SECONDS` 10,
-  `MAX_STRETCH` 0.08, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.6,
+  `MAX_LOCK_CENTS` 50, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.6,
   `EDGE_SECONDS` 30, `FULL_LU` 0, `DROP_LU` 2, `MIN_AGREEMENT_BITS` 1.0,
   `FLOOR_GAIN_DB` 3), of
   `tasks/recording_search_manager.py` (`_FADE_TEMPO_PENALTY` 0.5,
