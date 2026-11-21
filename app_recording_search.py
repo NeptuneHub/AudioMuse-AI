@@ -672,7 +672,8 @@ def recording_search_transition_api():
           volume: the fader, the number to multiply the song by at each point,
           on top of gain: 0 = silent, 1 = full; from goes from 1 to 0, to from 0
           to 1. A beat mix normally fades the ends while three filters hand
-          the song over; competing vocals use sustained equal-power faders.
+          the song over; competing vocals use sustained crossfade faders
+          with a gentle additional outgoing taper later in the mix.
           high_db, mid_db and bass_db: how much to turn down the highs (high
           shelf), the mids (peaking filter) and the bass (low shelf) at each
           point, in dB: 0 = unchanged, -40 = almost gone. A crossfade may also

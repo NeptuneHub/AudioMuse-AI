@@ -328,10 +328,13 @@ def test_competing_vocals_keep_a_sustained_crossfade_and_gradual_midrange_exchan
     old, new = np.array(answer['from']['volume']), np.array(answer['to']['volume'])
     assert np.interp(2.0, points, new / np.maximum(old, 1e-9)) < 0.4
     assert np.sum((old > 0.25) & (new > 0.25)) * answer['step'] >= 6.0
-    assert np.allclose(np.arctan2(new, old), np.pi / 2 * points / answer['duration'], atol=0.001)
+    phase = np.arctan2(new, old)
+    original = np.pi / 2 * points / answer['duration']
+    assert np.allclose(phase[points <= 0.4 * answer['duration']], original[points <= 0.4 * answer['duration']], atol=0.001)
+    assert np.max(phase - original) < 0.13
     difference = np.array(answer['to']['mid_db']) - np.array(answer['from']['mid_db'])
-    assert difference[0] == -6.0 and difference[-1] == 6.0
-    assert np.max(np.abs(np.diff(difference))) < 0.5
+    assert difference[0] == -6.0 and difference[-1] == 12.0
+    assert np.max(np.abs(np.diff(difference))) < 0.65
     assert answer['info']['vocal_overlap'] == 1.0
 
 
@@ -341,3 +344,34 @@ def test_a_pair_without_competing_vocals_keeps_the_original_mixer():
     result = levels.vocal_shapes({'voice': {'clash': False}}, 16.0, points, shapes)
     assert result is shapes
     assert np.min(result['eq']['to_mid_db']) == levels.MID_CUT_DB
+
+
+@pytest.mark.parametrize('seconds', [10.0, 14.0])
+@pytest.mark.parametrize('base_db', [6.0, 18.0])
+def test_the_old_vocal_does_not_linger_under_the_new_singer_late_in_the_fade(monkeypatch, seconds, base_db):
+    monkeypatch.setattr(levels.config, 'SMART_FADE_VOCAL_DUCK_DB', base_db)
+    points = np.linspace(0.0, seconds, 141)
+    plan = {'voice': {'clash': True, 'overlap': 1.0}}
+    base = levels.mix_shapes('fade', seconds, seconds / 2, 0.5, points)
+    incoming = base['to_volume'].copy()
+    shapes = levels.vocal_shapes(plan, seconds, points, base)
+    old, new = shapes['from_volume'], shapes['to_volume']
+    eq = shapes['eq']
+    late = int(0.75 * (len(points) - 1))
+    relative = 20 * np.log10(old[late] / new[late]) + eq['from_mid_db'][late] - eq['to_mid_db'][late]
+    assert relative <= -19.0
+    assert np.interp(0.2 * seconds, points, eq['from_mid_db']) > -1.0
+    assert np.array_equal(new, incoming)
+    assert np.min(old ** 2 + new ** 2) > 0.9
+    assert np.sum((old > 0.25) & (new > 0.25)) * seconds / (len(points) - 1) > 0.58 * seconds
+    assert np.max(np.abs(np.diff(eq['from_mid_db']) / np.diff(points))) < 6.0
+
+
+def test_the_late_vocal_taper_can_be_disabled_without_changing_the_incoming_fade(monkeypatch):
+    monkeypatch.setattr(levels.config, 'SMART_FADE_VOCAL_TAIL_DB', 0.0)
+    points = np.linspace(0.0, 10.0, 101)
+    shapes = levels.mix_shapes('fade', 10.0, 5.0, 0.5, points)
+    old, new = shapes['from_volume'].copy(), shapes['to_volume'].copy()
+    result = levels.vocal_shapes({'voice': {'clash': True, 'overlap': 1.0}}, 10.0, points, shapes)
+    assert np.array_equal(result['from_volume'], old) and np.array_equal(result['to_volume'], new)
+    assert result['eq']['from_mid_db'][-1] == -6.0

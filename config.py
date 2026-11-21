@@ -1379,6 +1379,8 @@ SMART_FADE_ENERGY_DROP_DB = float(os.environ.get("SMART_FADE_ENERGY_DROP_DB", "3
 SMART_FADE_ENTRY_LIMIT_SECONDS = float(os.environ.get("SMART_FADE_ENTRY_LIMIT_SECONDS", "12"))
 SMART_FADE_VOCAL_MIX_SECONDS = float(os.environ.get("SMART_FADE_VOCAL_MIX_SECONDS", "14"))
 SMART_FADE_VOCAL_DUCK_DB = float(os.environ.get("SMART_FADE_VOCAL_DUCK_DB", "6"))
+# Extra outgoing mids reduction late in a vocal clash; highs and fader use half.
+SMART_FADE_VOCAL_TAIL_DB = float(os.environ.get("SMART_FADE_VOCAL_TAIL_DB", "6"))
 
 # --- Song demo ---
 # Seconds of each song the song player plays when Demo is ticked, around its chorus

@@ -39,9 +39,9 @@ Main Features:
   Shared peak trimming preserves the relative fader and EQ exchange.
 * crossfade_plan: the default crossfade at the two fade points, for a pair
   without a steady beat.
-* vocal_shapes: competing voices use sustained equal-power faders and a
-  gentle exchange of mids/highs across the central part of the transition.
-  Bass swaps and tempo locks remain; neither source gets a delayed start.
+* vocal_shapes: competing voices keep a sustained crossfade. An additional
+  late outgoing mid/high and fader taper reduces the old singer's tail.
+  Bass swaps, tempo locks and the incoming fade remain intact.
 """
 
 import math
@@ -223,9 +223,11 @@ def vocal_shapes(plan, seconds, points, shapes):
     exchange = ease(points, 0.3 * seconds, 0.7 * seconds)
     competition = min(1.0, 2.0 * plan['voice']['overlap'])
     cut = np.clip(config.SMART_FADE_VOCAL_DUCK_DB * max(1.0, seconds / mix.MIN_MIX_SECONDS) * competition, 0.0, 9.0)
+    tail = np.clip(config.SMART_FADE_VOCAL_TAIL_DB, 0.0, 6.0) * competition * ease(points, 0.4 * seconds, 0.85 * seconds)
     for band, amount in (('mid', cut), ('high', cut / 2.0)):
-        shapes['eq'][f'from_{band}_db'] = -amount * exchange
+        shapes['eq'][f'from_{band}_db'] = -amount * exchange - (tail if band == 'mid' else tail / 2.0)
         shapes['eq'][f'to_{band}_db'] = -amount * (1.0 - exchange)
+    shapes['from_volume'] *= 10.0 ** (-tail / 40.0)
     return shapes
 
 

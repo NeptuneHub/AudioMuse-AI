@@ -111,3 +111,8 @@ def test_smart_fade_transition_has_sustained_overlap_and_bounded_trimming(stack,
         for key in ('volume', 'speed', 'high_db', 'mid_db', 'bass_db'):
             assert len(answer[side][key]) >= 2 and np.isfinite(answer[side][key]).all()
     assert abs((len(answer['from']['volume']) - 1) * answer['step'] - answer['duration']) < 0.001
+    if answer['info']['vocal_overlap'] > 0.5:
+        late = round(0.75 * (len(answer['from']['volume']) - 1))
+        relative = 20 * np.log10(answer['from']['volume'][late] / answer['to']['volume'][late])
+        relative += answer['from']['mid_db'][late] - answer['to']['mid_db'][late]
+        assert relative < -18.5
