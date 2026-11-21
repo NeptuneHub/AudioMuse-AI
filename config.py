@@ -1371,6 +1371,15 @@ RECORDING_SEARCH_TARGET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_TARGET
 # process after the last recording search before they are unloaded to free RAM.
 RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_DURATION", "300"))
 
+# Keep a small audible tail; energy scoring moves cues away from natural fade-outs.
+SMART_FADE_END_MARGIN_SECONDS = float(os.environ.get("SMART_FADE_END_MARGIN_SECONDS", "2"))
+SMART_FADE_SEARCH_SECONDS = float(os.environ.get("SMART_FADE_SEARCH_SECONDS", "32"))
+SMART_FADE_ENERGY_DROP_DB = float(os.environ.get("SMART_FADE_ENERGY_DROP_DB", "3"))
+# Bound cuts into the audible opening and long vocal overlaps, retaining a sustained blend.
+SMART_FADE_ENTRY_LIMIT_SECONDS = float(os.environ.get("SMART_FADE_ENTRY_LIMIT_SECONDS", "12"))
+SMART_FADE_VOCAL_MIX_SECONDS = float(os.environ.get("SMART_FADE_VOCAL_MIX_SECONDS", "14"))
+SMART_FADE_VOCAL_DUCK_DB = float(os.environ.get("SMART_FADE_VOCAL_DUCK_DB", "6"))
+
 # --- Song demo ---
 # Seconds of each song the song player plays when Demo is ticked, around its chorus
 # or drop (also POST /api/demo's length when the request sends none). At least 5; a

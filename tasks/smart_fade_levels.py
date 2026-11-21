@@ -32,25 +32,23 @@ Main Features:
   bass. A crossfade keeps equal-power faders.
 * swap_point: the 4-beat bar nearest the middle beat where the next
   song's bass plays (SWAP_PRESENT of its loudest bar) in SWAP_RANGE.
-* transition plays the mix in advance at RATE (gains, time maps, filters,
-  faders); toward_db is a correction toward a target, smoothed over
-  SHAPE_SMOOTH_SECONDS, none at the two ends. band_shifts: per band (bass,
-  MID_BAND_HZ, highs) the target blends the two songs' own levels in that
-  band at each point, from the first's to the next's, so a band neither
-  jumps nor doubles when it changes hands and each song keeps its own
-  dynamics; added to both songs' band lists, up to BAND_LIMIT_DB. Then
-  fader_scale: the K-weighted whole mix follows the line from the first
-  song's level over the ANCHOR_SECONDS before the mix to the next song's
-  after it (SHAPE_LIMIT_DB), and the faders drop only where the sum would
-  peak above the louder song (MIX_HEADROOM).
+* transition simulates the gain, speed, filters and faders at RATE.
+  band_shifts follows each song's own spectral balance, with shared band
+  corrections up to BAND_LIMIT_DB. fader_scale smooths K-weighted energy
+  between the ANCHOR_SECONDS before and after the mix, up to SHAPE_LIMIT_DB.
+  Shared peak trimming preserves the relative fader and EQ exchange.
 * crossfade_plan: the default crossfade at the two fade points, for a pair
   without a steady beat.
+* vocal_shapes: competing voices use sustained equal-power faders and a
+  gentle exchange of mids/highs across the central part of the transition.
+  Bass swaps and tempo locks remain; neither source gets a delayed start.
 """
 
 import math
 
 import numpy as np
 
+import config
 from tasks import smart_fade_mix as mix
 
 TARGET_LUFS = -14.0
@@ -210,6 +208,25 @@ def mix_shapes(style, seconds, swap, beat, times):
             'to_highpass_hz': RISE_FROM_HZ * (RISE_TO_HZ / RISE_FROM_HZ) ** ease(times, lead_in, swap + beat) if rise else None,
         },
     }
+
+
+def vocal_shapes(plan, seconds, points, shapes):
+    """Reduce vocal competition while retaining an audible musical overlap."""
+    if not (plan.get('voice') or {}).get('clash'):
+        return shapes
+    share = np.asarray(points, dtype=np.float64) / seconds
+    shapes['from_volume'] = np.cos(np.pi / 2 * share)
+    shapes['to_volume'] = np.sin(np.pi / 2 * share)
+    if shapes['eq'] is None:
+        shapes['eq'] = {f'{side}_{band}_db': np.zeros(points.size) for side in ('from', 'to') for band in BANDS}
+        shapes['eq']['to_highpass_hz'] = None
+    exchange = ease(points, 0.3 * seconds, 0.7 * seconds)
+    competition = min(1.0, 2.0 * plan['voice']['overlap'])
+    cut = np.clip(config.SMART_FADE_VOCAL_DUCK_DB * max(1.0, seconds / mix.MIN_MIX_SECONDS) * competition, 0.0, 9.0)
+    for band, amount in (('mid', cut), ('high', cut / 2.0)):
+        shapes['eq'][f'from_{band}_db'] = -amount * exchange
+        shapes['eq'][f'to_{band}_db'] = -amount * (1.0 - exchange)
+    return shapes
 
 
 def _shelf(rate, hz, db, side):
@@ -414,7 +431,7 @@ def transition(path_out, path_in, plan):
     if beat_times is not None:
         swap = swap_point(beat_times, points, _low_energy(raw_b, zero, points))
         beat = float(np.median(np.diff(beat_times)))
-    shapes = mix_shapes(plan['style'], seconds, swap, beat, points)
+    shapes = vocal_shapes(plan, seconds, points, mix_shapes(plan['style'], seconds, swap, beat, points))
     eq = shapes['eq']
     fall, rise = shapes['from_volume'], shapes['to_volume']
     sa, sb = raw_a * gain_a, raw_b * gain_b
@@ -445,7 +462,7 @@ def transition(path_out, path_in, plan):
     def curve(key):
         return flat if eq is None or eq[key] is None else _rounded(eq[key], 2)
 
-    return {
+    answer = {
         'type': TYPES[plan['style']],
         'start': round(plan['mix_at'], 4),
         'duration': round(seconds, 4),
@@ -479,6 +496,10 @@ def transition(path_out, path_in, plan):
             'loudness_to': round(songs[1]['loudness'], 2),
         },
     }
+    if 'voice' in plan:
+        answer['info']['vocal_overlap'] = plan['voice']['overlap']
+        answer['info']['end_margin_seconds'] = plan['voice']['end_margin']
+    return answer
 
 
 def crossfade_plan(path_out, out_seconds, path_in, in_seconds):

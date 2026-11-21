@@ -292,3 +292,52 @@ def test_a_pair_without_a_steady_beat_still_gets_the_default_crossfade(tmp_path)
     assert answer['to']['gain'] / answer['from']['gain'] == pytest.approx(10.0 ** (9.54 / 20.0), rel=0.05)
     with pytest.raises(ValueError):
         levels.crossfade_plan(song_out, 30.0, song_in, 39.9)
+
+
+@pytest.mark.parametrize('seconds', [0.2, 2.0])
+def test_short_audio_can_still_use_executable_positive_crossfades(tmp_path, seconds):
+    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 5.0))
+    song_in = _write(tmp_path / 'b.wav', _click_audio(122, 5.0))
+    plan = {'mix_at': 5.0 - seconds, 'mix_seconds': seconds, 'in_at': 0.0, 'resume_at': seconds,
+            'swap_at': 5.0 - seconds / 2, 'style': 'fade', 'beat_seconds': None, 'stretch': 1.0,
+            'tempo_from': 120.0, 'tempo_to': 122.0, 'confidence': 'medium'}
+    answer = levels.transition(song_out, song_in, plan)
+    assert answer['duration'] == seconds and answer['to']['start'] == 0.0
+    assert answer['start'] + answer['duration'] == 5.0
+    assert answer['to']['continue_from'] == seconds
+    assert answer['from']['volume'][0] == answer['to']['volume'][-1] == 1.0
+    assert answer['from']['volume'][-1] == answer['to']['volume'][0] == 0.0
+    for side in ('from', 'to'):
+        assert all(np.isfinite(answer[side][key]).all() for key in ('speed', 'volume', 'high_db', 'mid_db', 'bass_db'))
+    _assert_executable(plan, answer)
+
+
+@pytest.mark.parametrize('style', ['fade', 'blend', 'rise'])
+def test_competing_vocals_keep_a_sustained_crossfade_and_gradual_midrange_exchange(tmp_path, style):
+    out_path = _write(tmp_path / 'out.wav', _click_audio(120, 20.0))
+    in_path = _write(tmp_path / 'in.wav', _click_audio(122, 20.0))
+    plan = {'mix_at': 0.0, 'mix_seconds': 10.0, 'in_at': 2.0, 'resume_at': 12.0,
+            'swap_at': 5.0, 'style': style, 'beat_seconds': 0.5, 'stretch': 1.0,
+            'tempo_from': 120.0, 'tempo_to': 120.0, 'confidence': 'medium',
+            'voice': {'clash': True, 'overlap': 1.0, 'end_margin': 10.0}}
+    answer = levels.transition(out_path, in_path, plan)
+    assert answer['to']['start'] == 2.0 and 'delay' not in answer['to']
+    assert answer['to']['continue_from'] == 12.0
+    assert set(answer['to']['speed']) == {1.0}
+    points = np.linspace(0.0, answer['duration'], len(answer['to']['volume']))
+    old, new = np.array(answer['from']['volume']), np.array(answer['to']['volume'])
+    assert np.interp(2.0, points, new / np.maximum(old, 1e-9)) < 0.4
+    assert np.sum((old > 0.25) & (new > 0.25)) * answer['step'] >= 6.0
+    assert np.allclose(np.arctan2(new, old), np.pi / 2 * points / answer['duration'], atol=0.001)
+    difference = np.array(answer['to']['mid_db']) - np.array(answer['from']['mid_db'])
+    assert difference[0] == -6.0 and difference[-1] == 6.0
+    assert np.max(np.abs(np.diff(difference))) < 0.5
+    assert answer['info']['vocal_overlap'] == 1.0
+
+
+def test_a_pair_without_competing_vocals_keeps_the_original_mixer():
+    points = np.linspace(0.0, 16.0, 161)
+    shapes = levels.mix_shapes('blend', 16.0, 8.0, 0.5, points)
+    result = levels.vocal_shapes({'voice': {'clash': False}}, 16.0, points, shapes)
+    assert result is shapes
+    assert np.min(result['eq']['to_mid_db']) == levels.MID_CUT_DB

@@ -92,3 +92,22 @@ def test_warmup_reports_models(stack, api, analyzed_library):
     assert body['loaded'] is True, body
     assert body['models']['neural'] is True, body
     assert body['models']['encoder'] is True, body
+
+
+def test_smart_fade_transition_has_sustained_overlap_and_bounded_trimming(stack, api, library, analyzed_library):
+    ids = [library.pid('A02'), library.pid('A03')]
+    ordered = api.json('POST', '/api/recording_search/smart_fade', json={'item_ids': ids, 'keep_order': True})
+    rows = {row['item_id']: row for row in ordered['results']}
+    answer = api.json('GET', '/api/recording_search/transition', params={
+        'from_id': ids[0], 'to_id': ids[1], 'out': rows[ids[0]]['fade_out_seconds'],
+        'in': rows[ids[1]]['fade_in_seconds'],
+    }, timeout=300)
+    assert answer['duration'] > 0.0 and answer['to']['start'] >= 0.0
+    assert 'delay' not in answer['to']
+    assert answer['to']['start'] <= 12.0
+    assert answer['info']['end_margin_seconds'] >= 1.9
+    assert_no_fp_ids(answer)
+    for side in ('from', 'to'):
+        for key in ('volume', 'speed', 'high_db', 'mid_db', 'bass_db'):
+            assert len(answer[side][key]) >= 2 and np.isfinite(answer[side][key]).all()
+    assert abs((len(answer['from']['volume']) - 1) * answer['step'] - answer['duration']) < 0.001

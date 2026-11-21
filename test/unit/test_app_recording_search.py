@@ -461,7 +461,7 @@ def test_the_player_mixes_with_the_filter_and_fader_curves_the_api_gives():
     assert "const blend = startPieceVoice(state.next, state.pieces.to, state.handoverAt, mix.to.start, mix.to.highpass_hz ? 'highpass' : 'lowshelf');" in mix
     assert 'follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
     assert 'const outgoingSource = switchToPiece(outgoing, state.pieces.from, state.handoverAt);' in mix
-    fallback = source[source.index('const span = crossfadeSeconds();'):]
+    fallback = source[source.index('const span = Math.min(crossfadeSeconds(),'):]
     fallback = fallback[:fallback.index('state.scheduled = [entry];')]
     assert 'state.node.gain.gain.setValueCurveAtTime(FADE_OUT, state.handoverAt, span);' in fallback
     assert 'const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading ? span : 0);' in fallback
@@ -516,13 +516,14 @@ def test_a_plan_without_a_beat_lock_plays_the_labelled_default_crossfade_on_its_
     mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
     assert 'outgoing.air.frequency' not in mix
     assert "const plain = mix.type === 'crossfade';" in mix
-    assert "const kind = plain ? 'Default crossfade' : `Beat-matched ${mix.type === 'beat_rise' ? 'rise' : 'mix with a bass swap'}`;" in source
+    assert "const kind = plain ? 'Default crossfade'" in source
     assert "const tempos = !tempo.tempo_from ? '' : plain ? ` (${tempo.tempo_from} and ${tempo.tempo_to} BPM)`" in source
     assert "if (plan && plan.type === 'beat_mix') return { kind: 'blend'," in source and "if (plan && plan.type === 'beat_rise') return { kind: 'rise'," in source
     assert "if (!tempo.tempo_from) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };" in source
     assert 'no transition plan' not in source and "'plain'" not in source
-    fallback = source[source.index('const span = crossfadeSeconds();'):]
-    assert 'if (fading && playMode.beatMatch) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title}`; });' in fallback
+    fallback = source[source.index('const span = Math.min(crossfadeSeconds(),'):]
+    assert 'const fading = fadeEnd !== null || playMode.beatMatch;' in source
+    assert 'stopVoice(state.node, state.handoverAt + span);' in fallback
     assert 'handsOver' not in source and 'handover_at' not in source and 'Natural hand-over' not in source
 
 
@@ -744,6 +745,7 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     import tasks.commons
     import tasks.smart_fade_levels
     import tasks.smart_fade_mix
+    import tasks.smart_fade_voice
 
     seen = _fake_media(monkeypatch, tmp_path, b'audio')
     monkeypatch.setattr(tasks.commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song'} for i in ids if i in ('fp_42', 'fp_43')})
@@ -764,9 +766,15 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
         calls.append(('answer', planned.get('beatless', False)))
         return answer
 
+    def check_voice(path_out, path_in, planned):
+        assert os.path.isfile(path_out) and os.path.isfile(path_in)
+        calls.append(('voice',))
+        return planned
+
     monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', make_plan)
     monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', make_crossfade)
     monkeypatch.setattr(tasks.smart_fade_levels, 'transition', make_answer)
+    monkeypatch.setattr(tasks.smart_fade_voice, 'clear_voice', check_voice)
     url = '/api/recording_search/transition'
     for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1',
                   '?from_id=42&out=1&in=1', '?current_id=42&next_id=43&current_end=200&next_start=20'):
@@ -779,7 +787,7 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     assert response.status_code == 200 and response.mimetype == 'application/json'
     assert list(json.loads(response.data)) == ['type', 'start', 'duration', 'middle', 'step', 'filters', 'from', 'to', 'info']
     assert response.get_json() == answer
-    assert calls == [('plan', '42.mp3', 200.0, 20.5, True), ('answer', False)]
+    assert calls == [('plan', '42.mp3', 200.0, 20.5, True), ('voice',), ('answer', False)]
     assert not os.path.exists(seen['folder'])
     calls.clear()
 
@@ -790,14 +798,14 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', no_beat)
     response = client.get(url + '?from_id=42&to_id=43&out=200&in=20')
     assert response.status_code == 200 and response.get_json() == answer
-    assert calls == [('plan',), ('crossfade', 200.0, 20.0), ('answer', True)]
+    assert calls == [('plan',), ('crossfade', 200.0, 20.0), ('voice',), ('answer', True)]
 
     def no_room(*args):
         raise ValueError('No room for a crossfade at the fade points.')
 
     monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', no_room)
     response = client.get(url + '?from_id=42&to_id=43&out=200&in=20')
-    assert response.status_code == 400 and 'no room' in response.get_json()['error']
+    assert response.status_code == 400 and 'no audible room' in response.get_json()['error']
 
 
 def test_a_disabled_feature_answers_503_on_every_route_but_play_and_the_page_says_so(client, bp_mod, monkeypatch, tmp_path):

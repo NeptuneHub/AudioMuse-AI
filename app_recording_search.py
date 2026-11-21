@@ -26,7 +26,8 @@ Main Features:
   piece, cut on the sample; each song downloaded once into app_play_cache;
   it answers with the neural
   fingerprint off too), `/api/recording_search/transition` (JSON:
-  everything a player executes to mix the current song into the next) and
+  everything a player executes to mix the current song into the next, moved
+  by tasks.smart_fade_voice toward audible cues with bounded trimming and softer vocal overlap) and
   `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
@@ -648,7 +649,8 @@ def recording_search_transition_api():
           with straight lines (Web Audio setValueCurveAtTime) plays the curve.
           type: beat_mix (the beats lock: the tempo glides and the bass lines
           swap), beat_rise (the same, and the next song is louder: it comes in
-          from the treble down) or crossfade (everything else: no filters).
+          from the treble down) or crossfade (equal-power faders, with gentle
+          EQ when voices compete).
           start: the second of the current song where the transition starts.
           duration: how many seconds both songs play together.
           middle: seconds after start where the next song takes over.
@@ -669,11 +671,12 @@ def recording_search_transition_api():
           from its own start.
           volume: the fader, the number to multiply the song by at each point,
           on top of gain: 0 = silent, 1 = full; from goes from 1 to 0, to from 0
-          to 1. In a beat mix it only fades the two ends and keeps the mix at a
-          steady loudness (it never clips); the three filters hand the song over.
+          to 1. A beat mix normally fades the ends while three filters hand
+          the song over; competing vocals use sustained equal-power faders.
           high_db, mid_db and bass_db: how much to turn down the highs (high
           shelf), the mids (peaking filter) and the bass (low shelf) at each
-          point, in dB: 0 = unchanged, -40 = almost gone; all 0 in a crossfade.
+          point, in dB: 0 = unchanged, -40 = almost gone. A crossfade may also
+          use gentle EQ when voices compete.
           to also has start (the second of the to_id song where it comes in),
           highpass_hz (beat_rise only: the corner of a high-pass
           used instead of its low shelf, removing what is below it; else null)
@@ -681,7 +684,9 @@ def recording_search_transition_api():
           transition ends).
           info, not needed to play: tempo_from and tempo_to (BPM, null
           without a steady beat), confidence (high, medium or low),
-          loudness_from and loudness_to (LUFS, whole songs).
+          loudness_from and loudness_to (LUFS, whole songs), vocal_overlap
+          (the fraction of competing vocals near the middle), and
+          end_margin_seconds (audible outgoing tail).
         content:
           application/json:
             schema:
@@ -793,6 +798,7 @@ def recording_search_transition_api():
     """
     from tasks.smart_fade_levels import crossfade_plan, transition
     from tasks.smart_fade_mix import plan_transition
+    from tasks.smart_fade_voice import clear_voice
 
     if disabled := _disabled_response():
         return disabled
@@ -818,9 +824,9 @@ def recording_search_transition_api():
                 plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
             except ValueError:
                 plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds)
-            answer = transition(paths[0], paths[1], plan)
+            answer = transition(paths[0], paths[1], clear_voice(paths[0], paths[1], plan))
         except ValueError:
-            return json_error(ERR_INVALID_REQUEST, 'These two songs have no room for a crossfade at these points.')
+            return json_error(ERR_INVALID_REQUEST, 'These two songs have no audible room for a crossfade at these points.')
         except Exception as exc:
             logger.exception('Smart fade transition failed')
             return json_exception(exc, ERR_SEARCH_FAILED, 'The transition could not be made. Check the container logs.')
