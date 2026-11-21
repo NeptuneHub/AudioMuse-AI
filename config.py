@@ -368,8 +368,8 @@ ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "T
 USE_GPU_CLUSTERING = os.environ.get("USE_GPU_CLUSTERING", "False").lower() == "true"
 
 # --- Clustering Cleanup Behavior ---
-# When True (default), existing '_automatic' playlists are deleted before new clusters are created.
-# Set to False to preserve old automatic playlists when running clustering.
+# When True (default), the playlists of earlier clustering runs are deleted before the new ones are created. Clustering playlists are identified by the "Weekly mix by AudioMuse-AI" prefix of their description, by the legacy '_automatic' name suffix, or, on Lyrion, by the names the last run recorded.
+# Set to False to keep the playlists of earlier runs.
 CLUSTERING_CLEANING = os.environ.get("CLUSTERING_CLEANING", "True").lower() == "true"
 
 # When True, AI playlist naming also avoids names used in previous clustering runs

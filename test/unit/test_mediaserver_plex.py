@@ -710,7 +710,10 @@ class TestPlexPlaylistReads:
 
         playlists = get_all_playlists()
 
-        assert playlists == [{'Id': '55', 'Name': 'My Mix'}, {'Id': '56', 'Name': 'Chill_automatic'}]
+        assert playlists == [
+            {'Id': '55', 'Name': 'My Mix', 'Description': ''},
+            {'Id': '56', 'Name': 'Chill_automatic', 'Description': ''},
+        ]
         assert mock_get.call_args.kwargs['params'] == {'playlistType': 'audio'}
 
     @patch('tasks.mediaserver.plex.requests.get')
@@ -723,7 +726,7 @@ class TestPlexPlaylistReads:
             size=1, Metadata=[{'ratingKey': '55', 'title': 'My Mix'}]
         )
 
-        assert get_playlist_by_name('My Mix') == {'Id': '55', 'Name': 'My Mix'}
+        assert get_playlist_by_name('My Mix') == {'Id': '55', 'Name': 'My Mix', 'Description': ''}
         assert get_playlist_by_name('Missing') is None
 
     @patch('tasks.mediaserver.plex.requests.get')
@@ -840,6 +843,34 @@ class TestPlexCreatePlaylist:
         create_playlist('Mix', ['1'])
 
         assert mock_post.called
+
+    @patch('tasks.mediaserver.plex.requests.put')
+    @patch('tasks.mediaserver.plex.requests.post')
+    @patch('tasks.mediaserver.plex.requests.get')
+    @patch('tasks.mediaserver.plex.config')
+    def test_create_playlist_writes_the_description_as_summary(self, mock_config, mock_get, mock_post, mock_put):
+        from tasks.mediaserver.plex import create_playlist
+
+        _set_config(mock_config)
+        mock_get.return_value = _resp(_identity_payload())
+        mock_post.return_value = _resp(_mc(Metadata=[{'ratingKey': '900', 'title': 'Mix'}]))
+        mock_put.return_value = _resp({})
+
+        result = create_playlist('Mix', ['1'], description='Weekly mix by AudioMuse-AI')
+
+        assert result == {'Id': '900', 'Name': 'Mix', 'Description': 'Weekly mix by AudioMuse-AI'}
+        assert mock_put.call_args.args[0] == f'{PLEX_URL}/playlists/900'
+        assert mock_put.call_args.kwargs['params'] == {'summary': 'Weekly mix by AudioMuse-AI'}
+
+    @patch('tasks.mediaserver.plex.requests.get')
+    @patch('tasks.mediaserver.plex.config')
+    def test_get_all_playlists_reads_the_summary_as_description(self, mock_config, mock_get):
+        from tasks.mediaserver.plex import get_all_playlists
+
+        _set_config(mock_config)
+        mock_get.return_value = _resp_mc(size=1, Metadata=[{'ratingKey': '55', 'title': 'Mix', 'summary': 'Weekly mix by AudioMuse-AI'}])
+
+        assert get_all_playlists() == [{'Id': '55', 'Name': 'Mix', 'Description': 'Weekly mix by AudioMuse-AI'}]
 
 
 class TestPlexCreateOrReplacePlaylist:

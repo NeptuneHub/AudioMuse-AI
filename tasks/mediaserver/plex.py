@@ -430,7 +430,11 @@ def _list_playlists(user_creds=None):
         r.raise_for_status()
         items = _container(r.json()).get('Metadata') or []
         return [
-            {'Id': _str_key(p.get('ratingKey')), 'Name': p.get('title')}
+            {
+                'Id': _str_key(p.get('ratingKey')),
+                'Name': p.get('title'),
+                'Description': p.get('summary') or '',
+            }
             for p in items
             if p.get('ratingKey') is not None
         ]
@@ -558,12 +562,31 @@ def _create_playlist_batched(title, item_ids, user_creds=None):
     return {'Id': _str_key(new_id), 'Name': created.get('title', title)}
 
 
-def create_playlist(base_name, item_ids):
+def _set_playlist_summary(playlist_id, summary, user_creds=None):
+    user_creds = context.active_creds(user_creds)
     try:
-        return _create_playlist_batched(base_name, list(item_ids))
+        r = requests.put(
+            f"{_base_url(user_creds)}/playlists/{playlist_id}",
+            headers=_headers(user_creds),
+            params={'summary': summary},
+            timeout=REQUESTS_TIMEOUT,
+        )
+        r.raise_for_status()
+        return True
+    except Exception:
+        logger.exception(f"Plex: could not set the summary of playlist {playlist_id}")
+        return False
+
+
+def create_playlist(base_name, item_ids, description=None):
+    try:
+        created = _create_playlist_batched(base_name, list(item_ids))
     except Exception:
         logger.exception("Exception creating Plex playlist '%s'", base_name)
         return None
+    if created and description and _set_playlist_summary(created['Id'], description):
+        created['Description'] = description
+    return created
 
 
 def create_instant_playlist(playlist_name, item_ids, user_creds=None):
