@@ -45,6 +45,7 @@ _DEFAULTS = (
     ('FLASK_BUILTIN_HTTPS', True, 'FLASK_BUILTIN_HTTPS', 'false', False),
     ('TASK_HISTORY_MAX_ROWS_PER_TYPE', 100, 'TASK_HISTORY_MAX_ROWS_PER_TYPE', '5', 5),
     ('COREML_MODEL_CACHE_DIR', '', 'COREML_MODEL_CACHE_DIR', '/data/coreml_models', '/data/coreml_models'),
+    ('SMART_FADE_RECOVER_SECONDS', 4.0, 'SMART_FADE_RECOVER_SECONDS', '0', 0.0),
 )
 
 

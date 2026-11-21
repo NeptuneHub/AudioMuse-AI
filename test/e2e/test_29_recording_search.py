@@ -19,6 +19,7 @@ Main Features:
 * by_track leaves out the padded copy of the same recording and still fills the list
 * silent, missing and unknown inputs are 400
 * warmup reports the neural and encoder models loaded
+* smart fades retain a sustained overlap and report bounded cue recovery
 """
 
 import io
@@ -106,6 +107,11 @@ def test_smart_fade_transition_has_sustained_overlap_and_bounded_trimming(stack,
     assert 'delay' not in answer['to']
     assert answer['to']['start'] <= 12.0
     assert answer['info']['end_margin_seconds'] >= 1.9
+    assert 0.0 <= answer['info']['recovered_seconds'] <= 4.0001
+    consumed = answer['to']['continue_from'] - answer['to']['start']
+    assert consumed > 0.0
+    speeds = np.asarray(answer['to']['speed'])
+    assert abs(consumed - np.sum((speeds[1:] + speeds[:-1]) * 0.5 * answer['step'])) < 0.002
     assert_no_fp_ids(answer)
     for side in ('from', 'to'):
         for key in ('volume', 'speed', 'high_db', 'mid_db', 'bass_db'):

@@ -18,6 +18,8 @@ Main Features:
   few bars, but never turn it into a sequential handoff or delayed entrance.
 * Keep beat locks when cue shifts preserve their grids. Pass the amount of
   vocal competition to smart_fade_levels for a modest, gradual EQ exchange.
+* Recover a few skipped seconds with a local pass, preserving fade length,
+  audible energy, vocal balance and each source's half-bar grid.
 * Detector failures preserve normal crossfading; energy checks still apply.
 """
 
@@ -51,6 +53,9 @@ BAR_BEATS = 4
 FREE_STEP_SECONDS = 0.5
 SILENT_DBFS = -50.0
 FRAME_SECONDS = 0.1
+RECOVERY_ENERGY_TOLERANCE = 0.25
+RECOVERY_VOICE_TOLERANCE = 0.05
+RECOVERY_TIME_TOLERANCE = 0.25
 EMBEDDING_INPUT = 'model/Placeholder:0'
 EMBEDDING_OUTPUT = 'model/dense/BiasAdd:0'
 PREDICTION_INPUT = 'serving_default_model_Placeholder:0'
@@ -195,6 +200,57 @@ def _energy_cost(heard, points, weights):
     return float(np.average(weak + 12.0 * silent, weights=weights))
 
 
+def _recover(ending, starting, plan):
+    """Keep more source audio without spending the fade's duration or energy."""
+    budget = max(0.0, config.SMART_FADE_RECOVER_SECONDS)
+    if not budget or ending['spans'] is None or starting['spans'] is None:
+        return plan
+    seconds = plan['mix_seconds']
+    source_seconds = plan['resume_at'] - plan['in_at']
+    step_out, step_in = _steps(plan)
+    if plan['style'] != 'fade' and plan.get('beat_seconds'):
+        step_out /= 2.0
+        step_in /= 2.0
+    audible_end = ending['at'] + ending['bounds'][1]
+    margin = min(max(0.0, config.SMART_FADE_END_MARGIN_SECONDS), audible_end / 10.0)
+    room_out = max(0.0, min(budget, audible_end - margin - seconds - plan['mix_at']))
+    earliest = min(plan['in_at'], max(starting['at'] + starting['bounds'][0], 1.0))
+    room_in = max(0.0, min(budget, plan['in_at'] - earliest))
+    outgoing = np.arange(math.floor(room_out / step_out + 1e-6) + 1) * step_out
+    incoming = np.arange(math.floor(room_in / step_in + 1e-6) + 1) * step_in
+    share = np.linspace(0.0, 1.0, 81)
+    out_weights = np.maximum(0.05, np.cos(np.pi / 2 * share) ** 2)
+    in_weights = np.maximum(0.05, np.sin(np.pi / 2 * share) ** 2)
+    central = np.sin(np.pi * share) ** 2
+    out_cost = {float(d): _energy_cost(ending, plan['mix_at'] + d + seconds * share, out_weights) for d in outgoing}
+    in_cost = {float(d): _energy_cost(starting, plan['in_at'] - d + source_seconds * share, in_weights) for d in incoming}
+
+    def clash(a, b):
+        active = _activity(ending, plan['mix_at'] + a + seconds * share) & _activity(starting, plan['in_at'] - b + source_seconds * share)
+        return float(np.average(active, weights=central))
+
+    original_clash = clash(0.0, 0.0)
+    safe = []
+    for a in outgoing:
+        for b in incoming:
+            if (a + b > budget + 1e-6 or out_cost[a] > out_cost[0.0] + RECOVERY_ENERGY_TOLERANCE
+                    or in_cost[b] > in_cost[0.0] + RECOVERY_ENERGY_TOLERANCE):
+                continue
+            competition = clash(a, b)
+            if competition > original_clash + RECOVERY_VOICE_TOLERANCE:
+                continue
+            loss = max(0.0, out_cost[a] - out_cost[0.0]) + max(0.0, in_cost[b] - in_cost[0.0]) + 3.0 * max(0.0, competition - original_clash)
+            safe.append((float(a), float(b), competition, loss))
+    most = max(a + b for a, b, _competition, _loss in safe)
+    near = [row for row in safe if row[0] + row[1] >= most - RECOVERY_TIME_TOLERANCE]
+    a, b, competition, _loss = min(near, key=lambda row: (row[3], max(row[0], row[1]), -row[0]))
+    return dict(plan, mix_at=round(plan['mix_at'] + a, 4), in_at=round(plan['in_at'] - b, 4),
+                resume_at=round(plan['resume_at'] - b, 4), swap_at=round(plan['swap_at'] + a, 4),
+                voice=dict(plan['voice'], clash=competition > 0.1, overlap=round(competition, 4),
+                           end_margin=round(audible_end - plan['mix_at'] - a - seconds, 4),
+                           recovered_seconds=round(a + b, 4)))
+
+
 def _moved(path_out, path_in, plan):
     step_out, step_in = _steps(plan)
     look = max(0.0, plan['mix_at'] - config.SMART_FADE_SEARCH_SECONDS)
@@ -264,8 +320,9 @@ def _moved(path_out, path_in, plan):
                  stretch=plan['stretch'] if locked else 1.0, confidence=plan['confidence'] if locked else 'medium',
                  voice={'clash': clash > 0.1, 'overlap': round(clash, 4),
                         'end_margin': round(audible_end - at - seconds, 4)})
+    moved = _recover(ending, starting, moved)
     logger.info("Smart crossfade at %.2f s for %.2f s, incoming cue %.2f s, audible tail %.2f s, vocal competition %.2f",
-                at, seconds, entry, audible_end - at - seconds, clash)
+                moved['mix_at'], seconds, moved['in_at'], moved['voice']['end_margin'], moved['voice']['overlap'])
     return moved
 
 

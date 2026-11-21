@@ -1375,6 +1375,8 @@ RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_D
 SMART_FADE_END_MARGIN_SECONDS = float(os.environ.get("SMART_FADE_END_MARGIN_SECONDS", "2"))
 SMART_FADE_SEARCH_SECONDS = float(os.environ.get("SMART_FADE_SEARCH_SECONDS", "32"))
 SMART_FADE_ENERGY_DROP_DB = float(os.environ.get("SMART_FADE_ENERGY_DROP_DB", "3"))
+# Recover this much source audio in total through small, quality-checked cue shifts.
+SMART_FADE_RECOVER_SECONDS = float(os.environ.get("SMART_FADE_RECOVER_SECONDS", "4"))
 # Bound cuts into the audible opening and long vocal overlaps, retaining a sustained blend.
 SMART_FADE_ENTRY_LIMIT_SECONDS = float(os.environ.get("SMART_FADE_ENTRY_LIMIT_SECONDS", "12"))
 SMART_FADE_VOCAL_MIX_SECONDS = float(os.environ.get("SMART_FADE_VOCAL_MIX_SECONDS", "14"))

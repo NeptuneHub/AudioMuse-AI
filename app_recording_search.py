@@ -687,7 +687,11 @@ def recording_search_transition_api():
           without a steady beat), confidence (high, medium or low),
           loudness_from and loudness_to (LUFS, whole songs), vocal_overlap
           (the fraction of competing vocals near the middle), and
-          end_margin_seconds (audible outgoing tail).
+          end_margin_seconds (audible outgoing tail), recovered_seconds
+          (source audio retained by the final local cue adjustment, up to
+          SMART_FADE_RECOVER_SECONDS in total; default 4). This adjustment
+          preserves transition duration and only moves the ending later or
+          the opening earlier when energy and vocal checks allow it.
         content:
           application/json:
             schema:

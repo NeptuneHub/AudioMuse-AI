@@ -12,6 +12,7 @@ Main Features:
 * Sine mixtures exercise decoding, energy ranking, EQ and peak control together.
 * Immediate voices keep sustained faders rather than a delayed sequential entry.
 * Leading silence and natural fade-outs are rejected as useful mixing material.
+* Recovery preserves fade duration while retaining more ending/opening audio.
 """
 
 import numpy as np
@@ -37,9 +38,18 @@ def test_real_audio_keeps_a_gradual_overlap_and_avoids_silent_and_fading_edges(t
     plan = {'mix_at': 28.0, 'mix_seconds': 10.0, 'in_at': 6.0, 'resume_at': 16.0,
             'style': 'fade', 'swap_at': 33.0, 'beat_seconds': None, 'stretch': 1.0,
             'tempo_from': None, 'tempo_to': None, 'confidence': 'medium'}
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 0.0)
+    before = voice.clear_voice(*paths, plan)
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 4.0)
     chosen = voice.clear_voice(*paths, plan)
+    saved = chosen['mix_at'] - before['mix_at'] + before['in_at'] - chosen['in_at']
+    assert 3.0 <= saved <= 4.0
+    assert chosen['mix_at'] >= before['mix_at'] and chosen['in_at'] <= before['in_at']
+    assert chosen['mix_seconds'] == before['mix_seconds']
+    assert chosen['voice']['recovered_seconds'] == pytest.approx(saved)
     answer = levels.transition(*paths, chosen)
     assert answer['duration'] == 10.0
+    assert answer['info']['recovered_seconds'] == pytest.approx(saved)
     assert answer['start'] < 28.0
     assert silent_intro <= answer['to']['start'] <= silent_intro + 12.0
     assert 'delay' not in answer['to']

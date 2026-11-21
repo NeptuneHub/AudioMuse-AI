@@ -12,6 +12,7 @@ Main Features:
 * Energy and vocal competition guide a joint, bounded cue search.
 * Continuous vocals keep a real crossfade with moderate incoming trimming.
 * Musical grids survive cue changes; missing detectors impose no veto.
+* Local recovery keeps up to four more source seconds without shortening fades.
 * MusiCNN covers short regions and edge patches; Silero complements it.
 """
 
@@ -52,8 +53,9 @@ def test_continuous_vocals_keep_a_multisecond_overlap_and_a_moderate_incoming_cu
     _inspect_pair(monkeypatch)
     moved = voice.clear_voice('out', 'in', PLAN)
     assert 10.0 <= moved['mix_seconds'] <= 14.0
-    assert moved['mix_at'] + moved['mix_seconds'] == 116.0
-    assert moved['in_at'] == 8.0 and 'in_delay' not in moved
+    assert moved['mix_at'] + moved['mix_seconds'] == 118.0
+    assert moved['in_at'] == 6.0 and 'in_delay' not in moved
+    assert moved['voice']['recovered_seconds'] == 4.0
     assert moved['resume_at'] == moved['in_at'] + moved['mix_seconds']
     assert moved['style'] == 'blend' and moved['beat_seconds'] == 0.5
     assert moved['voice']['clash'] is True
@@ -84,12 +86,12 @@ def test_a_nearby_vocal_gap_reduces_competition_without_waiting_for_the_last_wor
     assert moved['mix_at'] + moved['mix_seconds'] <= 116.0
 
 
-def test_an_instrumental_intro_keeps_the_original_cues_and_beat_lock(monkeypatch):
+def test_an_instrumental_intro_recovers_audio_and_keeps_the_beat_lock(monkeypatch):
     _inspect_pair(monkeypatch, in_spans=[(28.0, 45.0)])
     moved = voice.clear_voice('out', 'in', PLAN)
     assert moved['style'] == 'blend' and moved['beat_seconds'] == 0.5
-    assert moved['in_at'] == 8.0 and moved['mix_at'] == 100.0
-    assert moved['mix_seconds'] == 16.0 and moved['resume_at'] == 24.0
+    assert moved['in_at'] == 6.0 and moved['mix_at'] == 102.0
+    assert moved['mix_seconds'] == 16.0 and moved['resume_at'] == 22.0
     assert moved['voice']['clash'] is False
 
 
@@ -98,7 +100,7 @@ def test_excessive_intro_trimming_is_bounded_without_forcing_a_zero_cue(monkeypa
     plan = dict(PLAN, in_at=22.0, resume_at=38.0)
     moved = voice.clear_voice('out', 'in', plan)
     assert 0.0 < moved['in_at'] <= voice.config.SMART_FADE_ENTRY_LIMIT_SECONDS
-    assert moved['in_at'] == 12.0
+    assert moved['in_at'] == 10.0
 
 
 def test_failed_detectors_preserve_the_normal_cues_and_overlap(monkeypatch):
@@ -146,6 +148,76 @@ def test_a_short_incoming_track_cannot_overrun_when_a_tempo_lock_is_dropped(monk
     assert moved['style'] == 'fade' and moved['beat_seconds'] is None
     assert moved['in_at'] + moved['mix_seconds'] <= 10.0001
     assert moved['resume_at'] <= 10.0001
+
+
+def test_recovery_keeps_the_fade_and_recovers_four_seconds_on_both_beat_grids(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, voice={'clash': True, 'overlap': 1.0, 'end_margin': 24.0})
+    ending = _inspection(0.0, 140.0, [(0.0, 140.0)])
+    starting = _inspection(0.0, 40.0, [(0.0, 40.0)])
+    moved = voice._recover(ending, starting, plan)
+    assert moved['mix_at'] == 102.0 and moved['in_at'] == 6.0
+    assert moved['resume_at'] == 22.0 and moved['swap_at'] == 110.0
+    assert moved['voice']['recovered_seconds'] == 4.0
+    for key in ('mix_seconds', 'beat_seconds', 'style', 'stretch', 'confidence'):
+        assert moved[key] == plan[key]
+    assert plan['mix_at'] == 100.0 and plan['in_at'] == 8.0
+
+
+def test_recovery_preserves_each_source_grid_at_different_tempos(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, resume_at=23.2, stretch=0.95,
+                voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
+    ending = _inspection(0.0, 140.0, [])
+    starting = _inspection(0.0, 40.0, [])
+    moved = voice._recover(ending, starting, plan)
+    a, b = moved['mix_at'] - plan['mix_at'], plan['in_at'] - moved['in_at']
+    assert a / 1.0 == pytest.approx(round(a / 1.0))
+    assert b / 0.95 == pytest.approx(round(b / 0.95), abs=1e-4)
+    assert 3.0 <= a + b <= 4.0001
+    assert moved['resume_at'] - moved['in_at'] == pytest.approx(15.2)
+
+
+def test_recovery_stops_at_leading_silence_and_the_outgoing_tail_margin(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, voice={'clash': False, 'overlap': 0.0, 'end_margin': 2.0})
+    ending = _inspection(0.0, 118.0, [])
+    starting = dict(_inspection(0.0, 40.0, []), bounds=(6.0, 40.0))
+    moved = voice._recover(ending, starting, plan)
+    assert moved['mix_at'] == plan['mix_at']
+    assert moved['in_at'] == 6.0 and moved['voice']['recovered_seconds'] == 2.0
+    assert moved['voice']['end_margin'] == 2.0
+
+
+def test_recovery_rejects_later_fading_audio_instead_of_forcing_four_seconds(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, style='fade', beat_seconds=None,
+                voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
+    grid = np.arange(1400) * voice.mix.STEP_SECONDS
+    ending = _inspection(0.0, 140.0, [], -6 * np.maximum(0.0, grid - 100.0))
+    starting = dict(_inspection(0.0, 40.0, []), bounds=(8.0, 40.0))
+    moved = voice._recover(ending, starting, plan)
+    assert moved['mix_at'] == 100.0 and moved['in_at'] == 8.0
+
+
+def test_recovery_limits_new_vocal_competition(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, voice={'clash': False, 'overlap': 0.0, 'end_margin': 2.0})
+    ending = _inspection(0.0, 118.0, [(0.0, 118.0)])
+    starting = _inspection(0.0, 40.0, [(0.0, 8.0)])
+    moved = voice._recover(ending, starting, plan)
+    assert moved['voice']['overlap'] <= 0.05
+    assert moved['voice']['recovered_seconds'] < 4.0
+    assert moved['voice']['clash'] is False
+
+
+@pytest.mark.parametrize('budget,spans', [(0.0, []), (4.0, None)])
+def test_recovery_can_be_disabled_and_missing_detectors_do_not_move_cues(monkeypatch, budget, spans):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', budget, raising=False)
+    plan = dict(PLAN, voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
+    ending = _inspection(0.0, 140.0, spans)
+    starting = _inspection(0.0, 40.0, [])
+    assert voice._recover(ending, starting, plan) is plan
 
 
 def test_sung_patches_and_silero_form_a_union_and_one_failed_detector_is_tolerated(monkeypatch):
