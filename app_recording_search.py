@@ -686,12 +686,19 @@ def recording_search_transition_api():
           info, not needed to play: tempo_from and tempo_to (BPM, null
           without a steady beat), confidence (high, medium or low),
           loudness_from and loudness_to (LUFS, whole songs), vocal_overlap
-          (the fraction of competing vocals near the middle), and
+          (a conservative estimate of competing vocals near the middle,
+          retained during ending recovery to preserve the vocal taper), and
           end_margin_seconds (audible outgoing tail), recovered_seconds
           (source audio retained by the final local cue adjustment, up to
           SMART_FADE_RECOVER_SECONDS in total; default 4). This adjustment
           preserves transition duration and only moves the ending later or
           the opening earlier when energy and vocal checks allow it.
+          ending_recovered_seconds: additional ending audio retained toward
+          the requested out cue (up to SMART_FADE_END_RECOVER_SECONDS;
+          default 4). The incoming cue, fade duration and vocal taper stay
+          intact. A long preferred ending margin can yield this many seconds
+          after energy and later vocal checks, leaving at least two audible
+          seconds or the configured margin when it is smaller.
         content:
           application/json:
             schema:
@@ -829,6 +836,7 @@ def recording_search_transition_api():
                 plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
             except ValueError:
                 plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds)
+            plan['requested_end'] = out_seconds
             answer = transition(paths[0], paths[1], clear_voice(paths[0], paths[1], plan))
         except ValueError:
             return json_error(ERR_INVALID_REQUEST, 'These two songs have no audible room for a crossfade at these points.')

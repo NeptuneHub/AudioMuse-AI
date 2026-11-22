@@ -13,6 +13,7 @@ Main Features:
 * Immediate voices keep sustained faders rather than a delayed sequential entry.
 * Leading silence and natural fade-outs are rejected as useful mixing material.
 * Recovery preserves fade duration while retaining more ending/opening audio.
+* A large ending margin yields a few seconds when the requested ending remains energetic.
 """
 
 import numpy as np
@@ -63,3 +64,35 @@ def test_real_audio_keeps_a_gradual_overlap_and_avoids_silent_and_fading_edges(t
     mids = np.array(answer['to']['mid_db']) - np.array(answer['from']['mid_db'])
     assert 0.5 < mids[len(mids) // 2] < 1.5
     assert mids[0] == -6 and mids[-1] == 12
+
+
+def test_ending_recovery_uses_strong_audio_without_shortening_the_fade_or_releasing_the_vocal_taper(tmp_path, monkeypatch):
+    rate = voice.VAD_RATE
+    t = np.arange(120 * rate) / rate
+    ending = (0.12 * np.sin(2 * np.pi * 440 * t) + 0.1 * np.sin(2 * np.pi * 120 * t))
+    ending *= 10 ** (-np.maximum(0.0, t - 116.0) * 4.0 / 20)
+    incoming = 0.12 * np.sin(2 * np.pi * 770 * t) + 0.1 * np.sin(2 * np.pi * 180 * t)
+    paths = [str(tmp_path / name) for name in ('out.wav', 'in.wav')]
+    for path, audio in zip(paths, (ending, incoming)):
+        soundfile.write(path, audio, rate)
+    monkeypatch.setattr(voice, 'voiced_spans', lambda audio: [(0.0, len(audio) / rate)])
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_MARGIN_SECONDS', 10.0)
+    plan = {'mix_at': 110.0, 'mix_seconds': 10.0, 'in_at': 8.0, 'resume_at': 18.0,
+            'style': 'fade', 'swap_at': 115.0, 'beat_seconds': None, 'stretch': 1.0,
+            'tempo_from': None, 'tempo_to': None, 'confidence': 'medium', 'requested_end': 120.0}
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 0.0)
+    before = voice.clear_voice(*paths, plan)
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 4.0)
+    after = voice.clear_voice(*paths, plan)
+    assert after['mix_at'] - before['mix_at'] == 4.0
+    assert after['in_at'] == before['in_at'] and after['resume_at'] == before['resume_at']
+    assert after['mix_seconds'] == before['mix_seconds'] == 10.0
+    assert after['voice']['end_margin'] == 6.0
+    assert after['voice']['overlap'] == before['voice']['overlap']
+    answers = [levels.transition(*paths, selected) for selected in (before, after)]
+    old_phase, new_phase = [np.arctan2(answer['to']['volume'], answer['from']['volume']) for answer in answers]
+    assert np.allclose(new_phase, old_phase, atol=0.001)
+    assert answers[1]['info']['ending_recovered_seconds'] == 4.0
+    outgoing = np.asarray(answers[1]['from']['volume'])
+    incoming = np.asarray(answers[1]['to']['volume'])
+    assert np.sum((outgoing > 0.25) & (incoming > 0.25)) * answers[1]['step'] >= 6.0

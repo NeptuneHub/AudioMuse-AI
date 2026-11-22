@@ -20,6 +20,9 @@ Main Features:
   vocal competition to smart_fade_levels for a modest, gradual EQ exchange.
 * Recover a few skipped seconds with a local pass, preserving fade length,
   audible energy, vocal balance and each source's half-bar grid.
+* Restore early endings toward the requested cue with a separate bounded pass.
+  Keep the incoming cue and approved vocal taper; reject fading energy and
+  increased competition in the later half, retaining a small audible tail.
 * Detector failures preserve normal crossfading; energy checks still apply.
 """
 
@@ -56,6 +59,8 @@ FRAME_SECONDS = 0.1
 RECOVERY_ENERGY_TOLERANCE = 0.25
 RECOVERY_VOICE_TOLERANCE = 0.05
 RECOVERY_TIME_TOLERANCE = 0.25
+ENDING_ENERGY_TOLERANCE = 0.5
+RECOVERY_MIN_TAIL_SECONDS = 2.0
 EMBEDDING_INPUT = 'model/Placeholder:0'
 EMBEDDING_OUTPUT = 'model/dense/BiasAdd:0'
 PREDICTION_INPUT = 'serving_default_model_Placeholder:0'
@@ -251,6 +256,46 @@ def _recover(ending, starting, plan):
                            recovered_seconds=round(a + b, 4)))
 
 
+def _later_ending(ending, starting, plan):
+    """Restore a few ending seconds without altering the approved vocal envelope."""
+    budget = max(0.0, config.SMART_FADE_END_RECOVER_SECONDS)
+    requested = plan.get('requested_end')
+    seconds = plan['mix_seconds']
+    finish = plan['mix_at'] + seconds
+    if not budget or requested is None or requested <= finish or ending['spans'] is None or starting['spans'] is None:
+        return plan
+    audible_end = ending['at'] + ending['bounds'][1]
+    margin = min(max(0.0, config.SMART_FADE_END_MARGIN_SECONDS), audible_end / 10.0)
+    tail = max(min(margin, RECOVERY_MIN_TAIL_SECONDS), margin - budget)
+    room = max(0.0, min(budget, requested - finish, audible_end - tail - finish))
+    step = _steps(plan)[0]
+    if plan['style'] != 'fade' and plan.get('beat_seconds'):
+        step /= 2.0
+    share = np.linspace(0.0, 1.0, 81)
+    weights = np.maximum(0.05, np.cos(np.pi / 2 * share) ** 2)
+    central = np.sin(np.pi * share) ** 2
+    late = central * (share >= 0.5)
+    incoming = _activity(starting, plan['in_at'] + (plan['resume_at'] - plan['in_at']) * share)
+
+    def quality(delta):
+        points = plan['mix_at'] + delta + seconds * share
+        simultaneous = _activity(ending, points) & incoming
+        return (_energy_cost(ending, points, weights), float(np.average(simultaneous, weights=central)),
+                float(np.average(simultaneous, weights=late)))
+
+    energy, clash, late_clash = quality(0.0)
+    for delta in np.arange(1, math.floor(room / step + 1e-6) + 1)[::-1] * step:
+        candidate_energy, candidate_clash, candidate_late = quality(delta)
+        if (candidate_energy > energy + ENDING_ENERGY_TOLERANCE or candidate_clash > clash + RECOVERY_VOICE_TOLERANCE
+                or candidate_late > late_clash + RECOVERY_VOICE_TOLERANCE
+                or (not plan['voice']['clash'] and candidate_clash > 0.1)):
+            continue
+        return dict(plan, mix_at=round(plan['mix_at'] + delta, 4), swap_at=round(plan['swap_at'] + delta, 4),
+                    voice=dict(plan['voice'], end_margin=round(audible_end - finish - delta, 4),
+                               ending_recovered_seconds=round(float(delta), 4)))
+    return plan
+
+
 def _moved(path_out, path_in, plan):
     step_out, step_in = _steps(plan)
     look = max(0.0, plan['mix_at'] - config.SMART_FADE_SEARCH_SECONDS)
@@ -321,6 +366,7 @@ def _moved(path_out, path_in, plan):
                  voice={'clash': clash > 0.1, 'overlap': round(clash, 4),
                         'end_margin': round(audible_end - at - seconds, 4)})
     moved = _recover(ending, starting, moved)
+    moved = _later_ending(ending, starting, moved)
     logger.info("Smart crossfade at %.2f s for %.2f s, incoming cue %.2f s, audible tail %.2f s, vocal competition %.2f",
                 moved['mix_at'], seconds, moved['in_at'], moved['voice']['end_margin'], moved['voice']['overlap'])
     return moved

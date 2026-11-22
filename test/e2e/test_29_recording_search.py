@@ -108,6 +108,7 @@ def test_smart_fade_transition_has_sustained_overlap_and_bounded_trimming(stack,
     assert answer['to']['start'] <= 12.0
     assert answer['info']['end_margin_seconds'] >= 1.9
     assert 0.0 <= answer['info']['recovered_seconds'] <= 4.0001
+    assert 0.0 <= answer['info']['ending_recovered_seconds'] <= 4.0001
     consumed = answer['to']['continue_from'] - answer['to']['start']
     assert consumed > 0.0
     speeds = np.asarray(answer['to']['speed'])

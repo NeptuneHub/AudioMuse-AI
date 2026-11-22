@@ -13,6 +13,7 @@ Main Features:
 * Continuous vocals keep a real crossfade with moderate incoming trimming.
 * Musical grids survive cue changes; missing detectors impose no veto.
 * Local recovery keeps up to four more source seconds without shortening fades.
+* Ending-only recovery restores early cues while preserving the approved vocal taper.
 * MusiCNN covers short regions and edge patches; Silero complements it.
 """
 
@@ -218,6 +219,80 @@ def test_recovery_can_be_disabled_and_missing_detectors_do_not_move_cues(monkeyp
     ending = _inspection(0.0, 140.0, spans)
     starting = _inspection(0.0, 40.0, [])
     assert voice._recover(ending, starting, plan) is plan
+
+
+def test_later_ending_recovers_reserved_tail_without_changing_the_approved_blend(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 4.0, raising=False)
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_MARGIN_SECONDS', 10.0)
+    plan = dict(PLAN, requested_end=125.0, voice={'clash': True, 'overlap': 1.0, 'end_margin': 10.0})
+    ending = _inspection(0.0, 126.0, [(0.0, 126.0)])
+    starting = _inspection(0.0, 40.0, [(0.0, 40.0)])
+    moved = voice._later_ending(ending, starting, plan)
+    assert moved['mix_at'] == 104.0 and moved['swap_at'] == 112.0
+    assert moved['voice']['end_margin'] == 6.0
+    assert moved['voice']['ending_recovered_seconds'] == 4.0
+    for key in ('in_at', 'resume_at', 'mix_seconds', 'style', 'stretch', 'beat_seconds'):
+        assert moved[key] == plan[key]
+    assert moved['voice']['clash'] is True and moved['voice']['overlap'] == 1.0
+    assert plan['mix_at'] == 100.0
+
+
+def test_later_ending_stops_at_the_original_requested_endpoint_on_the_beat_grid(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, requested_end=117.3, voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
+    moved = voice._later_ending(_inspection(0.0, 140.0, []), _inspection(0.0, 40.0, []), plan)
+    assert moved['mix_at'] == 101.0
+    assert moved['mix_at'] + moved['mix_seconds'] <= plan['requested_end']
+
+
+def test_later_ending_preserves_a_small_audible_tail_even_with_a_large_budget(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 4.0, raising=False)
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_MARGIN_SECONDS', 2.0)
+    plan = dict(PLAN, requested_end=118.0, voice={'clash': False, 'overlap': 0.0, 'end_margin': 2.0})
+    moved = voice._later_ending(_inspection(0.0, 118.0, []), _inspection(0.0, 40.0, []), plan)
+    assert moved['mix_at'] == 100.0 and moved['voice']['end_margin'] == 2.0
+
+
+def test_later_ending_rejects_a_fading_window(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, requested_end=125.0, voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
+    grid = np.arange(1400) * voice.mix.STEP_SECONDS
+    ending = _inspection(0.0, 140.0, [], -12.0 * np.maximum(0.0, grid - 100.0))
+    moved = voice._later_ending(ending, _inspection(0.0, 40.0, []), plan)
+    assert moved['mix_at'] == 100.0
+
+
+def test_later_ending_cannot_trade_early_vocals_for_a_lingering_late_singer(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 4.0, raising=False)
+    plan = dict(PLAN, requested_end=125.0, voice={'clash': True, 'overlap': 0.5, 'end_margin': 24.0})
+    ending = _inspection(0.0, 140.0, [(100.0, 108.0), (116.0, 140.0)])
+    moved = voice._later_ending(ending, _inspection(0.0, 40.0, [(0.0, 40.0)]), plan)
+    assert 0.0 <= moved['mix_at'] - plan['mix_at'] <= 2.0
+    assert moved['voice']['overlap'] == plan['voice']['overlap']
+
+
+@pytest.mark.parametrize('budget,spans,target', [(0.0, [], 125.0), (4.0, None, 125.0), (4.0, [], 115.0)])
+def test_later_ending_does_not_force_movement_without_a_valid_reason(monkeypatch, budget, spans, target):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', budget, raising=False)
+    plan = dict(PLAN, requested_end=target, voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
+    assert voice._later_ending(_inspection(0.0, 140.0, spans), _inspection(0.0, 40.0, []), plan) is plan
+
+
+def test_requested_ending_is_used_without_another_detector_pass(monkeypatch):
+    _inspect_pair(monkeypatch)
+    original = voice._heard
+    calls = []
+
+    def heard(path, start, seconds):
+        calls.append(path)
+        return original(path, start, seconds)
+
+    monkeypatch.setattr(voice, '_heard', heard)
+    moved = voice.clear_voice('out', 'in', dict(PLAN, requested_end=130.0))
+    assert moved['mix_at'] + moved['mix_seconds'] == 122.0
+    assert moved['in_at'] == 6.0 and moved['mix_seconds'] == 14.0
+    assert moved['voice']['ending_recovered_seconds'] == 4.0
+    assert sorted(calls) == ['in', 'out']
 
 
 def test_sung_patches_and_silero_form_a_union_and_one_failed_detector_is_tolerated(monkeypatch):

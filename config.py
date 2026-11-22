@@ -1371,12 +1371,14 @@ RECORDING_SEARCH_TARGET_LEVEL_DB = float(os.environ.get("RECORDING_SEARCH_TARGET
 # process after the last recording search before they are unloaded to free RAM.
 RECORDING_SEARCH_WARMUP_DURATION = int(os.environ.get("RECORDING_SEARCH_WARMUP_DURATION", "300"))
 
-# Keep a small audible tail; energy scoring moves cues away from natural fade-outs.
+# Prefer this audible tail; ending recovery may use some of it after quality checks.
 SMART_FADE_END_MARGIN_SECONDS = float(os.environ.get("SMART_FADE_END_MARGIN_SECONDS", "2"))
 SMART_FADE_SEARCH_SECONDS = float(os.environ.get("SMART_FADE_SEARCH_SECONDS", "32"))
 SMART_FADE_ENERGY_DROP_DB = float(os.environ.get("SMART_FADE_ENERGY_DROP_DB", "3"))
 # Recover this much source audio in total through small, quality-checked cue shifts.
 SMART_FADE_RECOVER_SECONDS = float(os.environ.get("SMART_FADE_RECOVER_SECONDS", "4"))
+# Additional ending-only recovery toward the requested cue, retaining a small tail.
+SMART_FADE_END_RECOVER_SECONDS = float(os.environ.get("SMART_FADE_END_RECOVER_SECONDS", "4"))
 # Bound cuts into the audible opening and long vocal overlaps, retaining a sustained blend.
 SMART_FADE_ENTRY_LIMIT_SECONDS = float(os.environ.get("SMART_FADE_ENTRY_LIMIT_SECONDS", "12"))
 SMART_FADE_VOCAL_MIX_SECONDS = float(os.environ.get("SMART_FADE_VOCAL_MIX_SECONDS", "14"))

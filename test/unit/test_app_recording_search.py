@@ -768,6 +768,7 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
 
     def check_voice(path_out, path_in, planned):
         assert os.path.isfile(path_out) and os.path.isfile(path_in)
+        assert planned['requested_end'] == 200.0
         calls.append(('voice',))
         return planned
 

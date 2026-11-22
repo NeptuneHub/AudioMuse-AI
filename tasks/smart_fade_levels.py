@@ -502,6 +502,7 @@ def transition(path_out, path_in, plan):
         answer['info']['vocal_overlap'] = plan['voice']['overlap']
         answer['info']['end_margin_seconds'] = plan['voice']['end_margin']
         answer['info']['recovered_seconds'] = plan['voice'].get('recovered_seconds', 0.0)
+        answer['info']['ending_recovered_seconds'] = plan['voice'].get('ending_recovered_seconds', 0.0)
     return answer
 
 
