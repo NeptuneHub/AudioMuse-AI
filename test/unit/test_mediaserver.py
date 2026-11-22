@@ -541,6 +541,71 @@ class TestNavidromeSelectBestArtist:
 
 
 class TestNavidromeAuthParams:
+    @pytest.mark.parametrize('password', ['', None])
+    @pytest.mark.parametrize('api_key', ['', 'default-server-api-key'])
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_instant_playlist_default_user_with_optional_password(
+        self, mock_config, mock_request, password, api_key
+    ):
+        from tasks.mediaserver import context
+        from tasks.mediaserver.navidrome import create_instant_playlist
+
+        mock_config.NAVIDROME_URL = 'http://default:4533'
+        mock_config.NAVIDROME_USER = 'default-user'
+        mock_config.NAVIDROME_PASSWORD = 'default-pass'
+        mock_config.NAVIDROME_API_KEY = api_key
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            'subsonic-response': {
+                'status': 'ok', 'playlist': {'id': 'p1', 'name': 'Mix_instant'},
+            },
+        }
+        mock_request.return_value = mock_response
+
+        with context.use_server(None):
+            result = create_instant_playlist(
+                'Mix', ['song-1'], {'user': 'default-user', 'password': password}
+            )
+
+        assert result['Id'] == 'p1'
+        assert mock_request.call_count == 2
+        for call in mock_request.call_args_list:
+            assert call.args[1].startswith('http://default:4533/rest/')
+            params = call.kwargs['params']
+            if api_key:
+                assert params['apiKey'] == api_key
+                assert 'u' not in params and 'p' not in params
+            else:
+                assert params['u'] == 'default-user'
+                assert params['p'] == 'enc:' + 'default-pass'.encode('utf-8').hex()
+                assert 'apiKey' not in params
+
+    @pytest.mark.parametrize('user_creds,server', [
+        ({'user': 'other-user', 'password': ''}, None),
+        ({'url': 'http://other:4533', 'user': 'default-user', 'password': ''}, None),
+        ({'user': 'default-user', 'password': ''}, {'creds': {'user': 'default-user'}}),
+    ])
+    @patch('tasks.mediaserver.navidrome.requests.request')
+    @patch('tasks.mediaserver.navidrome.config')
+    def test_partial_credentials_do_not_reuse_another_user_or_servers_secrets(
+        self, mock_config, mock_request, user_creds, server
+    ):
+        from tasks.mediaserver import context
+        from tasks.mediaserver.navidrome import _navidrome_request_ex
+
+        mock_config.NAVIDROME_URL = 'http://default:4533'
+        mock_config.NAVIDROME_USER = 'default-user'
+        mock_config.NAVIDROME_PASSWORD = 'default-pass'
+        mock_config.NAVIDROME_API_KEY = 'default-server-api-key'
+
+        with context.use_server(server):
+            data, err = _navidrome_request_ex('ping', user_creds=user_creds)
+
+        assert data is None
+        assert err['kind'] == 'config'
+        mock_request.assert_not_called()
+
     @patch('tasks.mediaserver.navidrome.config')
     def test_generates_hex_encoded_password(self, mock_config):
         from tasks.mediaserver.navidrome import get_navidrome_auth_params
