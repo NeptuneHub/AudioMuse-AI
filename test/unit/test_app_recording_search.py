@@ -51,6 +51,7 @@ import io
 import json
 import os
 import sys
+import threading
 
 import numpy as np
 import pytest
@@ -753,8 +754,10 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     answer = {'type': 'crossfade', 'start': 191.5, 'duration': 10.0, 'middle': 5.0, 'step': 0.1, 'filters': {'bass_hz': 180.0},
               'from': {'gain': 0.5}, 'to': {'gain': 0.7}, 'info': {'tempo_from': None}}
     calls = []
+    folders = []
 
     def make_plan(path_out, out_seconds, path_in, in_seconds):
+        folders.append(os.path.dirname(path_out))
         calls.append(('plan', os.path.basename(path_out), out_seconds, in_seconds, os.path.isdir(seen['folder'])))
         return dict(plan)
 
@@ -762,7 +765,8 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
         calls.append(('crossfade', out_seconds, in_seconds))
         return dict(plan, beatless=True)
 
-    def make_answer(path_out, path_in, planned):
+    def make_answer(path_out, path_in, planned, prepared=None):
+        assert prepared == [path_out, path_in]
         calls.append(('answer', planned.get('beatless', False)))
         return answer
 
@@ -775,6 +779,7 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     monkeypatch.setattr(tasks.smart_fade_mix, 'plan_transition', make_plan)
     monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', make_crossfade)
     monkeypatch.setattr(tasks.smart_fade_levels, 'transition', make_answer)
+    monkeypatch.setattr(tasks.smart_fade_levels, 'prepare_song', lambda path: path)
     monkeypatch.setattr(tasks.smart_fade_voice, 'clear_voice', check_voice)
     url = '/api/recording_search/transition'
     for query in ('', '?from_id=42&to_id=43&out=x&in=1', '?from_id=42&to_id=43&out=-1&in=1',
@@ -788,8 +793,11 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     assert response.status_code == 200 and response.mimetype == 'application/json'
     assert list(json.loads(response.data)) == ['type', 'start', 'duration', 'middle', 'step', 'filters', 'from', 'to', 'info']
     assert response.get_json() == answer
+    timings = dict(part.strip().split(';dur=') for part in response.headers['Server-Timing'].split(','))
+    assert set(timings) == {'setup', 'fetch', 'plan', 'voice', 'level_wait', 'mix', 'total'}
+    assert all(float(value) >= 0.0 for value in timings.values())
     assert calls == [('plan', '42.mp3', 200.0, 20.5, True), ('voice',), ('answer', False)]
-    assert not os.path.exists(seen['folder'])
+    assert all(not os.path.exists(folder) for folder in folders)
     calls.clear()
 
     def no_beat(*args):
@@ -807,6 +815,166 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     monkeypatch.setattr(tasks.smart_fade_levels, 'crossfade_plan', no_room)
     response = client.get(url + '?from_id=42&to_id=43&out=200&in=20')
     assert response.status_code == 400 and 'no audible room' in response.get_json()['error']
+
+
+def test_transition_prepares_both_song_levels_while_planning(client, monkeypatch, tmp_path):
+    from tasks import commons, smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    _fake_media(monkeypatch, tmp_path, b'audio')
+    monkeypatch.setattr(commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song'} for i in ids})
+    ready = threading.Barrier(3)
+
+    def prepare(path):
+        ready.wait(timeout=3)
+        return path
+
+    def plan(*args):
+        ready.wait(timeout=3)
+        return {'mix_at': 180.0}
+
+    def answer(path_out, path_in, planned, prepared=None):
+        assert prepared == [path_out, path_in]
+        return {'start': planned['mix_at']}
+
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', prepare, raising=False)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', plan)
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', answer)
+    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20')
+    assert response.status_code == 200 and response.get_json() == {'start': 180.0}
+
+
+def test_transition_downloads_in_parallel_with_separate_request_contexts(client, bp_mod, monkeypatch, tmp_path):
+    from flask import g, request
+    from tasks import smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    ready = threading.Barrier(2)
+    seen = []
+
+    def fetch(item_id, folder):
+        g.download_id = item_id
+        ready.wait(timeout=3)
+        assert g.download_id == item_id
+        assert request.headers['X-Media-Server'] == 'selected-server'
+        path = os.path.join(folder, 'same-provider-name.audio')
+        with open(path, 'wb') as handle:
+            handle.write(b'audio')
+        seen.append((item_id, path))
+        return path, None
+
+    monkeypatch.setattr(bp_mod, '_fetch_song', fetch)
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', lambda path: path)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', lambda *args: {})
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', lambda a, b, plan, prepared: {'separate': a != b})
+    response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20',
+                          headers={'X-Media-Server': 'selected-server'})
+    assert response.status_code == 200 and response.get_json() == {'separate': True}
+    assert sorted(item for item, path in seen) == ['42', '43']
+    assert all(not os.path.exists(path) for item, path in seen)
+
+
+def test_transition_downloads_an_identical_song_once(client, bp_mod, monkeypatch):
+    from tasks import smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    seen = []
+
+    def fetch(item_id, folder):
+        seen.append(item_id)
+        return os.path.join(folder, item_id), None
+
+    monkeypatch.setattr(bp_mod, '_fetch_song', fetch)
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', lambda path: path)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', lambda *args: {})
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', lambda a, b, plan, prepared: {'same': a == b})
+    response = client.get('/api/recording_search/transition?from_id=42&to_id=42&out=200&in=20')
+    assert response.status_code == 200 and response.get_json() == {'same': True}
+    assert seen == ['42']
+
+
+def test_transition_reuses_completed_playback_downloads(client, monkeypatch, tmp_path):
+    import app_play_cache
+    from tasks import commons, smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    seen = _fake_media(monkeypatch, tmp_path, b'ID3audio')
+    monkeypatch.setattr(commons, 'fetch_track_metadata_map', lambda ids: {item: {} for item in ids})
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', lambda path: path)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', lambda *args: {})
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', lambda a, b, plan, prepared: {'ready': True})
+    response = client.get('/api/recording_search/play/42')
+    assert response.status_code == 200 and response.data == b'ID3audio'
+    response.close()
+    for _ in range(2):
+        response = client.get('/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20')
+        assert response.status_code == 200
+    assert seen['downloads'] == 2
+    assert all(entry.users == 0 for entry in app_play_cache._entries.values())
+
+
+def test_transition_retries_a_download_that_failed_after_writing_partial_audio(client, monkeypatch, tmp_path):
+    from tasks import mediaserver, smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    _fake_media(monkeypatch, tmp_path, b'audio')
+    calls = []
+
+    def download(folder, item):
+        calls.append(item)
+        path = os.path.join(folder, 'song.audio')
+        with open(path, 'wb') as handle:
+            handle.write(b'audio')
+        return None if len(calls) == 1 else path
+
+    monkeypatch.setattr(mediaserver, 'download_track', download)
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', lambda path: path)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', lambda *args: {})
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', lambda a, b, plan, prepared: {'ready': True})
+    url = '/api/recording_search/transition?from_id=42&to_id=42&out=200&in=20'
+    assert client.get(url).status_code == 502
+    assert client.get(url).status_code == 200
+    assert len(calls) == 2
+
+
+def test_transition_download_cache_keeps_selected_servers_separate(client, monkeypatch, tmp_path):
+    import contextlib
+    from flask import request
+    import app_server_context
+    from tasks import mediaserver, smart_fade_levels, smart_fade_mix, smart_fade_voice
+    from tasks.mediaserver import context
+
+    _fake_media(monkeypatch, tmp_path, b'audio')
+    downloaded = []
+
+    @contextlib.contextmanager
+    def selected():
+        with context.use_server({'server_id': request.args['server']}):
+            yield
+
+    def download(folder, item):
+        server = context.active_server_id()
+        downloaded.append(server)
+        path = os.path.join(folder, 'song.audio')
+        with open(path, 'w') as handle:
+            handle.write(server)
+        return path
+
+    def prepare(path):
+        with open(path) as handle:
+            return handle.read()
+
+    monkeypatch.setattr(app_server_context, 'resolve_request_server_id', lambda data=None: request.args['server'])
+    monkeypatch.setattr(app_server_context, 'use_request_server', selected)
+    monkeypatch.setattr(mediaserver, 'download_track', download)
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', prepare)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', lambda *args: {})
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', lambda a, b, plan, prepared: {'server': prepared[0]})
+    for server in ('first', 'second', 'first'):
+        response = client.get('/api/recording_search/transition?from_id=42&to_id=42&out=200&in=20&server=' + server)
+        assert response.status_code == 200 and response.get_json() == {'server': server}
+    assert downloaded == ['first', 'second']
 
 
 def test_a_disabled_feature_answers_503_on_every_route_but_play_and_the_page_says_so(client, bp_mod, monkeypatch, tmp_path):

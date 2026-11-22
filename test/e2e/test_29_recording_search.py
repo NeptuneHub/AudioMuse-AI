@@ -123,3 +123,8 @@ def test_smart_fade_transition_has_sustained_overlap_and_bounded_trimming(stack,
         relative = 20 * np.log10(answer['from']['volume'][late] / answer['to']['volume'][late])
         relative += answer['from']['mid_db'][late] - answer['to']['mid_db'][late]
         assert relative < -18.5
+    repeated = api.json('GET', '/api/recording_search/transition', params={
+        'from_id': ids[0], 'to_id': ids[1], 'out': rows[ids[0]]['fade_out_seconds'],
+        'in': rows[ids[1]]['fade_in_seconds'],
+    }, timeout=300)
+    assert repeated == answer

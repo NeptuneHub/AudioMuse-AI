@@ -10,8 +10,8 @@
 
 The player asks for a song in pieces (the play route with start and seconds), so
 each song is downloaded once into a temporary folder and every play request
-reads that copy, even while the media server still delivers it. Only the play
-route uses it.
+reads that copy, even while the media server still delivers it. Transition
+analysis also copies the completed download while holding a reference.
 
 Main Features:
 * acquire(key, item_id) returns the song's entry, starting its download in a
@@ -48,6 +48,7 @@ class GrowingDownload:
         os.makedirs(folder)
         self.folder = folder
         self.done = threading.Event()
+        self.succeeded = False
         self.thread = threading.Thread(
             target=self._run, args=(contextvars.copy_context(), item_id), name='play-download', daemon=True)
         self.thread.start()
@@ -56,7 +57,8 @@ class GrowingDownload:
         from tasks import mediaserver
 
         try:
-            if not context.run(mediaserver.download_track, self.folder, {'Id': item_id, 'id': item_id}):
+            self.succeeded = bool(context.run(mediaserver.download_track, self.folder, {'Id': item_id, 'id': item_id}))
+            if not self.succeeded:
                 logger.error('The media server did not deliver %s for playback', item_id)
         except Exception:
             logger.exception('Playback download failed for %s', item_id)
@@ -116,7 +118,7 @@ class Entry:
         self.last = time.monotonic()
 
     def failed(self):
-        return self.download.done.is_set() and not self.download.size()
+        return self.download.done.is_set() and (not self.download.succeeded or not self.download.size())
 
 
 _entries = {}

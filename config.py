@@ -1379,6 +1379,8 @@ SMART_FADE_ENERGY_DROP_DB = float(os.environ.get("SMART_FADE_ENERGY_DROP_DB", "3
 SMART_FADE_RECOVER_SECONDS = float(os.environ.get("SMART_FADE_RECOVER_SECONDS", "4"))
 # Additional ending-only recovery toward the requested cue, retaining a small tail.
 SMART_FADE_END_RECOVER_SECONDS = float(os.environ.get("SMART_FADE_END_RECOVER_SECONDS", "4"))
+# Keep small loudness/peak and energy records, keyed by audio content; 0 disables.
+SMART_FADE_LEVEL_CACHE_SIZE = int(os.environ.get("SMART_FADE_LEVEL_CACHE_SIZE", "128"))
 # Bound cuts into the audible opening and long vocal overlaps, retaining a sustained blend.
 SMART_FADE_ENTRY_LIMIT_SECONDS = float(os.environ.get("SMART_FADE_ENTRY_LIMIT_SECONDS", "12"))
 SMART_FADE_VOCAL_MIX_SECONDS = float(os.environ.get("SMART_FADE_VOCAL_MIX_SECONDS", "14"))

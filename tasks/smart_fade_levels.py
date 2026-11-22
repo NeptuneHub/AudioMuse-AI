@@ -18,6 +18,8 @@ highpass_hz and continue_from; then info.
 Main Features:
 * song_level: BS.1770 loudness and sample peak in one streaming pass; the
   gain brings it to TARGET_LUFS, a quiet song only up to PEAK_CEILING.
+* prepare_song lets the endpoint overlap the two whole-song scans with cue
+  and vocal analysis, reusing their exact sources and levels for the mix.
 * time_maps: the second of each song at each point; speed is its slope,
   the playback rate a player sets (no time-stretch, the pitch
   moves with the tempo like a DJ deck without key lock, as the simulation
@@ -49,6 +51,7 @@ import math
 import numpy as np
 
 import config
+from tasks import smart_fade_cache
 from tasks import smart_fade_mix as mix
 
 TARGET_LUFS = -14.0
@@ -412,10 +415,20 @@ def _rounded(values, digits):
     return None if values is None else (np.round(np.asarray(values, dtype=np.float64), digits) + 0.0).tolist()
 
 
-def transition(path_out, path_in, plan):
+def clear_level_cache():
+    smart_fade_cache.clear()
+
+
+def prepare_song(path):
+    """Reuse bounded, content-keyed statistics; never retain decoded song audio."""
+    source = _source(path)
+    profile = ('loudness', source['mono'] is not None, TARGET_LUFS, PEAK_CEILING, GUESSED_PEAK_MARGIN, mix.RATE)
+    return source, smart_fade_cache.remember(path, profile, lambda: song_level(source))
+
+
+def transition(path_out, path_in, plan, prepared=None):
     rate = mix.RATE
-    sources = [_source(path_out), _source(path_in)]
-    songs = [song_level(source) for source in sources]
+    sources, songs = zip(*(prepared if prepared is not None else [prepare_song(path_out), prepare_song(path_in)]))
     gain_a, gain_b = songs[0]['gain'], songs[1]['gain']
     seconds, swap, lead, follow, beat_times = time_maps(plan)
     count = max(1, int(round(seconds / mix.STEP_SECONDS)))
@@ -507,7 +520,7 @@ def transition(path_out, path_in, plan):
 
 
 def crossfade_plan(path_out, out_seconds, path_in, in_seconds):
-    ending, starting = mix._levels(path_out), mix._levels(path_in)
+    ending, starting = mix._levels_pair(path_out, path_in)
     out_seconds = min(out_seconds, ending['seconds'])
     overlap = min(mix.MIN_MIX_SECONDS, out_seconds, starting['seconds'] - in_seconds)
     if overlap <= mix.BLOCK_SECONDS:

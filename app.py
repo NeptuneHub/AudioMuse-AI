@@ -1379,6 +1379,9 @@ if not _is_worker:
             neural_tracks = load_neural_fingerprint_index()
             if neural_tracks:
                 logger.info("Neural fingerprint index loaded at startup (%d tracks).", neural_tracks)
+                from tasks.smart_fade_voice import warmup as warmup_smart_fade
+
+                warmup_smart_fade()
             elif not config.NEURAL_FINGERPRINT_ENABLED:
                 logger.info("Neural fingerprint disabled (NEURAL_FINGERPRINT_ENABLED=false); Search by Recording is off.")
             else:

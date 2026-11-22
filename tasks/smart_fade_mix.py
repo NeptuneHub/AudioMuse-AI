@@ -46,8 +46,11 @@ Main Features:
 
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+
+from tasks import smart_fade_cache
 
 RATE = 44100
 MIX_SECONDS = 15.0
@@ -146,6 +149,11 @@ def _integrated(energy):
 
 
 def _levels(path):
+    profile = ('energy', LEVEL_RATE, BLOCK_SECONDS, STEP_SECONDS, K_SHELF_HZ, K_SHELF_DB, K_PASS_HZ, ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU)
+    return smart_fade_cache.remember(path, profile, lambda: _measure_levels(path))
+
+
+def _measure_levels(path):
     audio = _load(path, LEVEL_RATE)
     weighted = _k_weighted(audio, LEVEL_RATE)
     power = np.concatenate([[0.0], np.cumsum(np.square(weighted, dtype=np.float64))])
@@ -154,6 +162,7 @@ def _levels(path):
     starts = np.minimum(np.round(np.arange(count) * STEP_SECONDS * LEVEL_RATE).astype(np.int64), audio.size)
     ends = np.minimum(starts + size, audio.size)
     energy = (power[ends] - power[starts]) / np.maximum(ends - starts, 1)
+    energy.setflags(write=False)
     return {'energy': energy, 'loudness': _integrated(energy), 'seconds': audio.size / LEVEL_RATE}
 
 
@@ -161,6 +170,11 @@ def _relative_energy(levels, start, count):
     first = int(round((start - BLOCK_SECONDS / 2) / STEP_SECONDS))
     blocks = np.clip(first + np.arange(count), 0, levels['energy'].size - 1)
     return levels['energy'][blocks] / 10.0 ** ((levels['loudness'] + 0.691) / 10.0)
+
+
+def _levels_pair(path_out, path_in):
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-energy') as pool:
+        return tuple(pool.map(_levels, (path_out, path_in)))
 
 
 def _mix_floor(ending, a_at, starting, b_at, seconds):
@@ -328,21 +342,28 @@ def _mix_beats(beat, beats_out, out_length, first_in, in_length, rate):
     return None
 
 
+def _track_region(path, start, seconds, lead=None):
+    audio = _region(path, start, seconds)
+    tempo, beats = _beats(audio if lead is None else audio[int(round(lead * RATE)):])
+    section = _phrase_entry(audio, lead) if lead is not None else None
+    return audio, tempo, beats, section
+
+
 def plan_transition(path_out, out_seconds, path_in, in_seconds):
     a_start = max(0.0, out_seconds - LOOK_SECONDS)
     b_start = max(0.0, in_seconds - PHRASE_LEAD_SECONDS)
     lead = in_seconds - b_start
-    song_out = _region(path_out, a_start, out_seconds - a_start + 2.0)
-    song_in = _region(path_in, b_start, lead + LOOK_SECONDS + 2.0)
-    tempo_out, beats_out = _beats(song_out)
-    tempo_in, beats_after = _beats(song_in[int(round(lead * RATE)):])
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-beats') as pool:
+        ending = pool.submit(_track_region, path_out, a_start, out_seconds - a_start + 2.0)
+        starting = pool.submit(_track_region, path_in, b_start, lead + LOOK_SECONDS + 2.0, lead)
+        song_out, tempo_out, beats_out, _ = ending.result()
+        song_in, tempo_in, beats_after, section = starting.result()
     rate = _stretch_rate(tempo_out, tempo_in)
     locked = bool(tempos_match(tempo_out, tempo_in))
     beat = 60.0 / tempo_out
     before = np.arange(beats_after[0] - 60.0 / tempo_in, -lead, -60.0 / tempo_in)[::-1]
     grid = np.concatenate([before, beats_after]) + lead
     entries = [float(beats_after[0] + lead)]
-    section = _phrase_entry(song_in, lead)
     if section is not None:
         entries.insert(0, float(grid[np.argmin(np.abs(grid - section))]))
     fits = [(entry, _mix_beats(beat, beats_out, song_out.size / RATE, entry, song_in.size / RATE, rate)) for entry in entries]
@@ -360,7 +381,7 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
         overlap = beats * beat
         usable = beats_out[beats_out + overlap <= song_out.size / RATE]
         mix_at = float(usable[np.argmin(np.abs(usable - (out_seconds - a_start - overlap)))])
-        ending, starting = _levels(path_out), _levels(path_in)
+        ending, starting = _levels_pair(path_out, path_in)
         mix_at = _fuller_start(ending, a_start, usable, mix_at, starting, b_start + first_in, overlap)
     resume_in = first_in + overlap * rate
     if not locked:

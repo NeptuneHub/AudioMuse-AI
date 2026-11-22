@@ -44,7 +44,7 @@ Main Features:
   certificate, one browser warning) or say why the built-in HTTPS is off.
 """
 
-from flask import Blueprint, Response, render_template, request, jsonify
+from flask import Blueprint, Response, render_template, request, jsonify, copy_current_request_context
 import contextlib
 import json
 import logging
@@ -52,6 +52,8 @@ import math
 import os
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from time import perf_counter
 
 import app_play_cache
 import app_server_context
@@ -587,7 +589,6 @@ def _library_failure(item_id):
 
 
 def _fetch_song(item_id, folder):
-    from tasks import mediaserver
     from tasks.commons import fetch_track_metadata_map
 
     try:
@@ -596,12 +597,20 @@ def _fetch_song(item_id, folder):
         return None, json_exception(exc, ERR_INVALID_REQUEST)
     if not fetch_track_metadata_map([canonical_id]):
         return None, json_error(ERR_NOT_FOUND, 'This song is not in the library.')
+    entry = None
     try:
-        with app_server_context.use_request_server():
-            path = mediaserver.download_track(folder, {'Id': item_id, 'id': item_id})
+        entry = _acquire_song(item_id)
+        entry.download.done.wait()
+        source = None if entry.failed() else entry.download.file()
+        path = os.path.join(folder, os.path.basename(source)) if source else None
+        if path:
+            shutil.copyfile(source, path)
     except Exception:
         logger.exception('Playback download failed for %s', item_id)
         path = None
+    finally:
+        if entry is not None:
+            app_play_cache.release(entry)
     if not path:
         return None, json_error(ERR_MEDIASERVER_UNREACHABLE, 'The media server did not deliver this song.', http_status=502)
     return path, None
@@ -808,7 +817,8 @@ def recording_search_transition_api():
       502:
         description: The media server did not deliver a song.
     """
-    from tasks.smart_fade_levels import crossfade_plan, transition
+    started = perf_counter()
+    from tasks.smart_fade_levels import crossfade_plan, prepare_song, transition
     from tasks.smart_fade_mix import plan_transition
     from tasks.smart_fade_voice import clear_voice
 
@@ -824,20 +834,41 @@ def recording_search_transition_api():
     if not (from_id and to_id and math.isfinite(out_seconds) and math.isfinite(in_seconds)) or min(out_seconds, in_seconds) < 0:
         return json_error(ERR_INVALID_REQUEST, 'Give from_id, to_id, out and in (seconds).')
     folder = tempfile.mkdtemp(prefix='audiomuse_mix_')
+    marked = perf_counter()
+    timings = {'setup': (marked - started) * 1000.0}
     try:
         paths = []
-        for item_id in (from_id, to_id):
-            path, failure = _fetch_song(item_id, folder)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-fetch') as pool:
+            downloads = {}
+            for index, item_id in enumerate(dict.fromkeys((from_id, to_id))):
+                destination = os.path.join(folder, str(index))
+                os.mkdir(destination)
+                downloads[item_id] = pool.submit(copy_current_request_context(_fetch_song), item_id, destination)
+            downloaded = [downloads[item_id].result() for item_id in (from_id, to_id)]
+        for path, failure in downloaded:
             if failure is not None:
                 return failure
             paths.append(path)
+        fetched = perf_counter()
+        timings['fetch'] = (fetched - marked) * 1000.0
         try:
-            try:
-                plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
-            except ValueError:
-                plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds)
-            plan['requested_end'] = out_seconds
-            answer = transition(paths[0], paths[1], clear_voice(paths[0], paths[1], plan))
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-levels') as pool:
+                measured = [pool.submit(prepare_song, path) for path in paths]
+                try:
+                    plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
+                except ValueError:
+                    plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds)
+                plan['requested_end'] = out_seconds
+                planned = perf_counter()
+                timings['plan'] = (planned - fetched) * 1000.0
+                plan = clear_voice(paths[0], paths[1], plan)
+                voiced = perf_counter()
+                timings['voice'] = (voiced - planned) * 1000.0
+                prepared = [future.result() for future in measured]
+                measured_at = perf_counter()
+                timings['level_wait'] = (measured_at - voiced) * 1000.0
+                answer = transition(paths[0], paths[1], plan, prepared=prepared)
+                timings['mix'] = (perf_counter() - measured_at) * 1000.0
         except ValueError:
             return json_error(ERR_INVALID_REQUEST, 'These two songs have no audible room for a crossfade at these points.')
         except Exception as exc:
@@ -845,7 +876,10 @@ def recording_search_transition_api():
             return json_exception(exc, ERR_SEARCH_FAILED, 'The transition could not be made. Check the container logs.')
     finally:
         shutil.rmtree(folder, ignore_errors=True)
-    return Response(json.dumps(answer), mimetype='application/json')
+    response = Response(json.dumps(answer), mimetype='application/json')
+    timings['total'] = (perf_counter() - started) * 1000.0
+    response.headers['Server-Timing'] = ', '.join(f'{name};dur={value:.2f}' for name, value in timings.items())
+    return response
 
 
 def _send_then_release(chunks, entry):

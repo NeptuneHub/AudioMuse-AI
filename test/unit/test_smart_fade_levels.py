@@ -39,9 +39,18 @@ Main Features:
 import numpy as np
 import pytest
 import soundfile
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 from tasks import smart_fade_levels as levels
 from tasks import smart_fade_mix as mix
+
+
+@pytest.fixture(autouse=True)
+def fresh_level_cache():
+    levels.clear_level_cache()
+    yield
+    levels.clear_level_cache()
 
 
 def _click_audio(bpm, seconds, first=0.0, level=0.8):
@@ -64,6 +73,94 @@ def _write(path, audio, channels=2):
 def _equal_power(count):
     share = np.linspace(0.0, 1.0, count)
     return np.cos(np.pi / 2 * share), np.sin(np.pi / 2 * share)
+
+
+def test_level_cache_uses_content_and_invalidates_when_audio_changes(tmp_path, monkeypatch):
+    levels.clear_level_cache()
+    t = np.arange(mix.RATE) / mix.RATE
+    audio = 0.1 * np.sin(2 * np.pi * 440 * t)
+    path = _write(tmp_path / 'first.wav', audio)
+    copy = tmp_path / 'copy.wav'
+    copy.write_bytes((tmp_path / 'first.wav').read_bytes())
+    original, calls = levels.song_level, []
+
+    def measured(source):
+        calls.append(source['path'])
+        return original(source)
+
+    monkeypatch.setattr(levels, 'song_level', measured)
+    first, second = levels.prepare_song(path), levels.prepare_song(str(copy))
+    assert len(calls) == 1 and first[1] == second[1]
+    first[1]['gain'] = 999.0
+    assert levels.prepare_song(str(copy))[1]['gain'] != 999.0
+    _write(tmp_path / 'first.wav', audio / 2)
+    assert levels.prepare_song(path)[1] != second[1]
+    assert len(calls) == 2
+
+
+def test_level_cache_is_bounded_and_failed_measurements_can_be_retried(tmp_path, monkeypatch):
+    levels.clear_level_cache()
+    monkeypatch.setattr(levels.config, 'SMART_FADE_LEVEL_CACHE_SIZE', 2, raising=False)
+    paths = [_write(tmp_path / f'{n}.wav', np.full(1000, 0.01 * (n + 1))) for n in range(3)]
+    calls = []
+
+    def measured(source):
+        calls.append(source['path'])
+        return {'gain': 1.0}
+
+    monkeypatch.setattr(levels, 'song_level', measured)
+    for path in paths + [paths[0]]:
+        levels.prepare_song(path)
+    assert len(calls) == 4
+    levels.clear_level_cache()
+
+    def broken(source):
+        raise RuntimeError('measurement failed')
+
+    monkeypatch.setattr(levels, 'song_level', broken)
+    with pytest.raises(RuntimeError, match='measurement failed'):
+        levels.prepare_song(paths[0])
+    monkeypatch.setattr(levels, 'song_level', measured)
+    assert levels.prepare_song(paths[0])[1] == {'gain': 1.0}
+
+
+def test_same_audio_has_one_inflight_loudness_scan(tmp_path, monkeypatch):
+    path = _write(tmp_path / 'same.wav', np.zeros(1000))
+    original_key = levels.smart_fade_cache._key
+    hashed = threading.Barrier(2)
+    calls = []
+
+    def key(path, source):
+        result = original_key(path, source)
+        hashed.wait(timeout=3)
+        return result
+
+    def measured(source):
+        calls.append(source['path'])
+        return {'gain': 1.0}
+
+    monkeypatch.setattr(levels.smart_fade_cache, '_key', key)
+    monkeypatch.setattr(levels, 'song_level', measured)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        prepared = list(pool.map(levels.prepare_song, (path, path)))
+    assert len(calls) == 1 and prepared[0][1] == prepared[1][1]
+
+
+def test_prepared_song_levels_are_reused_with_an_identical_transition(tmp_path, monkeypatch):
+    t = np.arange(10 * mix.RATE) / mix.RATE
+    paths = [_write(tmp_path / name, 0.1 * np.sin(2 * np.pi * hz * t))
+             for name, hz in (('out.wav', 220), ('in.wav', 440))]
+    plan = {'mix_at': 4.0, 'mix_seconds': 2.0, 'in_at': 1.0, 'resume_at': 3.0,
+            'style': 'fade', 'swap_at': 5.0, 'beat_seconds': None, 'stretch': 1.0,
+            'tempo_from': None, 'tempo_to': None, 'confidence': 'medium'}
+    expected = levels.transition(*paths, plan)
+    prepared = [levels.prepare_song(path) for path in paths]
+
+    def repeated(path):
+        raise AssertionError('A prepared song must not be scanned again.')
+
+    monkeypatch.setattr(levels, 'prepare_song', repeated)
+    assert levels.transition(*paths, plan, prepared=prepared) == expected
 
 
 def test_the_faders_stay_put_on_a_steady_mix_and_fill_the_hole_of_a_fading_or_quiet_song():

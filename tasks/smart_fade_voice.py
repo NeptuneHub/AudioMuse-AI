@@ -24,6 +24,8 @@ Main Features:
   Keep the incoming cue and approved vocal taper; reject fading energy and
   increased competition in the later half, retaining a small audible tail.
 * Detector failures preserve normal crossfading; energy checks still apply.
+* Skip only singing patches contained in an already proven vocal union;
+  refine uncovered patches and their neighbours at the original resolution.
 """
 
 import logging
@@ -75,24 +77,25 @@ def _musicnn():
     with _sessions_lock:
         if _sessions is None:
             from config import EMBEDDING_MODEL_PATH, MOOD_LABELS, PREDICTION_MODEL_PATH
-            from tasks.onnx_utils import create_onnx_session, resolve_providers
+            from tasks.onnx_utils import _default_sess_options, create_onnx_session, resolve_providers
 
             providers = resolve_providers(label='smart_fade_voice', cpu_only_default=True)
+            options = _default_sess_options()
+            options.add_session_config_entry('session.intra_op.allow_spinning', '0')
+            options.add_session_config_entry('session.inter_op.allow_spinning', '0')
             _sessions = (
-                create_onnx_session(EMBEDDING_MODEL_PATH, providers, label='smart_fade_voice'),
-                create_onnx_session(PREDICTION_MODEL_PATH, providers, label='smart_fade_voice'),
+                create_onnx_session(EMBEDDING_MODEL_PATH, providers, label='smart_fade_voice', sess_options=options),
+                create_onnx_session(PREDICTION_MODEL_PATH, providers, label='smart_fade_voice', sess_options=options),
                 [MOOD_LABELS.index(tag) for tag in VOCAL_TAGS],
             )
         return _sessions
 
 
-def vocal_scores(audio):
-    """The MusiCNN singing score of each patch and the second each patch starts."""
+def _patches(audio):
     import librosa
 
     if not audio.size:
-        return np.zeros(0), np.zeros(0)
-    embedding, prediction, tags = _musicnn()
+        return np.zeros(0), np.zeros((0, PATCH_FRAMES, 96), dtype=np.float32)
     samples = (PATCH_FRAMES - 1) * MEL_HOP + FFT_SIZE
     audio = np.pad(audio, (0, max(0, samples - audio.size)))
     mel = librosa.feature.melspectrogram(y=audio, sr=VAD_RATE, n_fft=FFT_SIZE, hop_length=MEL_HOP, n_mels=96, window='hann',
@@ -100,14 +103,25 @@ def vocal_scores(audio):
     log_mel = np.log10(1 + 10000 * np.maximum(mel, 0.0))
     last = log_mel.shape[1] - PATCH_FRAMES
     starts = np.unique(np.append(np.arange(0, last + 1, PATCH_HOP_FRAMES), last))
-    patches = np.array([log_mel[:, k:k + PATCH_FRAMES] for k in starts]).transpose(0, 2, 1).astype(np.float32)
+    return starts * MEL_HOP / VAD_RATE, np.array([log_mel[:, k:k + PATCH_FRAMES] for k in starts]).transpose(0, 2, 1).astype(np.float32)
+
+
+def _predict(patches):
+    if not len(patches):
+        return np.zeros(0)
+    embedding, prediction, tags = _musicnn()
     features = embedding.run([EMBEDDING_OUTPUT], {EMBEDDING_INPUT: patches})[0]
     logits = prediction.run([PREDICTION_OUTPUT], {PREDICTION_INPUT: features})[0]
-    return starts * MEL_HOP / VAD_RATE, (1.0 / (1.0 + np.exp(-logits[:, tags]))).max(axis=1)
+    return (1.0 / (1.0 + np.exp(-logits[:, tags]))).max(axis=1)
 
 
-def sung_spans(audio):
-    starts, scores = vocal_scores(audio)
+def vocal_scores(audio):
+    """The MusiCNN singing score of each patch and the second each patch starts."""
+    starts, patches = _patches(audio)
+    return starts, _predict(patches)
+
+
+def _patch_spans(starts, scores):
     spans, run = [], []
     for k, sung in enumerate(np.append(scores >= VOCAL_SCORE, False)):
         if sung:
@@ -117,6 +131,57 @@ def sung_spans(audio):
             spans.append((float(starts[run[0]]), float(starts[run[-1]]) + PATCH_SECONDS))
         run = []
     return spans
+
+
+def _sung_patches(starts, predict):
+    """Omit only patches whose classification cannot change the vocal union."""
+    count = len(starts)
+    if not count:
+        return []
+    stride = max(VOCAL_RUN, VOCAL_RUN - 1 + int(PATCH_SECONDS * VAD_RATE / (PATCH_HOP_FRAMES * MEL_HOP)))
+    anchors = np.arange(0, count, stride)
+    probes = np.unique(np.r_[np.minimum(anchors[:, None] + np.arange(VOCAL_RUN), count - 1).ravel(), count - 1])
+    scores = np.full(count, np.nan)
+    scores[probes] = predict(probes)
+    merged = []
+    for begin, end in _patch_spans(starts, scores):
+        if merged and begin <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((begin, end))
+    covered = np.zeros(count, dtype=bool)
+    for begin, end in merged:
+        covered |= (starts >= begin) & (starts + PATCH_SECONDS <= end)
+    outside = np.flatnonzero(~covered)
+    needed = np.unique(np.r_[outside, np.maximum(0, outside - 1), np.minimum(count - 1, outside + 1)])
+    needed = needed[np.isnan(scores[needed])]
+    if needed.size:
+        scores[needed] = predict(needed)
+    return _patch_spans(starts, scores)
+
+
+def sung_spans(audio):
+    starts, patches = _patches(audio)
+    return _sung_patches(starts, lambda indices: _predict(patches[indices]))
+
+
+def warmup():
+    """Initialize numerical runtimes before the web worker accepts transitions."""
+    try:
+        from tasks.paged_ivf import _pin_blas_single_thread
+
+        voiced_spans(np.zeros((PATCH_FRAMES - 1) * MEL_HOP + FFT_SIZE, dtype=np.float32))
+        audio = np.zeros(12 * mix.RATE, dtype=np.float32)
+        burst = 0.1 * np.sin(2 * np.pi * 1000 * np.arange(int(0.03 * mix.RATE)) / mix.RATE)
+        for at in np.arange(0, audio.size, mix.RATE // 2):
+            audio[at:at + burst.size] = burst
+        mix._beats(audio)
+        _pin_blas_single_thread()
+        mix._phrase_entry(audio, 4.0)
+        mix._agreement(audio)
+        logger.info('Smart fade models and musical analysis warmed up')
+    except Exception:
+        logger.warning('Smart fade warmup failed; the next transition will retry', exc_info=True)
 
 
 def spoken_spans(audio):

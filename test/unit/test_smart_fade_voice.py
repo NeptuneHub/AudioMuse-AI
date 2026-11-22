@@ -18,6 +18,8 @@ Main Features:
 """
 
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import numpy as np
 import pytest
@@ -298,8 +300,9 @@ def test_requested_ending_is_used_without_another_detector_pass(monkeypatch):
 def test_sung_patches_and_silero_form_a_union_and_one_failed_detector_is_tolerated(monkeypatch):
     starts = np.arange(10) * 0.5
     scores = np.array([0.05, 0.2, 0.05, 0.2, 0.3, 0.25, 0.05, 0.05, 0.2, 0.2])
-    monkeypatch.setattr(voice, 'vocal_scores', lambda audio: (starts, scores))
-    assert voice.sung_spans(np.zeros(1)) == [(1.5, 2.5 + voice.PATCH_SECONDS), (4.0, 4.5 + voice.PATCH_SECONDS)]
+    expected = [(1.5, 2.5 + voice.PATCH_SECONDS), (4.0, 4.5 + voice.PATCH_SECONDS)]
+    assert voice._patch_spans(starts, scores) == expected
+    monkeypatch.setattr(voice, 'sung_spans', lambda audio: expected)
     monkeypatch.setattr(voice, 'spoken_spans', lambda audio: [(0.2, 0.9)])
     assert voice.voiced_spans(np.zeros(1))[0] == (0.2, 0.9)
 
@@ -311,6 +314,90 @@ def test_sung_patches_and_silero_form_a_union_and_one_failed_detector_is_tolerat
     monkeypatch.setattr(voice, 'spoken_spans', broken)
     with pytest.raises(RuntimeError):
         voice.voiced_spans(np.zeros(1))
+
+
+def test_adaptive_patch_skipping_preserves_the_full_resolution_mask():
+    rng = np.random.default_rng(42)
+    for count in (1, 2, 5, 7, 19, 60, 121):
+        starts = np.arange(count) * voice.PATCH_HOP_FRAMES * voice.MEL_HOP / voice.VAD_RATE
+        if count > 1:
+            starts[-1] -= 0.1
+        edges = np.r_[starts, starts + voice.PATCH_SECONDS]
+        points = np.unique(np.r_[edges, np.nextafter(edges, -np.inf), np.nextafter(edges, np.inf)])
+        for _ in range(40):
+            positive = rng.random(count) < rng.random()
+            accepted = positive & (np.r_[False, positive[:-1]] | np.r_[positive[1:], False])
+            accepted[0], accepted[-1] = positive[0], positive[-1]
+            expected = np.zeros(points.size, dtype=bool)
+            for start in starts[accepted]:
+                expected |= (points >= start) & (points < start + voice.PATCH_SECONDS)
+            evaluated = []
+
+            def predict(indices):
+                evaluated.extend(indices)
+                return np.where(positive[indices], 0.3, 0.05)
+
+            spans = voice._sung_patches(starts, predict)
+            actual = voice._activity({'at': 0.0, 'spans': spans}, points)
+            assert np.array_equal(actual, expected)
+            assert len(evaluated) == len(set(evaluated)) <= count
+
+
+@pytest.mark.parametrize('score', [0.05, 0.3])
+def test_adaptive_patches_skip_only_proven_covered_windows(score):
+    starts = np.arange(120) * voice.PATCH_HOP_FRAMES * voice.MEL_HOP / voice.VAD_RATE
+    evaluated = []
+
+    def predict(indices):
+        evaluated.extend(indices)
+        return np.full(len(indices), score)
+
+    spans = voice._sung_patches(starts, predict)
+    if score < voice.VOCAL_SCORE:
+        assert len(evaluated) == len(starts) and spans == []
+    else:
+        assert len(evaluated) < len(starts) / 2
+        assert voice._activity({'at': 0.0, 'spans': spans}, np.linspace(0, starts[-1] + voice.PATCH_SECONDS - 1e-6, 1000)).all()
+
+
+def test_warmup_initializes_detectors_and_the_beat_tracker_without_library_audio(monkeypatch):
+    from tasks import paged_ivf
+
+    calls = []
+    monkeypatch.setattr(voice, 'voiced_spans', lambda audio: calls.append(('voice', len(audio))))
+    monkeypatch.setattr(voice.mix, '_beats', lambda audio: calls.append(('beats', len(audio))))
+    monkeypatch.setattr(paged_ivf, '_pin_blas_single_thread', lambda: calls.append(('blas', 1)))
+    monkeypatch.setattr(voice.mix, '_phrase_entry', lambda audio, at: calls.append(('phrase', at)))
+    monkeypatch.setattr(voice.mix, '_agreement', lambda audio: calls.append(('agreement', len(audio))))
+    voice.warmup()
+    assert calls == [('voice', (voice.PATCH_FRAMES - 1) * voice.MEL_HOP + voice.FFT_SIZE), ('beats', 12 * voice.mix.RATE),
+                     ('blas', 1), ('phrase', 4.0), ('agreement', 12 * voice.mix.RATE)]
+
+
+def test_model_initialization_is_shared_and_keeps_the_existing_cpu_budget(monkeypatch):
+    from tasks import onnx_utils
+
+    ready = threading.Barrier(2)
+    created = []
+    monkeypatch.setattr(voice, '_sessions', None)
+    monkeypatch.setattr(onnx_utils, 'usable_cpu_count', lambda: 2)
+    monkeypatch.setattr(onnx_utils, 'resolve_providers', lambda **kw: [('CPUExecutionProvider', {})])
+
+    def create(path, providers, label, sess_options):
+        assert sess_options.intra_op_num_threads == 2
+        assert sess_options.get_session_config_entry('session.intra_op.allow_spinning') == '0'
+        assert sess_options.get_session_config_entry('session.inter_op.allow_spinning') == '0'
+        created.append(path)
+        return object()
+
+    def initialize():
+        ready.wait(timeout=3)
+        return voice._musicnn()
+
+    monkeypatch.setattr(onnx_utils, 'create_onnx_session', create)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        sessions = [future.result() for future in [pool.submit(initialize), pool.submit(initialize)]]
+    assert len(created) == 2 and sessions[0] is sessions[1]
 
 
 @pytest.mark.parametrize('seconds', [1.0, 4.3])
