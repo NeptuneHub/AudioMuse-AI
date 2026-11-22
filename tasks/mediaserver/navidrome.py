@@ -151,6 +151,13 @@ def _redact_navidrome_secrets(text):
 def _auth_kwargs_from_creds(user_creds):
     if not user_creds:
         return {}
+    if (
+        context.active_server() is None
+        and not user_creds.get('url')
+        and user_creds.get('user') == config.NAVIDROME_USER
+        and not (user_creds.get('password') or user_creds.get('api_key'))
+    ):
+        return {}
     return {
         'username': user_creds.get('user') or '',
         'password': user_creds.get('password') or '',
