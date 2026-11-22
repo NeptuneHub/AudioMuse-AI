@@ -151,7 +151,6 @@ def _redact_navidrome_secrets(text):
 def _auth_kwargs_from_creds(user_creds):
     if not user_creds:
         return {}
-    # An empty optional password for the default account uses its saved auth.
     if (
         context.active_server() is None
         and not user_creds.get('url')
