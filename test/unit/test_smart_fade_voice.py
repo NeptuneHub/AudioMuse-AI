@@ -333,7 +333,7 @@ def test_adaptive_patch_skipping_preserves_the_full_resolution_mask():
                 expected |= (points >= start) & (points < start + voice.PATCH_SECONDS)
             evaluated = []
 
-            def predict(indices):
+            def predict(indices, evaluated=evaluated, positive=positive):
                 evaluated.extend(indices)
                 return np.where(positive[indices], 0.3, 0.05)
 
