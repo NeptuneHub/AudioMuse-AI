@@ -19,6 +19,7 @@ Main Features:
 * by_track leaves out the padded copy of the same recording and still fills the list
 * silent, missing and unknown inputs are 400
 * warmup reports the neural and encoder models loaded
+* smart fades retain a sustained overlap and report bounded cue recovery
 """
 
 import io
@@ -92,3 +93,38 @@ def test_warmup_reports_models(stack, api, analyzed_library):
     assert body['loaded'] is True, body
     assert body['models']['neural'] is True, body
     assert body['models']['encoder'] is True, body
+
+
+def test_smart_fade_transition_has_sustained_overlap_and_bounded_trimming(stack, api, library, analyzed_library):
+    ids = [library.pid('A02'), library.pid('A03')]
+    ordered = api.json('POST', '/api/recording_search/smart_fade', json={'item_ids': ids, 'keep_order': True})
+    rows = {row['item_id']: row for row in ordered['results']}
+    answer = api.json('GET', '/api/recording_search/transition', params={
+        'from_id': ids[0], 'to_id': ids[1], 'out': rows[ids[0]]['fade_out_seconds'],
+        'in': rows[ids[1]]['fade_in_seconds'],
+    }, timeout=300)
+    assert answer['duration'] > 0.0 and answer['to']['start'] >= 0.0
+    assert 'delay' not in answer['to']
+    assert answer['to']['start'] <= 12.0
+    assert answer['info']['end_margin_seconds'] >= 1.9
+    assert 0.0 <= answer['info']['recovered_seconds'] <= 4.0001
+    assert 0.0 <= answer['info']['ending_recovered_seconds'] <= 4.0001
+    consumed = answer['to']['continue_from'] - answer['to']['start']
+    assert consumed > 0.0
+    speeds = np.asarray(answer['to']['speed'])
+    assert abs(consumed - np.sum((speeds[1:] + speeds[:-1]) * 0.5 * answer['step'])) < 0.002
+    assert_no_fp_ids(answer)
+    for side in ('from', 'to'):
+        for key in ('volume', 'speed', 'high_db', 'mid_db', 'bass_db'):
+            assert len(answer[side][key]) >= 2 and np.isfinite(answer[side][key]).all()
+    assert abs((len(answer['from']['volume']) - 1) * answer['step'] - answer['duration']) < 0.001
+    if answer['info']['vocal_overlap'] > 0.5:
+        late = round(0.75 * (len(answer['from']['volume']) - 1))
+        relative = 20 * np.log10(answer['from']['volume'][late] / answer['to']['volume'][late])
+        relative += answer['from']['mid_db'][late] - answer['to']['mid_db'][late]
+        assert relative < -18.5
+    repeated = api.json('GET', '/api/recording_search/transition', params={
+        'from_id': ids[0], 'to_id': ids[1], 'out': rows[ids[0]]['fade_out_seconds'],
+        'in': rows[ids[1]]['fade_in_seconds'],
+    }, timeout=300)
+    assert repeated == answer

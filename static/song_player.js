@@ -114,7 +114,7 @@
     const OPTIONS = {
         smart: {
             label: 'Smart fade',
-            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), plays them all at the same loudness, each from where it should start to where it should end with a beat-matched mix of at least 15 seconds that hands the bass, mids and highs over one after the other (only when the beats are confirmed to lock; otherwise the default 10 second crossfade, started on a beat and into the next song\'s section start), and shows Skip to the fade. As each transition is planned, a small icon on the next row says how that song comes in: an equals sign for a beat-matched mix, rising lines for a beat-matched rise, a split square for the default crossfade; the player bar counts them. Set it before the search.'
+            help: 'Orders the songs so each one flows into the next (a path or an album keeps its order), matches loudness, and makes a gradual transition while both songs have energy. It balances how much is trimmed against competing voices, with gentle EQ where needed. Confirmed beats keep their tempo glide and bass swap. Skip to the fade jumps to the planned transition. Set it before the search.'
         },
         demo: {
             label: 'Demo',
@@ -254,6 +254,7 @@
         let swapView = null;
         const planCache = new Map();
         const planMarks = new Map();
+        const heard = new Map();
         let listPairs = [];
 
         function listSongs() {
@@ -627,6 +628,11 @@
                         return null;
                     })
                     .then(plan => {
+                        if (plan) {
+                            heard.set(from.row, Object.assign({}, heard.get(from.row), { end: plan.start + plan.duration }));
+                            heard.set(to.row, Object.assign({}, heard.get(to.row), { start: plan.to.start }));
+                            if (choice && choice.smart) smartSpans(listSongs().map(withFade));
+                        }
                         planMarks.set(key, markFor(plan, to));
                         paintMark(to, planMarks.get(key));
                         showSummary();
@@ -649,7 +655,7 @@
                 if (!URLS.transition || typeof from.end !== 'number' || typeof song.start !== 'number') return [song, markFor(null, song)];
                 return [song, planMarks.get(pairKey(from, song)) || { kind: 'none' }];
             }));
-            showSpans(list, songs, 'Smart fade', song => marks.get(song));
+            showSpans(list, songs.map(song => Object.assign({}, song, heard.get(song.row))), 'Smart fade', song => marks.get(songs.find(other => other.row === song.row)));
         }
 
         function showSummary() {
@@ -767,9 +773,11 @@
                         state.handoverAt = Infinity;
                         return;
                     }
-                    const fading = fadeEnd !== null;
-                    const span = crossfadeSeconds();
-                    state.handoverAt = Math.max(now + 0.05, at(fading ? Math.min(fadeEnd, length) - span : length));
+                    const fading = fadeEnd !== null || playMode.beatMatch;
+                    const end = Math.min(fadeEnd === null ? length - (playMode.beatMatch ? Math.min(2, length / 10) : 0) : fadeEnd, length);
+                    const played = state.node.offset + Math.max(0, now - state.node.when);
+                    const span = Math.min(crossfadeSeconds(), Math.max(0.1, end - played - 0.05));
+                    state.handoverAt = Math.max(now + 0.05, at(fading ? end - span : length));
                     commit = () => {
                         if (fading) {
                             state.node.gain.gain.setValueCurveAtTime(FADE_OUT, state.handoverAt, span);
@@ -963,6 +971,7 @@
             shown += 1;
             planCache.clear();
             planMarks.clear();
+            heard.clear();
             listPairs = [];
             showSummary();
             const seed = options.seed && options.seed.item_id ? { item_id: String(options.seed.item_id), title: options.seed.title || 'Unknown' } : null;

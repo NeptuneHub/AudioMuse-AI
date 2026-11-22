@@ -39,6 +39,7 @@ Main Features:
 import numpy as np
 import pytest
 import soundfile
+import threading
 
 from tasks import smart_fade_mix as mix
 
@@ -88,6 +89,19 @@ def test_two_click_tracks_mix_on_the_beat_at_the_first_tempo(tmp_path):
     beats_in = (plan['in_at'] - 0.2) * 122 / 60
     assert abs(plan['in_at'] - 5.0) <= mix.PHRASE_REACH_BEATS * 60 / 122 + 0.01 and abs(beats_in - round(beats_in)) <= 0.08
     assert plan['resume_at'] - plan['in_at'] == pytest.approx(plan['mix_seconds'] * plan['stretch'], abs=0.002)
+
+
+def test_both_regions_are_tracked_in_parallel(tmp_path, monkeypatch):
+    paths = [_clicks(tmp_path / name, bpm, 40.0) for name, bpm in (('a.wav', 120), ('b.wav', 122))]
+    ready = threading.Barrier(2)
+    track = mix._track_region
+
+    def together(*args):
+        ready.wait(timeout=3)
+        return track(*args)
+
+    monkeypatch.setattr(mix, '_track_region', together)
+    assert mix.plan_transition(paths[0], 30.0, paths[1], 5.0)['style'] == 'blend'
 
 
 def test_the_mix_is_the_fewest_beat_steps_that_reach_the_mix_length(tmp_path, monkeypatch):
@@ -160,12 +174,10 @@ def test_a_beat_grid_that_misses_the_beats_fades_instead_of_matching(tmp_path, m
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     song_in = _clicks(tmp_path / 'b.wav', 120, 40.0, first=0.1)
     tracked = mix._beats
-    calls = []
-
     def off_grid(audio):
         tempo, grid = tracked(audio)
-        calls.append(tempo)
-        return tempo, grid + (0.15 if len(calls) > 1 else 0.0)
+        incoming = np.flatnonzero(np.abs(audio) > 0.01)[0] > 0.05 * mix.RATE
+        return tempo, grid + (0.15 if incoming else 0.0)
 
     monkeypatch.setattr(mix, '_phrase_entry', lambda audio, target: None)
     assert mix.plan_transition(song_out, 30.0, song_in, 5.0)['style'] == 'blend'
