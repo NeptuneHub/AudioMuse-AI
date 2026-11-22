@@ -2468,6 +2468,54 @@ class TestEmbyGetTracksFromAlbum:
         assert 'standalone_' not in call_url, "Should NOT include 'standalone_' prefix in API call"
 
 
+class TestEmbyCreateInstantPlaylist:
+    @pytest.mark.parametrize('bound', [False, True])
+    @pytest.mark.parametrize('user_creds,expected_user_id', [
+        ({'user_identifier': 'default-user', 'token': ''}, 'default-user'),
+        ({'user_identifier': 'Listener', 'token': ''}, 'listener-id'),
+        ({'user_identifier': 'listener-id', 'token': 'explicit-token'}, 'listener-id'),
+        ({'user_id': 'explicit-id', 'token': ''}, 'explicit-id'),
+        (None, None),
+    ])
+    @patch('tasks.mediaserver.emby.requests.get')
+    @patch('tasks.mediaserver.emby.requests.post')
+    @patch('tasks.mediaserver.emby.config')
+    def test_uses_requested_account_and_selected_servers_token(
+        self, mock_config, mock_post, mock_get, bound, user_creds, expected_user_id
+    ):
+        from tasks.mediaserver import context
+        from tasks.mediaserver.emby import create_instant_playlist
+
+        mock_config.EMBY_URL = 'http://default:8096'
+        mock_config.EMBY_USER_ID = 'default-user'
+        mock_config.EMBY_TOKEN = 'default-token'
+        selected = {
+            'url': 'http://secondary:8096', 'user_id': 'secondary-user', 'token': 'secondary-token',
+        } if bound else {
+            'url': mock_config.EMBY_URL,
+            'user_id': mock_config.EMBY_USER_ID,
+            'token': mock_config.EMBY_TOKEN,
+        }
+        mock_get.return_value.json.return_value = [{'Name': 'Listener', 'Id': 'listener-id'}]
+        mock_post.return_value.json.return_value = {'Id': 'new-playlist'}
+
+        with context.use_server({'creds': selected} if bound else None):
+            result = create_instant_playlist('Mix', ['song-1'], user_creds)
+
+        assert result == {'Id': 'new-playlist'}
+        assert mock_post.call_count == 1
+        url = mock_post.call_args.args[0]
+        assert url.startswith(selected['url'] + '/emby/Playlists?')
+        assert f"&UserId={expected_user_id or selected['user_id']}&" in url
+        token = (user_creds or {}).get('token') or selected['token']
+        assert mock_post.call_args.kwargs['headers'] == {'X-Emby-Token': token}
+        if (user_creds or {}).get('user_identifier'):
+            assert mock_get.call_args.args[0] == selected['url'] + '/emby/Users'
+            assert mock_get.call_args.kwargs['headers'] == {'X-Emby-Token': token}
+        else:
+            mock_get.assert_not_called()
+
+
 class TestEmbyCreatePlaylist:
     @patch('tasks.mediaserver.emby.requests.post')
     @patch('tasks.mediaserver.emby.config')

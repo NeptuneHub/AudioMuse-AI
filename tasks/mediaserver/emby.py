@@ -880,6 +880,8 @@ def create_instant_playlist(playlist_name, item_ids, user_creds=None):
     token = (user_creds.get('token') if user_creds else None) or config.EMBY_TOKEN
     if not token:
         raise ValueError("Emby Token is required and could not be found.")
+    if user_creds and user_creds.get('user_identifier'):
+        user_id = resolve_user(user_creds['user_identifier'], token)
     if not user_id:
         raise ValueError("Emby User user_id is required and could not be found.")
 
