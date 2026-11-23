@@ -585,7 +585,9 @@ function renderSelectionPanel() {
             const row = document.createElement('div');
             row.className = 'selection-list-item';
             const left = document.createElement('div');
-            left.innerHTML = `<span style="color:var(--text-muted);margin-right:6px">[${p.genre}]</span> ${p.title} - ${p.artist}`;
+            left.innerHTML = '<span style="color:var(--text-muted);margin-right:6px"></span>';
+            left.firstElementChild.textContent = `[${p.genre}]`;
+            left.appendChild(document.createTextNode(` ${p.title} - ${p.artist}`));
             const btn = document.createElement('button'); btn.className = 'btn btn-danger btn-sm'; btn.textContent = 'REMOVE'; btn.style.marginLeft = '8px'; btn.onclick = (()=>{
                 return function() { removeFromSelection(id); };
             })();

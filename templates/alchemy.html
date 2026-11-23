@@ -365,12 +365,13 @@
                     _alchemyAnchorsCache.forEach(anchor => {
                         const tr = document.createElement('tr');
                         tr.innerHTML = `
-                            <td>${anchor.name}</td>
+                            <td></td>
                             <td>
                                 <button type="button" class="btn btn-sm btn-ghost btn-rename-anchor" data-id="${anchor.id}">Rename</button>
                                 <button type="button" class="btn btn-sm btn-danger btn-delete-anchor" data-id="${anchor.id}">Delete</button>
                             </td>
                         `;
+                        tr.firstElementChild.textContent = anchor.name;
                         anchorsTable.appendChild(tr);
                     });
                 }
