@@ -39,6 +39,8 @@ Main Features:
   they are still legitimately stopping aborts a restore that was going fine.
 * Backups are compressed to .zip; restore accepts .sql or .zip uploads
   (zip detected by magic bytes and extracted before psql).
+* Restore uploads, chunk reassembly and extracted SQL use BACKUP_DIR so large
+  files do not fill a RAM-backed system temp directory.
 """
 
 import os
@@ -332,7 +334,7 @@ def _extract_sql_if_zip(dump_file, log):
             if member is None:
                 log.write("Restore FAILED: no .sql file found inside the zip archive.\n")
                 return None, None
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql', dir=BACKUP_DIR)
             with zf.open(member) as src:
                 shutil.copyfileobj(src, tmp, 1024 * 1024)
             tmp.close()
@@ -1044,7 +1046,7 @@ def restore_backup():
             ):
                 logger.info(f"All {total_chunks} chunks received. Reassembling...")
 
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql', dir=BACKUP_DIR)
                 restore_file = tmp.name
 
                 try:
@@ -1124,7 +1126,7 @@ def restore_backup():
                 logger.warning("Refusing non-chunked restore: lock already held.")
                 return json_error(ERR_CONFLICT, 'A database restore is already in progress. '
                         'Wait for it to finish, or wait up to 1 hour for the lock to auto-release.')
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql')
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.sql', dir=BACKUP_DIR)
             uploaded.save(tmp)
             tmp.close()
             restore_file = tmp.name
