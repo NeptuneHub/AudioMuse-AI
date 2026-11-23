@@ -30,6 +30,7 @@ import os
 import sys
 import types
 import zipfile
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -155,14 +156,22 @@ class TestExtractSqlIfZip:
         assert source == str(dump)
         assert extracted is None
 
-    def test_zip_upload_extracts_inner_sql_to_temp_file(self, tmp_path):
+    def test_zip_extracts_to_backup_dir_when_system_temp_is_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        backup_dir = tmp_path / 'backup'
+        backup_dir.mkdir()
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(backup_dir))
+        monkeypatch.setattr(app_backup.tempfile, 'tempdir', str(tmp_path / 'missing-system-temp'))
         inner = b'SELECT 42;\n'
         zpath = tmp_path / 'dump.zip'
         with zipfile.ZipFile(zpath, 'w') as zf:
             zf.writestr('audiomuse_backup_20260717_120000.sql', inner)
         source, extracted = app_backup._extract_sql_if_zip(str(zpath), io.StringIO())
+        assert source is not None
         assert source == extracted
         assert source != str(zpath)
+        assert Path(source).parent == backup_dir
         with open(source, 'rb') as fh:
             assert fh.read() == inner
         os.unlink(source)
@@ -436,6 +445,40 @@ class TestRestoreWorkerStopSafety:
         assert 'postgresql://audiomuse@postgres:5432/audiomusedb' in seen['cmd']
         assert '-h' not in seen['cmd']
         assert seen['env']['PGPASSWORD'] == 'pw'
+
+
+class TestRestoreStorage:
+    @pytest.mark.parametrize('chunked', [False, True], ids=['single-file', 'chunked'])
+    def test_upload_uses_backup_dir_when_system_temp_is_unavailable(
+        self, client, monkeypatch, tmp_path, chunked
+    ):
+        backup_dir = tmp_path / 'backup'
+        monkeypatch.setattr(app_backup, 'BACKUP_DIR', str(backup_dir))
+        monkeypatch.setattr(app_backup, 'RESTORE_LOG_DIR', str(backup_dir))
+        monkeypatch.setattr(app_backup.tempfile, 'tempdir', str(tmp_path / 'missing-system-temp'))
+        monkeypatch.setattr(
+            app_backup.restart_manager, 'publish_stop_request', lambda **_kwargs: True
+        )
+        runner = MagicMock(return_value=MagicMock(pid=123))
+        monkeypatch.setattr(app_backup.subprocess, 'Popen', runner)
+
+        if chunked:
+            first = _post(client, chunk_num=1, total_chunks=2)
+            assert first.status_code == 200
+            assert first.get_json()['all_chunks_received'] is False
+            resp = _post(client, chunk_num=2, total_chunks=2)
+            expected = b'SELECT 1;\n' * 2
+        else:
+            resp = _post(client)
+            expected = b'SELECT 1;\n'
+
+        assert resp.status_code == 200
+        assert resp.get_json()['all_chunks_received'] is True
+        runner.assert_called_once()
+        restore_file = Path(runner.call_args.args[0][-2])
+        assert restore_file.parent == backup_dir
+        assert restore_file.read_bytes() == expected
+        assert not list((backup_dir / 'chunks').glob('backup_*.sql'))
 
 
 class TestRestoreChunkProgress:
