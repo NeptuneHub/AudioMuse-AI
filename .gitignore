@@ -100,3 +100,11 @@ metadata/
 /dclap_sae_k20_d1024_best_encoder.onnx
 /dclap_sae_k20_d1024_best_decoder.onnx
 pr.md
+
+# CLAP2 benchmark downloads and generated results
+/scripts/tmp/
+scripts/clap2_labels.json
+scripts/readme.md
+scripts/clap2.py
+scripts/music_similarity.py
+scripts/requirements.txt
