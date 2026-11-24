@@ -46,6 +46,7 @@ ERR_MEDIASERVER_AUTH = 1104
 ERR_MEDIASERVER_LIBRARY = 1105
 ERR_MEDIASERVER_PLAYLIST = 1106
 ERR_MEDIASERVER_TEST_FAILED = 1107
+ERR_MEDIASERVER_PASSTHROUGH_DENIED = 1108
 
 ERR_ANALYSIS_FAILED = 2001
 ERR_ALBUM_ANALYSIS_FAILED = 2002
@@ -226,6 +227,15 @@ ERROR_REGISTRY = {
         "default_message": (
             "The media server connection test failed: the server could not be reached, or it "
             "answered without a usable music library. The container log has the server's answer."
+        ),
+    },
+    ERR_MEDIASERVER_PASSTHROUGH_DENIED: {
+        "error_class": "Music Server Access Denied",
+        "default_message": (
+            "The media server did not let AudioMuse-AI act as your user, so nothing was "
+            "created. An administrator must allow this AudioMuse-AI host for external "
+            "authentication on the media server (Navidrome: ExtAuth.TrustedSources and "
+            "ExtAuth.UserHeader)."
         ),
     },
     ERR_ANALYSIS_FAILED: {

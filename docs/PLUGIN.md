@@ -555,6 +555,36 @@ def register(ctx):
 
 Keep in mind that `admin_only` hides the menu link only. The page URL under `/plugins/<your id>/` stays reachable by any logged-in user. The one page AudioMuse-AI gates to admins for you is the settings page.
 
+### Request identity
+
+Inside a request, AudioMuse-AI sets three values on `flask.g` before your view
+runs. Branch on `g.auth_method` and treat any value you do not know as "deny":
+
+| `g.auth_method` | Who is calling | `g.auth_user` | `g.auth_role` |
+|---|---|---|---|
+| `session` | A user signed in with a local AudioMuse-AI account (cookie) | the local username | `admin` or `user` |
+| `proxy` | A user signed in through a reverse proxy / identity provider (see [REVERSE_PROXY_AUTH.md](REVERSE_PROXY_AUTH.md)) | the identity provider's username | `admin` or `user` (from the IdP groups) |
+| `bearer` | A service or script using the shared `API_TOKEN` | `None` | `admin` |
+
+When authentication is disabled (`AUTH_ENABLED=false`) every request is treated
+as an admin and `g.auth_user` may be `None`.
+
+`g.auth_user` is the identity key for both `session` and `proxy`: a proxy user
+`alice` and a local account `alice` get the same value. AudioMuse-AI itself
+keeps them apart (a proxy user never acts on the local account), so if your
+plugin stores per-user data and needs that distinction, include
+`g.auth_method` in the key.
+
+This identity covers AudioMuse-AI's own login only. If your plugin has its own
+authentication (its own tokens, accounts or login pages), the reverse-proxy
+login does not sign users in there and does not replace or protect it. A plugin
+that branches on `g.auth_method` must accept `proxy` itself to serve SSO users.
+
+Media-server helpers you call from a request (for example
+`tasks.mediaserver.navidrome._navidrome_request`) always use the configured
+service account, for proxy users too. Only AudioMuse-AI's own playlist creation
+can run as the proxy user, when the admin sets `AUTH_PROXY_PLAYLIST_OWNER=user`.
+
 ## What works on each build
 
 Nearly everything a plugin can do works the same on Docker, Kubernetes and the Windows, macOS and Linux standalone builds. The only real difference is extra pip packages.

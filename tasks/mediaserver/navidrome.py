@@ -140,6 +140,7 @@ def get_navidrome_auth_params(username=None, password=None, api_key=None):
 
 
 _OPENSUBSONIC_AUTH_ERROR_CODES = {40, 41, 42, 43, 44}
+_EXTAUTH_REJECTED_CODES = _OPENSUBSONIC_AUTH_ERROR_CODES | {10}
 
 _SECRET_QUERY_PARAM = re.compile(r'(?i)([?&](?:[pst]|apiKey)=)[^&\s]*')
 
@@ -165,12 +166,71 @@ def _auth_kwargs_from_creds(user_creds):
     }
 
 
+_SUBSONIC_CLIENT_PARAMS = {"v": "1.16.1", "c": "AudioMuse-AI", "f": "json"}
+
+
+def _service_creds():
+    server = context.active_server()
+    if server is not None and "creds" in server:
+        return server.get("creds") or {}
+    return {'user': config.NAVIDROME_USER, 'api_key': config.NAVIDROME_API_KEY}
+
+
+def _is_explicit_user(user_creds):
+    """True when the caller passed Navidrome credentials other than the service
+    account's (another user name, or another API key).
+
+    Bound server creds are merged into ``user_creds`` along the call chain, so
+    the service account's own user name or API key is not an explicit choice.
+    """
+    creds = user_creds or {}
+    service = _service_creds()
+    user = creds.get('user') or ''
+    api_key = creds.get('api_key') or ''
+    if user and user != (service.get('user') or ''):
+        return True
+    return bool(api_key) and api_key != (service.get('api_key') or '')
+
+
+def _playlist_public_param(user_creds=None):
+    """Service-account playlists stay public as before; a playlist created for a
+    proxy-authenticated user is private unless that user chose to share it."""
+    if not _extauth_headers(_is_explicit_user(user_creds)):
+        return "true"
+    return "true" if context.playlist_public() else "false"
+
+
+def _extauth_headers(explicit_user=False):
+    """ExtAuth header that makes Navidrome run the call as the acting user.
+
+    Only used inside a playlist write of a proxy-authenticated user with
+    AUTH_PROXY_PLAYLIST_OWNER=user (``app_proxy_auth.playlist_owner_context``
+    binds the acting user), and only when the caller did not pass explicit
+    Navidrome credentials (those always win). When the header is sent, the
+    request carries no service credentials: Navidrome ignores u/p/t/s next to
+    the header anyway, and a Navidrome that does not trust AudioMuse then fails
+    with an auth error instead of silently acting as the service account.
+    """
+    if explicit_user or config.AUTH_PROXY_PLAYLIST_OWNER != 'user':
+        return {}
+    username = context.acting_user()
+    if not username:
+        return {}
+    header = config.NAVIDROME_EXTAUTH_USER_HEADER or 'Remote-User'
+    return {header: username}
+
+
 def _navidrome_request_ex(
     endpoint, params=None, method='get', stream=False, user_creds=None, timeout=None
 ):
+    explicit_user = _is_explicit_user(user_creds)
     user_creds = context.active_creds(user_creds)
     params = params or {}
-    auth_params = get_navidrome_auth_params(**_auth_kwargs_from_creds(user_creds))
+    headers = _extauth_headers(explicit_user)
+    if headers:
+        auth_params = dict(_SUBSONIC_CLIENT_PARAMS)
+    else:
+        auth_params = get_navidrome_auth_params(**_auth_kwargs_from_creds(user_creds))
     if not auth_params:
         msg = "Navidrome credentials are not configured (need apiKey or user/password)."
         logger.error(f"{msg} Cannot make API call.")
@@ -184,7 +244,8 @@ def _navidrome_request_ex(
 
     try:
         r = requests.request(
-            method, url, params=all_params, timeout=timeout or REQUESTS_TIMEOUT, stream=stream
+            method, url, params=all_params, timeout=timeout or REQUESTS_TIMEOUT, stream=stream,
+            headers=headers or None,
         )
         r.raise_for_status()
 
@@ -197,6 +258,15 @@ def _navidrome_request_ex(
             message = error.get("message") or "Navidrome returned an error."
             logger.error(f"Navidrome API Error on '{endpoint}': {message}")
             kind = 'auth' if error.get("code") in _OPENSUBSONIC_AUTH_ERROR_CODES else 'server'
+            if headers and error.get("code") in _EXTAUTH_REJECTED_CODES:
+                kind = 'auth'
+                context.mark_passthrough_rejected()
+                logger.error(
+                    "Navidrome did not accept the external-auth header for '%s'. Check that "
+                    "ND_EXTAUTH_TRUSTEDSOURCES contains the IP of this AudioMuse host and that "
+                    "ND_EXTAUTH_USERHEADER equals NAVIDROME_EXTAUTH_USER_HEADER ('%s').",
+                    endpoint, config.NAVIDROME_EXTAUTH_USER_HEADER,
+                )
             return None, {'kind': kind, 'message': message}
         return opensubsonic_response, None
 
@@ -593,7 +663,7 @@ def _add_to_playlist(playlist_id, item_ids, user_creds=None):
         params = {
             "playlistId": playlist_id,
             "songIdToAdd": batch_ids,
-            "public": "true",
+            "public": _playlist_public_param(user_creds),
         }
 
         response = _navidrome_request(
@@ -648,13 +718,13 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
 
     update_response = _navidrome_request(
         "updatePlaylist",
-        {"playlistId": new_playlist_id, "public": "true"},
+        {"playlistId": new_playlist_id, "public": _playlist_public_param(user_creds)},
         method='post',
         user_creds=user_creds,
     )
     if not (update_response and update_response.get("status") == "ok"):
         logger.error(
-            f"Failed to set playlist '{playlist_name}' public after creation via updatePlaylist."
+            f"Failed to set the visibility of playlist '{playlist_name}' after creation via updatePlaylist."
         )
 
     if ids_to_add_later:

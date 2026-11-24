@@ -147,6 +147,55 @@ html.sidebar-open .sidebar-actions {
     background: inherit;
 }
 
+/* Signed-in account (name, role, and SSO group or local) above the menu. */
+.sidebar-user {
+    margin: 0 0 0.75rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid rgba(209, 213, 219, 0.25);
+    border-radius: 0.5rem;
+    font-size: 0.85rem;
+    line-height: 1.3;
+}
+
+.sidebar-user-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.sidebar-user-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-user-role {
+    flex-shrink: 0;
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    border: 1px solid currentColor;
+}
+
+.sidebar-user-role-admin {
+    color: #fbbf24;
+}
+
+.sidebar-user-role-user {
+    color: #93c5fd;
+}
+
+.sidebar-user-source {
+    margin-top: 0.15rem;
+    color: #9ca3af;
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .sidebar-nav {
     list-style: none;
     padding: 0;

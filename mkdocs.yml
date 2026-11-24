@@ -15,6 +15,7 @@ nav:
   - GPU: GPU.md
   - Parameters: PARAMETERS.md
   - Authentication: AUTH.md
+  - Reverse Proxy SSO: REVERSE_PROXY_AUTH.md
   - Plugins: PLUGIN.md
   - Error Codes: ERROR_CODES.md
   - FAQ: FAQ.md

@@ -204,6 +204,20 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     # app_config - stale rows there cause deleted admins to resurrect.
     'AUDIOMUSE_USER',
     'AUDIOMUSE_PASSWORD',
+    # Reverse-proxy trust settings and the proxy-user playlist owner are
+    # environment-only: a DB row would outrank the env (no way to back out),
+    # make them editable by any admin and put the shared secret into backups.
+    'AUTH_PROXY_ENABLED',
+    'AUTH_PROXY_SHARED_SECRET',
+    'AUTH_PROXY_SECRET_HEADER',
+    'AUTH_PROXY_TRUSTED_SOURCES',
+    'AUTH_PROXY_USER_HEADER',
+    'AUTH_PROXY_GROUPS_HEADER',
+    'AUTH_PROXY_ADMIN_GROUP',
+    'AUTH_PROXY_USER_GROUP',
+    'AUTH_PROXY_LOGOUT_URL',
+    'AUTH_PROXY_PLAYLIST_OWNER',
+    'NAVIDROME_EXTAUTH_USER_HEADER',
     # Computed numpy/precomputed constants - persisting them through
     # setup_manager would stringify the ndarray ("[1. 0. 0. ...]") and
     # corrupt the value on reload (cast_value can't reverse str(ndarray)).
@@ -1838,6 +1852,44 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "")
 # Enable or disable authentication independently of whether credentials are set.
 # Default is True to preserve the current secure behavior.
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "True").lower() == "true"
+
+# --- Reverse-proxy (forward-auth) authentication ---
+# Lets an identity-aware reverse proxy (authentik, Authelia, oauth2-proxy, ...)
+# authenticate users. The proxy sends the username and group list as request
+# headers; AudioMuse maps the groups to its admin/user roles. The headers are
+# only honoured when the request also carries AUTH_PROXY_SHARED_SECRET, which
+# the proxy adds only on its forward-auth route; AUTH_PROXY_TRUSTED_SOURCES
+# (comma-separated IPs/CIDRs of the proxy) can restrict the sender further.
+# Without a secret proxy auth stays off. The proxy MUST strip client-supplied
+# copies of these headers. Local login and the API_TOKEN keep working.
+# All AUTH_PROXY_* settings are environment-only: they are never stored in
+# app_config, never editable in the setup wizard and never returned by the API.
+AUTH_PROXY_ENABLED = os.environ.get("AUTH_PROXY_ENABLED", "False").lower() == "true"
+AUTH_PROXY_SHARED_SECRET = os.environ.get("AUTH_PROXY_SHARED_SECRET", "")
+AUTH_PROXY_SECRET_HEADER = os.environ.get("AUTH_PROXY_SECRET_HEADER", "X-Proxy-Secret")
+AUTH_PROXY_TRUSTED_SOURCES = os.environ.get("AUTH_PROXY_TRUSTED_SOURCES", "")
+AUTH_PROXY_USER_HEADER = os.environ.get("AUTH_PROXY_USER_HEADER", "Remote-User")
+AUTH_PROXY_GROUPS_HEADER = os.environ.get("AUTH_PROXY_GROUPS_HEADER", "Remote-Groups")
+# Members of this group become AudioMuse admins.
+AUTH_PROXY_ADMIN_GROUP = os.environ.get("AUTH_PROXY_ADMIN_GROUP", "")
+# When set, only members of this group (or the admin group) may use AudioMuse;
+# when empty, every user the proxy lets through gets the 'user' role.
+AUTH_PROXY_USER_GROUP = os.environ.get("AUTH_PROXY_USER_GROUP", "")
+# Where /logout sends proxy-authenticated users (e.g. the authentik
+# outpost sign-out URL). Local sessions always return to the login page.
+AUTH_PROXY_LOGOUT_URL = os.environ.get("AUTH_PROXY_LOGOUT_URL", "")
+# Who owns playlists that proxy-authenticated users create: 'service' (the
+# configured media-server account, as for every other session) or 'user' (the
+# proxy user's own Navidrome account via Navidrome external auth, private by
+# default). Only the playlist write itself is affected; all other media-server
+# calls, local sessions, API tokens and background jobs keep the service
+# account. 'user' requires Navidrome's ExtAuth.TrustedSources to include the
+# AudioMuse host IP. Navidrome only: other media servers keep the service account.
+AUTH_PROXY_PLAYLIST_OWNER = os.environ.get("AUTH_PROXY_PLAYLIST_OWNER", "service").strip().lower()
+if AUTH_PROXY_PLAYLIST_OWNER not in ("service", "user"):
+    AUTH_PROXY_PLAYLIST_OWNER = "service"
+# Header Navidrome reads the user from (Navidrome's ExtAuth.UserHeader).
+NAVIDROME_EXTAUTH_USER_HEADER = os.environ.get("NAVIDROME_EXTAUTH_USER_HEADER", "Remote-User")
 
 # True once the database overrides and the default music server were projected
 # onto these globals. False means this process is running on env values only.

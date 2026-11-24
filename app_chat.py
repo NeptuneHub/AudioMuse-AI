@@ -38,6 +38,7 @@ from error import error_manager
 from error.error_dictionary import (
     ERR_CONFIG_INVALID,
     ERR_INVALID_REQUEST,
+    ERR_MEDIASERVER_PASSTHROUGH_DENIED,
     ERR_PLAYLIST_REJECTED,
     UNKNOWN_ERROR_CODE,
 )
@@ -1055,6 +1056,8 @@ def create_media_server_playlist_api():
             info = app_server_context.create_instant_playlist_for_server(
                 user_playlist_name, item_ids, server_id
             )
+        except app_server_context.PassthroughDeniedError:
+            return json_error(ERR_MEDIASERVER_PASSTHROUGH_DENIED)
         except ValueError as exc:
             return json_exception(exc, ERR_PLAYLIST_REJECTED, message=None)
         created_playlist_info = info['result']
