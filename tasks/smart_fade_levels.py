@@ -17,33 +17,34 @@ highpass_hz and continue_from; then info.
 
 Main Features:
 * song_level: BS.1770 loudness and sample peak in one streaming pass; the
-  gain brings it to TARGET_LUFS, a quiet song only up to PEAK_CEILING.
+  gain brings it to TARGET_LUFS, its peak to PEAK_CEILING at most.
 * prepare_song lets the endpoint overlap the two whole-song scans with cue
   and vocal analysis, reusing their exact sources and levels for the mix.
 * time_maps: the second of each song at each point; speed is its slope,
-  the playback rate a player sets (no time-stretch, the pitch
-  moves with the tempo like a DJ deck without key lock, as the simulation
-  here resamples). A fade plays both as they are; a blend or a rise glides
-  the tempo beat by beat, so the mix lasts the mean of the two parts.
+  the playback rate a player sets (the pitch moves with the tempo like a
+  DJ deck without key lock). A fade plays both as they are; a beat-matched
+  mix glides the tempo beat by beat over the mean of the two parts.
 * mix_shapes, a DJ's 3-band EQ mix, every move an S-curve (ease): the next
   song's highs (shelf at HIGH_HZ) come in first, its mids (peak at MID_HZ)
   next, the bass lines swap in one equal-power move over two beats (shelf
   at BASS_HZ), then the first song's mids and its highs go out; the faders
-  only fade the two ends in and out over EDGE_BEATS. A rise sweeps a
+  only fade the two ends over EDGE_BEATS. A rise sweeps a
   high-pass from RISE_FROM_HZ to RISE_TO_HZ instead of the next song's
-  bass. A crossfade keeps equal-power faders.
+  bass. A percussion mix trades equal-power faders, one kick at a time
+  (DRUM_BASS_CUT_DB) and the hats (DRUM_HIGH_CUT_DB) around the swap. A
+  crossfade keeps equal-power faders.
 * swap_point: the 4-beat bar nearest the middle beat where the next
   song's bass plays (SWAP_PRESENT of its loudest bar) in SWAP_RANGE.
 * transition simulates the gain, speed, filters and faders at RATE.
   band_shifts follows each song's own spectral balance, with shared band
   corrections up to BAND_LIMIT_DB. fader_scale smooths K-weighted energy
   between the ANCHOR_SECONDS before and after the mix, up to SHAPE_LIMIT_DB.
-  Shared peak trimming preserves the relative fader and EQ exchange.
+  An unlocked crossfade never sinks CONTINUITY_FLOOR_DB under the louder
+  song; peak trimming lowers both faders together, PEAK_CEILING at most.
 * crossfade_plan: the default crossfade at the two fade points, for a pair
   without a steady beat.
-* vocal_shapes: competing voices keep a sustained crossfade. An additional
-  late outgoing mid/high and fader taper reduces the old singer's tail.
-  Bass swaps, tempo locks and the incoming fade remain intact.
+* vocal_shapes: competing voices keep a sustained equal-power crossfade with
+  a gradual mid/high exchange and a late taper of the old singer.
 """
 
 import math
@@ -57,7 +58,8 @@ from tasks import smart_fade_mix as mix
 TARGET_LUFS = -14.0
 PEAK_CEILING = 0.891
 GUESSED_PEAK_MARGIN = math.sqrt(2.0)
-MIX_HEADROOM = 1.12
+PEAK_ATTACK_DB_PER_SECOND = 18.0
+PEAK_RELEASE_DB_PER_SECOND = 5.0
 BASS_HZ = 180.0
 BASS_CUT_DB = -40.0
 MID_HZ = 1000.0
@@ -71,7 +73,19 @@ BANDS = {'bass': BASS_CUT_DB, 'mid': MID_CUT_DB, 'high': HIGH_CUT_DB}
 BAND_LIMIT_DB = 6.0
 RISE_FROM_HZ = 800.0
 RISE_TO_HZ = 10.0
-HIGHPASS_Q_DB = 1.0
+DRUM_BASS_CUT_DB = (-22.0, -19.0)
+DRUM_HIGH_CUT_DB = (-10.0, -8.0)
+CONTINUITY_FLOOR_DB = -4.0
+DRUMLESS_SHARE = 0.12
+UNLOCKED_RISE_DB = 0.0
+BLEND_CUT_DB = -12.0
+BASS_PRESENT_DB = -12.0
+BASS_LINE_HZ = 120.0
+VOCAL_HANDOFF_OVERLAP = 0.3
+UNLOCKED_BEAT_SECONDS = 0.5
+UNLOCKED = {'fade', 'eq_blend', 'filter_rise', 'vocal_handoff'}
+SHAPE_OF = {'vocal_handoff': 'fade'}
+PASS_Q = math.sqrt(0.5)
 ANCHOR_SECONDS = 3.0
 SHAPE_LIMIT_DB = 6.0
 SHAPE_SMOOTH_SECONDS = 1.0
@@ -81,7 +95,8 @@ WARM_SECONDS = 0.5
 FILTER_BLOCK = 512
 READ_BLOCK = 65536
 PEAK_FLOOR = 1e-6
-TYPES = {'blend': 'beat_mix', 'rise': 'beat_rise', 'fade': 'crossfade'}
+TYPES = {'blend': 'beat_mix', 'rise': 'beat_rise', 'percussion_mix': 'percussion_mix', 'eq_blend': 'eq_blend',
+         'filter_rise': 'filter_rise', 'vocal_handoff': 'vocal_handoff', 'fade': 'crossfade'}
 SWAP_RANGE = (0.3, 0.7)
 SWAP_PRESENT = 0.25
 
@@ -131,9 +146,7 @@ def song_level(source):
     peak *= GUESSED_PEAK_MARGIN if guessed else 1.0
     gain = 1.0
     if loudness > mix.ABSOLUTE_GATE_LUFS:
-        gain = 10.0 ** ((TARGET_LUFS - loudness) / 20.0)
-        if gain > 1.0:
-            gain = max(1.0, min(gain, PEAK_CEILING / max(peak, PEAK_FLOOR)))
+        gain = min(10.0 ** ((TARGET_LUFS - loudness) / 20.0), PEAK_CEILING / max(peak, PEAK_FLOOR))
     return {'loudness': float(loudness), 'peak': peak, 'gain': float(gain), 'seconds': frames / rate}
 
 
@@ -189,10 +202,50 @@ def swap_point(beat_times, points, low_in):
     return float(beat_times[min(present, key=lambda k: (abs(2 * k - last), -k))])
 
 
-def mix_shapes(style, seconds, swap, beat, times):
+def mix_shapes(style, seconds, swap, beat, times, bass_swap=True):
+    times = np.asarray(times, dtype=np.float64)
     if style == 'fade':
-        share = np.asarray(times, dtype=np.float64) / seconds
+        share = np.clip(times / seconds, 0.0, 1.0)
         return {'from_volume': np.cos(np.pi / 2 * share), 'to_volume': np.sin(np.pi / 2 * share), 'eq': None}
+    if style in ('eq_blend', 'filter_rise'):
+        share = np.clip(times / seconds, 0.0, 1.0)
+        bass = ease(times, swap - beat, swap + beat)
+        rest = seconds - swap
+        blend = style == 'eq_blend'
+        swapped = bass_swap or not blend
+        flat = np.zeros(times.size)
+        return {
+            'from_volume': np.cos(np.pi / 2 * share),
+            'to_volume': np.sin(np.pi / 2 * share),
+            'eq': {
+                'from_high_db': BLEND_CUT_DB * ease(times, swap + rest / 2.0, seconds) if blend else flat,
+                'from_mid_db': BLEND_CUT_DB * ease(times, swap, seconds) if blend else flat.copy(),
+                'from_bass_db': _cut_db(np.cos(np.pi / 2 * bass), BASS_CUT_DB) if swapped else None,
+                'to_high_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap / 2.0)) if blend else flat.copy(),
+                'to_mid_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap)) if blend else flat.copy(),
+                'to_bass_db': _cut_db(np.sin(np.pi / 2 * bass), BASS_CUT_DB) if blend and swapped else None,
+                'to_highpass_hz': None if blend else RISE_FROM_HZ * (RISE_TO_HZ / RISE_FROM_HZ) ** ease(times, 0.0, swap + beat),
+            },
+        }
+    if style == 'percussion_mix':
+        share = np.interp(times, (0.0, swap, seconds), (0.0, 0.5, 1.0))
+        width = max(beat, min(0.8, 0.13 * seconds))
+        kicks = ease(times, swap - width, swap + width)
+        hats = ease(times, swap - 1.15 * width, swap + 1.15 * width)
+        flat = np.zeros(times.size)
+        return {
+            'from_volume': np.cos(np.pi / 2 * share),
+            'to_volume': np.sin(np.pi / 2 * share),
+            'eq': {
+                'from_high_db': DRUM_HIGH_CUT_DB[0] * hats,
+                'from_mid_db': flat,
+                'from_bass_db': _cut_db(1.0 - kicks, DRUM_BASS_CUT_DB[0]),
+                'to_high_db': DRUM_HIGH_CUT_DB[1] * (1.0 - hats),
+                'to_mid_db': flat.copy(),
+                'to_bass_db': _cut_db(kicks, DRUM_BASS_CUT_DB[1]),
+                'to_highpass_hz': None,
+            },
+        }
     rise = style == 'rise'
     lead_in = swap / 3.0
     rest = seconds - swap - beat
@@ -215,9 +268,9 @@ def mix_shapes(style, seconds, swap, beat, times):
 
 def vocal_shapes(plan, seconds, points, shapes):
     """Reduce vocal competition while retaining an audible musical overlap."""
-    if not (plan.get('voice') or {}).get('clash'):
+    if plan.get('style') not in ('blend', 'rise', None, *UNLOCKED) or not (plan.get('voice') or {}).get('clash'):
         return shapes
-    share = np.asarray(points, dtype=np.float64) / seconds
+    share = np.clip(np.asarray(points, dtype=np.float64) / seconds, 0.0, 1.0)
     shapes['from_volume'] = np.cos(np.pi / 2 * share)
     shapes['to_volume'] = np.sin(np.pi / 2 * share)
     if shapes['eq'] is None:
@@ -228,10 +281,23 @@ def vocal_shapes(plan, seconds, points, shapes):
     cut = np.clip(config.SMART_FADE_VOCAL_DUCK_DB * max(1.0, seconds / mix.MIN_MIX_SECONDS) * competition, 0.0, 9.0)
     tail = np.clip(config.SMART_FADE_VOCAL_TAIL_DB, 0.0, 6.0) * competition * ease(points, 0.4 * seconds, 0.85 * seconds)
     for band, amount in (('mid', cut), ('high', cut / 2.0)):
-        shapes['eq'][f'from_{band}_db'] = -amount * exchange - (tail if band == 'mid' else tail / 2.0)
-        shapes['eq'][f'to_{band}_db'] = -amount * (1.0 - exchange)
+        old = -amount * exchange - (tail if band == 'mid' else tail / 2.0)
+        new = -amount * (1.0 - exchange)
+        shapes['eq'][f'from_{band}_db'] = old if band == 'mid' else np.minimum(shapes['eq']['from_high_db'], old)
+        shapes['eq'][f'to_{band}_db'] = new if band == 'mid' else np.minimum(shapes['eq']['to_high_db'], new)
     shapes['from_volume'] *= 10.0 ** (-tail / 40.0)
     return shapes
+
+
+def unlocked_style(plan, part_a, part_b, energy_a, energy_b):
+    shares = [mix.drum_share(part, 0.0, part.size / mix.RATE) for part in (part_a, part_b)]
+    if min(share if share is not None else 0.0 for share in shares) <= DRUMLESS_SHARE:
+        return 'eq_blend'
+    if energy_b > 10 ** (UNLOCKED_RISE_DB / 10) * max(energy_a, 1e-10):
+        return 'filter_rise'
+    if (plan.get('voice') or {}).get('overlap', 0.0) >= VOCAL_HANDOFF_OVERLAP:
+        return 'vocal_handoff'
+    return 'fade'
 
 
 def _shelf(rate, hz, db, side):
@@ -262,7 +328,7 @@ def _mid_peak(rate, db):
 
 def _high_pass(rate, hz):
     angle = 2.0 * math.pi * hz / rate
-    alpha = math.sin(angle) / (2.0 * 10.0 ** (HIGHPASS_Q_DB / 20.0))
+    alpha = math.sin(angle) / (2.0 * PASS_Q)
     cos = math.cos(angle)
     a = [1 + alpha, -2 * cos, 1 - alpha]
     return np.array([(1 + cos) / 2, -(1 + cos), (1 + cos) / 2]) / a[0], np.array(a) / a[0]
@@ -312,10 +378,10 @@ def _block_energy(signal, zero, centers):
     return _block_power(mix._k_weighted(signal, mix.RATE), zero, centers)
 
 
-def _low_energy(signal, zero, centers):
+def _low_energy(signal, zero, centers, hz=BASS_HZ, order=2):
     from scipy.signal import butter, sosfilt
 
-    return _block_power(sosfilt(butter(2, BASS_HZ, btype='lowpass', fs=mix.RATE, output='sos'), signal, axis=1), zero, centers)
+    return _block_power(sosfilt(butter(order, hz, btype='lowpass', fs=mix.RATE, output='sos'), signal, axis=1), zero, centers)
 
 
 def _block_power(filtered, zero, centers):
@@ -344,6 +410,15 @@ def _segment_max(values, edges):
     return np.where(np.diff(np.append(edges, values.size)) > 0, out, 0.0)
 
 
+def _peak_trim(peaks, step):
+    attenuation = np.minimum(0.0, 20.0 * np.log10(PEAK_CEILING / np.maximum(peaks, 1e-9)))
+    for i in range(attenuation.size - 2, -1, -1):
+        attenuation[i] = min(attenuation[i], attenuation[i + 1] + PEAK_ATTACK_DB_PER_SECOND * step)
+    for i in range(1, attenuation.size):
+        attenuation[i] = min(attenuation[i], attenuation[i - 1] + PEAK_RELEASE_DB_PER_SECOND * step)
+    return 10.0 ** (attenuation / 20.0)
+
+
 def toward_db(mixed, target_db, step, limit):
     mixed = np.asarray(mixed, dtype=np.float64)
     share = np.linspace(0.0, 1.0, mixed.size) if mixed.size > 1 else np.zeros(1)
@@ -364,14 +439,17 @@ def fader_scale(mixed, before, after, step):
 
 def band_shifts(heard, own_from, own_to, step):
     shifts = []
-    for level, first, last in zip(heard, own_from, own_to):
+    for band, level, first, last in zip(BANDS, heard, own_from, own_to):
         first, last = np.asarray(first, dtype=np.float64), np.asarray(last, dtype=np.float64)
         share = np.linspace(0.0, 1.0, first.size) if first.size > 1 else np.zeros(1)
         floor = 10.0 ** (SILENT_DB / 10.0)
         if max(first.mean(), last.mean()) <= floor:
             shifts.append(np.zeros(first.size))
             continue
-        target = (1.0 - share) * 10.0 * np.log10(np.maximum(first, floor)) + share * 10.0 * np.log10(np.maximum(last, floor))
+        if band == 'bass':
+            target = (1.0 - share) * 10.0 * np.log10(np.maximum(first, floor)) + share * 10.0 * np.log10(np.maximum(last, floor))
+        else:
+            target = 10.0 * np.log10(np.maximum((1.0 - share) * first + share * last, floor))
         shifts.append(toward_db(level, target, step, BAND_LIMIT_DB))
     return shifts
 
@@ -390,13 +468,11 @@ def _band_powers(signal, zero, centers):
     return [_block_power(sosfilt(sos, signal, axis=1), zero, centers) for sos in _band_filters()]
 
 
-
-
 def _through(eq, sa, sb, t, points):
     rate = mix.RATE
 
     def value(key, at):
-        return float(np.interp(at, points, eq[key]))
+        return 0.0 if eq[key] is None else float(np.interp(at, points, eq[key]))
 
     def from_filters(at):
         return [_low_shelf(rate, value('from_bass_db', at)), _mid_peak(rate, value('from_mid_db', at)), _high_shelf(rate, value('from_high_db', at))]
@@ -419,15 +495,28 @@ def clear_level_cache():
     smart_fade_cache.clear()
 
 
+def _remembered(path, source):
+    profile = ('loudness', source['mono'] is not None, TARGET_LUFS, PEAK_CEILING, GUESSED_PEAK_MARGIN, mix.RATE)
+    return smart_fade_cache.remember(path, profile, lambda: song_level(source))
+
+
 def prepare_song(path):
     """Reuse bounded, content-keyed statistics; never retain decoded song audio."""
+    import soundfile
+
     source = _source(path)
-    profile = ('loudness', source['mono'] is not None, TARGET_LUFS, PEAK_CEILING, GUESSED_PEAK_MARGIN, mix.RATE)
-    return source, smart_fade_cache.remember(path, profile, lambda: song_level(source))
+    try:
+        return source, _remembered(path, source)
+    except soundfile.SoundFileRuntimeError:
+        if source['mono'] is not None:
+            raise
+        source = {'path': path, 'mono': mix._load(path, mix.RATE)}
+        return source, _remembered(path, source)
 
 
 def transition(path_out, path_in, plan, prepared=None):
     rate = mix.RATE
+    style = plan['style']
     sources, songs = zip(*(prepared if prepared is not None else [prepare_song(path_out), prepare_song(path_in)]))
     gain_a, gain_b = songs[0]['gain'], songs[1]['gain']
     seconds, swap, lead, follow, beat_times = time_maps(plan)
@@ -436,20 +525,30 @@ def transition(path_out, path_in, plan, prepared=None):
     points = np.arange(count + 1) * step
     zero = int(round(WARM_SECONDS * rate))
     t = np.arange(-zero, int(round(seconds * rate))) / rate
-    a_begin, a_audio = _window(sources[0], plan['mix_at'] - ANCHOR_SECONDS - WARM_SECONDS, ANCHOR_SECONDS + WARM_SECONDS + float(lead(seconds)) - plan['mix_at'] + 0.5)
+    a_begin, a_audio = _window(sources[0], plan['mix_at'] - ANCHOR_SECONDS - WARM_SECONDS,
+                               ANCHOR_SECONDS + WARM_SECONDS + float(lead(seconds)) - plan['mix_at'] + 0.5)
     b_from = float(follow(-WARM_SECONDS))
     b_begin, b_audio = _window(sources[1], b_from, float(follow(seconds)) + ANCHOR_SECONDS + 0.5 - b_from)
     lanes = max(a_audio.shape[0], b_audio.shape[0])
     a_audio, b_audio = _lanes(a_audio, lanes), _lanes(b_audio, lanes)
     raw_a, raw_b = _along(a_audio, a_begin, lead(t)), _along(b_audio, b_begin, follow(t))
-    beat = plan.get('beat_seconds') or 0.0
-    if beat_times is not None:
+    sa, sb = raw_a * gain_a, raw_b * gain_b
+    body = points[(points >= 0.2 * seconds) & (points <= 0.8 * seconds)]
+    energy_a, energy_b = (np.mean(_block_energy(signal, zero, body)) for signal in (sa, sb))
+    if style in ('blend', 'rise'):
+        style = 'rise' if energy_b >= 10 ** (mix.RISE_DB / 10) * max(energy_a, 1e-10) else 'blend'
+    elif style == 'fade':
+        style = unlocked_style(plan, sa[:, zero:].mean(axis=0), sb[:, zero:].mean(axis=0), energy_a, energy_b)
+    beat = plan.get('beat_seconds') or UNLOCKED_BEAT_SECONDS
+    if beat_times is not None and style not in UNLOCKED:
         swap = swap_point(beat_times, points, _low_energy(raw_b, zero, points))
         beat = float(np.median(np.diff(beat_times)))
-    shapes = vocal_shapes(plan, seconds, points, mix_shapes(plan['style'], seconds, swap, beat, points))
+    lows = [float(np.mean(_low_energy(signal, zero, body, BASS_LINE_HZ, 4))) for signal in (sa, sb)] if style == 'eq_blend' else [1.0, 1.0]
+    bass_swap = min(lows) >= 10 ** (BASS_PRESENT_DB / 10) * max(lows)
+    shapes = vocal_shapes(dict(plan, style=style), seconds, points,
+                          mix_shapes(SHAPE_OF.get(style, style), seconds, swap, beat, points, bass_swap))
     eq = shapes['eq']
     fall, rise = shapes['from_volume'], shapes['to_volume']
-    sa, sb = raw_a * gain_a, raw_b * gain_b
     if eq is not None:
         heard = _through(eq, sa, sb, t, points)
         bands = _band_powers(heard[0] * np.interp(t, points, fall) + heard[1] * np.interp(t, points, rise), zero, points)
@@ -464,11 +563,17 @@ def transition(path_out, path_in, plan, prepared=None):
     before = _span_energy(a_audio, a_begin, plan['mix_at'] - ANCHOR_SECONDS, ANCHOR_SECONDS)
     after = _span_energy(b_audio, b_begin, float(follow(seconds)), ANCHOR_SECONDS)
     scale = fader_scale(mixed, before * gain_a ** 2, after * gain_b ** 2, step)
+    if style in UNLOCKED and plan.get('beat_rejection'):
+        strongest = np.maximum(_block_energy(raw_a, zero, points) * gain_a ** 2,
+                               _block_energy(raw_b, zero, points) * gain_b ** 2)
+        floor_db = 10.0 * np.log10(np.maximum(strongest, 1e-12)) + CONTINUITY_FLOOR_DB
+        scale = np.maximum(scale, 10.0 ** (toward_db(mixed, floor_db, step, SHAPE_LIMIT_DB) / 20.0))
     fade_from, fade_to = fall * scale, rise * scale
     edges = np.round(points[:-1] * rate).astype(np.int64)
-    total = np.abs(sa[:, zero:] * np.interp(t[zero:], points, fade_from) + sb[:, zero:] * np.interp(t[zero:], points, fade_to)).max(axis=0)
-    ceiling = max(1.0, float(np.abs(sa[:, zero:]).max(initial=0.0)), float(np.abs(sb[:, zero:]).max(initial=0.0)))
-    trim = np.minimum(1.0, ceiling / np.maximum(_segment_max(total, edges) * MIX_HEADROOM, 1e-9))
+    out_peak = np.abs(sa[:, zero:] * np.interp(t[zero:], points, fade_from))
+    in_peak = np.abs(sb[:, zero:] * np.interp(t[zero:], points, fade_to))
+    peaks = _segment_max((out_peak + in_peak).max(axis=0), edges)
+    trim = _peak_trim(peaks, step)
     inner = np.minimum(trim[:-1], trim[1:])
     fade_from[1:-1] *= inner
     fade_to[1:-1] *= inner
@@ -478,7 +583,7 @@ def transition(path_out, path_in, plan, prepared=None):
         return flat if eq is None or eq[key] is None else _rounded(eq[key], 2)
 
     answer = {
-        'type': TYPES[plan['style']],
+        'type': TYPES[style],
         'start': round(plan['mix_at'], 4),
         'duration': round(seconds, 4),
         'middle': round(swap, 4),
@@ -516,6 +621,9 @@ def transition(path_out, path_in, plan, prepared=None):
         answer['info']['end_margin_seconds'] = plan['voice']['end_margin']
         answer['info']['recovered_seconds'] = plan['voice'].get('recovered_seconds', 0.0)
         answer['info']['ending_recovered_seconds'] = plan['voice'].get('ending_recovered_seconds', 0.0)
+    for key in ('beat_rejection', 'selection_reason'):
+        if key in plan:
+            answer['info'][key] = plan[key]
     return answer
 
 

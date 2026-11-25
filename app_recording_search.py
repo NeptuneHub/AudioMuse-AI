@@ -658,10 +658,16 @@ def recording_search_transition_api():
           with straight lines (Web Audio setValueCurveAtTime) plays the curve.
           type: beat_mix (the beats lock: the tempo glides and the bass lines
           swap), beat_rise (the same, and the next song is louder: it comes in
-          from the treble down) or crossfade (equal-power faders, with gentle
-          EQ when voices compete).
+          from the treble down), percussion_mix (two drum-led parts whose beats
+          line up: one kick at a time); without a beat lock, all at native
+          speed: eq_blend (one part has no drums: equal-power faders, one
+          bass swap, the mids and highs handed over), filter_rise (the next
+          song louder: it comes in through an opening high-pass), vocal_handoff
+          (two voices overlap:
+          the mids pass from one singer to the other) or crossfade (the
+          default: equal-power faders).
           start: the second of the current song where the transition starts.
-          duration: how many seconds both songs play together.
+          duration: how many seconds the player schedules for the transition.
           middle: seconds after start where the next song takes over.
           step: seconds between two points of every list below.
           filters: high_hz (corner of the high shelf that high_db drives),
@@ -688,7 +694,7 @@ def recording_search_transition_api():
           point, in dB: 0 = unchanged, -40 = almost gone. A crossfade may also
           use gentle EQ when voices compete.
           to also has start (the second of the to_id song where it comes in),
-          highpass_hz (beat_rise only: the corner of a high-pass
+          highpass_hz (beat_rise and filter_rise: the corner of a high-pass
           used instead of its low shelf, removing what is below it; else null)
           and continue_from (the second where it plays on alone once the
           transition ends).
@@ -715,7 +721,7 @@ def recording_search_transition_api():
               properties:
                 type:
                   type: string
-                  enum: [beat_mix, beat_rise, crossfade]
+                  enum: [beat_mix, beat_rise, percussion_mix, eq_blend, filter_rise, vocal_handoff, crossfade]
                 start:
                   type: number
                 duration:
@@ -858,6 +864,7 @@ def recording_search_transition_api():
                     plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
                 except ValueError:
                     plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds)
+                    plan['beat_rejection'] = 'no_beat_grid'
                 plan['requested_end'] = out_seconds
                 planned = perf_counter()
                 timings['plan'] = (planned - fetched) * 1000.0

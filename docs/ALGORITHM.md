@@ -3029,7 +3029,7 @@ the neural fingerprint.
    player. Smart fade and Demo exclude each other.
 2. **Play** plays each song from its start time to its end time (the first
    one from the beginning, the last one to its end) and mixes it into the
-   next with one of the three transitions below. Every song plays at the same
+   next with one of the seven transitions below. Every song plays at the same
    loudness (-14 LUFS; a quiet song is raised only as far as its peaks allow),
    and in every transition the two volume curves follow both songs' own
    levels, so a song already fading on its own or a quiet intro leaves no
@@ -3038,14 +3038,11 @@ the neural fingerprint.
 3. **One highlighted row, the louder song.** During a transition the
    highlight and the clock stay on the ending song until the middle of the mix
    or crossfade, then they jump to the starting one.
-4. **Transition icons.** The page asks for a transition plan only for the
-   song that plays, while it plays (never for the whole list), and as each
-   plan arrives the next row's bar starts with a small icon for how that song
-   comes in: a faint dot while it is being planned, an equals sign (accent
-   colour) for a beat-matched mix, rising lines for a beat-matched rise, a
-   square split in two halves for the default crossfade. Hovering an icon names the transition and the two tempos, and the
-   player bar counts the transitions planned so far (beat-matched first, then
-   crossfades).
+4. **Transition icons.** The page starts planning the next ten transitions
+   from the current or selected song, with two server requests at a time.
+   Each confirmed plan adds an icon and duration to its incoming row. Planned
+   results are reused, and jumping to a different song replaces the pending
+   queue. Scrubbing uses the audio stream independently of the plan requests.
 5. **Skip to the fade** jumps to 6 seconds before the next transition.
    Pressed while the next song or its plan is still loading, it waits for them
    ("Preparing the mix..."), because a plan that arrives after its mix point
@@ -3053,47 +3050,133 @@ the neural fingerprint.
    row moves in the song, never closer than one second to the line where its
    fade starts, so the planned transition always happens.
 
-**The three transitions**
+**The seven transitions**
 
-The default is the crossfade; the two beat-matched mixes play only on a
-confirmed beat lock, when the server is sure of the beats of both songs.
+The three beat-matched mixes play only where the server is sure the beats of
+both songs line up (a confirmed beat lock, or for the percussion mix two
+drum-led parts whose hits line up). A pair without a beat lock keeps both
+songs at their own speed and gets the transition its two parts allow: an EQ
+blend when one of them has no drums (nothing can clash), a filter rise when
+the next song comes in much louder, a vocal handoff when two voices overlap,
+else the crossfade. Each type has its own row icon and count.
 
-1. **Beat-matched mix with a bass swap**
-   - Label: `Beat-matched mix with a bass swap into <next song> (tempo gliding from X to Y BPM)`
-   - When: a confirmed beat lock: the tempos are within 2.9% (or half or
-     double time), so the two songs end up at most 50 cents apart in pitch,
+On 80 Similar Song lists (10 seed songs from each of 8 genres, 10 songs
+each, 798 transitions answered) they came out as 333 EQ blends, 258
+crossfades, 76 beat mixes, 69 filter rises, 54 vocal handoffs and 3
+percussion mixes; with only the beat-matched kinds and the crossfade, 40 of
+those lists had played 337 crossfades of 387. The crossfades follow the
+music: they are what is left where both songs have drums at tempos too far
+apart to lock, at similar loudness, with no voice over a voice.
+
+| Genre | Crossfade | Most frequent other kinds |
+|---|---|---|
+| Folk | 2% | EQ blend 92% |
+| Jazz | 5% | EQ blend 89% |
+| Electronic | 24% | EQ blend 53%, beat mix 14% |
+| Soul | 30% | EQ blend 37%, vocal handoff 14% |
+| Pop | 33% | EQ blend 36%, vocal handoff 17% |
+| Hip-hop | 41% | filter rise 25%, vocal handoff 19% |
+| Rock | 59% | EQ blend 20%, beat mix 14% |
+| Metal | 67% | filter rise 18%, beat mix 12% |
+
+1. **Beat-matched mix with a bass swap** (`beat_mix`)
+   - Label: `Beat-matched mix with a bass swap into <next song> (X to Y BPM)`
+   - When: a confirmed beat lock: the tempos are within 3.5% (or half or
+     double time), so the two songs end up at most 60 cents apart in pitch,
      the two songs' drum hits line up within 30 ms, and on both songs
      several beat trackers agree on where the beats are (section 19.3).
-   - How it sounds: both songs play together for at least 15 seconds, in whole
-     steps of 8 beats (15 to 21 seconds), shortened 8 beats at a time down to
-     10 seconds when there is no room. The tempo glides beat by beat from the
-     first song's to the next song's. Mixed the way a DJ mixes with a 3-band
-     EQ, every move a smooth S-curve, one band after the other: the next
-     song's highs come in first, then its mids, then the two bass lines swap
-     in one quick move over 2 beats, on the bar nearest the middle where the
-     next song's own bass is playing; after the swap the ending song's mids
-     go out, its highs last. The faders only fade the two ends in and out.
-2. **Beat-matched rise**
-   - Label: `Beat-matched rise into <next song> (tempo gliding from X to Y BPM)`
+   - How it sounds: both songs play together for at least 15 seconds, in
+     whole steps of 8 beats (15 to 21 seconds), shortened 8 beats at a time
+     down to 10 seconds when there is no room. The tempo glides beat by beat
+     from the first song's to the next song's. Mixed the way a DJ mixes with a
+     3-band EQ, every move a smooth S-curve, one band after the other: the
+     next song's highs come in first, then its mids, then the two bass lines
+     swap in one move over 2 beats, on the bar nearest the middle where the
+     next song's own bass is playing; after the swap the ending song's mids go
+     out, its highs last. The faders only fade the two ends in and out.
+2. **Beat-matched rise** (`beat_rise`)
+   - Label: `Beat-matched rise into <next song> (X to Y BPM)`
    - When: the same confirmed lock, and the next song is at least 6 dB louder
-     during the mix.
+     over the central 60% of the mix, measured after both whole-song gains
+     with K-weighted power.
    - How it sounds: the same length and tempo glide as the blend. The next
      song comes in from the treble down (a high-pass opens from 800 Hz to
-     10 Hz until the swap, so its bass arrives last); the ending song goes
-     out as in the blend.
-3. **Default crossfade**
+     10 Hz until a beat after the swap, so its bass arrives last); the ending
+     song goes out as in the blend.
+3. **Beat-matched percussion mix** (`percussion_mix`)
+   - Label: `Beat-matched percussion mix into <next song> (X to Y BPM)`
+   - When: both mixed parts are drum-led (above 150 Hz the percussive energy
+     is at least 1.5 times the harmonic one: drum intros and outros, breaks;
+     the bass lines are left out because they always swap one at a time,
+     and with them house intros measured 0.07 to 0.25 against 1.4 to 61
+     without, rock parts 0.11 to 0.37 either way) and their hits
+     line up within 30 ms (a steady offset under 90 ms repaired), with no
+     voice of one song over a voice of the other there. Either a confirmed
+     beat lock whose two parts are drum-led, or, without a full lock (the
+     tempos 60 to 90 cents apart, drums carry little pitch), the last 8 to 12
+     seconds before the fade point.
+   - How it sounds: whole bars, the tempo gliding as in the blend (15 to 21
+     seconds on a full lock, 8 to 12 without). The faders cross equal-power;
+     the two kick drums swap in one move around the middle (one bass drum at
+     a time), the hi-hats cross with them; a 3-band hand-over has nothing to
+     hand over in drums alone.
+4. **EQ blend** (`eq_blend`)
+   - Label: `EQ blend without drums to clash into <next song> (X and Y BPM)`
+   - When: no beat lock, and in the mix one of the two parts has no drums
+     (above 150 Hz the percussive energy at most 0.12 times the harmonic
+     one: ballads, acoustic songs, beatless intros, outros and breakdowns).
+     Two tempos only clash where both songs play a beat; a part without
+     drums can be laid over anything (DJs mix beatless sections at any
+     tempo).
+   - How it sounds: the crossfade's length, points and equal-power faders,
+     both songs at their own speed, with the bands handed over in order: the
+     two bass lines swap in one move at the middle (one bass at a time), the
+     next song's highs and mids open from -12 dB over the first half, the
+     ending song's mids and highs close to -12 dB over the second half. The
+     bass swaps only when both songs have a bass line (below 120 Hz, over
+     the middle of the mix, the weaker within 12 dB of the stronger); when
+     one has none, the only bass fades with its fader as in the crossfade,
+     because taking it out at the middle with nothing to replace it left the
+     mix without bass there (12 of 40 rendered genre-list blends had one
+     bass line: holes deeper than 3 dB went from 3 to 1, both songs audible
+     together from 2.8 to 3.7 seconds). The beat mix's deeper cuts (mids at -27 dB
+     until the swap) left the next song nearly silent when it had no drums
+     to carry it: 17 of 113 rendered blends dipped more than 3 dB under the
+     level line with them.
+5. **Filter rise** (`filter_rise`)
+   - Label: `Filter rise into <next song> (X and Y BPM)`
+   - When: no beat lock, both parts have drums, and the next song comes in
+     louder than the ending one goes out over the middle of the mix (both at
+     their playing loudness). DJs bring a song of another tempo in through a
+     high-pass; a quieter next song stays a crossfade (the filter would hide
+     it).
+   - How it sounds: both songs at their own speed, equal-power faders; the
+     next song comes in through a high-pass opening from 800 Hz to 10 Hz by
+     a beat after the middle, so its kick and bass arrive while the ending
+     song leaves, and the ending song's bass goes out in one move at the
+     middle: one kick and one bass at a time.
+6. **Vocal handoff** (`vocal_handoff`)
+   - Label: `Vocal handoff into <next song> (X and Y BPM)`
+   - When: no beat lock, both parts have drums at similar levels, and the
+     voice check finds the two songs' voices overlapping for at least 30% of
+     the mix.
+   - How it sounds: the crossfade, with the mids (where voices sit) moving
+     from one singer to the other around the middle (up to 9 dB) and a late
+     extra cut of the old singer, so the two voices are never at full level
+     together.
+7. **Default crossfade** (`crossfade`)
    - Label: `Default crossfade into <next song> (X and Y BPM)`, or just
      `Default crossfade into <next song>` when there is no plan and so no
      measured tempos; the line then switches to
      `Playing <next song> from m:ss until m:ss`.
-   - When: every other case. There is a plan but no confirmed lock
-     (`type: "crossfade"`: the tempos are too far apart, the drum hits would not
-     line up, or the beat trackers disagree on either song), or there is no
-     plan at all (an error, no answer, or an answer after its mix point).
+   - When: no beat lock, both songs have drums at similar levels and no
+     voices overlap; or no usable plan in the browser by its mix point.
    - How it sounds: a volume crossfade of about 10 seconds, one song going
-     down while the next comes up, no filters, nothing stretched; each song
-     keeps its own tempo. The two curves start equal-power and follow both
-     songs' levels (section 19.3).
+     down while the next comes up, nothing stretched; each song keeps its own
+     tempo. The two curves start equal-power and follow both songs' levels,
+     never sinking more than 4 dB under the louder song (section 19.3). When
+     voices of both songs overlap, a gentle mid/high exchange moves the two
+     singers apart; otherwise no filters.
    - Where: with a plan it starts on a beat of the ending song and the next
      song comes in on its section start, the points the plan found, over the
      fewest whole beats of the ending song that reach 10 seconds. Without a
@@ -3102,7 +3185,7 @@ confirmed beat lock, when the server is sure of the beats of both songs.
 ### 19.2. The Two Endpoints
 
 Both endpoints answer numbers only. The page fetches each song from the media
-server (`GET /api/recording_search/play/<id>`) and does every cut, stretch and
+server (`GET /api/recording_search/play/<id>`) and plays every cut, speed and
 fade itself in the browser; another frontend can call the two endpoints the
 same way. With the neural fingerprint off both answer 503.
 
@@ -3131,14 +3214,11 @@ same way. With the neural fingerprint off both answer 503.
      always had: `from_id` (the current song), `to_id` (the next one), `out`
      (the current song's `fade_out_seconds`) and `in` (the next song's
      `fade_in_seconds`).
-   - Answers everything a player executes, numbers only, in the order a
-     player uses them; a frontend computes nothing:
-     - `type`: `beat_mix` (a confirmed beat lock: the tempo glides and the
-       bass lines swap), `beat_rise` (the same lock, the next song at least
-       6 dB louder: it comes in from the treble down) or `crossfade`
-       (everything else, no filters).
+   - Returns the transition timing and curves for the player.
+     - `type`: `beat_mix`, `beat_rise`, `percussion_mix`, `eq_blend`,
+       `filter_rise`, `vocal_handoff` or `crossfade` (section 19.1).
      - `start`: the second of the current song where the transition starts.
-     - `duration`: how many seconds both songs play together.
+     - `duration`: how many seconds the player schedules for the transition.
      - `middle`: seconds after `start` where the next song takes over, in a
        beat mix the bass swap (the page moves the highlight there).
      - `step`: seconds between two points of every list below (about 0.1).
@@ -3156,13 +3236,14 @@ same way. With the neural fingerprint off both answer 503.
          song's own audio at it (Web Audio `playbackRate`), `from` from
          `start` and `to` from its own `start`; 1 all along in a crossfade.
        - `volume`: the fader, a multiplier from 1 to 0 for `from` and from 0
-         to 1 for `to`; in a beat mix it only fades the two ends, and it
-         carries the steady-level correction and the clip guard.
+         to 1 for `to`; in a beat mix or rise it only fades the two ends, in a
+         percussion mix and a crossfade it carries the whole exchange. It
+         also carries the steady-level correction and the peak protection.
        - `high_db`, `mid_db`, `bass_db`: the filter gains in dB, all 0 for a
-         crossfade.
+         crossfade without vocal ducking.
        - `to` only: `start` (the second of the next song where it comes
-         in), `highpass_hz` (a `beat_rise` sweeps a 2nd-order
-         high-pass instead of the low shelf; else `null`) and
+         in), `highpass_hz` (a `beat_rise` or `filter_rise` sweeps a 2nd-order
+         Butterworth high-pass instead of the low shelf; else `null`) and
          `continue_from` (the second where the next song plays on alone
          once the transition ends).
      - `info`, not needed to play: `tempo_from` and `tempo_to` (BPM,
@@ -3200,13 +3281,16 @@ same way. With the neural fingerprint off both answer 503.
 |---|---|
 | `type: "beat_mix"` | 1. Beat-matched mix with a bass swap |
 | `type: "beat_rise"` | 2. Beat-matched rise |
-| `type: "crossfade"` | 3. Default crossfade, on the answer's points |
-| an error, no answer, or an answer after its `start` | 3. Default crossfade, on the order times |
+| `type: "percussion_mix"` | 3. Beat-matched percussion mix |
+| `type: "eq_blend"` | 4. EQ blend |
+| `type: "filter_rise"` | 5. Filter rise |
+| `type: "vocal_handoff"` | 6. Vocal handoff |
+| `type: "crossfade"` | 7. Default crossfade, on the answer's points |
+| an error, no answer, or an answer after its `start` | 7. Default crossfade, on the order times |
 
-Without an answer the default crossfade is a plain one (the page has no level
-data then): two S-curves whose volumes always add up to 1, so it never
-clips, on the order
-endpoint's two times: the current song fades out over the 10 seconds before
+Without an answer the page uses an equal-power fade when both excerpts are
+buffered. Channel peaks at playback gain bound the faders. Partial buffers
+use complementary S-curves. The current song fades out over the 10 seconds before
 its `fade_out_seconds`, the next song starts from its `fade_in_seconds` at
 its own gain of 1, and the highlight jumps after 5 seconds. With the order
 above, `id-A` fades out from 3:18.5 to 3:28.5 while `id-C` starts from 0:20.0
@@ -3245,8 +3329,8 @@ the end of its file and the next song starts right after.
    fade-out is not silence to the fingerprint, which brings every half second
    to its own level, so it can still be picked. The fingerprint knows nothing
    of tempo, so the stored tempo breaks near ties: a next song whose tempo
-   cannot be beat-matched in tune with the current one (more than 50 cents,
-   2.9%, apart, half or double time allowed; it was 8% until the page matched
+   cannot be beat-matched in tune with the current one (more than 60 cents,
+   3.5%, apart, half or double time allowed; it was 8% until the page matched
    tempo by speed, which moves the pitch) loses 0.5 of cosine. That weight is set so about half of
    the hand-overs of a 50-song similar list can be beat-matched: on three such
    lists (pop, Italian rock, synthwave) neighbours with compatible stored
@@ -3297,14 +3381,15 @@ the end of its file and the next song starts right after.
    by up to 2%, and on real stretched pairs that left the beats drifting a
    median 110 ms apart over the mix, 35 ms with the fit). Fewer than 4 beats
    in either region raise `ValueError`. The stretch is the ending song's tempo
-   over the next one's, half or double time allowed; past 50 cents (2.9%) the
+   over the next one's, half or double time allowed; past 60 cents (3.5%) the
    next song is not stretched (`tempos_match`, the same rule the order uses on
    the stored tempo). The next song enters on its first beat after its fade-in time, or
    on a section start within 8 beats of it: a novelty curve (an 8-beat
    checkerboard kernel on the beat-synchronous chroma, MFCC and loudness
    self-similarity) is computed over the region and the entry moves to the
    beat nearest its highest peak; of the two entries the one that leaves room
-   for the longer mix wins, a tie going to the section start. The published
+   for the longer mix is tried first, a tie going to the section start. The
+   other entry is also checked if the first has poor beat alignment. The published
    DJ systems studied all start a mix on a phrase or section boundary; on 60 library
    songs with Harmonix Set section annotations the entry landed within
    1 second of a real section start 27% of the time (13% before; within
@@ -3317,17 +3402,20 @@ the end of its file and the next song starts right after.
    10 seconds, and without room for that it raises `ValueError` too, which the
    endpoint turns into the plain `crossfade` at the two given points. The
    middle beat of the mix is where the bass lines swap unless the next song
-   has no bass there (step 5), and the next song resumes alone the mix
+   has no bass there (step 6), and the next song resumes alone the mix
    length times the stretch after its entry. A pair
    whose tempos match then goes through the beat check (step 3); a pair that
-   passes is a `beat_rise` when the next song's part is at least 6 dB louder
-   (RMS) than the ending song's, else a `beat_mix`.
+   passes gets a provisional rise or blend. The renderer makes the final
+   decision using normalized levels at the selected cues.
 3. **Beat check** (`_in_step`). Before a beat match is kept, the server
    cross-correlates the onset curves of the two planned parts (the next
    song's curve stretched by the plan) over half a beat either way, and keeps
    the match only if the best score within 30 ms of the plan (about where two
    drum hits stop sounding as one) is at least 60% of the best score at any
-   offset. Near-ties pass: 16th-note hi-hats give peaks every 120 ms that
+   offset. If a cue misses, both halves must agree on an offset within
+   25 ms for an adjustment of up to 90 ms or 18% of a beat, whichever is
+   smaller. The adjusted cue must pass the original alignment check.
+   Near-ties pass: 16th-note hi-hats give peaks every 120 ms that
    cannot be told apart. A pair that fails, like a pair whose tempos do not
    match, becomes a `fade`: stretch 1 and the fewest whole beats of the ending
    song that reach 10 seconds, ending at its fade-out time. On three lists of
@@ -3411,7 +3499,27 @@ the end of its file and the next song starts right after.
    intensity step, so they do not decide the confidence. A fade's plan now
    takes up to about 1 s more; the page asks for it while the previous song
    plays.
-5. **What a player executes** (`tasks/smart_fade_levels.py`,
+5. **Voice check** (`tasks/smart_fade_voice.py`, `clear_voice`). After the
+   plan, both songs' audio around the cues is decoded at 16 kHz and every
+   voice is found (the MusiCNN singing tags over 3-second patches, joined
+   with a speech detector). The cues may then move, the ending song's within
+   `SMART_FADE_SEARCH_SECONDS` and the next song's start within
+   `SMART_FADE_ENTRY_LIMIT_SECONDS`, to the pair that costs least for weak
+   or silent audio, two voices at once and distance from the planned cues; a
+   beat mix moves in whole bars only, and a few skipped seconds are given
+   back afterwards when energy and voices allow it. A moved beat mix is
+   checked again (step 3): when its hits no longer line up and no voices
+   clash at the planned cues, the verified planned cues stay (two drum
+   patterns that drift apart are the most common fault listeners hear in
+   automatic transitions, 15% against 6.5% for voices over voices, ISMIR
+   2017); with a clash it becomes the default crossfade of 10 seconds,
+   ending on the same second. The share of time two voices overlap goes to
+   the curves (`vocal_shapes`): an equal-power crossfade with up to 9 dB of
+   mid exchange (half on the highs) around the middle and a late taper of
+   the old singer, beat mixes keeping their own deeper cuts. A percussion
+   mix (section 19.1) is chosen here, only when no voice overlaps another in
+   it.
+6. **What a player executes** (`tasks/smart_fade_levels.py`,
    `transition`, the endpoint's answer). Every number of a transition is
    computed on the server, so any frontend only schedules it; the shared page
    (`static/song_player.js`) computes nothing of its own. The page decodes both songs
@@ -3452,9 +3560,9 @@ the end of its file and the next song starts right after.
      pitch by their whole tempo ratio for the 15 to 21 seconds of the mix (a
      6% gap is about a semitone: two songs in one key clash like a minor
      second). A beat mix therefore needs the tempos within `MAX_LOCK_CENTS`
-     (50 cents, 2.9%); on an 11-transition pop list the mixes at 90 to 117
+     (60 cents, 3.5%); on an 11-transition pop list the mixes at 90 to 117
      cents were the ones that sounded wrong, those at 4 and 19 cents clean.
-     `tempos_match`, which also steers the smart fade order, is that 50-cent
+     `tempos_match`, which also steers the smart fade order, shares that 60-cent
      rule, so the order picks neighbours that can mix in tune.
      The speeds, joined by straight lines as Web Audio plays them, land
      within 2 ms of the time map; after the mix the next song goes on from a
@@ -3479,24 +3587,28 @@ the end of its file and the next song starts right after.
      come in over the first third of the time before the swap (from
      -40 dB), its mids from -27 dB until a beat before the swap, the two bass
      lines swap in one equal-power move over 2 beats (one bass line at a
-     time; DJs drill the swap as one move on a beat), then the ending song's
-     mids go down over two thirds of the time left and its highs over the
-     last two thirds. The faders only fade the two ends in and out over
-     2 beats, while the bands are cut, and carry the steady-level
-     correction below. Before, the highs had no list of their own and rode
-     on the faders at the same moments; on the same 10 recorded pop
-     transitions the mix stays as steady (beat mixes 1.06 dB off the line,
-     1.08 before, 0 clipped samples). A rise sweeps a high-pass on the next
-     song from 800 Hz down to 10 Hz (log scale) from the end of its highs
-     move to a beat after the swap, instead of its bass. The default
-     crossfade keeps equal-power faders and flat filters.
+     time), then the ending song's mids go down over two thirds of the time
+     left and its highs over the last two thirds. The faders only fade the
+     two ends in and out over 2 beats, while the bands are cut, and carry the
+     steady-level correction below; real DJ mixes keep a near constant energy
+     through a transition with the faders up and the EQ doing the hand-over
+     (DAFx 2022, 50,742 transitions). A rise sweeps a 2nd-order Butterworth
+     high-pass on the next song from 800 Hz down to 10 Hz (log scale) from the
+     end of its highs move to a beat after the swap, instead of its bass. A
+     percussion mix crosses equal-power faders over its 8 to 12 seconds, swaps
+     the two kick drums with amplitude curves that add up to 1 (two kicks on
+     the same beat add like one signal, so equal power would bump them, as
+     DAFx 2016 derives for correlated signals) and crosses the hi-hats around
+     the same moment. The default crossfade uses equal-power faders, right for
+     two unrelated songs (the same derivation), with no filters unless voices
+     compete (`vocal_shapes`).
    - **Each band fitted to the two songs** (`band_shifts`, folded into
      `high_db`, `mid_db` and `bass_db`). The S-curves above only fix the
      order and timing; how far each band goes depends on the songs. The
      server splits the mix it plays in advance into bass (under 180 Hz),
      mids (300 to 3000 Hz) and highs (over 4 kHz) and, at every point,
-     compares each band with a target: the blend, in dB, of the two songs'
-     own levels in that band at that moment, all the first song's at the
+     compares each band with a target calculated by blending the two songs'
+     instantaneous band powers before conversion to dB, all the first song's at the
      start and all the next song's at the end. Both songs' band gains are
      raised or lowered together by the difference (at most 6 dB, smoothed
      over 1 second, none at the two ends), so a band neither jumps nor
@@ -3550,22 +3662,20 @@ the end of its file and the next song starts right after.
      beat mixes stay as close to the level line as before (median 1.08 dB
      off it, 1.10 with the straight lines), with 1 mix more than 3 dB under
      it instead of 2 (a crossfade, untouched) and 0 clipped samples.
-   - **No clipping** (in each song's `volume`). After shaping, the
-     server sums the two songs' samples (at their gains, through the
-     filters) under the faders and, wherever that sum would peak above the
-     louder of the two songs alone, lowers both faders there just enough,
-     with about 1 dB of margin (the filters, and a browser's decoder that
-     differs slightly from the server's): two loud masters at about -3 dB
-     each in the middle of a mix otherwise pass full scale and clip
-     (measured up to 1.22, hundreds of clipped samples in one mix). Peaks a
-     song already has on its own (decoded lossy files can pass 1.0) are left
-     as they are, and outside a mix every song plays exactly as decoded.
+   - **Peak protection** (in each song's `volume`). The server adds the
+     magnitudes of the two filtered and faded tracks to bound their combined
+     peak, with about 1 dB of headroom. It lowers both faders ahead of a peak
+     and restores the level gradually afterward. The whole-song gain also
+     limits peaks to about -1 dBFS.
+   - **Loudness continuity.** A crossfade of a pair without a beat lock also
+     keeps the mix within 4 dB (`CONTINUITY_FLOOR_DB`) of the louder of the
+     two songs at each point, so two songs both fading leave no hole.
+     Correction is smoothed, limited, and subordinate to peak protection.
    - **Default crossfade without a plan.** A plain crossfade over the 10
      seconds before the ending song's fade-out time, the next song from its
-     fade-in time: without a plan the page has no level data, so it uses two
-     raised-cosine S-curves (slow at both ends, like every move of a mix)
-     whose volumes add up to exactly 1 at every instant, which never clips.
-     The demo crossfade uses the same curves.
+     fade-in time. With both excerpts buffered, the player measures their peaks
+     and limits the equal-power faders to the available headroom. Incomplete
+     buffers, joins within one recording and demo fades use complementary S-curves.
    - **Volume curves on the two songs' levels** (`fader_scale`). A fixed equal-power curve
      only adds up to a steady level when both songs stay steady. An ending
      song that is already fading out on its own, under a fade-out of its
@@ -3631,7 +3741,7 @@ the end of its file and the next song starts right after.
      bit for bit, or in Chromium off
      by less than -185 dBFS on under 1% of near-silent samples (its rounding
      of the start time), with 0.00 dB change at 15 kHz.
-6. **Measured and not kept.**
+7. **Measured and not kept.**
    - **A loop of the ending song** (some streaming players repeat a bar to
      stretch a short ending; Apple Music's AutoMix "repeats sections where
      necessary"). Over 93 real transitions only 1 mix came out under
@@ -3656,6 +3766,59 @@ the end of its file and the next song starts right after.
      the bass lines swapped): on a pop similar-song list the plain crossfade
      sounded better on average, so pairs without a confirmed lock now get the
      default crossfade.
+   - **Eight more transitions for pairs without a beat lock**, reviewed and
+     removed: a spectral sweep (a low-pass on the ending song and a high-pass
+     on the next one closing on each other from 18 kHz to 95 Hz), a filter
+     handoff (low-pass to 1.35 kHz and a bass swap), an instrumental bridge
+     (the same with a 4.6 kHz low-pass when the chords matched), an opening
+     pickup (the next song from its first sound under a low-passed ending), a
+     natural tail (a 4-second mix across a level drop of the ending song), a
+     cut into the drop (a 3.4-second filtered build and a 0.7-second switch), a
+     rhythm handoff (unlocked drums traded in 0.8 seconds) and a vocal handoff
+     with a mid exchange of its own (a second path for what `vocal_shapes`
+     already does; the vocal handoff kept above is that voice exchange).
+     On the same 45 hand-overs of three 16-song similar lists (pop, rock,
+     synthwave) they took 41 of the 45: spectral sweep 33, opening pickup 4,
+     one each of the others, all 7.5 seconds or shorter, and not one plain
+     crossfade was left. They are the filtered fade and the short hand-overs
+     above under new names, played on the pairs that do not lock, where
+     overlapping drums cannot line up. Published automatic DJ systems use beat-matched
+     mixes only (a drum and bass system: no filter sweeps; a streaming
+     service's playlist transitions: one beat-aligned crossfade), their
+     listeners' complaints were beats that do not align (15%) and voices over
+     voices (6.5%), never the kind of transition (ISMIR 2017), and an
+     8-bar linear crossfade was not significantly worse than rule-based EQ
+     transitions or a learned one (ICASSP 2022). With the four transitions
+     left the same 45 hand-overs play 39 crossfades (10.2 seconds, both songs
+     audible together for 4.9 seconds against 2.0, no level hole deeper than
+     3 dB, no clipped sample) and 6 beat mixes (18.3 seconds). On the
+     first 15 hand-overs of 12 Similar Song lists of 12 genres (180) they
+     play 135 crossfades, 37 beat mixes and 8 percussion mixes (house 6 of
+     15, hip-hop and latin 1 each, none where the music is not drum-led);
+     94 of the crossfades are tempos too far apart to mix in tune, mostly
+     because the stored tempo the order uses is measured in steps of about
+     7% (a song reads 104.2, 117.2 or 156.2 BPM), so neighbours of the same
+     stored tempo are 0 to 7% apart. A rise needs a quiet ending
+     against a full entry once both songs play at the same loudness: none at
+     the order's cues in 150 hand-overs, two with a later fade-out point.
+   - **Retrying a refused beat lock on shorter bars** (4 beats at a time down
+     to 10 seconds, both entries). On 12 Similar Song lists of 12 genres (180
+     hand-overs) it turned 18 crossfades into beat mixes, 12 with both halves
+     checked, but played along the answer's speeds their drums were within
+     30 ms in only 38% (46% with both halves) of the quarters of the mix,
+     against 76% for the locks found at full length and 88% for the
+     percussion mixes: checking many lengths lets weak onset curves pass by
+     chance, so a refused lock stays a crossfade.
+   - **Other EQ blend shapes**, rendered on the same 40 EQ blends of the
+     genre lists: holding the playing bass at full power through the swap
+     (a boost of up to 3 dB) moved the median dip from 1.45 to 1.3 dB with
+     the same 7 holes deeper than 3 dB and 0.3 dB higher bumps; leaving out
+     the mid and high exchange kept both songs audible together longer (2.7
+     against 2.15 seconds) but made 9 holes. Neither is kept.
+   - **An 8-second beat mix** (5.5 to 13 seconds in 4-beat steps, both
+     faders trading level around the swap): the 7 to 14 second mixes it
+     brings back were the ones that sounded too rapid on a phone; real
+     transitions peak at 32 beats (ISMIR 2020).
    - **The bass swap on an 8-beat phrase** of the next song before any
      other bar. On the 24-beat mixes the phrases fall at a third and two
      thirds of the mix, never in the middle. Recorded through the page, the
@@ -3680,9 +3843,17 @@ the end of its file and the next song starts right after.
 
 - `NEURAL_FINGERPRINT_ENABLED` (section 17.4): Smart fade needs it. Without it
   the option is not shown and the two endpoints answer 503.
-- Nothing else is configurable: the lengths and limits are constants of
+- `SMART_FADE_END_MARGIN_SECONDS` (2), `SMART_FADE_SEARCH_SECONDS` (32),
+  `SMART_FADE_ENERGY_DROP_DB` (3), `SMART_FADE_RECOVER_SECONDS` (4),
+  `SMART_FADE_END_RECOVER_SECONDS` (4), `SMART_FADE_ENTRY_LIMIT_SECONDS` (12),
+  `SMART_FADE_VOCAL_MIX_SECONDS` (14), `SMART_FADE_VOCAL_DUCK_DB` (6),
+  `SMART_FADE_VOCAL_TAIL_DB` (6) and `SMART_FADE_LEVEL_CACHE_SIZE` (128) in
+  `config.py` tune where the voice check moves the cues and how far it
+  ducks competing voices.
+- The lengths and limits are constants of
   `tasks/smart_fade_mix.py` (`MIX_SECONDS` 15, `MIN_MIX_SECONDS` 10,
-  `MAX_LOCK_CENTS` 50, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.6,
+  `PERCUSSION_SECONDS` 8 to 12, `PERCUSSION_LOCK_CENTS` 90,
+  `MAX_LOCK_CENTS` 60, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.6,
   `EDGE_SECONDS` 30, `FULL_LU` 0, `DROP_LU` 2, `MIN_AGREEMENT_BITS` 1.0,
   `FLOOR_GAIN_DB` 3), of
   `tasks/recording_search_manager.py` (`_FADE_TEMPO_PENALTY` 0.5,
