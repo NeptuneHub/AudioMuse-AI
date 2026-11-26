@@ -228,6 +228,12 @@ def test_tempos_match_allows_60_cents_and_half_or_double_time():
     assert mix.tempos_match(np.array([[120.0], [150.0]]), np.array([[122.0, 150.0]])).tolist() == [[True, False], [False, True]]
 
 
+def test_the_percussion_mix_accepts_tempos_up_to_its_own_wider_limit():
+    assert mix.tempos_match(120.0, 125.0, mix.PERCUSSION_LOCK_CENTS)
+    assert mix.tempos_match(120.0, 62.5, mix.PERCUSSION_LOCK_CENTS)
+    assert not mix.tempos_match(120.0, 127.0, mix.PERCUSSION_LOCK_CENTS)
+
+
 def test_a_tempo_between_the_tracker_frames_is_measured_finely(tmp_path):
     bpm = 60.0 / (42.33 * 512 / mix.RATE)
     song_out = _clicks(tmp_path / 'a.wav', bpm, 40.0)

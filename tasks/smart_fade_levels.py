@@ -202,50 +202,58 @@ def swap_point(beat_times, points, low_in):
     return float(beat_times[min(present, key=lambda k: (abs(2 * k - last), -k))])
 
 
+def _unlocked_shapes(style, seconds, swap, beat, times, bass_swap):
+    share = np.clip(times / seconds, 0.0, 1.0)
+    bass = ease(times, swap - beat, swap + beat)
+    rest = seconds - swap
+    blend = style == 'eq_blend'
+    swapped = bass_swap or not blend
+    flat = np.zeros(times.size)
+    return {
+        'from_volume': np.cos(np.pi / 2 * share),
+        'to_volume': np.sin(np.pi / 2 * share),
+        'eq': {
+            'from_high_db': BLEND_CUT_DB * ease(times, swap + rest / 2.0, seconds) if blend else flat,
+            'from_mid_db': BLEND_CUT_DB * ease(times, swap, seconds) if blend else flat.copy(),
+            'from_bass_db': _cut_db(np.cos(np.pi / 2 * bass), BASS_CUT_DB) if swapped else None,
+            'to_high_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap / 2.0)) if blend else flat.copy(),
+            'to_mid_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap)) if blend else flat.copy(),
+            'to_bass_db': _cut_db(np.sin(np.pi / 2 * bass), BASS_CUT_DB) if blend and swapped else None,
+            'to_highpass_hz': None if blend else RISE_FROM_HZ * (RISE_TO_HZ / RISE_FROM_HZ) ** ease(times, 0.0, swap + beat),
+        },
+    }
+
+
+def _percussion_shapes(seconds, swap, beat, times):
+    share = np.interp(times, (0.0, swap, seconds), (0.0, 0.5, 1.0))
+    width = max(beat, min(0.8, 0.13 * seconds))
+    kicks = ease(times, swap - width, swap + width)
+    hats = ease(times, swap - 1.15 * width, swap + 1.15 * width)
+    flat = np.zeros(times.size)
+    return {
+        'from_volume': np.cos(np.pi / 2 * share),
+        'to_volume': np.sin(np.pi / 2 * share),
+        'eq': {
+            'from_high_db': DRUM_HIGH_CUT_DB[0] * hats,
+            'from_mid_db': flat,
+            'from_bass_db': _cut_db(1.0 - kicks, DRUM_BASS_CUT_DB[0]),
+            'to_high_db': DRUM_HIGH_CUT_DB[1] * (1.0 - hats),
+            'to_mid_db': flat.copy(),
+            'to_bass_db': _cut_db(kicks, DRUM_BASS_CUT_DB[1]),
+            'to_highpass_hz': None,
+        },
+    }
+
+
 def mix_shapes(style, seconds, swap, beat, times, bass_swap=True):
     times = np.asarray(times, dtype=np.float64)
     if style == 'fade':
         share = np.clip(times / seconds, 0.0, 1.0)
         return {'from_volume': np.cos(np.pi / 2 * share), 'to_volume': np.sin(np.pi / 2 * share), 'eq': None}
     if style in ('eq_blend', 'filter_rise'):
-        share = np.clip(times / seconds, 0.0, 1.0)
-        bass = ease(times, swap - beat, swap + beat)
-        rest = seconds - swap
-        blend = style == 'eq_blend'
-        swapped = bass_swap or not blend
-        flat = np.zeros(times.size)
-        return {
-            'from_volume': np.cos(np.pi / 2 * share),
-            'to_volume': np.sin(np.pi / 2 * share),
-            'eq': {
-                'from_high_db': BLEND_CUT_DB * ease(times, swap + rest / 2.0, seconds) if blend else flat,
-                'from_mid_db': BLEND_CUT_DB * ease(times, swap, seconds) if blend else flat.copy(),
-                'from_bass_db': _cut_db(np.cos(np.pi / 2 * bass), BASS_CUT_DB) if swapped else None,
-                'to_high_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap / 2.0)) if blend else flat.copy(),
-                'to_mid_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap)) if blend else flat.copy(),
-                'to_bass_db': _cut_db(np.sin(np.pi / 2 * bass), BASS_CUT_DB) if blend and swapped else None,
-                'to_highpass_hz': None if blend else RISE_FROM_HZ * (RISE_TO_HZ / RISE_FROM_HZ) ** ease(times, 0.0, swap + beat),
-            },
-        }
+        return _unlocked_shapes(style, seconds, swap, beat, times, bass_swap)
     if style == 'percussion_mix':
-        share = np.interp(times, (0.0, swap, seconds), (0.0, 0.5, 1.0))
-        width = max(beat, min(0.8, 0.13 * seconds))
-        kicks = ease(times, swap - width, swap + width)
-        hats = ease(times, swap - 1.15 * width, swap + 1.15 * width)
-        flat = np.zeros(times.size)
-        return {
-            'from_volume': np.cos(np.pi / 2 * share),
-            'to_volume': np.sin(np.pi / 2 * share),
-            'eq': {
-                'from_high_db': DRUM_HIGH_CUT_DB[0] * hats,
-                'from_mid_db': flat,
-                'from_bass_db': _cut_db(1.0 - kicks, DRUM_BASS_CUT_DB[0]),
-                'to_high_db': DRUM_HIGH_CUT_DB[1] * (1.0 - hats),
-                'to_mid_db': flat.copy(),
-                'to_bass_db': _cut_db(kicks, DRUM_BASS_CUT_DB[1]),
-                'to_highpass_hz': None,
-            },
-        }
+        return _percussion_shapes(seconds, swap, beat, times)
     rise = style == 'rise'
     lead_in = swap / 3.0
     rest = seconds - swap - beat

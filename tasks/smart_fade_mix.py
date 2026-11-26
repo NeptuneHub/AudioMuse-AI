@@ -93,9 +93,9 @@ TREBLE_BAND_HZ = 4000.0
 FLOOR_GAIN_DB = 3.0
 
 
-def tempos_match(tempo_out, tempo_in):
+def tempos_match(tempo_out, tempo_in, limit=MAX_LOCK_CENTS):
     ratio = np.asarray(tempo_out, dtype=np.float64) / np.asarray(tempo_in, dtype=np.float64)
-    return np.any([np.abs(1200.0 * np.log2(ratio * octave)) <= MAX_LOCK_CENTS for octave in OCTAVES], axis=0)
+    return np.any([np.abs(1200.0 * np.log2(ratio * octave)) <= limit for octave in OCTAVES], axis=0)
 
 
 def _load(path, rate, start=0.0, seconds=None):
@@ -388,11 +388,18 @@ def _percussion_mix(song_out, song_in, beats_out, entries, end, beat, rate, a_st
         at = float(positions[-1])
         if not _percussive(song_out, at, seconds):
             continue
-        for entry in entries:
-            if entry + seconds * rate <= song_in.size / RATE and _percussive(song_in, entry, seconds * rate):
-                aligned = _aligned_entry(song_out, at, song_in, entry, seconds, rate, beat, halves=True)
-                if aligned is not None:
-                    return _handoff('percussion_mix', a_start + at, b_start + aligned, seconds, rate, beat)
+        aligned = _percussion_entry(song_out, at, song_in, entries, seconds, rate, beat)
+        if aligned is not None:
+            return _handoff('percussion_mix', a_start + at, b_start + aligned, seconds, rate, beat)
+    return None
+
+
+def _percussion_entry(song_out, at, song_in, entries, seconds, rate, beat):
+    for entry in entries:
+        if entry + seconds * rate <= song_in.size / RATE and _percussive(song_in, entry, seconds * rate):
+            aligned = _aligned_entry(song_out, at, song_in, entry, seconds, rate, beat, halves=True)
+            if aligned is not None:
+                return aligned
     return None
 
 
@@ -490,7 +497,7 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
                 reason = 'beat_tracking'
     if not locked:
         short_rate = _stretch_rate(tempo_out, tempo_in, PERCUSSION_LOCK_CENTS)
-        suitable_tempo = short_rate != 1.0 or tempos_match(tempo_out, tempo_in)
+        suitable_tempo = tempos_match(tempo_out, tempo_in, PERCUSSION_LOCK_CENTS)
         if suitable_tempo:
             drums = _percussion_mix(song_out, song_in, beats_out, entries, out_seconds - a_start,
                                     beat, short_rate, a_start, b_start)
