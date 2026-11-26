@@ -16,8 +16,10 @@ report its progress.
 Main Features:
 * TrackPlan / plan_track_stages / build_album_plan: which of MusiCNN, CLAP and
   lyrics still need to run, per track and per album.
-* load_server_work_map: ONE keyset-paginated scan per server (provider id ->
-  work bit mask), so the phase loop decides skip-or-launch from memory.
+* load_server_work_map: ONE streamed pass per server (provider id -> work bit
+  mask), so the phase loop decides skip-or-launch from memory. The server-side
+  cursor is planned for the whole result, so Postgres joins with sequential
+  scans instead of one random index lookup per row (HDD libraries).
 * resolve_track_identity / claim_new_canonical_id / load_fingerprint_index:
   content identity via the embedding signature, confirmed by exact cosine plus
   track-duration agreement and settled against the DB so concurrent workers
@@ -544,16 +546,12 @@ def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, h
     work_map[key] = work_map.get(key, 0) | mask
 
 
-def _work_map_scan(cur, sql, params, work_map, chunk_size):
-    last = ''
-    while True:
-        cur.execute(sql, (*params, last, chunk_size))
-        rows = cur.fetchall()
-        if not rows:
-            return
-        for row in rows:
+def _work_map_scan(conn, name, sql, params, work_map, chunk_size):
+    with conn.cursor(name=name) as scan:
+        scan.itersize = chunk_size
+        scan.execute(sql, params)
+        for row in scan:
             _apply_work_bits(work_map, *row)
-        last = str(rows[-1][0])
 
 
 def _work_sql(clap_available, lyrics_enabled, neural_available=False):
@@ -590,20 +588,15 @@ def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=2
                          neural_available=False):
     mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled, neural_available)
     work_map = {}
-    with get_db() as conn, conn.cursor() as cur:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL cursor_tuple_fraction = 1.0")
         if server_id:
             _work_map_scan(
-                cur,
-                mapped_sql + " AND m.provider_track_id > %s "
-                "ORDER BY m.provider_track_id LIMIT %s",
-                (server_id,), work_map, chunk_size,
+                conn, 'work_map_mapped', mapped_sql, (server_id,), work_map, chunk_size,
             )
         if _is_default_server(server_id):
-            _work_map_scan(
-                cur,
-                legacy_sql + " AND s.item_id > %s ORDER BY s.item_id LIMIT %s",
-                (), work_map, chunk_size,
-            )
+            _work_map_scan(conn, 'work_map_legacy', legacy_sql, (), work_map, chunk_size)
     return work_map
 
 
