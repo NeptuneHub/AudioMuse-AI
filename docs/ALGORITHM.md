@@ -3057,27 +3057,28 @@ both songs line up (a confirmed beat lock, or for the percussion mix two
 drum-led parts whose hits line up). A pair without a beat lock keeps both
 songs at their own speed and gets the transition its two parts allow: an EQ
 blend when one of them has no drums (nothing can clash), a filter rise when
-the next song comes in much louder, a vocal handoff when two voices overlap,
-else the crossfade. Each type has its own row icon and count.
+the next song comes in louder at a related tempo, a vocal handoff when two
+voices overlap, else the crossfade. Each type has its own row icon and count.
 
 On 80 Similar Song lists (10 seed songs from each of 8 genres, 10 songs
-each, 798 transitions answered) they came out as 333 EQ blends, 258
-crossfades, 76 beat mixes, 69 filter rises, 54 vocal handoffs and 3
+each, 798 transitions answered) they came out as 333 EQ blends, 268
+crossfades, 76 beat mixes, 59 filter rises, 54 vocal handoffs and 3
 percussion mixes; with only the beat-matched kinds and the crossfade, 40 of
 those lists had played 337 crossfades of 387. The crossfades follow the
 music: they are what is left where both songs have drums at tempos too far
-apart to lock, at similar loudness, with no voice over a voice.
+apart to lock, with no voice over a voice, at similar loudness or with a
+louder next song at an unrelated tempo.
 
 | Genre | Crossfade | Most frequent other kinds |
 |---|---|---|
 | Folk | 2% | EQ blend 92% |
-| Jazz | 5% | EQ blend 89% |
-| Electronic | 24% | EQ blend 53%, beat mix 14% |
-| Soul | 30% | EQ blend 37%, vocal handoff 14% |
-| Pop | 33% | EQ blend 36%, vocal handoff 17% |
-| Hip-hop | 41% | filter rise 25%, vocal handoff 19% |
-| Rock | 59% | EQ blend 20%, beat mix 14% |
-| Metal | 67% | filter rise 18%, beat mix 12% |
+| Jazz | 6% | EQ blend 89% |
+| Electronic | 25% | EQ blend 53%, beat mix 14% |
+| Soul | 31% | EQ blend 37%, vocal handoff 14% |
+| Pop | 34% | EQ blend 36%, vocal handoff 17% |
+| Hip-hop | 43% | filter rise 23%, vocal handoff 19% |
+| Rock | 60% | EQ blend 20%, beat mix 14% |
+| Metal | 71% | filter rise 15%, beat mix 12% |
 
 1. **Beat-matched mix with a bass swap** (`beat_mix`)
    - Label: `Beat-matched mix with a bass swap into <next song> (X to Y BPM)`
@@ -3145,16 +3146,30 @@ apart to lock, at similar loudness, with no voice over a voice.
      level line with them.
 5. **Filter rise** (`filter_rise`)
    - Label: `Filter rise into <next song> (X and Y BPM)`
-   - When: no beat lock, both parts have drums, and the next song comes in
+   - When: no beat lock, both parts have drums, the next song comes in
      louder than the ending one goes out over the middle of the mix (both at
-     their playing loudness). DJs bring a song of another tempo in through a
-     high-pass; a quieter next song stays a crossfade (the filter would hide
-     it).
+     their playing loudness), and the two tempos are related: within 200
+     cents (12%) of the same tempo, half or double time, 3:2 or 4:3 (a beat
+     tracker reads some songs at two thirds or three quarters of their
+     tempo). DJs bring a song of another tempo in through a high-pass; a
+     quieter next song stays a crossfade (the filter would hide it). The
+     next song's hats and snare play over the ending song's beat until the
+     middle, so two unrelated pulses clash there: on a rock list a rise of
+     166 into 96 BPM (1.73 times, about 250 cents from every simple ratio)
+     sounded bad by ear while 97 into 108 and 93 into 123 BPM were
+     acceptable. Such a pair gets the vocal handoff or the crossfade, the kind
+     that sounded acceptable between unrelated tempos in the same list. Of the
+     69 genre-list rises, 59 keep it (8 unrelated, 2 without measured tempos).
    - How it sounds: both songs at their own speed, equal-power faders; the
-     next song comes in through a high-pass opening from 800 Hz to 10 Hz by
-     a beat after the middle, so its kick and bass arrive while the ending
-     song leaves, and the ending song's bass goes out in one move at the
-     middle: one kick and one bass at a time.
+     next song comes in through a high-pass that opens from 800 Hz down to
+     the bass shelf's 180 Hz by a beat before the middle and waits there,
+     then opens to 10 Hz over the 2 beats in which the ending song's bass
+     goes out in one move: one kick and one bass at a time. Opening it
+     straight to 10 Hz by a beat after the middle let the next song's kick
+     and bass in about 2 seconds before the ending song's bass left: on the
+     69 genre-list rises two bass lines played together for 1.1 seconds
+     (median) and two kicks for 0.9, against 0.3 and 0.3 with the held
+     filter, with the same 8 dips deeper than 3 dB and no clipping.
 6. **Vocal handoff** (`vocal_handoff`)
    - Label: `Vocal handoff into <next song> (X and Y BPM)`
    - When: no beat lock, both parts have drums at similar levels, and the
@@ -3595,6 +3610,9 @@ the end of its file and the next song starts right after.
      (DAFx 2022, 50,742 transitions). A rise sweeps a 2nd-order Butterworth
      high-pass on the next song from 800 Hz down to 10 Hz (log scale) from the
      end of its highs move to a beat after the swap, instead of its bass. A
+     filter rise (no lock) sweeps the same high-pass from 800 Hz to the bass
+     shelf's 180 Hz until a beat before the swap, holds it there, and opens it
+     to 10 Hz over the 2 beats in which the ending song's bass shelf closes. A
      percussion mix crosses equal-power faders over its 8 to 12 seconds, swaps
      the two kick drums with amplitude curves that add up to 1 (two kicks on
      the same beat add like one signal, so equal power would bump them, as
@@ -3815,6 +3833,14 @@ the end of its file and the next song starts right after.
      the same 7 holes deeper than 3 dB and 0.3 dB higher bumps; leaving out
      the mid and high exchange kept both songs audible together longer (2.7
      against 2.15 seconds) but made 9 holes. Neither is kept.
+   - **Other filter rise rules and shapes**, on the 3 rises of one rock list
+     rated by ear and the 69 genre-list rises: tempos related only as the
+     same, half or double time would also refuse one of the acceptable rises
+     (93 into 123 BPM, a 4:3 reading) and 32 of the 69; a pulse similarity
+     (the correlation of the two parts' onset autocorrelations) scored an
+     acceptable rise lower than the bad one. Holding the high-pass at 300 Hz
+     instead of 180 Hz made 10 dips deeper than 3 dB against 8, and the EQ
+     blend's shape 14.
    - **An 8-second beat mix** (5.5 to 13 seconds in 4-beat steps, both
      faders trading level around the swap): the 7 to 14 second mixes it
      brings back were the ones that sounded too rapid on a phone; real

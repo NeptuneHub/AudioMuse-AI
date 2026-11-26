@@ -407,12 +407,17 @@ def test_unlocked_pairs_get_the_transition_their_parts_allow():
     t = np.arange(10 * rate) / rate
     drums = _click_audio(110, 10.0)
     chords = (0.3 * np.sin(2 * np.pi * 220.0 * t) + 0.2 * np.sin(2 * np.pi * 277.2 * t)).astype(np.float32)
-    plan = {'voice': {'overlap': 0.0}}
+    plan = {'voice': {'overlap': 0.0}, 'tempo_from': 97.3, 'tempo_to': 108.0}
     assert levels.unlocked_style(plan, drums, chords, 1.0, 1.0) == 'eq_blend'
     assert levels.unlocked_style(plan, chords, drums, 1.0, 1.0) == 'eq_blend'
     assert levels.unlocked_style(plan, drums, drums, 1.0, 1.0) == 'fade'
     assert levels.unlocked_style(plan, drums, drums, 1.0, 0.5) == 'fade'
     assert levels.unlocked_style(plan, drums, drums, 1.0, 1.1) == 'filter_rise'
+    assert levels.unlocked_style(dict(plan, tempo_from=92.9, tempo_to=122.8), drums, drums, 1.0, 1.1) == 'filter_rise'
+    assert levels.unlocked_style(dict(plan, tempo_from=166.2, tempo_to=96.0), drums, drums, 1.0, 1.1) == 'fade'
+    assert levels.unlocked_style(dict(plan, tempo_from=None), drums, drums, 1.0, 1.1) == 'fade'
+    unrelated = {'voice': {'overlap': 0.5}, 'tempo_from': 166.2, 'tempo_to': 96.0}
+    assert levels.unlocked_style(unrelated, drums, drums, 1.0, 1.1) == 'vocal_handoff'
     assert levels.unlocked_style({'voice': {'overlap': 0.5}}, drums, drums, 1.0, 1.0) == 'vocal_handoff'
     assert levels.unlocked_style({'voice': {'overlap': 0.2}}, drums, drums, 1.0, 1.0) == 'fade'
 
@@ -436,6 +441,12 @@ def test_the_eq_blend_and_the_filter_rise_cross_equal_power_and_swap_the_bass_on
         else:
             assert eq['to_bass_db'] is None and not np.any(eq['to_mid_db']) and not np.any(eq['from_mid_db'])
             assert eq['to_highpass_hz'][0] == levels.RISE_FROM_HZ and eq['to_highpass_hz'][600] == pytest.approx(levels.RISE_TO_HZ)
+            held = points <= 4.5
+            assert eq['to_highpass_hz'][held] == pytest.approx(np.maximum(eq['to_highpass_hz'][held], levels.BASS_HZ))
+            assert eq['to_highpass_hz'][450] == pytest.approx(levels.BASS_HZ) and (np.diff(eq['to_highpass_hz']) <= 1e-9).all()
+            opening = (points > 4.5) & (points < 5.5)
+            assert (eq['to_highpass_hz'][opening] < levels.BASS_HZ).all() and (eq['from_bass_db'][opening] < 0.0).all()
+            assert eq['from_bass_db'][points <= 4.5].max() == 0.0 and eq['to_highpass_hz'][550] == pytest.approx(levels.RISE_TO_HZ)
 
 
 def test_unlocked_kinds_play_the_eq_blend_and_the_rise_shapes_at_native_speed(tmp_path, monkeypatch):

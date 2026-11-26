@@ -32,7 +32,10 @@ Main Features:
   high-pass from RISE_FROM_HZ to RISE_TO_HZ instead of the next song's
   bass. A percussion mix trades equal-power faders, one kick at a time
   (DRUM_BASS_CUT_DB) and the hats (DRUM_HIGH_CUT_DB) around the swap. A
-  crossfade keeps equal-power faders.
+  crossfade keeps equal-power faders. An unlocked filter rise holds the next
+  song's high-pass at BASS_HZ until the bass swap, then opens it while the
+  first song's bass leaves; unlocked_style picks it only for tempos within
+  RISE_RELATED_CENTS of a RISE_RATIOS relation.
 * swap_point: the 4-beat bar nearest the middle beat where the next
   song's bass plays (SWAP_PRESENT of its loudest bar) in SWAP_RANGE.
 * transition simulates the gain, speed, filters and faders at RATE.
@@ -78,6 +81,8 @@ DRUM_HIGH_CUT_DB = (-10.0, -8.0)
 CONTINUITY_FLOOR_DB = -4.0
 DRUMLESS_SHARE = 0.12
 UNLOCKED_RISE_DB = 0.0
+RISE_RELATED_CENTS = 200.0
+RISE_RATIOS = (1.0, 0.5, 2.0, 1.5, 2.0 / 3.0, 4.0 / 3.0, 0.75)
 BLEND_CUT_DB = -12.0
 BASS_PRESENT_DB = -12.0
 BASS_LINE_HZ = 120.0
@@ -219,7 +224,7 @@ def _unlocked_shapes(style, seconds, swap, beat, times, bass_swap):
             'to_high_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap / 2.0)) if blend else flat.copy(),
             'to_mid_db': BLEND_CUT_DB * (1.0 - ease(times, 0.0, swap)) if blend else flat.copy(),
             'to_bass_db': _cut_db(np.sin(np.pi / 2 * bass), BASS_CUT_DB) if blend and swapped else None,
-            'to_highpass_hz': None if blend else RISE_FROM_HZ * (RISE_TO_HZ / RISE_FROM_HZ) ** ease(times, 0.0, swap + beat),
+            'to_highpass_hz': None if blend else RISE_FROM_HZ * (BASS_HZ / RISE_FROM_HZ) ** ease(times, 0.0, swap - beat) * (RISE_TO_HZ / BASS_HZ) ** bass,
         },
     }
 
@@ -301,7 +306,9 @@ def unlocked_style(plan, part_a, part_b, energy_a, energy_b):
     shares = [mix.drum_share(part, 0.0, part.size / mix.RATE) for part in (part_a, part_b)]
     if min(share if share is not None else 0.0 for share in shares) <= DRUMLESS_SHARE:
         return 'eq_blend'
-    if energy_b > 10 ** (UNLOCKED_RISE_DB / 10) * max(energy_a, 1e-10):
+    tempo_from, tempo_to = plan.get('tempo_from'), plan.get('tempo_to')
+    related = bool(tempo_from and tempo_to and mix.tempos_match(tempo_from, tempo_to, RISE_RELATED_CENTS, RISE_RATIOS))
+    if related and energy_b > 10 ** (UNLOCKED_RISE_DB / 10) * max(energy_a, 1e-10):
         return 'filter_rise'
     if (plan.get('voice') or {}).get('overlap', 0.0) >= VOCAL_HANDOFF_OVERLAP:
         return 'vocal_handoff'

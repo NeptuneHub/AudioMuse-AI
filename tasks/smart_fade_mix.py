@@ -93,9 +93,9 @@ TREBLE_BAND_HZ = 4000.0
 FLOOR_GAIN_DB = 3.0
 
 
-def tempos_match(tempo_out, tempo_in, limit=MAX_LOCK_CENTS):
+def tempos_match(tempo_out, tempo_in, limit=MAX_LOCK_CENTS, ratios=OCTAVES):
     ratio = np.asarray(tempo_out, dtype=np.float64) / np.asarray(tempo_in, dtype=np.float64)
-    return np.any([np.abs(1200.0 * np.log2(ratio * octave)) <= limit for octave in OCTAVES], axis=0)
+    return np.any([np.abs(1200.0 * np.log2(ratio * relation)) <= limit for relation in ratios], axis=0)
 
 
 def _load(path, rate, start=0.0, seconds=None):
