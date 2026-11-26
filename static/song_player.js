@@ -40,18 +40,15 @@
  * highpass_hz, flat on every source until a mix; the next song then plays on alone. The first
  * song of a play waits for its own transition, which carries its gain. Without a
  * plan (an error, a late answer, no times) the page plays a plain crossfade
- * over SMART_CROSSFADE_SECONDS at the order's times: S-curves (FADE_IN,
- * FADE_OUT, slow at both ends) whose two volumes always add up to 1, so it
- * cannot clip; it is labelled "Default crossfade" like the planned one. The
- * demo crossfade and the last demo's fade out use the same curves. A row
+ * over SMART_CROSSFADE_SECONDS at the order's times. Buffered excerpts use
+ * equal-power curves limited by their peak headroom. Incomplete buffers,
+ * demo fades and joins within one recording use complementary S-curves. A row
  * click plays from that row.
  *
- * With Smart fade the page asks for a transition plan only for the song that
- * plays, as it plays (requestPlan keeps each answer; play takes a fresh copy),
- * and the next row's bar starts with an icon (MARKS) for how that song comes
- * in: a dot while it is planned, an equals sign for a beat-matched mix, rising
- * lines for a rise, a split square for the default crossfade; the player bar
- * counts the transitions planned so far.
+ * With Smart fade the server plans the next ten transitions from the active
+ * song. The window moves with playback and row clicks. A row shows the
+ * incoming transition once the server plans it and the playback range once
+ * both source times are known.
  *
  * During a transition the highlight and the clock stay on the louder song:
  * the ending one until the middle of the mix or crossfade, then they jump to
@@ -100,13 +97,15 @@
     const FADE_IN = Float32Array.from({ length: FADE_POINTS }, (_, k) => 0.5 - 0.5 * Math.cos(Math.PI * k / (FADE_POINTS - 1)));
     const FADE_OUT = FADE_IN.slice().reverse();
     const JOIN_SECONDS = 0.023;
-    const START_SECONDS = 4;
+    const START_SECONDS = 0.6;
     const PIECE_SECONDS = 30;
     const PIECE_PAD_SECONDS = 1;
     const FIRST_PIECE_SECONDS = 8;
     const JOIN_LEAD_SECONDS = 5;
     const COMMIT_LEAD_SECONDS = 5;
     const GAIN_GLIDE_SECONDS = 0.3;
+    const TRANSITION_REQUESTS = 2;
+    const TRANSITION_LOOKAHEAD = 10;
     const settings = document.currentScript ? document.currentScript.dataset : {};
     const URLS = { play: settings.playUrl || '', smartFade: settings.smartFadeUrl || '', transition: settings.transitionUrl || '' };
     const READY = !!URLS.play;
@@ -143,35 +142,65 @@
     }
 
     const MARKS = {
-        pending: '<svg viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="1.6" fill="currentColor"/></svg>',
         crossfade: '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M10.5 1.5v9h-9z" fill="currentColor"/></svg>',
         blend: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4.5h8M2 7.5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
-        rise: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 7l8-4M2 10.5l8-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
+        rise: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 7l8-4M2 10.5l8-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+        percussion: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 7v3m2.7-7v7m2.6-5v5M10 2v8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+        eqblend: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 3h5M5.5 6h5M3 9h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+        sweep: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 2h2c3 0 3 8 6 8h2M1 6h2c2 0 3-4 6-4h2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+        vocals: '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="4" y="1" width="4" height="6.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M2.5 5.5a3.5 3.5 0 0 0 7 0M6 9v2M4.3 11h3.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>'
     };
 
-    function markHtml(mark) {
-        const kind = mark ? mark.kind : 'none';
-        const title = mark && mark.title ? ` title="${escapeHtml(mark.title)}"` : '';
-        return `<span class="play-mark" data-mark="${kind}"${title}>${MARKS[kind] || ''}</span>`;
+    const TRANSITIONS = {
+        beat_mix: { kind: 'blend', label: 'Beat-matched mix with a bass swap', short: 'Beat mix', glides: true },
+        beat_rise: { kind: 'rise', label: 'Beat-matched rise', short: 'Beat rise', glides: true },
+        percussion_mix: { kind: 'percussion', label: 'Beat-matched percussion mix', short: 'Percussion mix', glides: true },
+        eq_blend: { kind: 'eqblend', label: 'EQ blend without drums to clash', short: 'EQ blend' },
+        filter_rise: { kind: 'sweep', label: 'Filter rise', short: 'Filter rise' },
+        vocal_handoff: { kind: 'vocals', label: 'Vocal handoff', short: 'Vocal handoff' },
+        crossfade: { kind: 'crossfade', label: 'Default crossfade', short: 'Crossfade' }
+    };
+    const TRANSITION_MARKS = Object.values(TRANSITIONS);
+    const MARK_LABELS = Object.fromEntries(TRANSITION_MARKS.map(({ kind, short }) => [kind, short]));
+
+    function markHtml(mark, labeled = false) {
+        const { kind, seconds } = mark;
+        const title = mark.title ? ` title="${escapeHtml(mark.title)}"` : '';
+        const label = labeled && MARK_LABELS[kind];
+        const duration = Number.isFinite(seconds) ? ` ${seconds.toFixed(1)} s` : '';
+        return `<span class="play-mark${label ? ' play-mark-labeled' : ''}" data-mark="${kind}"${title}>${MARKS[kind] || ''}${label ? `<span>${label}${duration}</span>` : ''}</span>`;
     }
 
-    function showSpans(list, songs, label, markOf) {
+    function spanAt(item) {
+        const main = item.querySelector('.result-main') || item;
+        let span = main.querySelector('.play-span');
+        if (!span) {
+            span = document.createElement('div');
+            span.className = 'play-span';
+            main.append(span);
+        }
+        return span;
+    }
+
+    function addRange(item, song, label) {
+        if (!item || !Number.isFinite(song.start) || !Number.isFinite(song.end) || song.end <= song.start) return;
+        const span = spanAt(item);
+        if (span.querySelector('.play-span-track')) return;
+        const length = Math.max(song.duration || 0, song.end, 1);
+        const left = 100 * song.start / length;
+        const width = Math.min(100 - left, Math.max(1, 100 * (song.end - song.start) / length));
+        const start = clock(song.start);
+        const end = clock(song.end);
+        span.title = `${label}: start at ${start}, end at ${end} of ${clock(length)}`;
+        span.insertAdjacentHTML('beforeend',
+            `<span class="play-span-track"><span class="play-span-fill" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span>`
+            + `<span>${start} - ${end}</span>`);
+    }
+
+    function showSpans(list, songs, label) {
         list.querySelectorAll('.play-span').forEach(span => span.remove());
         const items = list.querySelectorAll('.result-item');
-        songs.forEach(song => {
-            const item = song.row >= 0 ? items[song.row] : null;
-            if (!item || typeof song.start !== 'number' || typeof song.end !== 'number') return;
-            const length = Math.max(song.duration || 0, song.end, 1);
-            const left = Math.min(100, 100 * song.start / length);
-            const width = Math.max(1, Math.min(100 - left, 100 * (song.end - song.start) / length));
-            const start = clock(song.start);
-            const end = clock(song.end);
-            (item.querySelector('.result-main') || item).insertAdjacentHTML('beforeend',
-                `<div class="play-span" title="${escapeHtml(label)}: start at ${start}, end at ${end} of ${clock(length)}">`
-                + (markOf ? markHtml(markOf(song)) : '')
-                + `<span class="play-span-track"><span class="play-span-fill" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%"></span></span>`
-                + `<span>${start} - ${end}</span></div>`);
-        });
+        songs.forEach(song => addRange(items[song.row], song, label));
     }
 
     function unlockAudio() {
@@ -224,6 +253,17 @@
         if (values) param.setValueCurveAtTime(Float32Array.from(values), from, length);
     }
 
+    function validPlan(plan) {
+        if (!plan || !Object.hasOwn(TRANSITIONS, plan.type) || !(plan.duration > 0) || !(plan.step > 0)) return false;
+        const times = [plan.start, plan.duration, plan.middle, plan.step, plan.to?.start, plan.to?.continue_from];
+        const filters = ['bass_hz', 'mid_hz', 'mid_q', 'high_hz'];
+        if (!times.every(Number.isFinite) || !filters.every(key => Number.isFinite(plan.filters?.[key]))) return false;
+        const count = plan.from?.speed?.length;
+        return count >= 2 && [plan.from, plan.to].every(side => Number.isFinite(side?.gain)
+            && ['speed', 'volume', 'bass_db', 'mid_db', 'high_db'].every(key =>
+                Array.isArray(side[key]) && side[key].length === count && side[key].every(Number.isFinite)));
+    }
+
     function create(list) {
         const bar = document.createElement('div');
         bar.className = 'song-player hidden';
@@ -231,7 +271,7 @@
             + '<button type="button" class="btn btn-ghost play-skip-btn hidden" disabled>Skip to the fade</button>'
             + '<button type="button" class="btn btn-ghost play-stop-btn" disabled>Stop</button>'
             + '<span class="play-clock"></span>'
-            + '<span class="play-summary" title="Transitions planned for this list: beat-matched mixes, then default crossfades"></span>'
+            + '<span class="play-summary" aria-label="Transition counts"></span>'
             + '<span class="now-playing" aria-live="polite"></span>';
         list.parentNode.insertBefore(bar, list);
         list.classList.add('playable-list');
@@ -252,10 +292,7 @@
         let scrub = null;
         const playNodes = new Set();
         let swapView = null;
-        const planCache = new Map();
-        const planMarks = new Map();
-        const heard = new Map();
-        let listPairs = [];
+        let planning = null;
 
         function listSongs() {
             const songs = [...list.querySelectorAll('.result-item')]
@@ -357,7 +394,8 @@
 
         function seekLimit(state) {
             if (state.mix) return state.mix.start;
-            return state.fadeEnd !== null ? state.fadeEnd - crossfadeSeconds() : lengthOf(state);
+            if (state.fadeEnd === null) return lengthOf(state);
+            return Math.max(0, state.fadeEnd - (state.ready ? crossfadeSeconds() : 0));
         }
 
         function showProgress(item, second, state) {
@@ -382,10 +420,6 @@
             return !!state && state === playCurrent && audioCtx.currentTime < state.handoverAt - 0.1;
         }
 
-        function canSeek(state) {
-            return isLive(state) && !state.committed;
-        }
-
         function glide(state, gain) {
             if (state !== playCurrent) return;
             levels.set(state.track, gain);
@@ -396,8 +430,9 @@
             const target = Math.max(0, second);
             const seek = state.seek = {};
             pieceAt(state.track, target).then(() => {
-                if (state.seek !== seek || !canSeek(state)) return;
+                if (state.seek !== seek || !isLive(state)) return;
                 halt(state.node);
+                state.committed = false;
                 state.node = startSource(state.track, audioCtx.currentTime + 0.05, target, false);
                 state.node.onMove = state.plan;
                 state.plan();
@@ -422,13 +457,14 @@
 
         function makeVoice(track, filter, when, offset) {
             const air = audioCtx.createBiquadFilter();
+            const chainGain = audioCtx.createGain();
             const tone = audioCtx.createBiquadFilter();
             const mid = audioCtx.createBiquadFilter();
             const high = audioCtx.createBiquadFilter();
             const gain = audioCtx.createGain();
             const level = audioCtx.createGain();
             const voice = {
-                track, air, tone, mid, high, gain, level, when: onGrid(when), offset: onGrid(Math.max(0, offset)),
+                track, air, chainGain, tone, mid, high, gain, level, when: onGrid(when), offset: onGrid(Math.max(0, offset)),
                 feeds: [], timers: [], chained: null, single: null, pending: false, halted: false,
                 stopAt: Infinity, noJoinAfter: Infinity, onMove: null
             };
@@ -440,6 +476,7 @@
             mid.gain.value = 0;
             high.type = 'highshelf';
             high.gain.value = 0;
+            chainGain.connect(air);
             air.connect(tone);
             tone.connect(mid);
             mid.connect(high);
@@ -456,13 +493,13 @@
             item.source.stop(Math.max(item.end, item.when));
         }
 
-        function feed(voice, piece, when, second, fadeIn) {
+        function feed(voice, piece, when, second, fadeIn, input = voice.air) {
             const source = audioCtx.createBufferSource();
             const fader = audioCtx.createGain();
             const item = { source, fader, piece, when, end: Infinity };
             source.buffer = piece.buffer;
             source.connect(fader);
-            fader.connect(voice.air);
+            fader.connect(input);
             if (fadeIn) fader.gain.setValueCurveAtTime(FADE_IN, when, fadeIn);
             source.onended = () => {
                 fader.disconnect();
@@ -476,7 +513,7 @@
         }
 
         function chain(voice, piece, when, second, fadeIn) {
-            const item = feed(voice, piece, when, second, fadeIn);
+            const item = feed(voice, piece, when, second, fadeIn, voice.chainGain);
             voice.chained = item;
             voice.pending = !piece.last;
             if (piece.last) return;
@@ -508,9 +545,9 @@
             atTime(voice.timers, joinAt - JOIN_LEAD_SECONDS, join);
         }
 
-        function startSource(track, when, offset, fadeIn, filter) {
-            const voice = makeVoice(track, filter, when, offset);
-            if (fadeIn) voice.gain.gain.setValueCurveAtTime(FADE_IN, voice.when, fadeIn);
+        function startSource(track, when, offset, fadeIn, curve = FADE_IN) {
+            const voice = makeVoice(track, null, when, offset);
+            if (fadeIn) voice.gain.gain.setValueCurveAtTime(curve, voice.when, fadeIn);
             const piece = coveringPiece(track, voice.offset);
             if (piece) {
                 chain(voice, piece, voice.when, voice.offset, 0);
@@ -544,14 +581,9 @@
             voice.timers.forEach(clearTimeout);
             voice.timers = [];
             voice.chained = null;
+            voice.chainGain.gain.setValueCurveAtTime(FADE_OUT, at, JOIN_SECONDS);
             voice.feeds.forEach(item => {
-                if (item.when < at) {
-                    item.fader.gain.cancelScheduledValues(at);
-                    item.fader.gain.setValueCurveAtTime(FADE_OUT, at, JOIN_SECONDS);
-                    endFeed(item, at + JOIN_SECONDS);
-                } else {
-                    endFeed(item, item.when);
-                }
+                endFeed(item, item.when < at ? at + JOIN_SECONDS : item.when);
             });
             voice.single = feed(voice, piece, at, second, JOIN_SECONDS);
             voice.pending = false;
@@ -595,9 +627,13 @@
         async function loadTransition(index) {
             const from = playQueue[index];
             const to = playQueue[index + 1];
-            if (!playMode.beatMatch || !URLS.transition || !to || typeof from.end !== 'number' || typeof to.start !== 'number') return null;
-            const plan = await requestPlan(from, to);
+            if (!playMode.beatMatch || !planning || !canPlan(from, to)) return null;
+            const plan = await requestPlan(planning, from, to, true);
             return plan ? Object.assign({}, plan) : null;
+        }
+
+        function canPlan(from, to) {
+            return URLS.transition && Number.isFinite(from?.end) && Number.isFinite(to?.start);
         }
 
         function pairKey(from, to) {
@@ -605,79 +641,161 @@
         }
 
         function markFor(plan, to) {
-            const tempo = plan ? plan.info : {};
-            if (plan && plan.type === 'beat_mix') return { kind: 'blend', title: `Beat-matched mix with a bass swap into ${to.title} (${tempo.tempo_from} to ${tempo.tempo_to} BPM)` };
-            if (plan && plan.type === 'beat_rise') return { kind: 'rise', title: `Beat-matched rise into ${to.title} (${tempo.tempo_from} to ${tempo.tempo_to} BPM)` };
-            if (!tempo.tempo_from) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };
-            return { kind: 'crossfade', title: `Default crossfade into ${to.title} (${tempo.tempo_from} and ${tempo.tempo_to} BPM)` };
+            const tempo = (plan && plan.info) || {};
+            const { kind, label, glides } = (plan && TRANSITIONS[plan.type]) || TRANSITIONS.crossfade;
+            const bpm = tempo.tempo_from && tempo.tempo_to
+                ? ` (${tempo.tempo_from} ${glides ? 'to' : 'and'} ${tempo.tempo_to} BPM)` : '';
+            return { kind, title: `${label} into ${to.title}${bpm}` };
         }
 
-        function requestPlan(from, to) {
-            const key = pairKey(from, to);
-            if (!planCache.has(key)) {
-                const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
-                planMarks.set(key, { kind: 'pending', title: 'Planning this transition...' });
-                paintMark(to, planMarks.get(key));
-                planCache.set(key, fetch(`${URLS.transition}?${query}`)
+        function runPlans(batch) {
+            while (!batch.controller.signal.aborted && batch.active < TRANSITION_REQUESTS && batch.pending.length) {
+                const { key, query, resolve } = batch.pending.shift();
+                batch.active++;
+                fetch(`${URLS.transition}?${query}`, { signal: batch.controller.signal })
                     .then(async response => {
-                        const plan = await readJsonBody(response);
-                        return response.ok && plan && plan.duration > 0 ? plan : null;
+                        const plan = response.ok ? await readJsonBody(response) : null;
+                        return validPlan(plan) ? plan : null;
                     })
-                    .catch(() => {
-                        planCache.delete(key);
-                        return null;
-                    })
+                    .catch(() => null)
                     .then(plan => {
-                        if (plan) {
-                            heard.set(from.row, Object.assign({}, heard.get(from.row), { end: plan.start + plan.duration }));
-                            heard.set(to.row, Object.assign({}, heard.get(to.row), { start: plan.to.start }));
-                            if (choice && choice.smart) smartSpans(listSongs().map(withFade));
-                        }
-                        planMarks.set(key, markFor(plan, to));
-                        paintMark(to, planMarks.get(key));
-                        showSummary();
-                        return plan;
-                    }));
+                        resolve(plan);
+                        if (plan && planning === batch) paintPlan(batch, key, plan);
+                    })
+                    .finally(() => {
+                        batch.active--;
+                        runPlans(batch);
+                    })
+                    .catch(error => console.error('Could not show a planned transition in the list.', error));
             }
-            return planCache.get(key);
         }
 
-        function paintMark(song, mark) {
-            const item = song.row >= 0 ? list.querySelectorAll('.result-item')[song.row] : null;
-            const old = item && item.querySelector('.play-mark');
-            if (old) old.outerHTML = markHtml(mark);
-        }
-
-        function smartSpans(songs) {
-            const marks = new Map(songs.map((song, k) => {
-                if (!k) return [song, { kind: 'none' }];
-                const from = songs[k - 1];
-                if (!URLS.transition || typeof from.end !== 'number' || typeof song.start !== 'number') return [song, markFor(null, song)];
-                return [song, planMarks.get(pairKey(from, song)) || { kind: 'none' }];
-            }));
-            showSpans(list, songs.map(song => Object.assign({}, song, heard.get(song.row))), 'Smart fade', song => marks.get(songs.find(other => other.row === song.row)));
-        }
-
-        function showSummary() {
-            const kinds = listPairs.map(key => (planMarks.get(key) || { kind: 'none' }).kind);
-            const special = kinds.filter(kind => kind === 'blend' || kind === 'rise').length;
-            const crossfades = kinds.filter(kind => kind === 'crossfade').length;
-            playSummary.innerHTML = special + crossfades
-                ? `<span class="play-mark" data-mark="blend">${MARKS.blend}</span>${special} <span class="play-mark" data-mark="crossfade">${MARKS.crossfade}</span>${crossfades}`
-                : '';
-        }
-
-        function trackPairs(songs) {
-            listPairs = [];
-            for (let k = 1; k < songs.length; k++) {
-                if (URLS.transition && typeof songs[k - 1].end === 'number' && typeof songs[k].start === 'number') listPairs.push(pairKey(songs[k - 1], songs[k]));
+        function requestPlan(batch, from, to, priority = false) {
+            const key = pairKey(from, to);
+            let job = batch.requests.get(key);
+            if (!job) {
+                const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
+                job = { key, query };
+                job.promise = new Promise(resolve => { job.resolve = resolve; });
+                batch.requests.set(key, job);
+                batch.pending.push(job);
             }
-            showSummary();
+            if (priority) {
+                const index = batch.pending.indexOf(job);
+                if (index > 0) batch.pending.unshift(...batch.pending.splice(index, 1));
+            }
+            runPlans(batch);
+            return job.promise;
+        }
+
+        function showTransition(to, plan) {
+            const mark = markFor(plan, to);
+            nowPlaying.innerHTML = `${markHtml(mark)} <span>${escapeHtml(mark.title)}</span>`;
+        }
+
+        function showSummary(counts) {
+            playSummary.innerHTML = TRANSITION_MARKS.filter(({ kind }) => counts.has(kind))
+                .map(({ kind, label, short }) => {
+                    const title = `${label}: ${counts.get(kind)}`;
+                    return `<span class="play-summary-count" title="${title}" aria-label="${title}">${markHtml({ kind })}<span>${short} ${counts.get(kind)}</span></span>`;
+                }).join('');
+        }
+
+        function startPlanning(songs, token) {
+            const items = list.querySelectorAll('.result-item');
+            const edges = new Map();
+            songs.slice(1).forEach((to, i) => {
+                const from = songs[i];
+                if (!canPlan(from, to)) return;
+                const key = pairKey(from, to);
+                if (!edges.has(key)) edges.set(key, []);
+                edges.get(key).push({ from, to, i });
+            });
+            const ranges = songs.map((song, i) => ({ duration: song.duration, start: i === 0 ? song.start : null,
+                end: i === songs.length - 1 ? song.duration : null }));
+            planning = { controller: new AbortController(), requests: new Map(), pending: [], active: 0,
+                items, edges, ranges, counts: new Map(), token, window: null };
+            planAhead(songs, 0);
+        }
+
+        function paintPlan(batch, key, plan) {
+            for (const { from, to, i } of batch.edges.get(key) || []) {
+                const mark = markFor(plan, to);
+                batch.counts.set(mark.kind, (batch.counts.get(mark.kind) || 0) + 1);
+                const item = batch.items[to.row];
+                if (item) spanAt(item).insertAdjacentHTML('afterbegin', markHtml({ ...mark, seconds: plan.duration }, true));
+                batch.ranges[i].end = plan.start + travelled(plan.from.speed, plan.step);
+                batch.ranges[i + 1].start = plan.to.start;
+                addRange(batch.items[from.row], batch.ranges[i], 'Smart fade');
+                addRange(item, batch.ranges[i + 1], 'Smart fade');
+            }
+        }
+
+        function planAhead(songs, index) {
+            const batch = planning;
+            if (!batch) return;
+            const pairs = songs.slice(index + 1, index + 1 + TRANSITION_LOOKAHEAD)
+                .map((to, i) => [songs[index + i], to]).filter(([from, to]) => canPlan(from, to));
+            const keys = new Set(pairs.map(([from, to]) => pairKey(from, to)));
+            const windowKey = JSON.stringify([...keys]);
+            if (batch.window === windowKey) return;
+            batch.window = windowKey;
+            batch.pending = batch.pending.filter(job => {
+                if (keys.has(job.key)) return true;
+                batch.requests.delete(job.key);
+                job.resolve(null);
+                return false;
+            });
+            const plans = pairs.map(([from, to]) => requestPlan(batch, from, to));
+            Promise.all(plans).then(() => {
+                if (batch === planning && batch.token === shown && batch.window === windowKey) showSummary(batch.counts);
+            }).catch(error => console.error('Could not show the transition counts.', error));
+        }
+
+        function resetPlanning() {
+            if (planning) {
+                planning.controller.abort();
+                planning.pending.splice(0).forEach(({ resolve }) => resolve(null));
+                planning = null;
+            }
+            playSummary.replaceChildren();
+            list.querySelectorAll('.play-span').forEach(span => span.remove());
         }
 
         function entryOffset(index) {
             const song = playQueue[index];
             return typeof song.start === 'number' ? song.start : 0;
+        }
+
+        function bufferedPeak(track, start, seconds) {
+            const piece = coveringPiece(track, start);
+            if (!piece || piece.end < start + seconds) return null;
+            const buffer = piece.buffer;
+            const first = Math.max(0, Math.floor((start - piece.start) * buffer.sampleRate));
+            const last = Math.min(buffer.length, first + Math.ceil(seconds * buffer.sampleRate) + 1);
+            let peak = 0;
+            for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                const samples = buffer.getChannelData(channel);
+                for (let i = first; i < last; i++) peak = Math.max(peak, Math.abs(samples[i]));
+            }
+            return peak * levelOf(track);
+        }
+
+        function fallbackCurves(state, start, entry, span) {
+            if (!playMode.beatMatch) return [FADE_OUT, FADE_IN];
+            const a = bufferedPeak(state.track, start, span);
+            const b = bufferedPeak(state.next, entry, span);
+            if (a === null || b === null) return [FADE_OUT, FADE_IN];
+            const fall = new Float32Array(FADE_POINTS);
+            const rise = new Float32Array(FADE_POINTS);
+            for (let k = 0; k < FADE_POINTS; k++) {
+                const angle = Math.PI * k / (2 * (FADE_POINTS - 1));
+                const x = Math.cos(angle), y = Math.sin(angle);
+                const headroom = Math.max(1, a * x + b * y);
+                fall[k] = x / headroom;
+                rise[k] = y / headroom;
+            }
+            return [fall, rise];
         }
 
         function fadeEndOf(index) {
@@ -686,6 +804,7 @@
         }
 
         function begin(index, track, node) {
+            if (playMode.beatMatch) planAhead(playQueue, index);
             const token = playToken;
             const song = playQueue[index];
             const hasNext = index + 1 < playQueue.length;
@@ -729,7 +848,6 @@
                     state.handoverAt = at(mix.start);
                     state.node.noJoinAfter = state.handoverAt - 2 * JOIN_SECONDS;
                     commit = () => {
-                        const plain = mix.type === 'crossfade';
                         const resume = onGrid(state.handoverAt + mix.duration);
                         const span = resume - state.handoverAt;
                         const outgoing = state.node;
@@ -748,6 +866,7 @@
                             follow(node.mid.gain, side.mid_db, state.handoverAt, span);
                             follow(node.tone.gain, side.bass_db, state.handoverAt, span);
                         });
+                        if (mix.to.highpass_hz) blend.tone.Q.value = -10 * Math.log10(2);
                         follow(blend.tone.frequency, mix.to.highpass_hz, state.handoverAt, span);
                         outgoing.gain.gain.setValueAtTime(0, resume + 1 / audioCtx.sampleRate);
                         blend.gain.gain.setValueCurveAtTime(FADE_OUT, resume + 1 / audioCtx.sampleRate, JOIN_SECONDS);
@@ -760,12 +879,8 @@
                             state: { track: state.next, mix: null, fadeEnd: fadeEndOf(index + 1) },
                             at: t => mix.to.start + played * Math.min(1, Math.max(0, (t - state.handoverAt) / span))
                         };
-                        after(state.handoverAt, () => {
-                            const kind = plain ? 'Default crossfade' : `Beat-matched ${mix.type === 'beat_rise' ? 'rise' : 'mix with a bass swap'}`;
-                            const tempo = mix.info;
-                            const tempos = !tempo.tempo_from ? '' : plain ? ` (${tempo.tempo_from} and ${tempo.tempo_to} BPM)` : ` (tempo gliding from ${tempo.tempo_from} to ${tempo.tempo_to} BPM)`;
-                            nowPlaying.textContent = `${kind} into ${playQueue[index + 1].title}${tempos}`;
-                        });
+                        after(state.handoverAt, () => showTransition(playQueue[index + 1], mix));
+                        after(state.handoverAt + mix.middle, () => planAhead(playQueue, index + 1));
                         after(resume, () => begin(index + 1, state.next, entry));
                     };
                 } else {
@@ -779,13 +894,16 @@
                     const span = Math.min(crossfadeSeconds(), Math.max(0.1, end - played - 0.05));
                     state.handoverAt = Math.max(now + 0.05, at(fading ? end - span : length));
                     commit = () => {
+                        const offset = entryOffset(index + 1);
+                        const sourceAt = state.node.offset + state.handoverAt - state.node.when;
+                        const [fall, rise] = fading ? fallbackCurves(state, sourceAt, offset, span) : [FADE_OUT, FADE_IN];
                         if (fading) {
-                            state.node.gain.gain.setValueCurveAtTime(FADE_OUT, state.handoverAt, span);
+                            state.node.gain.gain.setValueCurveAtTime(fall, state.handoverAt, span);
                             stopVoice(state.node, state.handoverAt + span);
                         }
-                        const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading ? span : 0);
+                        const entry = startSource(state.next, state.handoverAt, offset, fading ? span : 0, rise);
                         state.scheduled = [entry];
-                        if (fading && playMode.beatMatch) after(state.handoverAt, () => { nowPlaying.textContent = `Default crossfade into ${playQueue[index + 1].title}`; });
+                        if (fading && playMode.beatMatch) after(state.handoverAt, () => showTransition(playQueue[index + 1], null));
                         after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, entry));
                     };
                 }
@@ -868,6 +986,7 @@
                     nowPlaying.textContent = `${notice ? notice + ' ' : ''}Loading ${song.title}...`;
                     const track = makeTrack(song);
                     const entry = entryOffset(index);
+                    if (playMode.beatMatch) planAhead(playQueue, index);
                     const planned = loadTransition(index);
                     const first = await pieceAround(track, entry, entry + FIRST_PIECE_SECONDS).catch(error => { notice = skipNotice(song, error); return null; });
                     if (token !== playToken) return;
@@ -910,8 +1029,7 @@
             if (token !== playToken) return;
             playMode = queue;
             playQueue = queue.songs;
-            if (queue.beatMatch) smartSpans(playQueue);
-            else if (queue.label) showSpans(list, playQueue, queue.label);
+            if (queue.label && !queue.beatMatch) showSpans(list, playQueue, queue.label);
             const index = row === undefined ? 0 : playQueue.findIndex(song => song.row >= row);
             if (index < 0) {
                 nowPlaying.textContent = demoMode ? 'No demo for this song.' : 'Nothing to play.';
@@ -946,7 +1064,7 @@
 
         list.addEventListener('pointerdown', event => {
             const item = event.target.closest('.result-item.playing');
-            if (!item || event.button !== 0 || !canSeek(playCurrent)) return;
+            if (!item || event.button !== 0 || !isLive(playCurrent)) return;
             scrub = { item, state: playCurrent };
             item.setPointerCapture(event.pointerId);
             showProgress(item, scrubSecond(event), scrub.state);
@@ -959,7 +1077,7 @@
             const { state } = scrub;
             const second = scrubSecond(event);
             scrub = null;
-            if (canSeek(state)) seekTo(state, second);
+            if (isLive(state)) seekTo(state, second);
         });
         list.addEventListener('pointercancel', () => {
             scrub = null;
@@ -969,14 +1087,11 @@
         async function arrange(rows, options) {
             stopPlayback();
             shown += 1;
-            planCache.clear();
-            planMarks.clear();
-            heard.clear();
-            listPairs = [];
-            showSummary();
+            resetPlanning();
             const seed = options.seed && options.seed.item_id ? { item_id: String(options.seed.item_id), title: options.seed.title || 'Unknown' } : null;
-            choice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };
-            if (!choice.smart || !rows.length) return rows;
+            const nextChoice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };
+            choice = nextChoice;
+            if (!nextChoice.smart || !rows.length) return rows;
             try {
                 const body = { item_ids: [...(seed ? [seed.item_id] : []), ...rows.map(row => String(row.item_id))] };
                 if (options.keepOrder) body.keep_order = true;
@@ -984,7 +1099,7 @@
                 const data = await readJsonBody(response);
                 if (!response.ok || data === null) throw new Error(apiErrorText(data, `Smart fade failed (HTTP ${response.status})`));
                 const answer = data.results || [];
-                answer.forEach(row => choice.fades.set(row.item_id, row));
+                answer.forEach(row => nextChoice.fades.set(row.item_id, row));
                 if (options.keepOrder) return rows;
                 const waiting = new Map();
                 rows.forEach(row => {
@@ -1001,8 +1116,8 @@
                 waiting.forEach(bucket => ordered.push(...bucket));
                 return ordered;
             } catch (error) {
-                choice.smart = false;
-                choice.note = `Smart fade is off for these results: ${error.message}`;
+                nextChoice.smart = false;
+                nextChoice.note = `Smart fade is off for these results: ${error.message}`;
                 return rows;
             }
         }
@@ -1018,9 +1133,8 @@
                     .then(songs => { if (token === shown) showSpans(list, songs, 'Demo'); })
                     .catch(error => { if (token === shown && !playCurrent) nowPlaying.textContent = error.message; });
             } else if (choice.smart) {
-                const songs = listSongs().map(withFade);
-                smartSpans(songs);
-                trackPairs(songs);
+                if (planning) resetPlanning();
+                startPlanning(listSongs().map(withFade), token);
             }
         }
 
@@ -1028,8 +1142,7 @@
             stopPlayback();
             shown += 1;
             choice = null;
-            listPairs = [];
-            showSummary();
+            resetPlanning();
             bar.classList.add('hidden');
         }
 

@@ -15,6 +15,10 @@ Main Features:
 * Local recovery keeps up to four more source seconds without shortening fades.
 * Ending-only recovery restores early cues while preserving the approved vocal taper.
 * MusiCNN covers short regions and edge patches; Silero complements it.
+* A percussion mix alternative wins only where no voices overlap; a locked
+  percussion mix with competing voices is a beat mix (it gets the vocal EQ).
+* A beat mix whose moved cues lose the beat keeps its verified cues when no voices
+  clash there, else it is the default 10-second crossfade.
 """
 
 from types import SimpleNamespace
@@ -98,6 +102,18 @@ def test_an_instrumental_intro_recovers_audio_and_keeps_the_beat_lock(monkeypatc
     assert moved['voice']['clash'] is False
 
 
+def test_rounded_beat_period_keeps_the_already_verified_beat_lock(monkeypatch):
+    _inspect_pair(monkeypatch, out_spans=[], in_spans=[])
+    duration = round(32 * 0.474032, 4)
+    plan = dict(PLAN, mix_seconds=duration, beat_seconds=0.4740, resume_at=8 + duration)
+
+    moved = voice.clear_voice('out', 'in', plan)
+
+    assert moved['style'] == 'blend'
+    assert moved['mix_seconds'] == duration
+    assert moved['confidence'] == 'high'
+
+
 def test_excessive_intro_trimming_is_bounded_without_forcing_a_zero_cue(monkeypatch):
     _inspect_pair(monkeypatch)
     plan = dict(PLAN, in_at=22.0, resume_at=38.0)
@@ -142,6 +158,51 @@ def test_leading_silence_does_not_count_toward_the_incoming_trim_limit(monkeypat
     assert moved['resume_at'] <= 42.0
 
 
+def test_a_beat_mix_whose_moved_cues_lose_the_beat_becomes_the_default_crossfade(monkeypatch):
+    _inspect_pair(monkeypatch)
+    heard = voice._heard
+    monkeypatch.setattr(voice, '_heard', lambda path, start, seconds: dict(heard(path, start, seconds), samples=np.zeros(16000)))
+    monkeypatch.setattr(voice.mix, '_in_step', lambda *args: False)
+    moved = voice.clear_voice('out', 'in', PLAN)
+    assert moved['style'] == 'fade' and moved['beat_rejection'] == 'audible_cue' and moved['beat_seconds'] is None
+    assert moved['mix_seconds'] == voice.mix.MIN_MIX_SECONDS and moved['mix_at'] + moved['mix_seconds'] == 118.0
+    assert moved['resume_at'] == moved['in_at'] + voice.mix.MIN_MIX_SECONDS
+
+
+def test_a_verified_beat_mix_stays_when_moved_cues_lose_the_beat_and_no_voices_clash(monkeypatch):
+    _inspect_pair(monkeypatch, out_spans=[], in_spans=[], fade_at=110.0)
+    heard = voice._heard
+    monkeypatch.setattr(voice, '_heard', lambda path, start, seconds: dict(heard(path, start, seconds), samples=np.zeros(16000)))
+    monkeypatch.setattr(voice.mix, '_in_step', lambda *args: False)
+    plan = dict(PLAN, mix_at=108.0, swap_at=116.0)
+    kept = voice.clear_voice('out', 'in', plan)
+    assert kept['style'] == 'blend' and kept['beat_seconds'] == 0.5 and 'beat_rejection' not in kept
+    assert (kept['mix_at'], kept['in_at'], kept['mix_seconds'], kept['resume_at']) == (108.0, 8.0, 16.0, 24.0)
+    assert kept['voice']['clash'] is False and kept['voice']['end_margin'] == 16.0
+
+
+def test_a_locked_percussion_mix_with_competing_voices_becomes_a_beat_mix(monkeypatch):
+    _inspect_pair(monkeypatch)
+    assert voice.clear_voice('out', 'in', dict(PLAN, style='percussion_mix'))['style'] == 'blend'
+    _inspect_pair(monkeypatch, out_spans=[], in_spans=[])
+    assert voice.clear_voice('out', 'in', dict(PLAN, style='percussion_mix'))['style'] == 'percussion_mix'
+
+
+def test_the_ending_song_is_read_only_a_minute_past_the_planned_end(monkeypatch):
+    _inspect_pair(monkeypatch, duration=3600.0)
+    heard = voice._heard
+    asked = []
+
+    def recorded(path, start, seconds):
+        asked.append((path, start, seconds))
+        return heard(path, start, seconds)
+
+    monkeypatch.setattr(voice, '_heard', recorded)
+    voice.clear_voice('out', 'in', PLAN)
+    (_path, start, seconds), = [call for call in asked if call[0] == 'out']
+    assert seconds is not None and start + seconds == PLAN['mix_at'] + PLAN['mix_seconds'] + voice.TAIL_READ_SECONDS
+
+
 def test_a_short_incoming_track_cannot_overrun_when_a_tempo_lock_is_dropped(monkeypatch):
     def heard(path, start, seconds):
         return _inspection(start, 140.0 - start if path == 'out' else 10.0, [])
@@ -151,6 +212,18 @@ def test_a_short_incoming_track_cannot_overrun_when_a_tempo_lock_is_dropped(monk
     assert moved['style'] == 'fade' and moved['beat_seconds'] is None
     assert moved['in_at'] + moved['mix_seconds'] <= 10.0001
     assert moved['resume_at'] <= 10.0001
+
+
+def test_a_percussion_mix_alternative_is_taken_only_where_no_voices_overlap(monkeypatch):
+    drums = voice.mix._handoff('percussion_mix', 104.0, 6.0, 10.0, 0.98, 0.5)
+    plan = dict(PLAN, style='fade', beat_seconds=None, mix_seconds=10.0, resume_at=18.0, swap_at=105.0,
+                confidence='medium', beat_rejection='beat_tracking', alternatives=[drums])
+    _inspect_pair(monkeypatch, out_spans=[(60.0, 100.0)], in_spans=[(20.0, 40.0)])
+    chosen = voice.clear_voice('out', 'in', plan)
+    assert chosen['style'] == 'percussion_mix' and chosen['selection_reason'] == 'percussion_mix'
+    assert chosen['confidence'] == 'high' and chosen['mix_seconds'] == 10.0 and chosen['beat_seconds'] == 0.5
+    _inspect_pair(monkeypatch, out_spans=[(60.0, 120.0)], in_spans=[(0.0, 40.0)])
+    assert voice.clear_voice('out', 'in', plan)['style'] == 'fade'
 
 
 def test_recovery_keeps_the_fade_and_recovers_four_seconds_on_both_beat_grids(monkeypatch):

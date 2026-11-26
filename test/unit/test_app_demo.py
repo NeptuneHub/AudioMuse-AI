@@ -189,14 +189,14 @@ def test_the_demo_client_takes_its_url_from_its_script_tag():
 
 def test_the_player_plays_whole_songs_demos_or_smart_fade_as_ticked_before_the_search():
     source = _source('static', 'song_player.js')
-    assert "choice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };" in source
+    assert "const nextChoice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };" in source
     assert "if (choice && choice.demo) return { songs: await demos().queue(songs), beatMatch: false, stopAtEnd: true, label: 'Demo' };" in source
     assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
     assert "return { songs, beatMatch: false, stopAtEnd: false, label: '' };" in source
     assert "return typeof song.end === 'number' && (index + 1 < playQueue.length || playMode.stopAtEnd) ? song.end : null;" in source
     assert 'const fadeEnd = fadeEndOf(index);' in source
     assert 'const ending = fadeEnd !== null && playMode.stopAtEnd;' in source
-    assert 'if (!playMode.beatMatch || !URLS.transition' in source
+    assert 'if (!playMode.beatMatch || !planning || !canPlan(from, to)) return null;' in source
     assert "console.error('Could not prepare the beat-matched mix; crossfading into the next song instead.', error);" in source
 
 

@@ -16,14 +16,19 @@ Main Features:
   leave a small audible tail, rather than waiting for terminal silence.
 * Preserve a sustained overlap. Dense vocals can shorten a long mix to a
   few bars, but never turn it into a sequential handoff or delayed entrance.
-* Keep beat locks when cue shifts preserve their grids. Pass the amount of
-  vocal competition to smart_fade_levels for a modest, gradual EQ exchange.
+* Keep beat locks when cue shifts preserve their grids and the onsets still
+  line up. Moved cues that lose the lock give back the verified original
+  cues when no voices clash there, else the default MIN_MIX_SECONDS
+  crossfade ending at the same second. Pass the amount of vocal competition
+  to smart_fade_levels for a modest, gradual EQ exchange.
+* A percussion mix alternative wins when no voice overlaps another there.
 * Recover a few skipped seconds with a local pass, preserving fade length,
   audible energy, vocal balance and each source's half-bar grid.
 * Restore early endings toward the requested cue with a separate bounded pass.
   Keep the incoming cue and approved vocal taper; reject fading energy and
   increased competition in the later half, retaining a small audible tail.
 * Detector failures preserve normal crossfading; energy checks still apply.
+  The ending song is read only up to TAIL_READ_SECONDS past the planned end.
 * Skip only singing patches contained in an already proven vocal union;
   refine uncovered patches and their neighbours at the original resolution.
 """
@@ -63,6 +68,7 @@ RECOVERY_VOICE_TOLERANCE = 0.05
 RECOVERY_TIME_TOLERANCE = 0.25
 ENDING_ENERGY_TOLERANCE = 0.5
 RECOVERY_MIN_TAIL_SECONDS = 2.0
+TAIL_READ_SECONDS = 60.0
 EMBEDDING_INPUT = 'model/Placeholder:0'
 EMBEDDING_OUTPUT = 'model/dense/BiasAdd:0'
 PREDICTION_INPUT = 'serving_default_model_Placeholder:0'
@@ -223,7 +229,7 @@ def _steps(plan):
     if not beat or plan['style'] == 'fade':
         return FREE_STEP_SECONDS, FREE_STEP_SECONDS
     beats = max(1, int(round(plan['mix_seconds'] / beat)))
-    return BAR_BEATS * beat, BAR_BEATS * (plan['resume_at'] - plan['in_at']) / beats
+    return BAR_BEATS * plan['mix_seconds'] / beats, BAR_BEATS * (plan['resume_at'] - plan['in_at']) / beats
 
 
 def _heard(path, start, seconds):
@@ -241,7 +247,7 @@ def _heard(path, start, seconds):
     power = np.concatenate([[0.0], np.cumsum(np.square(mix._k_weighted(audio, VAD_RATE), dtype=np.float64))])
     ends = np.minimum(hops + size, audio.size)
     energy = (power[ends] - power[hops]) / np.maximum(1, ends - hops)
-    return {'spans': spans, 'bounds': _sound_bounds(audio), 'seconds': duration,
+    return {'spans': spans, 'bounds': _sound_bounds(audio), 'seconds': duration, 'samples': audio,
             'loudness': mix._lufs(energy), 'at': start}
 
 
@@ -365,12 +371,21 @@ def _moved(path_out, path_in, plan):
     step_out, step_in = _steps(plan)
     look = max(0.0, plan['mix_at'] - config.SMART_FADE_SEARCH_SECONDS)
     incoming_limit = max(0.0, config.SMART_FADE_ENTRY_LIMIT_SECONDS)
+    alternatives = plan.get('alternatives', ())
+    look = min([look] + [option['mix_at'] for option in alternatives])
+    incoming_end = max([plan['resume_at'], incoming_limit + plan['mix_seconds']]
+                       + [option['resume_at'] for option in alternatives])
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-voice') as pool:
-        ending = pool.submit(_heard, path_out, look, None)
-        starting = pool.submit(_heard, path_in, 0.0, max(plan['resume_at'], incoming_limit + plan['mix_seconds']) + 3.0)
+        ending = pool.submit(_heard, path_out, look, plan['mix_at'] + plan['mix_seconds'] + TAIL_READ_SECONDS - look)
+        starting = pool.submit(_heard, path_in, 0.0, incoming_end + 3.0)
         ending, starting = ending.result(), starting.result()
     if ending['bounds'] is None or starting['bounds'] is None:
         raise ValueError('No audible room for a crossfade.')
+    for option in alternatives:
+        if _clear_handoff(ending, starting, option):
+            chosen = dict(plan, **option, confidence='high' if option['beat_seconds'] else 'medium',
+                          selection_reason=option['style'])
+            return chosen
     audible_end = look + ending['bounds'][1]
     incoming_end = starting['bounds'][1]
     incoming_limit += starting['bounds'][0]
@@ -382,16 +397,23 @@ def _moved(path_out, path_in, plan):
     probe = np.linspace(0.0, seconds, 81)
     dense = np.mean(_activity(ending, plan['mix_at'] + probe) & _activity(starting, plan['in_at'] + probe))
     if dense > 0.5 and seconds > config.SMART_FADE_VOCAL_MIX_SECONDS:
-        cap = max(mix.MIN_MIX_SECONDS, config.SMART_FADE_VOCAL_MIX_SECONDS)
-        bars = max(math.ceil(mix.MIN_MIX_SECONDS / step_out), math.floor(cap / step_out))
+        minimum = mix.MIN_BEAT_MIX_SECONDS if locked else mix.MIN_MIX_SECONDS
+        cap = max(minimum, config.SMART_FADE_VOCAL_MIX_SECONDS)
+        bars = max(math.ceil(minimum / step_out), math.floor(cap / step_out))
         seconds = min(seconds, bars * step_out if locked else cap)
     if seconds <= mix.BLOCK_SECONDS:
         raise ValueError('No audible room for a crossfade.')
-    if locked and abs(seconds / plan['beat_seconds'] - round(seconds / plan['beat_seconds'])) > 1e-4:
-        locked = False
-        ratio = 1.0
-        step_out = step_in = FREE_STEP_SECONDS
-        seconds = min(seconds, incoming_end - starting['bounds'][0])
+    if locked:
+        whole_bars = math.floor((seconds + 1e-6) / step_out)
+        if seconds + 0.001 >= plan['mix_seconds']:
+            seconds = plan['mix_seconds']
+        elif whole_bars >= 2:
+            seconds = whole_bars * step_out
+        else:
+            locked = False
+            ratio = 1.0
+            step_out = step_in = FREE_STEP_SECONDS
+            seconds = min(seconds, incoming_end - starting['bounds'][0])
     latest = max(0.0, audible_end - margin - seconds)
     original_end = plan['mix_at'] + plan['mix_seconds']
     out_anchor = original_end - seconds
@@ -417,10 +439,11 @@ def _moved(path_out, path_in, plan):
         return 3.0 * (outgoing_cost[at] + incoming_cost[entry]) + 3.0 * clash + 0.12 * displacement + 0.025 * trim
 
     at, entry = min(((float(a), float(b)) for a in outgoing for b in incoming), key=score)
-    if any(abs((value - anchor) / step - round((value - anchor) / step)) > 1e-4
-           for value, anchor, step in ((at, plan['mix_at'], step_out), (entry, plan['in_at'], step_in))):
+    if locked and any(abs(value - anchor - round((value - anchor) / step) * step) > 0.001
+                      for value, anchor, step in ((at, plan['mix_at'], step_out), (entry, plan['in_at'], step_in))):
         locked = False
-        seconds = min(seconds, incoming_end - entry)
+        shorter = min(seconds, mix.MIN_MIX_SECONDS, incoming_end - entry)
+        at, seconds = at + seconds - shorter, shorter
         source_seconds = seconds
     simultaneous = _activity(ending, at + seconds * share) & _activity(starting, entry + source_seconds * share)
     clash = float(np.average(simultaneous, weights=central))
@@ -432,9 +455,50 @@ def _moved(path_out, path_in, plan):
                         'end_margin': round(audible_end - at - seconds, 4)})
     moved = _recover(ending, starting, moved)
     moved = _later_ending(ending, starting, moved)
+    if (moved['style'] != 'fade' and 'samples' in ending and 'samples' in starting
+            and (abs(moved['mix_at'] - plan['mix_at']) > 0.001 or abs(moved['in_at'] - plan['in_at']) > 0.001)):
+        duration = moved['mix_seconds']
+        rate = (moved['resume_at'] - moved['in_at']) / duration
+        if not mix._in_step(ending['samples'], moved['mix_at'] - ending['at'], starting['samples'],
+                            moved['in_at'] - starting['at'], duration, rate, moved['beat_seconds'], VAD_RATE):
+            shorter = min(duration, mix.MIN_MIX_SECONDS, incoming_end - moved['in_at'])
+            moved.update(mix._handoff('fade', moved['mix_at'] + duration - shorter, moved['in_at'], shorter))
+            moved['confidence'] = 'medium'
+    if moved['style'] == 'fade' and plan['style'] != 'fade':
+        moved = _kept_lock(ending, starting, plan, moved)
+    if moved['style'] == 'percussion_mix' and moved['voice']['clash']:
+        moved['style'] = 'blend'
     logger.info("Smart crossfade at %.2f s for %.2f s, incoming cue %.2f s, audible tail %.2f s, vocal competition %.2f",
                 moved['mix_at'], seconds, moved['in_at'], moved['voice']['end_margin'], moved['voice']['overlap'])
     return moved
+
+
+def _kept_lock(ending, starting, plan, moved):
+    seconds, source = plan['mix_seconds'], plan['resume_at'] - plan['in_at']
+    if (not plan.get('beat_seconds') or plan['mix_at'] < ending['at'] + ending['bounds'][0]
+            or plan['mix_at'] + seconds > ending['at'] + ending['bounds'][1]
+            or plan['in_at'] < starting['bounds'][0] or plan['resume_at'] > starting['bounds'][1]):
+        return dict(moved, beat_rejection='audible_cue')
+    share = np.linspace(0.0, 1.0, 81)
+    both = _activity(ending, plan['mix_at'] + seconds * share) & _activity(starting, plan['in_at'] + source * share)
+    clash = float(np.average(both, weights=np.sin(np.pi * share) ** 2))
+    if clash > 0.1:
+        return dict(moved, beat_rejection='audible_cue')
+    return dict(plan, voice={'clash': False, 'overlap': round(clash, 4),
+                             'end_margin': round(ending['at'] + ending['bounds'][1] - plan['mix_at'] - seconds, 4)})
+
+
+def _clear_handoff(ending, starting, option):
+    if ending['spans'] is None or starting['spans'] is None:
+        return False
+    at, entry, seconds = option['mix_at'], option['in_at'], option['mix_seconds']
+    end = ending['at'] + ending['bounds'][1]
+    if (at < ending['at'] + ending['bounds'][0] or at + seconds > end
+            or entry < starting['bounds'][0] or option['resume_at'] > starting['bounds'][1]):
+        return False
+    outgoing = _activity(ending, at + np.linspace(0, seconds, 21))
+    incoming = _activity(starting, np.linspace(entry, option['resume_at'], 21))
+    return not (outgoing & incoming).any()
 
 
 def clear_voice(path_out, path_in, plan):

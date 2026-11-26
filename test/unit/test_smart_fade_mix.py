@@ -20,7 +20,7 @@ Main Features:
   never more than PHRASE_REACH_BEATS away; RISE_DB louder, it rises in
 * Tempos too far apart (120 and 150 BPM) or a beat grid 150 ms off fade
   unstretched over MIN_MIX_SECONDS of whole beats, swap_at in the middle;
-  tempos_match (50 cents, half or double time) is one rule on numbers and arrays; the onset check takes
+  tempos_match (60 cents, half or double time) is one rule on numbers and arrays; the onset check takes
   clicks on the beat (stretched too) and refuses them 100 ms off
 * A tempo between the tracker's frames is measured to a fraction of a BPM;
   songs without a beat raise ValueError
@@ -34,6 +34,10 @@ Main Features:
 * A full-scale 997 Hz tone measures -3.01 LUFS; a fade from full level into
   a quieter next song is 'low' ('medium' steady, 'high' locked)
 * A real AAC .m4a, which libsndfile cannot open, plans like a WAV
+* Without a full lock, drum-led parts whose beats line up carry one
+  'percussion_mix' alternative of up to PERCUSSION_SECONDS; a tone is not
+  drum-led and gets none, clicks over a sub-bass are (the bass is left out); a locked pair of drum-led parts is a
+  'percussion_mix' too (the other tests treat click tracks as full songs)
 """
 
 import numpy as np
@@ -42,6 +46,13 @@ import soundfile
 import threading
 
 from tasks import smart_fade_mix as mix
+
+_REAL_PERCUSSIVE = mix._percussive
+
+
+@pytest.fixture(autouse=True)
+def _not_drum_led(monkeypatch):
+    monkeypatch.setattr(mix, '_percussive', lambda *args, **kwargs: False)
 
 
 def _click_audio(bpm, seconds, first=0.0, level=0.8):
@@ -120,7 +131,7 @@ def test_a_late_first_beat_shortens_the_mix_by_whole_steps_down_to_the_minimum(t
     plan = mix.plan_transition(song_out, 30.0, song_in, 0.0)
     beats = round(plan['mix_seconds'] / plan['beat_seconds'])
     assert plan['in_at'] == pytest.approx(14.0, abs=0.05)
-    assert beats % mix.BEAT_STEP == 0 and mix.MIN_MIX_SECONDS <= plan['mix_seconds'] < mix.MIX_SECONDS
+    assert beats % mix.BEAT_STEP == 0 and mix.MIN_BEAT_MIX_SECONDS <= plan['mix_seconds'] < mix.MIX_SECONDS
     assert plan['resume_at'] <= mix.LOOK_SECONDS + 2.0
     late = _clicks(tmp_path / 'c.wav', 120, 45.0, first=19.0)
     with pytest.raises(ValueError):
@@ -196,11 +207,31 @@ def test_the_onset_check_accepts_beats_on_the_beat_and_refuses_them_100_ms_off()
     assert mix._in_step(song_out, 10.0, stretched, 9.6, 8.0, 0.96, 0.5)
 
 
-def test_tempos_match_allows_50_cents_and_half_or_double_time():
+def test_small_consistent_onset_offset_is_repaired_but_drift_is_rejected():
+    a = _click_audio(120, 16)
+    b = _click_audio(120, 16, first=0.07)
+    cue = mix._aligned_entry(a, 2, b, 2, 8, 1, 0.5)
+    assert cue == pytest.approx(2.07, abs=0.015)
+    drifting = np.r_[b[:6 * mix.RATE], _click_audio(120, 10, first=0.145)]
+    assert mix._aligned_entry(a, 2, drifting, 2, 8, 1, 0.5) is None
+    steady = _click_audio(120, 16)
+    late = np.r_[steady[:6 * mix.RATE], _click_audio(120, 10, first=0.12)]
+    assert mix._in_step(a, 2, steady, 2, 8, 1, 0.5, halves=True)
+    assert not mix._in_step(a, 2, late, 2, 8, 1, 0.5, halves=True)
+
+
+def test_tempos_match_allows_60_cents_and_half_or_double_time():
     assert mix.tempos_match(120.0, 122.0) and mix.tempos_match(120.0, 118.0)
+    assert mix.tempos_match(120.0, 124.0) and mix.tempos_match(124.0, 120.0)
     assert not mix.tempos_match(120.0, 125.0) and not mix.tempos_match(120.0, 150.0)
     assert mix.tempos_match(120.0, 60.5) and mix.tempos_match(120.0, 243.0)
     assert mix.tempos_match(np.array([[120.0], [150.0]]), np.array([[122.0, 150.0]])).tolist() == [[True, False], [False, True]]
+
+
+def test_the_percussion_mix_accepts_tempos_up_to_its_own_wider_limit():
+    assert mix.tempos_match(120.0, 125.0, mix.PERCUSSION_LOCK_CENTS)
+    assert mix.tempos_match(120.0, 62.5, mix.PERCUSSION_LOCK_CENTS)
+    assert not mix.tempos_match(120.0, 127.0, mix.PERCUSSION_LOCK_CENTS)
 
 
 def test_a_tempo_between_the_tracker_frames_is_measured_finely(tmp_path):
@@ -240,7 +271,7 @@ def test_only_a_confirmed_beat_lock_mixes_everything_else_is_the_crossfade_plan(
     assert plan['confidence'] != 'high'
 
 
-def test_tempos_more_than_50_cents_apart_crossfade_even_when_their_beats_lock(tmp_path):
+def test_tempos_more_than_60_cents_apart_crossfade_even_when_their_beats_lock(tmp_path):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     apart = _clicks(tmp_path / 'b.wav', 125, 40.0, first=0.2)
     assert not mix.tempos_match(120.0, 125.0) and 1200 * np.log2(125 / 120) > mix.MAX_LOCK_CENTS
@@ -249,6 +280,69 @@ def test_tempos_more_than_50_cents_apart_crossfade_even_when_their_beats_lock(tm
     assert plan['confidence'] != 'high'
     double = mix.plan_transition(song_out, 30.0, _clicks(tmp_path / 'c.wav', 244, 40.0, first=0.2), 5.0)
     assert double['style'] == 'blend' and double['stretch'] == pytest.approx(240 / 244, abs=0.01)
+
+
+def test_a_locked_pair_of_drum_led_parts_is_mixed_as_a_percussion_mix(tmp_path, monkeypatch):
+    monkeypatch.setattr(mix, '_percussive', _REAL_PERCUSSIVE)
+    drums_out = tmp_path / 'a.wav'
+    drums_in = tmp_path / 'b.wav'
+    soundfile.write(drums_out, np.stack([_click_audio(120, 40.0)] * 2, axis=1), mix.RATE)
+    soundfile.write(drums_in, np.stack([_click_audio(122, 40.0, first=0.2)] * 2, axis=1), mix.RATE)
+    plan = mix.plan_transition(str(drums_out), 30.0, str(drums_in), 5.0)
+    assert plan['style'] == 'percussion_mix' and plan['confidence'] == 'high' and 'beat_rejection' not in plan
+    assert plan['stretch'] == pytest.approx(120 / 122, abs=0.01)
+    _assert_mix_length(plan)
+    t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
+    chords = _click_audio(122, 40.0, first=0.2) + 0.3 * np.sin(2 * np.pi * 220.0 * t) * np.minimum(1.0, t)
+    soundfile.write(tmp_path / 'c.wav', np.stack([chords] * 2, axis=1).astype(np.float32), mix.RATE)
+    assert mix.plan_transition(str(drums_out), 30.0, str(tmp_path / 'c.wav'), 5.0)['style'] in ('blend', 'fade')
+
+
+def test_drum_led_parts_whose_beats_line_up_get_a_percussion_mix_when_the_long_mix_fails(tmp_path, monkeypatch):
+    outgoing = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    incoming = _clicks(tmp_path / 'b.wav', 126, 40.0, first=0.2)
+    monkeypatch.setattr(mix, '_in_step', lambda a, start, b, entry, seconds, rate, beat, **kwargs: seconds < mix.PERCUSSION_SECONDS[1] + 0.1)
+    monkeypatch.setattr(mix, '_percussive', lambda *args: True)
+
+    plan = mix.plan_transition(outgoing, 30, incoming, 5)
+
+    assert plan['style'] == 'fade' and plan['beat_rejection'] == 'tempo_gap'
+    option, = plan['alternatives']
+    assert option['style'] == 'percussion_mix' and option['beat_seconds'] == pytest.approx(0.5, abs=0.01)
+    assert option['mix_seconds'] == pytest.approx(mix.PERCUSSION_SECONDS[1], abs=0.06)
+    assert option['stretch'] == pytest.approx(120 / 126, abs=0.01)
+    assert option['mix_at'] + option['mix_seconds'] <= 30.0 + 0.01
+
+
+def test_the_percussion_mix_needs_its_drums_in_time_in_both_halves(tmp_path, monkeypatch):
+    outgoing = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    incoming = _clicks(tmp_path / 'b.wav', 126, 40.0, first=0.2)
+    monkeypatch.setattr(mix, '_percussive', lambda *args: True)
+    asked = []
+    real = mix._aligned_entry
+
+    def recorded(*args, halves=False):
+        asked.append(halves)
+        return real(*args, halves=halves)
+
+    monkeypatch.setattr(mix, '_aligned_entry', recorded)
+    plan = mix.plan_transition(outgoing, 30, incoming, 5)
+    assert asked and all(asked) and plan['alternatives'][0]['style'] == 'percussion_mix'
+
+
+def test_parts_that_are_not_drum_led_get_no_percussion_mix(tmp_path, monkeypatch):
+    rate = mix.RATE
+    tone = (0.3 * np.sin(2 * np.pi * 440 * np.arange(10 * rate) / rate)).astype(np.float32)
+    assert _REAL_PERCUSSIVE(_click_audio(120, 10.0), 0.0, 8.0) and not _REAL_PERCUSSIVE(tone, 0.0, 8.0)
+    t = np.arange(10 * rate) / rate
+    sub_bass = (0.5 * np.sin(2 * np.pi * 55.0 * t)).astype(np.float32)
+    assert _REAL_PERCUSSIVE(_click_audio(120, 10.0) + sub_bass, 0.0, 8.0)
+    assert not _REAL_PERCUSSIVE(_click_audio(120, 10.0) + tone, 0.0, 8.0)
+    outgoing = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    incoming = _clicks(tmp_path / 'b.wav', 126, 40.0, first=0.2)
+    monkeypatch.setattr(mix, '_in_step', lambda a, start, b, entry, seconds, rate, beat, **kwargs: seconds < mix.PERCUSSION_SECONDS[1] + 0.1)
+    monkeypatch.setattr(mix, '_percussive', lambda *args: False)
+    assert 'alternatives' not in mix.plan_transition(outgoing, 30, incoming, 5)
 
 
 def test_a_full_scale_997_hz_tone_measures_minus_3_lufs(tmp_path):

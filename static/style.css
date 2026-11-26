@@ -1578,6 +1578,7 @@ html.dark-mode body .playable-list {
 }
 .play-span {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
     margin-top: 0.3rem;
@@ -1611,21 +1612,31 @@ html.dark-mode body .playable-list {
 }
 .play-mark svg {
     display: block;
-    width: 100%;
-    height: 100%;
+    flex: none;
+    width: 1rem;
+    height: 1rem;
 }
-.play-mark[data-mark="blend"],
-.play-mark[data-mark="rise"] {
-    color: var(--color-primary);
+.play-mark-labeled {
+    align-items: center;
+    gap: 0.3rem;
+    width: auto;
+    height: auto;
+    padding: 0.15rem 0.35rem;
+    border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+    border-radius: 0.35rem;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    white-space: nowrap;
 }
-.play-mark[data-mark="pending"] {
-    opacity: 0.45;
-}
-.play-mark[data-mark="none"] {
-    visibility: hidden;
-}
+.play-mark:is([data-mark="blend"], [data-mark="rise"]) { color: var(--color-primary); }
+.play-mark[data-mark="percussion"] { color: light-dark(#047857, #6ee7b7); }
+.play-mark[data-mark="eqblend"] { color: light-dark(#226647, #8ee6b5); }
+.play-mark[data-mark="sweep"] { color: light-dark(#02635e, #82e9d8); }
+.play-mark[data-mark="vocals"] { color: light-dark(#9d2456, #f9a8d4); }
+body.dark-mode .play-mark,
+html.dark-mode .play-mark { color-scheme: dark; }
 .song-player .play-summary {
     display: inline-flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.25rem;
     font-size: 0.8rem;
@@ -1635,9 +1646,12 @@ html.dark-mode body .playable-list {
 .song-player .play-summary:empty {
     display: none;
 }
-.song-player .play-summary .play-mark + .play-mark,
-.song-player .play-summary .play-mark:not(:first-child) {
-    margin-left: 0.35rem;
+.song-player .play-summary-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding-inline: 0.15rem;
+    white-space: nowrap;
 }
 .similarity-badge {
     color: white;

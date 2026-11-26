@@ -25,7 +25,8 @@ Main Features:
   the last bar in range when it starts after, the middle on a short mix
 * song_level: a quiet song is raised only up to PEAK_CEILING, a loud one
   lowered to TARGET_LUFS, a silent one left at 1; an AAC read as mono
-  measures like the same audio as a stereo WAV
+  measures like the same audio as a stereo WAV; a file that breaks while it
+  is read is measured again from the fallback decode
 * transition on real files: the answer's keys in their order (type, start,
   duration, middle, step, filters, from, to, info), one value per
   point in every list, volumes from exactly 1 and 0 to 0 and 1, speeds
@@ -34,6 +35,11 @@ Main Features:
   raised before the swap and its own lowered after; a boost over quiet clicks is lowered wherever the sum would
   peak above the louder song; crossfade_plan is the default crossfade at
   the fade points, its tempos null
+* percussion_mix: equal-power faders, one kick at a time (amplitude
+  crossover, correlated kicks) and a hats exchange, executable on real files
+* unlocked pairs: a drumless part gets the EQ blend, a louder next song the
+  filter rise, overlapping voices the vocal handoff, else the crossfade; all
+  at native speed, equal-power faders and one bass swap for the first two
 """
 
 import numpy as np
@@ -221,13 +227,13 @@ def test_a_beat_mix_hands_highs_mids_and_bass_over_like_a_dj_and_a_crossfade_sta
         assert (np.diff(curve) >= -1e-9).all()
     assert (blend['to_volume'][0], blend['from_volume'][0], blend['from_volume'][-1], blend['to_volume'][-1]) == (0.0, 1.0, 0.0, 1.0)
     assert (eq['to_high_db'][0], eq['from_high_db'][-1]) == (levels.HIGH_CUT_DB, levels.HIGH_CUT_DB)
-    fader_in = _first(times, blend['to_volume'], lambda v: v >= 1.0)
     highs_in = _first(times, eq['to_high_db'], lambda v: v >= 0.0)
     mids_in = _first(times, eq['to_mid_db'], lambda v: v >= 0.0)
     bass_out = _first(times, eq['from_bass_db'], lambda v: v < 0.0)
     bass_gone = _first(times, eq['from_bass_db'], lambda v: v <= levels.BASS_CUT_DB)
     mids_out = _first(times, eq['from_mid_db'], lambda v: v < 0.0)
     highs_out = _first(times, eq['from_high_db'], lambda v: v < 0.0)
+    fader_in = _first(times, blend['to_volume'], lambda v: v >= 1.0)
     fader_out = _first(times, blend['from_volume'], lambda v: v < 1.0)
     assert fader_in <= levels.EDGE_BEATS * beat + 0.01 and fader_in < highs_in <= swap / 3.0 + 0.01 < mids_in <= swap - beat + 0.01
     assert swap - beat <= bass_out and bass_gone <= swap + beat + 0.01 and bass_gone - bass_out <= 2 * beat + 0.01
@@ -238,6 +244,39 @@ def test_a_beat_mix_hands_highs_mids_and_bass_over_like_a_dj_and_a_crossfade_sta
     rise = levels.mix_shapes('rise', 16.0, swap, beat, times)['eq']
     assert rise['to_bass_db'] is None and rise['to_highpass_hz'][0] == levels.RISE_FROM_HZ
     assert _first(times, rise['to_highpass_hz'], lambda v: v <= levels.RISE_TO_HZ + 1e-6) <= swap + beat + 0.01
+
+
+def test_the_rise_high_pass_is_butterworth_like_the_page_filter():
+    from scipy.signal import freqz
+
+    for hz in (150, 1200, 4800):
+        response = freqz(*levels._high_pass(mix.RATE, hz), worN=np.array([hz / 4, hz, 4 * hz]), fs=mix.RATE)[1]
+        assert np.abs(response[1]) ** 2 == pytest.approx(0.5)
+        assert np.abs(response[2]) ** 2 == pytest.approx(1.0, abs=0.01) and np.abs(response[0]) < 0.07
+
+
+def test_a_percussion_mix_hands_one_kick_at_a_time_and_keeps_equal_power_faders():
+    points = np.linspace(0.0, 10.0, 1001)
+    shapes = levels.mix_shapes('percussion_mix', 10.0, 5.0, 0.5, points)
+    eq = shapes['eq']
+    assert shapes['from_volume'] ** 2 + shapes['to_volume'] ** 2 == pytest.approx(np.ones(points.size))
+    assert shapes['from_volume'][500] == pytest.approx(shapes['to_volume'][500])
+    out_kick, in_kick = 10.0 ** (eq['from_bass_db'] / 20.0), 10.0 ** (eq['to_bass_db'] / 20.0)
+    inside = (out_kick > 0.2) & (in_kick > 0.2)
+    assert inside.sum() > 50 and (out_kick + in_kick)[inside] == pytest.approx(1.0, abs=1e-6)
+    assert eq['from_bass_db'][0] == 0.0 and eq['to_bass_db'][0] == levels.DRUM_BASS_CUT_DB[1]
+    assert eq['from_bass_db'][-1] == levels.DRUM_BASS_CUT_DB[0] and eq['to_bass_db'][-1] == 0.0
+    assert eq['from_high_db'][-1] == levels.DRUM_HIGH_CUT_DB[0] and eq['to_high_db'][0] == levels.DRUM_HIGH_CUT_DB[1]
+    assert not np.any(eq['from_mid_db']) and not np.any(eq['to_mid_db']) and eq['to_highpass_hz'] is None
+
+
+def test_vocal_ducking_preserves_the_locked_mix_treble_entrance():
+    points = np.linspace(0.0, 8.0, 81)
+    shapes = levels.mix_shapes('blend', 8, 4, 0.5, points)
+    plan = {'style': 'blend', 'voice': {'clash': True, 'overlap': 0.33}}
+    result = levels.vocal_shapes(plan, 8, points, shapes)
+    assert result['eq']['to_high_db'][0] == levels.HIGH_CUT_DB
+    assert result['eq']['from_high_db'][-1] == levels.HIGH_CUT_DB
 
 
 def test_each_shelf_cuts_its_own_band_and_leaves_the_other_end_alone():
@@ -270,6 +309,24 @@ def test_the_bass_swap_lands_on_the_bar_nearest_the_middle_where_the_next_song_h
     assert levels.swap_point(speeding, np.linspace(0.0, speeding[-1], 107), np.ones(107)) == speeding[12]
 
 
+def test_a_file_that_breaks_while_it_is_measured_is_measured_from_the_fallback_decode(tmp_path, monkeypatch):
+    noise = (0.1 * np.random.default_rng(9).standard_normal(int(8.0 * mix.RATE))).astype(np.float32)
+    path = _write(tmp_path / 'broken.wav', noise)
+    whole = levels.song_level
+    calls = []
+
+    def lost_sync(source):
+        calls.append(source['mono'] is None)
+        if source['mono'] is None:
+            raise soundfile.LibsndfileError(2, prefix='Error : ')
+        return whole(source)
+
+    monkeypatch.setattr(levels, 'song_level', lost_sync)
+    source, level = levels.prepare_song(path)
+    assert calls == [True, False] and source['mono'] is not None and source['mono'].size == noise.size
+    assert level['loudness'] == pytest.approx(whole({'path': path, 'mono': None})['loudness'], abs=0.05)
+
+
 def test_each_song_gets_the_gain_that_brings_it_to_the_target_without_passing_the_peak_ceiling(tmp_path):
     t = np.arange(int(20.0 * mix.RATE)) / mix.RATE
     noise = np.clip(0.15 * np.random.default_rng(5).standard_normal(t.size), -0.95, 0.95).astype(np.float32)
@@ -292,7 +349,8 @@ def _assert_executable(plan, answer):
     assert list(answer) == ['type', 'start', 'duration', 'middle', 'step', 'filters', 'from', 'to', 'info']
     assert list(answer['from']) == ['gain', 'speed', 'volume', 'high_db', 'mid_db', 'bass_db']
     assert list(answer['to']) == ['gain', 'start', 'speed', 'volume', 'high_db', 'mid_db', 'bass_db', 'highpass_hz', 'continue_from']
-    assert list(answer['info']) == ['tempo_from', 'tempo_to', 'confidence', 'loudness_from', 'loudness_to']
+    assert list(answer['info']) == ['tempo_from', 'tempo_to', 'confidence', 'loudness_from', 'loudness_to',
+                                   *[key for key in ('beat_rejection', 'selection_reason') if key in plan]]
     assert list(answer['filters'].items()) == [('high_hz', levels.HIGH_HZ), ('mid_hz', levels.MID_HZ), ('mid_q', levels.MID_Q), ('bass_hz', levels.BASS_HZ)]
     current, upcoming = answer['from'], answer['to']
     count = len(current['volume'])
@@ -313,9 +371,127 @@ def _assert_executable(plan, answer):
     assert answer['info']['tempo_from'] == plan['tempo_from'] and answer['info']['confidence'] == plan['confidence']
 
 
+def test_a_percussion_mix_plays_executable_curves_on_the_original_audio(tmp_path):
+    outgoing = _write(tmp_path / 'out.wav', _click_audio(120, 24.0))
+    incoming = _write(tmp_path / 'in.wav', _click_audio(124, 24.0))
+    plan = dict(mix._handoff('percussion_mix', 3.0, 1.0, 10.0, 120 / 124, 0.5),
+                tempo_from=120, tempo_to=124, confidence='high', beat_rejection='beat_tracking',
+                selection_reason='percussion_mix')
+
+    answer = levels.transition(outgoing, incoming, plan)
+
+    assert answer['type'] == 'percussion_mix' and answer['to']['highpass_hz'] is None
+    assert 'lowpass_hz' not in answer['from'] and 'delay' not in answer['to']
+    assert min(answer['from']['bass_db']) < -15 and min(answer['to']['bass_db']) < -15
+    _assert_executable(plan, answer)
+
+
+def test_beatless_crossfade_catches_a_late_energy_dip_without_changing_cues(tmp_path, monkeypatch):
+    monkeypatch.setattr(levels, 'unlocked_style', lambda *args: 'fade')
+    clock = np.arange(20 * mix.RATE) / mix.RATE
+    out = 0.29 * np.sin(2 * np.pi * 220 * clock) * np.where((clock > 7) & (clock < 10), 1.0, 0.10)
+    inc = 0.27 * np.sin(2 * np.pi * 330 * clock) * np.where((clock > 8) & (clock < 12), 1.0, 0.10)
+    song_a = _write(tmp_path / 'a.wav', out)
+    song_b = _write(tmp_path / 'b.wav', inc)
+    plan = dict(mix._handoff('fade', 6.0, 4.0, 10.0), tempo_from=None, tempo_to=None, confidence='medium')
+    old = levels.transition(song_a, song_b, plan)
+    tuned = levels.transition(song_a, song_b, dict(plan, beat_rejection='no_beat_grid'))
+    assert old['duration'] == tuned['duration'] == 10.0 and old['start'] == tuned['start'] == 6.0
+    assert tuned['from']['volume'][50] > old['from']['volume'][50]
+    assert tuned['to']['volume'][50] > old['to']['volume'][50]
+    assert tuned['from']['bass_db'] == old['from']['bass_db'] == [0.0] * 101
+
+
+def test_unlocked_pairs_get_the_transition_their_parts_allow():
+    rate = mix.RATE
+    t = np.arange(10 * rate) / rate
+    drums = _click_audio(110, 10.0)
+    chords = (0.3 * np.sin(2 * np.pi * 220.0 * t) + 0.2 * np.sin(2 * np.pi * 277.2 * t)).astype(np.float32)
+    plan = {'voice': {'overlap': 0.0}, 'tempo_from': 97.3, 'tempo_to': 108.0}
+    assert levels.unlocked_style(plan, drums, chords, 1.0, 1.0) == 'eq_blend'
+    assert levels.unlocked_style(plan, chords, drums, 1.0, 1.0) == 'eq_blend'
+    assert levels.unlocked_style(plan, drums, drums, 1.0, 1.0) == 'fade'
+    assert levels.unlocked_style(plan, drums, drums, 1.0, 0.5) == 'fade'
+    assert levels.unlocked_style(plan, drums, drums, 1.0, 1.1) == 'filter_rise'
+    assert levels.unlocked_style(dict(plan, tempo_from=92.9, tempo_to=122.8), drums, drums, 1.0, 1.1) == 'filter_rise'
+    assert levels.unlocked_style(dict(plan, tempo_from=166.2, tempo_to=96.0), drums, drums, 1.0, 1.1) == 'fade'
+    assert levels.unlocked_style(dict(plan, tempo_from=None), drums, drums, 1.0, 1.1) == 'fade'
+    unrelated = {'voice': {'overlap': 0.5}, 'tempo_from': 166.2, 'tempo_to': 96.0}
+    assert levels.unlocked_style(unrelated, drums, drums, 1.0, 1.1) == 'vocal_handoff'
+    assert levels.unlocked_style({'voice': {'overlap': 0.5}}, drums, drums, 1.0, 1.0) == 'vocal_handoff'
+    assert levels.unlocked_style({'voice': {'overlap': 0.2}}, drums, drums, 1.0, 1.0) == 'fade'
+
+
+def test_the_eq_blend_and_the_filter_rise_cross_equal_power_and_swap_the_bass_once():
+    points = np.linspace(0.0, 10.0, 1001)
+    for style in ('eq_blend', 'filter_rise'):
+        shapes = levels.mix_shapes(style, 10.0, 5.0, 0.5, points)
+        eq = shapes['eq']
+        assert shapes['from_volume'] ** 2 + shapes['to_volume'] ** 2 == pytest.approx(np.ones(points.size))
+        bass_out = 10.0 ** (eq['from_bass_db'] / 10.0)
+        assert eq['from_bass_db'][0] == 0.0 and eq['from_bass_db'][-1] == levels.BASS_CUT_DB
+        if style == 'eq_blend':
+            power = bass_out + 10.0 ** (eq['to_bass_db'] / 10.0)
+            assert power[(points > 4.5) & (points < 5.5)] == pytest.approx(1.0, abs=0.01)
+            assert eq['to_mid_db'][0] == levels.BLEND_CUT_DB and eq['from_mid_db'][-1] == levels.BLEND_CUT_DB
+            assert eq['to_high_db'][250] == pytest.approx(0.0) and eq['from_high_db'][700] == pytest.approx(0.0)
+            alone = levels.mix_shapes(style, 10.0, 5.0, 0.5, points, bass_swap=False)['eq']
+            assert alone['from_bass_db'] is None and alone['to_bass_db'] is None
+            assert np.array_equal(alone['to_mid_db'], eq['to_mid_db'])
+        else:
+            assert eq['to_bass_db'] is None and not np.any(eq['to_mid_db']) and not np.any(eq['from_mid_db'])
+            assert eq['to_highpass_hz'][0] == levels.RISE_FROM_HZ and eq['to_highpass_hz'][600] == pytest.approx(levels.RISE_TO_HZ)
+            held = points <= 4.5
+            assert eq['to_highpass_hz'][held] == pytest.approx(np.maximum(eq['to_highpass_hz'][held], levels.BASS_HZ))
+            assert eq['to_highpass_hz'][450] == pytest.approx(levels.BASS_HZ) and (np.diff(eq['to_highpass_hz']) <= 1e-9).all()
+            opening = (points > 4.5) & (points < 5.5)
+            assert (eq['to_highpass_hz'][opening] < levels.BASS_HZ).all() and (eq['from_bass_db'][opening] < 0.0).all()
+            assert eq['from_bass_db'][points <= 4.5].max() == 0.0 and eq['to_highpass_hz'][550] == pytest.approx(levels.RISE_TO_HZ)
+
+
+def test_unlocked_kinds_play_the_eq_blend_and_the_rise_shapes_at_native_speed(tmp_path, monkeypatch):
+    t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
+    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + (0.2 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32))
+    song_in = _write(tmp_path / 'b.wav', _click_audio(150, 40.0) + (0.2 * np.sin(2 * np.pi * 330.0 * t)).astype(np.float32))
+    plan = dict(levels.crossfade_plan(song_out, 30.0, song_in, 5.0), beat_rejection='tempo_gap')
+    for kind, highpass in (('eq_blend', False), ('filter_rise', True), ('vocal_handoff', False)):
+        monkeypatch.setattr(levels, 'unlocked_style', lambda *args, kind=kind: kind)
+        answer = levels.transition(song_out, song_in, plan)
+        _assert_executable(dict(plan, beat_rejection='tempo_gap'), answer)
+        assert answer['type'] == kind and set(answer['from']['speed']) == set(answer['to']['speed']) == {1.0}
+        assert (answer['to']['highpass_hz'] is not None) == highpass
+        fall, rise = np.array(answer['from']['volume']), np.array(answer['to']['volume'])
+        assert fall[: fall.size // 4].mean() > fall[-fall.size // 4:].mean() and rise[: rise.size // 4].mean() < rise[-rise.size // 4:].mean()
+        if kind == 'eq_blend':
+            assert answer['to']['bass_db'][0] <= -30 and answer['from']['bass_db'][-1] <= -30
+            assert answer['to']['mid_db'][0] < -6 and answer['from']['mid_db'][-1] < -6
+        if kind == 'filter_rise':
+            assert answer['to']['highpass_hz'][0] == levels.RISE_FROM_HZ and answer['to']['highpass_hz'][-1] <= levels.RISE_TO_HZ + 0.01
+            assert answer['from']['bass_db'][-1] <= -30
+
+
+def test_an_eq_blend_swaps_the_bass_only_when_both_songs_have_one(tmp_path, monkeypatch):
+    t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
+    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + (0.3 * np.sin(2 * np.pi * 70.0 * t)).astype(np.float32))
+    monkeypatch.setattr(levels, 'unlocked_style', lambda *args: 'eq_blend')
+    for name, hz, swapped in (('b.wav', 55.0, True), ('c.wav', 1320.0, False)):
+        song_in = _write(tmp_path / name, _click_audio(150, 40.0) + (0.3 * np.sin(2 * np.pi * hz * t)).astype(np.float32))
+        plan = dict(levels.crossfade_plan(song_out, 30.0, song_in, 5.0), beat_rejection='tempo_gap')
+        answer = levels.transition(song_out, song_in, plan)
+        _assert_executable(plan, answer)
+        assert answer['type'] == 'eq_blend' and answer['to']['highpass_hz'] is None
+        if swapped:
+            assert answer['to']['bass_db'][0] <= -30 and answer['from']['bass_db'][-1] <= -30
+        else:
+            assert answer['from']['bass_db'] == answer['to']['bass_db'] == [0.0] * len(answer['from']['volume'])
+            assert answer['to']['mid_db'][0] < -6 and answer['from']['mid_db'][-1] < -6
+
+
 def test_a_beat_mix_and_a_crossfade_give_every_list_a_player_executes_in_order(tmp_path):
-    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0))
-    song_in = _write(tmp_path / 'b.wav', _click_audio(122, 40.0, first=0.2))
+    t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
+    bed = (0.3 * np.sin(2 * np.pi * 220.0 * t) + 0.15 * np.sin(2 * np.pi * 330.0 * t)).astype(np.float32)
+    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + bed)
+    song_in = _write(tmp_path / 'b.wav', _click_audio(122, 40.0, first=0.2) + bed)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     answer = levels.transition(song_out, song_in, plan)
     _assert_executable(plan, answer)
@@ -336,8 +512,9 @@ def test_a_beat_mix_and_a_crossfade_give_every_list_a_player_executes_in_order(t
 def test_each_band_is_fitted_to_the_two_songs_so_a_louder_next_bass_does_not_jump_in(tmp_path):
     t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
     hum = np.sin(2 * np.pi * 60.0 * t).astype(np.float32)
-    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + 0.05 * hum)
-    song_in = _write(tmp_path / 'b.wav', _click_audio(122, 40.0, first=0.2) + 0.2 * hum)
+    bed = (0.3 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + 0.05 * hum + bed)
+    song_in = _write(tmp_path / 'b.wav', _click_audio(122, 40.0, first=0.2) + 0.2 * hum + bed)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     answer = levels.transition(song_out, song_in, plan)
     _assert_executable(plan, answer)
@@ -352,7 +529,7 @@ def test_each_band_is_fitted_to_the_two_songs_so_a_louder_next_bass_does_not_jum
 def test_a_boost_is_lowered_wherever_the_sum_would_peak_above_the_louder_song(tmp_path):
     rate = mix.RATE
     audio = np.zeros(int(40.0 * rate), dtype=np.float32)
-    burst = (0.9 * np.sin(2 * np.pi * 1000 * np.arange(int(0.03 * rate)) / rate)).astype(np.float32)
+    burst = (0.9 * np.sin(2 * np.pi * 1000 * np.arange(int(0.006 * rate)) / rate)).astype(np.float32)
     for tenth in range(399):
         if not 200 <= tenth < 300 or tenth % 10 == 0:
             audio[int(tenth * rate / 10):int(tenth * rate / 10) + burst.size] += burst
@@ -367,12 +544,11 @@ def test_a_boost_is_lowered_wherever_the_sum_would_peak_above_the_louder_song(tm
     t = np.arange(int(10.0 * rate)) / rate
     points = np.arange(fall.size) * answer['step']
     region = audio[int(20.0 * rate):int(20.0 * rate) + t.size] * answer['from']['gain']
-    ceiling = max(1.0, float(np.abs(region).max()))
-    assert (np.abs(region) * (np.interp(t, points, plain_fall) + np.interp(t, points, plain_rise)) * 2.0).max() > ceiling / levels.MIX_HEADROOM
-    assert (np.abs(region) * (np.interp(t, points, fall) + np.interp(t, points, rise))).max() <= ceiling / levels.MIX_HEADROOM + 0.01
+    assert (np.abs(region) * (np.interp(t, points, plain_fall) + np.interp(t, points, plain_rise))).max() > levels.PEAK_CEILING
+    assert (np.abs(region) * (np.interp(t, points, fall) + np.interp(t, points, rise))).max() <= levels.PEAK_CEILING + 0.01
 
 
-def test_a_pair_without_a_steady_beat_still_gets_the_default_crossfade(tmp_path):
+def test_a_pair_without_a_steady_beat_gets_an_eq_blend_at_the_default_crossfade_points(tmp_path):
     t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
     song_out = _write(tmp_path / 'a.wav', (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32))
     song_in = _write(tmp_path / 'b.wav', (0.1 * np.sin(2 * np.pi * 330.0 * t)).astype(np.float32))
@@ -383,7 +559,9 @@ def test_a_pair_without_a_steady_beat_still_gets_the_default_crossfade(tmp_path)
     assert (plan['mix_at'], plan['mix_seconds'], plan['in_at'], plan['resume_at'], plan['swap_at']) == (20.0, 10.0, 5.0, 15.0, 25.0)
     answer = levels.transition(song_out, song_in, plan)
     _assert_executable(plan, answer)
-    assert (answer['type'], answer['start'], answer['duration'], answer['middle']) == ('crossfade', 20.0, 10.0, 5.0)
+    assert (answer['type'], answer['start'], answer['duration'], answer['middle']) == ('eq_blend', 20.0, 10.0, 5.0)
+    assert set(answer['from']['speed']) == set(answer['to']['speed']) == {1.0} and answer['to']['highpass_hz'] is None
+    assert answer['to']['bass_db'][0] == levels.BASS_CUT_DB and answer['from']['bass_db'][-1] == levels.BASS_CUT_DB
     assert answer['info']['tempo_from'] is None and answer['info']['tempo_to'] is None
     assert answer['info']['loudness_from'] - answer['info']['loudness_to'] == pytest.approx(9.54, abs=0.3)
     assert answer['to']['gain'] / answer['from']['gain'] == pytest.approx(10.0 ** (9.54 / 20.0), rel=0.05)

@@ -421,7 +421,7 @@ def test_the_page_reorders_by_track_results_through_the_smart_fade_endpoint():
     assert "currentResults = await AudioMusePlayer.arrange(resultsList, data.results || [], { seed });" in source
     assert "'smart_fade': url_for('recording_search_bp.recording_search_smart_fade_api')," in app_source
     assert "const body = { item_ids: [...(seed ? [seed.item_id] : []), ...rows.map(row => String(row.item_id))] };" in player
-    assert 'if (!choice.smart || !rows.length) return rows;' in player
+    assert 'if (!nextChoice.smart || !rows.length) return rows;' in player
 
 
 def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_started_in_the_play_click():
@@ -445,7 +445,7 @@ def test_the_player_cuts_and_fades_decoded_songs_itself_on_an_audio_clock_starte
 
 def test_the_player_mixes_with_the_filter_and_fader_curves_the_api_gives():
     source = _repo_file('static', 'song_player.js')
-    assert 'source.connect(fader);' in source and 'fader.connect(voice.air);' in source and 'air.connect(tone);' in source and 'tone.connect(mid);' in source
+    assert 'source.connect(fader);' in source and 'fader.connect(input);' in source and 'air.connect(tone);' in source and 'tone.connect(mid);' in source
     assert 'mid.connect(high);' in source and 'high.connect(gain);' in source and 'mid.connect(gain);' not in source
     assert "air.type = 'lowpass';" in source and 'air.frequency.value = audioCtx.sampleRate / 2;' in source
     assert "mid.type = 'peaking';" in source and 'mid.gain.value = 0;' in source and "tone.type = filter || 'lowshelf';" in source
@@ -460,13 +460,17 @@ def test_the_player_mixes_with_the_filter_and_fader_curves_the_api_gives():
                  'follow(blend.tone.frequency, mix.to.highpass_hz, state.handoverAt, span);'):
         assert line in mix, line
     assert "const blend = startPieceVoice(state.next, state.pieces.to, state.handoverAt, mix.to.start, mix.to.highpass_hz ? 'highpass' : 'lowshelf');" in mix
+    assert 'if (mix.to.highpass_hz) blend.tone.Q.value = -10 * Math.log10(2);' in mix
+    assert 'lowpass_hz' not in source and 'mix.to.delay' not in source and 'incomingAt' not in source
     assert 'follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
     assert 'const outgoingSource = switchToPiece(outgoing, state.pieces.from, state.handoverAt);' in mix
     fallback = source[source.index('const span = Math.min(crossfadeSeconds(),'):]
     fallback = fallback[:fallback.index('state.scheduled = [entry];')]
-    assert 'state.node.gain.gain.setValueCurveAtTime(FADE_OUT, state.handoverAt, span);' in fallback
-    assert 'const entry = startSource(state.next, state.handoverAt, entryOffset(index + 1), fading ? span : 0);' in fallback
-    assert 'if (fadeIn) voice.gain.gain.setValueCurveAtTime(FADE_IN, voice.when, fadeIn);' in source
+    assert 'fallbackCurves(state, sourceAt, offset, span)' in fallback
+    assert 'state.node.gain.gain.setValueCurveAtTime(fall, state.handoverAt, span);' in fallback
+    assert 'startSource(state.next, state.handoverAt, offset, fading ? span : 0, rise)' in fallback
+    assert 'function startSource(track, when, offset, fadeIn, curve = FADE_IN) {' in source
+    assert 'if (fadeIn) voice.gain.gain.setValueCurveAtTime(curve, voice.when, fadeIn);' in source
     assert 'const FADE_OUT = FADE_IN.slice().reverse();' in source and 'linearRampToValueAtTime' not in source
     assert 'return playMode.beatMatch ? SMART_CROSSFADE_SECONDS : CROSSFADE_SECONDS;' in source
     assert 'const SMART_CROSSFADE_SECONDS = 10;' in source
@@ -476,7 +480,7 @@ def test_the_player_mixes_with_the_filter_and_fader_curves_the_api_gives():
 def test_every_source_starts_on_a_whole_sample_and_each_mix_hands_over_to_a_fresh_source():
     source = _repo_file('static', 'song_player.js')
     assert 'return Math.round(seconds * audioCtx.sampleRate) / audioCtx.sampleRate;' in source
-    assert 'track, air, tone, mid, high, gain, level, when: onGrid(when), offset: onGrid(Math.max(0, offset)),' in source
+    assert 'track, air, chainGain, tone, mid, high, gain, level, when: onGrid(when), offset: onGrid(Math.max(0, offset)),' in source
     assert 'const joinAt = onGrid(when + piece.until - second);' in source
     assert 'const at = second => onGrid(state.node.when + second - state.node.offset);' in source
     mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
@@ -491,9 +495,9 @@ def test_every_source_starts_on_a_whole_sample_and_each_mix_hands_over_to_a_fres
 
 def test_the_page_takes_every_number_of_a_transition_from_the_api_and_computes_none():
     source = _repo_file('static', 'song_player.js')
-    plan = source[source.index('function requestPlan(from, to) {'):source.index('function paintMark(')]
+    plan = source[source.index('function runPlans(batch) {'):source.index('function showTransition(')]
     assert 'new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });' in plan
-    assert 'return response.ok && plan && plan.duration > 0 ? plan : null;' in plan
+    assert 'return validPlan(plan) ? plan : null;' in plan
     play = source[source.index('async function playSong(index) {'):source.index('async function startPlayback(')]
     assert 'const plan = await Promise.race([planned, new Promise(resolve => setTimeout(resolve, left * 1000))]);' in play
     assert 'if (plan) levels.set(track, plan.from.gain);' in play
@@ -515,12 +519,10 @@ def test_the_page_takes_every_number_of_a_transition_from_the_api_and_computes_n
 def test_a_plan_without_a_beat_lock_plays_the_labelled_default_crossfade_on_its_beat_and_section_points():
     source = _repo_file('static', 'song_player.js')
     mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('swapView = {\n')]
-    assert 'outgoing.air.frequency' not in mix
-    assert "const plain = mix.type === 'crossfade';" in mix
-    assert "const kind = plain ? 'Default crossfade'" in source
-    assert "const tempos = !tempo.tempo_from ? '' : plain ? ` (${tempo.tempo_from} and ${tempo.tempo_to} BPM)`" in source
-    assert "if (plan && plan.type === 'beat_mix') return { kind: 'blend'," in source and "if (plan && plan.type === 'beat_rise') return { kind: 'rise'," in source
-    assert "if (!tempo.tempo_from) return { kind: 'crossfade', title: `Default crossfade into ${to.title}` };" in source
+    assert 'mix.from.lowpass_hz' not in mix
+    assert "crossfade: { kind: 'crossfade', label: 'Default crossfade'," in source
+    assert 'showTransition(playQueue[index + 1], mix)' in source
+    assert 'showTransition(playQueue[index + 1], null)' in source
     assert 'no transition plan' not in source and "'plain'" not in source
     fallback = source[source.index('const span = Math.min(crossfadeSeconds(),'):]
     assert 'const fading = fadeEnd !== null || playMode.beatMatch;' in source
@@ -528,28 +530,31 @@ def test_a_plan_without_a_beat_lock_plays_the_labelled_default_crossfade_on_its_
     assert 'handsOver' not in source and 'handover_at' not in source and 'Natural hand-over' not in source
 
 
-def test_only_the_playing_song_is_planned_and_its_next_row_shows_how_it_comes_in():
+def test_only_the_next_ten_pairs_are_requested_and_only_confirmed_plans_get_badges():
     source = _repo_file('static', 'song_player.js')
     css = _repo_file('static', 'style.css')
     marks = source[source.index('const MARKS = {'):source.index('function markHtml(')]
-    assert all(kind in marks for kind in ('pending:', 'crossfade:', 'blend:', 'rise:'))
-    assert 'function showSpans(list, songs, label, markOf) {' in source and "+ (markOf ? markHtml(markOf(song)) : '')" in source
-    load = source[source.index('async function loadTransition(index) {'):source.index('function entryOffset(')]
-    assert 'const plan = await requestPlan(from, to);\n            return plan ? Object.assign({}, plan) : null;' in load
-    assert 'planCache.delete(key);' in load and 'paintMark(to, planMarks.get(key));' in load
-    assert "planMarks.set(key, { kind: 'pending', title: 'Planning this transition...' });" in load
-    show = source[source.index('        function show() {'):source.index('        function hide() {')]
-    assert 'smartSpans(songs);\n                trackPairs(songs);' in show
-    assert 'prefetchPlans' not in source and source.count('requestPlan(') == 2
-    assert 'if (queue.beatMatch) smartSpans(playQueue);' in source
-    arrange = source[source.index('async function arrange(rows, options) {'):]
-    assert 'planCache.clear();\n            planMarks.clear();' in arrange[:400]
-    assert '.play-mark[data-mark="blend"]' in css and '.song-player .play-summary:empty' in css
+    assert all(kind in marks for kind in ('crossfade:', 'blend:', 'rise:', 'percussion:', 'eqblend:', 'sweep:', 'vocals:'))
+    assert all(f'[data-mark="{kind}"]' in css for kind in ('percussion', 'eqblend', 'sweep', 'vocals'))
+    assert '[data-mark="blend"], [data-mark="rise"]' in css
+    for gone in ('drop:', 'tail:', 'drums:', 'filter:', 'bridge:', 'pickup:', 'FILTER_TRANSITIONS'):
+        assert gone not in source, gone
+    transitions = source[source.index('const TRANSITIONS = {'):source.index('const TRANSITION_MARKS')]
+    assert [line.split(':')[0].strip() for line in transitions.splitlines() if ': {' in line] == [
+        'beat_mix', 'beat_rise', 'percussion_mix', 'eq_blend', 'filter_rise', 'vocal_handoff', 'crossfade']
+    assert 'pending:' not in marks
+    assert 'TRANSITION_LOOKAHEAD = 10;' in source
+    assert 'batch.active < TRANSITION_REQUESTS' in source and 'batch.requests.get(key)' in source
+    assert 'batch.requests.delete(job.key);' in source
+    assert 'if (plan && planning === batch) paintPlan(batch, key, plan);' in source
+    assert 'markHtml({ ...mark, seconds: plan.duration }, true)' in source
+    assert 'planAhead(playQueue, index + 1)' in source
+    assert 'audio_flac' not in source
 
 
 def test_a_beat_matched_mix_plays_both_songs_at_the_api_speeds_without_time_stretching():
     source = _repo_file('static', 'song_player.js')
-    mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('const kind = plain')]
+    mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('showTransition(playQueue[index + 1], mix)')]
     assert 'follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
     assert 'const played = mix.to.continue_from - mix.to.start;' in mix
     assert 'at: t => mix.to.start + played * Math.min(1, Math.max(0, (t - state.handoverAt) / span))' in mix
@@ -559,11 +564,11 @@ def test_a_beat_matched_mix_plays_both_songs_at_the_api_speeds_without_time_stre
 
 def test_the_highlight_jumps_to_the_next_song_in_the_middle_of_a_transition():
     source = _repo_file('static', 'song_player.js')
-    tick = source[source.index('function tick() {'):source.index('function canSeek(')]
+    tick = source[source.index('function tick() {'):source.index('function glide(')]
     assert 'const view = swapView && now >= swapView.from ? swapView : null;' in tick
     assert "if (view) list.querySelectorAll('.result-item').forEach((item, n) => item.classList.toggle('playing', n === view.row));" in tick
     assert 'const second = view ? view.at(now) :' in tick
-    mix = source[source.index('swapView = {'):source.index("after(state.handoverAt, () => {\n                            const kind")]
+    mix = source[source.index('swapView = {'):source.index('showTransition(playQueue[index + 1], mix)')]
     assert 'from: state.handoverAt + mix.middle,' in mix and 'row: playQueue[index + 1].row,' in mix
     assert 'at: t => mix.to.start + played * Math.min(1, Math.max(0, (t - state.handoverAt) / span))' in mix
     assert 'after(state.handoverAt + (fading ? span / 2 : 0), () => begin(index + 1, state.next, entry));' in source
