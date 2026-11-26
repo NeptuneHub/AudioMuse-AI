@@ -862,8 +862,8 @@ def recording_search_transition_api():
                 measured = [pool.submit(prepare_song, path) for path in paths]
                 try:
                     plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)
-                except ValueError:
-                    plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds)
+                except ValueError as err:
+                    plan = crossfade_plan(paths[0], out_seconds, paths[1], in_seconds, getattr(err, 'fade_seconds', None))
                     plan['beat_rejection'] = 'no_beat_grid'
                 plan['requested_end'] = out_seconds
                 planned = perf_counter()

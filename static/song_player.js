@@ -92,7 +92,7 @@
  */
 (function () {
     const CROSSFADE_SECONDS = 4;
-    const SMART_CROSSFADE_SECONDS = 10;
+    const SMART_CROSSFADE_SECONDS = 7.5;
     const FADE_POINTS = 64;
     const FADE_IN = Float32Array.from({ length: FADE_POINTS }, (_, k) => 0.5 - 0.5 * Math.cos(Math.PI * k / (FADE_POINTS - 1)));
     const FADE_OUT = FADE_IN.slice().reverse();

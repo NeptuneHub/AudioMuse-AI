@@ -43,7 +43,8 @@ Main Features:
   CONTINUITY_FLOOR_DB under the louder song; peak trimming lowers both
   faders together, PEAK_CEILING at most.
 * crossfade_plan: the default crossfade at the two fade points, for a pair
-  without a steady beat.
+  without a steady beat or without room for a beat mix: the pair's own
+  crossfade length when the planner measured one, else PLAIN_FADE_SECONDS.
 * vocal_shapes: competing voices keep a sustained equal-power crossfade with
   a gradual mid/high exchange and a late taper of the old singer.
 """
@@ -77,7 +78,7 @@ RISE_TO_HZ = 10.0
 DRUM_BASS_CUT_DB = (-22.0, -19.0)
 DRUM_HIGH_CUT_DB = (-10.0, -8.0)
 CONTINUITY_FLOOR_DB = -4.0
-DRUMLESS_SHARE = 0.12
+DRUMLESS_SHARE = mix.DRUMLESS_SHARE
 UNLOCKED_RISE_DB = 0.0
 RISE_RELATED_CENTS = 200.0
 RISE_RATIOS = (1.0, 0.5, 2.0, 1.5, 2.0 / 3.0, 4.0 / 3.0, 0.75)
@@ -289,7 +290,7 @@ def vocal_shapes(plan, seconds, points, shapes):
         shapes['eq']['to_highpass_hz'] = None
     exchange = ease(points, 0.3 * seconds, 0.7 * seconds)
     competition = min(1.0, 2.0 * plan['voice']['overlap'])
-    cut = np.clip(config.SMART_FADE_VOCAL_DUCK_DB * max(1.0, seconds / mix.MIN_MIX_SECONDS) * competition, 0.0, 9.0)
+    cut = np.clip(config.SMART_FADE_VOCAL_DUCK_DB * max(1.0, seconds / mix.MIN_BEAT_MIX_SECONDS) * competition, 0.0, 9.0)
     tail = np.clip(config.SMART_FADE_VOCAL_TAIL_DB, 0.0, 6.0) * competition * ease(points, 0.4 * seconds, 0.85 * seconds)
     for band, amount in (('mid', cut), ('high', cut / 2.0)):
         old = -amount * exchange - (tail if band == 'mid' else tail / 2.0)
@@ -640,10 +641,10 @@ def transition(path_out, path_in, plan, prepared=None):
     return answer
 
 
-def crossfade_plan(path_out, out_seconds, path_in, in_seconds):
+def crossfade_plan(path_out, out_seconds, path_in, in_seconds, seconds=None):
     ending, starting = mix._levels_pair(path_out, path_in)
     out_seconds = min(out_seconds, ending['seconds'])
-    overlap = min(mix.MIN_MIX_SECONDS, out_seconds, starting['seconds'] - in_seconds)
+    overlap = min(seconds or mix.PLAIN_FADE_SECONDS, out_seconds, starting['seconds'] - in_seconds)
     if overlap <= mix.BLOCK_SECONDS:
         raise ValueError('No room for a crossfade at the fade points.')
     mix_at = out_seconds - overlap
@@ -658,5 +659,6 @@ def crossfade_plan(path_out, out_seconds, path_in, in_seconds):
         'style': 'fade',
         'swap_at': round(mix_at + overlap / 2, 4),
         'beat_seconds': None,
+        'fade_seconds': round(overlap, 4),
         'confidence': mix._confidence(ending, mix_at, starting, in_seconds, overlap, overlap, False),
     }

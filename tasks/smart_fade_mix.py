@@ -15,14 +15,25 @@ fetches the songs and does the whole fade itself.
 
 Main Features:
 * A few seconds around each point are decoded (mono, one rate); a file
-  libsndfile cannot open goes through the analysis PyAV loader.
+  libsndfile cannot open goes through the PyAV loader.
 * Beats come from librosa's tracker, tempo and grid from a line fitted through
   the beat times. The next song takes the first song's tempo in the mix
   (stretch, half or double time too, none past MAX_LOCK_CENTS); tempos_match is
   that rule, shared with the smart fade order, so neighbours are picked to mix.
-* The mix lasts at least MIX_SECONDS in whole BEAT_STEP steps, ending on the
-  beat nearest the fade point; without room it loses steps down to
-  MIN_BEAT_MIX_SECONDS. No steady beat or no room raises ValueError.
+* A lock is checked over the fewest BEAT_STEP steps reaching LOCK_SECONDS
+  (down to MIN_BEAT_MIX_SECONDS without room) to the beat nearest the fade
+  point; the mix plays its last whole bars nearest the pair's mix length.
+  No steady beat or room raises ValueError.
+* lengths: every transition counts felt beats, MIX_BEATS for a beat mix
+  and FADE_BEATS for a crossfade, the long count for sparse parts, the short
+  one when both parts are dense (density: drums under SPARSE_SHARE of the
+  sustained sound, down to DENSE_SHARE; a drumless part is sparse), kept
+  within MIN/MAX_BEAT_MIX_SECONDS and MIN_MIX_SECONDS/MAX_FADE_SECONDS. The
+  felt beat (_felt) is the tracker's, halved under FOLD_BPM when
+  FAST_ONSETS_PER_BEAT onsets fill each beat (a fast song read at half
+  speed), so a fast pair mixes in fewer seconds than a slow one. NoRoom
+  (a ValueError) carries that crossfade length to the plain crossfade;
+  without a beat it is PLAIN_FADE_SECONDS.
 * The next song enters on a section start: the beat nearest the highest peak,
   within PHRASE_REACH_BEATS, of a Foote novelty curve (PHRASE_KERNEL_BEATS
   checkerboard on beat-synchronous chroma, MFCC and loudness).
@@ -30,12 +41,13 @@ Main Features:
   other in pitch (the page matches tempo by speed, which moves the pitch),
   onsets lining up within MATCH_MS at MATCH_SHARE, and on both parts a committee of beat sequences (full, bass
   and treble band onsets, plus the pulse curve) agreeing by
-  MIN_AGREEMENT_BITS of mean information gain (ISMIR 2012); about half of a
-  50-song pop similar list locks.
+  MIN_AGREEMENT_BITS of mean information gain; about half of a 50-song pop
+  similar list locks.
 * style: 'blend' (locked, bass crossing at swap_at) or 'rise' (also RISE_DB
-  louder); else 'fade', the default crossfade: MIN_MIX_SECONDS unstretched,
-  from the beat where the equal-power mix of the two loudness curves dips
-  least when that lifts it FLOOR_GAIN_DB, never past EDGE_SECONDS.
+  louder); else 'fade', the default crossfade: the pair's fade_seconds
+  unstretched, from the beat where the equal-power mix of the two loudness
+  curves dips least when that lifts it FLOOR_GAIN_DB, never past
+  EDGE_SECONDS.
 * 'percussion_mix': drum-led parts (HPSS over PERCUSSION_BAND_HZ) on a lock,
   or a fade's alternative of PERCUSSION_SECONDS within PERCUSSION_LOCK_CENTS
   whose onsets line up in both halves; _aligned_entry repairs a steady offset.
@@ -54,10 +66,22 @@ import numpy as np
 from tasks import smart_fade_cache
 
 RATE = 44100
-MIX_SECONDS = 15.0
+LOCK_SECONDS = 15.0
 MIN_BEAT_MIX_SECONDS = 10.0
-MIN_MIX_SECONDS = 10.0
+MAX_BEAT_MIX_SECONDS = 21.0
+MIN_MIX_SECONDS = 5.0
+MAX_FADE_SECONDS = 10.0
+PLAIN_FADE_SECONDS = 7.5
+MIX_BEATS = (32, 24)
+FADE_BEATS = (18, 13)
+SPARSE_SHARE = 0.55
+DENSE_SHARE = 0.30
+DRUMLESS_SHARE = 0.12
+FOLD_BPM = 100.0
+FAST_ONSETS_PER_BEAT = 3.9
+FEEL_HOP = 512
 BEAT_STEP = 8
+BAR_BEATS = 4
 LOOK_SECONDS = 26.0
 MAX_LOCK_CENTS = 60.0
 PERCUSSION_LOCK_CENTS = 90.0
@@ -91,6 +115,12 @@ COMMITTEE_MELS = 64
 BASS_BAND_HZ = 200.0
 TREBLE_BAND_HZ = 4000.0
 FLOOR_GAIN_DB = 3.0
+
+
+class NoRoom(ValueError):
+    def __init__(self, fade_seconds):
+        super().__init__('No room for the mix around the fade points.')
+        self.fade_seconds = fade_seconds
 
 
 def tempos_match(tempo_out, tempo_in, limit=MAX_LOCK_CENTS, ratios=OCTAVES):
@@ -370,14 +400,14 @@ def _in_step(song_out, mix_at, song_in, first_in, overlap, rate, beat, sample_ra
 
     if not aligned(out_part, in_part):
         return False
-    if overlap < MIX_SECONDS and not halves:
+    if overlap < LOCK_SECONDS and not halves:
         return True
     return all(aligned(a - a.mean(), b - b.mean()) for a, b in zip(np.array_split(out_part, 2), np.array_split(in_part, 2)))
 
 
 def _percussion_mix(song_out, song_in, beats_out, entries, end, beat, rate, a_start, b_start):
     shortest, longest = PERCUSSION_SECONDS
-    bar = BEAT_STEP // 2
+    bar = BAR_BEATS
     for count in range(bar * math.floor((longest + 0.05) / (bar * beat)), 0, -bar):
         seconds = count * beat
         if seconds < shortest:
@@ -434,7 +464,7 @@ def _aligned_entry(song_out, at, song_in, entry, seconds, rate, beat, halves=Fal
 
 
 def _mix_beats(beat, beats_out, out_length, first_in, in_length, rate):
-    beats = BEAT_STEP * math.ceil((MIX_SECONDS - 0.001) / (BEAT_STEP * beat))
+    beats = BEAT_STEP * math.ceil((LOCK_SECONDS - 0.001) / (BEAT_STEP * beat))
     while beats * beat >= MIN_BEAT_MIX_SECONDS:
         usable = beats_out[beats_out + beats * beat <= out_length]
         if usable.size and first_in + beats * beat * rate <= in_length:
@@ -443,11 +473,44 @@ def _mix_beats(beat, beats_out, out_length, first_in, in_length, rate):
     return None
 
 
-def _track_region(path, start, seconds, lead=None):
+def _played_beats(beats, beat, seconds):
+    bars = math.floor(seconds / (BAR_BEATS * beat) + 0.5)
+    return max(BAR_BEATS, min(beats, BAR_BEATS * bars))
+
+
+def _felt(audio, tempo):
+    import librosa
+
+    onsets = librosa.onset.onset_detect(y=audio, sr=RATE, hop_length=FEEL_HOP, units='time')
+    per_beat = onsets.size / max(audio.size / RATE, 1e-9) * 60.0 / tempo
+    return 60.0 / tempo / (2.0 if tempo < FOLD_BPM and per_beat >= FAST_ONSETS_PER_BEAT else 1.0)
+
+
+def _feel(audio, tempo, start, seconds):
+    part = audio[max(0, int(round(start * RATE))):max(0, int(round((start + seconds) * RATE)))]
+    if part.size < RATE:
+        return 60.0 / tempo, None
+    return _felt(part, tempo), drum_share(part, 0.0, part.size / RATE)
+
+
+def density(shares):
+    dense = [0.0 if share is None or share <= DRUMLESS_SHARE
+             else float(np.clip((SPARSE_SHARE - share) / (SPARSE_SHARE - DENSE_SHARE), 0.0, 1.0)) for share in shares]
+    return min(dense) if dense else 0.0
+
+
+def lengths(beat, weight):
+    def span(counts, low, high):
+        return float(np.clip(beat * (counts[0] - weight * (counts[0] - counts[1])), low, high))
+
+    return span(MIX_BEATS, MIN_BEAT_MIX_SECONDS, MAX_BEAT_MIX_SECONDS), span(FADE_BEATS, MIN_MIX_SECONDS, MAX_FADE_SECONDS)
+
+
+def _track_region(path, start, seconds, lead=None, focus=(0.0, LOCK_SECONDS)):
     audio = _region(path, start, seconds)
     tempo, beats = _beats(audio if lead is None else audio[int(round(lead * RATE)):])
     section = _phrase_entry(audio, lead) if lead is not None else None
-    return audio, tempo, beats, section
+    return audio, tempo, beats, section, _feel(audio, tempo, *focus)
 
 
 def plan_transition(path_out, out_seconds, path_in, in_seconds):
@@ -455,10 +518,12 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
     b_start = max(0.0, in_seconds - PHRASE_LEAD_SECONDS)
     lead = in_seconds - b_start
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-beats') as pool:
-        ending = pool.submit(_track_region, path_out, a_start, out_seconds - a_start + 2.0)
-        starting = pool.submit(_track_region, path_in, b_start, lead + LOOK_SECONDS + 2.0, lead)
-        song_out, tempo_out, beats_out, _ = ending.result()
-        song_in, tempo_in, beats_after, section = starting.result()
+        ending = pool.submit(_track_region, path_out, a_start, out_seconds - a_start + 2.0, None,
+                             (out_seconds - a_start - LOCK_SECONDS, LOCK_SECONDS))
+        starting = pool.submit(_track_region, path_in, b_start, lead + LOOK_SECONDS + 2.0, lead, (lead, LOCK_SECONDS))
+        song_out, tempo_out, beats_out, _, (felt_out, drums_out) = ending.result()
+        song_in, tempo_in, beats_after, section, (felt_in, drums_in) = starting.result()
+    mix_length, fade_seconds = lengths((felt_out + felt_in) / 2.0, density((drums_out, drums_in)))
     rate = _stretch_rate(tempo_out, tempo_in)
     locked = bool(tempos_match(tempo_out, tempo_in))
     beat = 60.0 / tempo_out
@@ -472,7 +537,7 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
     fits = [(entry, _mix_beats(beat, beats_out, song_out.size / RATE, entry, song_in.size / RATE, rate)) for entry in entries]
     fits = [(entry, fit) for entry, fit in fits if fit is not None]
     if not fits:
-        raise ValueError('No room for the mix around the fade points.')
+        raise NoRoom(round(fade_seconds, 4))
     fits.sort(key=lambda item: item[1][0], reverse=True)
     first_in, (beats, usable) = fits[0]
     overlap = beats * beat
@@ -495,6 +560,10 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
                       and _agreement(song_in[int(round(lead * RATE)):]) >= MIN_AGREEMENT_BITS)
             if not locked:
                 reason = 'beat_tracking'
+    if locked:
+        played = _played_beats(beats, beat, mix_length)
+        mix_at += (beats - played) * beat
+        beats, overlap = played, played * beat
     if not locked:
         short_rate = _stretch_rate(tempo_out, tempo_in, PERCUSSION_LOCK_CENTS)
         suitable_tempo = tempos_match(tempo_out, tempo_in, PERCUSSION_LOCK_CENTS)
@@ -504,7 +573,7 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
             if drums is not None:
                 alternatives.append(drums)
         rate = 1.0
-        beats = max(1, min(math.ceil(MIN_MIX_SECONDS / beat), int((song_in.size / RATE - first_in) / beat),
+        beats = max(1, min(math.ceil(fade_seconds / beat - 1e-9), int((song_in.size / RATE - first_in) / beat),
                            int((song_out.size / RATE - beats_out[0]) / beat)))
         overlap = beats * beat
         usable = beats_out[beats_out + overlap <= song_out.size / RATE]
@@ -531,6 +600,7 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
         'style': style,
         'swap_at': round(a_start + mix_at + beats // 2 * beat, 4),
         'beat_seconds': round(beat, 4),
+        'fade_seconds': round(fade_seconds, 4),
     }
     plan['confidence'] = 'high' if locked else _confidence(ending, a_start + mix_at, starting, b_start + first_in, overlap, overlap * rate, locked)
     if alternatives:

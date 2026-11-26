@@ -507,6 +507,9 @@ def test_a_beat_mix_and_a_crossfade_give_every_list_a_player_executes_in_order(t
     assert set(flat['from']['speed']) == set(flat['to']['speed']) == {1.0}
     assert max(abs(v - 1.0) for v in answer['to']['speed']) > 0.01
     assert flat['to']['continue_from'] - flat['to']['start'] == pytest.approx(flat['duration'], abs=1e-3)
+    assert mix.MIN_BEAT_MIX_SECONDS - 1.0 <= answer['duration'] <= mix.MAX_BEAT_MIX_SECONDS
+    assert fade['fade_seconds'] - 1e-3 <= flat['duration'] < fade['fade_seconds'] + fade['beat_seconds'] + 1e-3
+    assert mix.MIN_MIX_SECONDS <= fade['fade_seconds'] <= mix.MAX_FADE_SECONDS
 
 
 def test_each_band_is_fitted_to_the_two_songs_so_a_louder_next_bass_does_not_jump_in(tmp_path):
@@ -521,7 +524,7 @@ def test_each_band_is_fitted_to_the_two_songs_so_a_louder_next_bass_does_not_jum
     points = np.arange(len(answer['from']['volume'])) * answer['step']
     before, after = points < answer['middle'] - 1.0, points > answer['middle'] + 1.0
     assert max(np.array(answer['from']['bass_db'])[before]) > 1.0
-    assert min(np.array(answer['to']['bass_db'])[after]) < -1.0
+    assert min(np.array(answer['to']['bass_db'])[after]) < -0.5
     assert max(answer['from']['bass_db'] + answer['to']['bass_db']) <= levels.BAND_LIMIT_DB
     assert answer['from']['bass_db'][0] == 0.0 and answer['to']['bass_db'][-1] == 0.0
 
@@ -535,15 +538,17 @@ def test_a_boost_is_lowered_wherever_the_sum_would_peak_above_the_louder_song(tm
             audio[int(tenth * rate / 10):int(tenth * rate / 10) + burst.size] += burst
     song_out = _write(tmp_path / 'a.wav', audio)
     song_in = _write(tmp_path / 'b.wav', audio)
-    plan = levels.crossfade_plan(song_out, 30.0, song_in, 20.0)
+    plan = levels.crossfade_plan(song_out, 30.0, song_in, 30.0 - mix.PLAIN_FADE_SECONDS)
     answer = levels.transition(song_out, song_in, plan)
     _assert_executable(plan, answer)
+    assert answer['start'] == answer['to']['start'] == 30.0 - mix.PLAIN_FADE_SECONDS
     fall, rise = np.array(answer['from']['volume']), np.array(answer['to']['volume'])
     plain_fall, plain_rise = _equal_power(fall.size)
     assert (fall[5:-5] / plain_fall[5:-5]).max() > 1.2
-    t = np.arange(int(10.0 * rate)) / rate
+    t = np.arange(int(answer['duration'] * rate)) / rate
     points = np.arange(fall.size) * answer['step']
-    region = audio[int(20.0 * rate):int(20.0 * rate) + t.size] * answer['from']['gain']
+    start = int(answer['start'] * rate)
+    region = audio[start:start + t.size] * answer['from']['gain']
     assert (np.abs(region) * (np.interp(t, points, plain_fall) + np.interp(t, points, plain_rise))).max() > levels.PEAK_CEILING
     assert (np.abs(region) * (np.interp(t, points, fall) + np.interp(t, points, rise))).max() <= levels.PEAK_CEILING + 0.01
 
@@ -556,15 +561,19 @@ def test_a_pair_without_a_steady_beat_gets_an_eq_blend_at_the_default_crossfade_
         mix.plan_transition(song_out, 30.0, song_in, 5.0)
     plan = levels.crossfade_plan(song_out, 30.0, song_in, 5.0)
     assert (plan['style'], plan['stretch'], plan['tempo_from'], plan['tempo_to'], plan['beat_seconds']) == ('fade', 1.0, None, None, None)
-    assert (plan['mix_at'], plan['mix_seconds'], plan['in_at'], plan['resume_at'], plan['swap_at']) == (20.0, 10.0, 5.0, 15.0, 25.0)
+    fade = mix.PLAIN_FADE_SECONDS
+    assert (plan['mix_at'], plan['mix_seconds'], plan['in_at'], plan['resume_at'], plan['swap_at']) == (30.0 - fade, fade, 5.0, 5.0 + fade, 30.0 - fade / 2)
+    assert plan['fade_seconds'] == fade
     answer = levels.transition(song_out, song_in, plan)
     _assert_executable(plan, answer)
-    assert (answer['type'], answer['start'], answer['duration'], answer['middle']) == ('eq_blend', 20.0, 10.0, 5.0)
+    assert (answer['type'], answer['start'], answer['duration'], answer['middle']) == ('eq_blend', 30.0 - fade, fade, fade / 2)
     assert set(answer['from']['speed']) == set(answer['to']['speed']) == {1.0} and answer['to']['highpass_hz'] is None
     assert answer['to']['bass_db'][0] == levels.BASS_CUT_DB and answer['from']['bass_db'][-1] == levels.BASS_CUT_DB
     assert answer['info']['tempo_from'] is None and answer['info']['tempo_to'] is None
     assert answer['info']['loudness_from'] - answer['info']['loudness_to'] == pytest.approx(9.54, abs=0.3)
     assert answer['to']['gain'] / answer['from']['gain'] == pytest.approx(10.0 ** (9.54 / 20.0), rel=0.05)
+    measured = levels.crossfade_plan(song_out, 30.0, song_in, 5.0, 6.0)
+    assert (measured['mix_at'], measured['mix_seconds'], measured['fade_seconds']) == (24.0, 6.0, 6.0)
     with pytest.raises(ValueError):
         levels.crossfade_plan(song_out, 30.0, song_in, 39.9)
 

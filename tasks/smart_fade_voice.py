@@ -18,8 +18,8 @@ Main Features:
   few bars, but never turn it into a sequential handoff or delayed entrance.
 * Keep beat locks when cue shifts preserve their grids and the onsets still
   line up. Moved cues that lose the lock give back the verified original
-  cues when no voices clash there, else the default MIN_MIX_SECONDS
-  crossfade ending at the same second. Pass the amount of vocal competition
+  cues when no voices clash there, else the pair's crossfade (the plan's
+  fade_seconds) ending at the same second. Pass the amount of vocal competition
   to smart_fade_levels for a modest, gradual EQ exchange.
 * A percussion mix alternative wins when no voice overlaps another there.
 * Recover a few skipped seconds with a local pass, preserving fade length,
@@ -442,7 +442,7 @@ def _moved(path_out, path_in, plan):
     if locked and any(abs(value - anchor - round((value - anchor) / step) * step) > 0.001
                       for value, anchor, step in ((at, plan['mix_at'], step_out), (entry, plan['in_at'], step_in))):
         locked = False
-        shorter = min(seconds, mix.MIN_MIX_SECONDS, incoming_end - entry)
+        shorter = min(seconds, plan.get('fade_seconds', mix.MIN_MIX_SECONDS), incoming_end - entry)
         at, seconds = at + seconds - shorter, shorter
         source_seconds = seconds
     simultaneous = _activity(ending, at + seconds * share) & _activity(starting, entry + source_seconds * share)
@@ -461,7 +461,7 @@ def _moved(path_out, path_in, plan):
         rate = (moved['resume_at'] - moved['in_at']) / duration
         if not mix._in_step(ending['samples'], moved['mix_at'] - ending['at'], starting['samples'],
                             moved['in_at'] - starting['at'], duration, rate, moved['beat_seconds'], VAD_RATE):
-            shorter = min(duration, mix.MIN_MIX_SECONDS, incoming_end - moved['in_at'])
+            shorter = min(duration, moved.get('fade_seconds', mix.MIN_MIX_SECONDS), incoming_end - moved['in_at'])
             moved.update(mix._handoff('fade', moved['mix_at'] + duration - shorter, moved['in_at'], shorter))
             moved['confidence'] = 'medium'
     if moved['style'] == 'fade' and plan['style'] != 'fade':

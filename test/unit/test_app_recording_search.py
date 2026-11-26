@@ -473,7 +473,7 @@ def test_the_player_mixes_with_the_filter_and_fader_curves_the_api_gives():
     assert 'if (fadeIn) voice.gain.gain.setValueCurveAtTime(curve, voice.when, fadeIn);' in source
     assert 'const FADE_OUT = FADE_IN.slice().reverse();' in source and 'linearRampToValueAtTime' not in source
     assert 'return playMode.beatMatch ? SMART_CROSSFADE_SECONDS : CROSSFADE_SECONDS;' in source
-    assert 'const SMART_CROSSFADE_SECONDS = 10;' in source
+    assert 'const SMART_CROSSFADE_SECONDS = 7.5;' in source
     assert 'MUFFLE_TO_HZ' not in source and 'Filtered fade' not in source and 'createDelay(' not in source
 
 
@@ -766,7 +766,7 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
         calls.append(('plan', os.path.basename(path_out), out_seconds, in_seconds, os.path.isdir(seen['folder'])))
         return dict(plan)
 
-    def make_crossfade(path_out, out_seconds, path_in, in_seconds):
+    def make_crossfade(path_out, out_seconds, path_in, in_seconds, seconds=None):
         calls.append(('crossfade', out_seconds, in_seconds))
         return dict(plan, beatless=True)
 

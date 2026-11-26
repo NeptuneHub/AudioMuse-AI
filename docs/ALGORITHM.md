@@ -3086,9 +3086,11 @@ louder next song at an unrelated tempo.
      double time), so the two songs end up at most 60 cents apart in pitch,
      the two songs' drum hits line up within 30 ms, and on both songs
      several beat trackers agree on where the beats are (section 19.3).
-   - How it sounds: both songs play together for at least 15 seconds, in
-     whole steps of 8 beats (15 to 21 seconds), shortened 8 beats at a time
-     down to 10 seconds when there is no room. The tempo glides beat by beat
+   - How it sounds: both songs play together for the whole bars nearest
+     the pair's mix length (24 to 32 felt beats, 10 to 21 seconds, see "How
+     long a transition lasts" below), the last bars of the span the beat
+     check covered (section 19.3), so the ending song still stops on its beat nearest the fade
+     point and the next song still enters on its cue. The tempo glides beat by beat
      from the first song's to the next song's. Mixed the way a DJ mixes with a
      3-band EQ, every move a smooth S-curve, one band after the other: the
      next song's highs come in first, then its mids, then the two bass lines
@@ -3116,8 +3118,8 @@ louder next song at an unrelated tempo.
      beat lock whose two parts are drum-led, or, without a full lock (the
      tempos 60 to 90 cents apart, drums carry little pitch), the last 8 to 12
      seconds before the fade point.
-   - How it sounds: whole bars, the tempo gliding as in the blend (15 to 21
-     seconds on a full lock, 8 to 12 without). The faders cross equal-power;
+   - How it sounds: whole bars, the tempo gliding as in the blend (the beat
+     mix's length on a full lock, 8 to 12 seconds without). The faders cross equal-power;
      the two kick drums swap in one move around the middle (one bass drum at
      a time), the hi-hats cross with them; a 3-band hand-over has nothing to
      hand over in drums alone.
@@ -3186,7 +3188,8 @@ louder next song at an unrelated tempo.
      `Playing <next song> from m:ss until m:ss`.
    - When: no beat lock, both songs have drums at similar levels and no
      voices overlap; or no usable plan in the browser by its mix point.
-   - How it sounds: a volume crossfade of about 10 seconds, one song going
+   - How it sounds: a volume crossfade of 13 to 18 felt beats, 5 to 10
+     seconds (see "How long a transition lasts" below), one song going
      down while the next comes up, nothing stretched; each song keeps its own
      tempo. The two curves start equal-power and follow both songs' levels,
      never sinking more than 4 dB under the louder song (section 19.3). When
@@ -3194,8 +3197,58 @@ louder next song at an unrelated tempo.
      singers apart; otherwise no filters.
    - Where: with a plan it starts on a beat of the ending song and the next
      song comes in on its section start, the points the plan found, over the
-     fewest whole beats of the ending song that reach 10 seconds. Without a
-     plan it runs between the two times of the order endpoint (section 19.2).
+     fewest whole beats of the ending song that reach the pair's crossfade
+     length. Without a plan it runs for 7.5 seconds between the two times
+     of the order endpoint (section 19.2). The EQ blend, the filter rise and
+     the vocal handoff have the same length and points.
+
+**How long a transition lasts**
+
+Every transition is counted in beats, so its length in seconds follows the
+two songs: a fast pair mixes in fewer seconds than a slow one, and a dense
+pair in fewer beats than a sparse one.
+
+- The pulse. The felt beat of each part is the beat tracker's, except that a
+  song read under 100 BPM with 3.9 or more onsets per beat is felt at
+  double tempo (a fast song read at half speed: on a metal list the tracker
+  read 71 to 86 BPM where the drums played 140 to 170, with 3.9 to 6.9
+  onsets per tracked beat, against 2.0 to 3.8 on slow pop and rock songs).
+  The pair's beat is the mean of the two felt beats. Listeners rate the
+  speed of music from its tempo and its event density together, not the
+  tempo alone (JASA 2010, ISMIR 2013), and DJs count transitions in beats
+  (real DJ transitions peak at multiples of 32 beats, ISMIR 2020).
+- The density. Above 150 Hz, the share of percussive against sustained
+  sound in the 15 seconds of each part next to its cue: 0.55 or more is
+  sparse, 0.30 or less dense, linear between; a part without drums (0.12
+  or less) is sparse; the pair is as dense as its sparser part, because a
+  sparse part leaves room for the other (an auto-DJ lines intros up with
+  outros for the same reason). On the lists heard by ear, the pop cues
+  measured a median of 0.43 (none under 0.27) and the Italian rock cues
+  0.21 (none over 0.35): sustained guitars, keys and voices are what pile
+  up in a long overlap of two full bands. Long crossfades blur sounds with
+  many impacts (arXiv 2024), and an automatic pop DJ shortens an overlap
+  where voices collide (arXiv 2026). The key fit of the two songs does
+  not decide the length: the pop neighbours matched in key the least
+  (median chroma correlation 0.00 against 0.54 on rock).
+- The count. A beat mix plays 32 felt beats for a sparse pair down to 24
+  for a dense one, kept within 10 to 21 seconds (whole bars of the ending
+  song, never past the span the beat check covered); a crossfade, EQ blend,
+  filter rise or vocal handoff plays 18 felt beats down to 13, kept within
+  5 to 10 seconds. The percussion mix without a full lock keeps its 8 to 12
+  seconds (its parts are drum-led, so sparse). The voice check's cap of 14
+  seconds on mixes where two voices overlap most of the time still applies.
+
+Fixed lengths were tried first. 15 to 21 second beat mixes with 10 second
+crossfades sounded right by ear on a pop Similar Song list and too long on an
+Italian rock list (too many instruments at once); about 10 second mixes with
+5 second crossfades sounded too abrupt on both, and right on a fast metal
+list. Replayed on the same lists (k3s), the counted beats gave:
+
+| List | Beat mixes | Crossfade kinds |
+|---|---|---|
+| Pop (about 104 BPM) | 13.8 s (all capped by the voice check, as before) | vocal handoffs 10.4 s for the 104 BPM pairs, 5.2 s for 150 to 160 BPM |
+| Italian rock (dense) | 12.6 s median | 7.1 s median |
+| Metal | 11.4 and 16.2 s | 5.6 to 7.5 s at 140 to 170 BPM, up to 9 s at 102 to 106 BPM |
 
 ### 19.2. The Two Endpoints
 
@@ -3267,9 +3320,11 @@ same way. With the neural fingerprint off both answer 503.
        that comes in quieter, else `medium`), `loudness_from` and
        `loudness_to` (whole songs, LUFS).
    - A pair without a steady beat, or without room for a beat mix, still
-     gets a `crossfade` at the two given points: `start` = `out` - 10,
-     `duration` 10 (less when a song is shorter), `to` from `in`, tempos
-     `null`. Every list has one value per point.
+     gets a `crossfade` at the two given points: `duration` = the pair's
+     crossfade length when the beats were measured (no room for a beat mix),
+     7.5 seconds without a beat (less when a song is shorter), `start` =
+     `out` - `duration`, `to` from `in`, tempos `null`. Every list has one
+     value per point.
 
    ```
    {"type": "beat_mix", "start": 147.3626, "duration": 16.0875, "middle": 8.0216, "step": 0.099922,
@@ -3305,11 +3360,11 @@ same way. With the neural fingerprint off both answer 503.
 
 Without an answer the page uses an equal-power fade when both excerpts are
 buffered. Channel peaks at playback gain bound the faders. Partial buffers
-use complementary S-curves. The current song fades out over the 10 seconds before
+use complementary S-curves. The current song fades out over the 7.5 seconds before
 its `fade_out_seconds`, the next song starts from its `fade_in_seconds` at
-its own gain of 1, and the highlight jumps after 5 seconds. With the order
-above, `id-A` fades out from 3:18.5 to 3:28.5 while `id-C` starts from 0:20.0
-and fades in until 0:30.0, then plays on alone. A song with `null` times gets
+its own gain of 1, and the highlight jumps after 3.75 seconds. With the order
+above, `id-A` fades out from 3:21.0 to 3:28.5 while `id-C` starts from 0:20.0
+and fades in until 0:27.5, then plays on alone. A song with `null` times gets
 no transition: when the next song has none, the crossfade still happens with
 the next song from its beginning; when the current song has none, it plays to
 the end of its file and the next song starts right after.
@@ -3410,12 +3465,20 @@ the end of its file and the next song starts right after.
    1 second of a real section start 27% of the time (13% before; within
    0.5 s: 18% against 5%). The same snap at the ending song's fade point did
    not help (it sits deep in the outro, a median 10 seconds from any annotated
-   boundary), so the mix end stays on the fingerprint point. The mix lasts the
-   fewest multiples of 8 beats of the ending song that reach 15 seconds and
-   ends on its beat nearest its fade-out time; when the regions have no room
-   (the next song's first beat comes late) it loses 8 beats at a time down to
-   10 seconds, and without room for that it raises `ValueError` too, which the
-   endpoint turns into the plain `crossfade` at the two given points. The
+   boundary), so the mix end stays on the fingerprint point. The beat check
+   (step 3) covers the fewest multiples of 8 beats of the ending song that
+   reach 15 seconds (`LOCK_SECONDS`), ending on its beat nearest its
+   fade-out time; when the regions have no room (the next song's first beat
+   comes late) it loses 8 beats at a time down to 10 seconds, and without
+   room for that it raises `NoRoom` (a `ValueError` carrying the pair's
+   crossfade length), which the endpoint turns into the plain `crossfade`
+   of that length at the two given points. The mix then plays the last
+   whole bars of that span nearest the pair's mix length (`lengths`, see
+   "How long a transition lasts" in section 19.1): the
+   ending song stops on the same beat, the next song enters on the same cue,
+   now over a later bar of the ending song, and the lock is the one checked
+   over the whole span (a shorter span checked on its own lets weak
+   onset curves pass, see "Retrying a refused beat lock" in step 7). The
    middle beat of the mix is where the bass lines swap unless the next song
    has no bass there (step 6), and the next song resumes alone the mix
    length times the stretch after its entry. A pair
@@ -3433,7 +3496,7 @@ the end of its file and the next song starts right after.
    Near-ties pass: 16th-note hi-hats give peaks every 120 ms that
    cannot be told apart. A pair that fails, like a pair whose tempos do not
    match, becomes a `fade`: stretch 1 and the fewest whole beats of the ending
-   song that reach 10 seconds, ending at its fade-out time. On three lists of
+   song that reach the pair's crossfade length (`fade_seconds`), ending at its fade-out time. On three lists of
    10 transitions (an Italian rock similar-song list, an electronic and a
    rock text search) the 17 beat-matched mixes split cleanly: 11 at 0.97 or
    more, 6 at 0.65 or less. In the browser output of the similar-song list,
@@ -3527,8 +3590,8 @@ the end of its file and the next song starts right after.
    clash at the planned cues, the verified planned cues stay (two drum
    patterns that drift apart are the most common fault listeners hear in
    automatic transitions, 15% against 6.5% for voices over voices, ISMIR
-   2017); with a clash it becomes the default crossfade of 10 seconds,
-   ending on the same second. The share of time two voices overlap goes to
+   2017); with a clash it becomes the pair's default crossfade (its
+   `fade_seconds`), ending on the same second. The share of time two voices overlap goes to
    the curves (`vocal_shapes`): an equal-power crossfade with up to 9 dB of
    mid exchange (half on the highs) around the middle and a late taper of
    the old singer, beat mixes keeping their own deeper cuts. A percussion
@@ -3572,7 +3635,7 @@ the end of its file and the next song starts right after.
      its time map). The page plays each song's own audio at that playback
      rate, as a DJ deck without key lock does: the pitch follows the tempo
      glide, and nothing is cut or re-joined. So the two songs sit apart in
-     pitch by their whole tempo ratio for the 15 to 21 seconds of the mix (a
+     pitch by their whole tempo ratio for the 10 to 21 seconds of the mix (a
      6% gap is about a semitone: two songs in one key clash like a minor
      second). A beat mix therefore needs the tempos within `MAX_LOCK_CENTS`
      (60 cents, 3.5%); on an 11-transition pop list the mixes at 90 to 117
@@ -3776,9 +3839,18 @@ the end of its file and the next song starts right after.
      of samples in every mix, and in a listening test it sounded the same as
      WSOLA (itself since replaced by a plain speed change, see Speed above).
    - **Shorter mixes.** 8 beats, an echo out and then 16 beats all sounded
-     like a jump on a phone. Real DJ transitions peak at 32 and 64 beats, 15
-     and 30 seconds at 128 BPM (ISMIR 2020, 20,765 transitions of 1,557
-     mixes), and streaming players cross over at most 12 seconds.
+     like a jump on a phone with the shapes of that time. Real DJ transitions
+     peak at 32 and 64 beats, 15 and 30 seconds at 128 BPM (ISMIR 2020,
+     20,765 transitions of 1,557 mixes), and streaming players cross over at
+     most 12 seconds.
+   - **One length for every song.** Beat mixes of 15 to 21 seconds (the
+     fewest 8-beat steps reaching 15) with 10-second crossfades, EQ blends,
+     filter rises and vocal handoffs sounded right on a pop Similar Song
+     list and too long on an Italian rock one; about 10-second mixes with
+     5-second native-speed kinds sounded right on a fast metal list and too
+     abrupt on the pop and rock ones (a short transition on a slow song
+     sounds like it is hurrying the song). Both gave way to the counted
+     beats of section 19.1.
    - **The filtered fade** for pairs without a beat lock (about 10 seconds,
      unstretched, the ending song muffled by a low-pass closing to 400 Hz and
      the bass lines swapped): on a pop similar-song list the plain crossfade
@@ -3842,9 +3914,9 @@ the end of its file and the next song starts right after.
      instead of 180 Hz made 10 dips deeper than 3 dB against 8, and the EQ
      blend's shape 14.
    - **An 8-second beat mix** (5.5 to 13 seconds in 4-beat steps, both
-     faders trading level around the swap): the 7 to 14 second mixes it
-     brings back were the ones that sounded too rapid on a phone; real
-     transitions peak at 32 beats (ISMIR 2020).
+     faders trading level around the swap) sounded too rapid on a phone; the
+     10-second mixes keep the EQ-led hand-over with the faders only at the
+     two ends.
    - **The bass swap on an 8-beat phrase** of the next song before any
      other bar. On the 24-beat mixes the phrases fall at a third and two
      thirds of the mix, never in the middle. Recorded through the page, the
@@ -3877,12 +3949,16 @@ the end of its file and the next song starts right after.
   `config.py` tune where the voice check moves the cues and how far it
   ducks competing voices.
 - The lengths and limits are constants of
-  `tasks/smart_fade_mix.py` (`MIX_SECONDS` 15, `MIN_MIX_SECONDS` 10,
+  `tasks/smart_fade_mix.py` (`LOCK_SECONDS` 15, `MIX_BEATS` 32 to 24,
+  `FADE_BEATS` 18 to 13, `MIN_BEAT_MIX_SECONDS` 10, `MAX_BEAT_MIX_SECONDS`
+  21, `MIN_MIX_SECONDS` 5, `MAX_FADE_SECONDS` 10, `PLAIN_FADE_SECONDS` 7.5,
+  `SPARSE_SHARE` 0.55, `DENSE_SHARE` 0.30, `DRUMLESS_SHARE` 0.12,
+  `FOLD_BPM` 100, `FAST_ONSETS_PER_BEAT` 3.9,
   `PERCUSSION_SECONDS` 8 to 12, `PERCUSSION_LOCK_CENTS` 90,
   `MAX_LOCK_CENTS` 60, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.6,
   `EDGE_SECONDS` 30, `FULL_LU` 0, `DROP_LU` 2, `MIN_AGREEMENT_BITS` 1.0,
   `FLOOR_GAIN_DB` 3), of
   `tasks/recording_search_manager.py` (`_FADE_TEMPO_PENALTY` 0.5,
   `_FADE_INTENSITY_WEIGHT` 0.04, `_FADE_SOUND_WEIGHT` 0.1, `_FADE_WEAK_WEIGHT`
-  1) and of `static/song_player.js` (`SMART_CROSSFADE_SECONDS` 10,
+  1) and of `static/song_player.js` (`SMART_CROSSFADE_SECONDS` 7.5,
   `TARGET_LUFS` -14, `PEAK_CEILING` 0.891).
