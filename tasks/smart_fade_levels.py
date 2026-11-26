@@ -18,32 +18,30 @@ highpass_hz and continue_from; then info.
 Main Features:
 * song_level: BS.1770 loudness and sample peak in one streaming pass; the
   gain brings it to TARGET_LUFS, its peak to PEAK_CEILING at most.
-* prepare_song lets the endpoint overlap the two whole-song scans with cue
-  and vocal analysis, reusing their exact sources and levels for the mix.
+* prepare_song lets the endpoint overlap the whole-song scans with cue and
+  vocal analysis, reusing their sources and levels for the mix.
 * time_maps: the second of each song at each point; speed is its slope,
   the playback rate a player sets (the pitch moves with the tempo like a
   DJ deck without key lock). A fade plays both as they are; a beat-matched
   mix glides the tempo beat by beat over the mean of the two parts.
-* mix_shapes, a DJ's 3-band EQ mix, every move an S-curve (ease): the next
-  song's highs (shelf at HIGH_HZ) come in first, its mids (peak at MID_HZ)
-  next, the bass lines swap in one equal-power move over two beats (shelf
-  at BASS_HZ), then the first song's mids and its highs go out; the faders
-  only fade the two ends over EDGE_BEATS. A rise sweeps a
-  high-pass from RISE_FROM_HZ to RISE_TO_HZ instead of the next song's
-  bass. A percussion mix trades equal-power faders, one kick at a time
-  (DRUM_BASS_CUT_DB) and the hats (DRUM_HIGH_CUT_DB) around the swap. A
-  crossfade keeps equal-power faders. An unlocked filter rise holds the next
-  song's high-pass at BASS_HZ until the bass swap, then opens it while the
-  first song's bass leaves; unlocked_style picks it only for tempos within
-  RISE_RELATED_CENTS of a RISE_RATIOS relation.
+* mix_shapes, a DJ's 3-band EQ mix of S-curves (ease): the next song's
+  highs (HIGH_HZ) come in first, its mids (MID_HZ) next, the bass lines
+  swap in one equal-power move over two beats (BASS_HZ), then the first
+  song's mids and highs go out; the faders fade the ends over EDGE_BEATS.
+  A rise sweeps a high-pass RISE_FROM_HZ to RISE_TO_HZ for the next bass
+  (unlocked: held at BASS_HZ until the swap). A percussion mix swaps one
+  kick (DRUM_BASS_CUT_DB) and the hats (DRUM_HIGH_CUT_DB) at a time. A
+  crossfade keeps equal-power faders.
+* unlocked_style: a filter rise only for tempos within RISE_RELATED_CENTS
+  of a RISE_RATIOS relation.
 * swap_point: the 4-beat bar nearest the middle beat where the next
   song's bass plays (SWAP_PRESENT of its loudest bar) in SWAP_RANGE.
-* transition simulates the gain, speed, filters and faders at RATE.
-  band_shifts follows each song's own spectral balance, with shared band
-  corrections up to BAND_LIMIT_DB. fader_scale smooths K-weighted energy
-  between the ANCHOR_SECONDS before and after the mix, up to SHAPE_LIMIT_DB.
-  An unlocked crossfade never sinks CONTINUITY_FLOOR_DB under the louder
-  song; peak trimming lowers both faders together, PEAK_CEILING at most.
+* transition simulates gain, speed, filters and faders at RATE.
+  band_shifts follows each song's spectral balance (BAND_LIMIT_DB);
+  fader_scale smooths K-weighted energy between the ANCHOR_SECONDS before
+  and after the mix (SHAPE_LIMIT_DB). An unlocked crossfade never sinks
+  CONTINUITY_FLOOR_DB under the louder song; peak trimming lowers both
+  faders together, PEAK_CEILING at most.
 * crossfade_plan: the default crossfade at the two fade points, for a pair
   without a steady beat.
 * vocal_shapes: competing voices keep a sustained equal-power crossfade with
