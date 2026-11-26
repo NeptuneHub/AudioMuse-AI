@@ -18,8 +18,7 @@ highpass_hz and continue_from; then info.
 Main Features:
 * song_level: BS.1770 loudness and sample peak in one streaming pass; the
   gain brings it to TARGET_LUFS, its peak to PEAK_CEILING at most.
-* prepare_song lets the endpoint overlap the whole-song scans with cue and
-  vocal analysis, reusing their sources and levels for the mix.
+* prepare_song: whole-song scans that overlap the cue and vocal analysis.
 * time_maps: the second of each song at each point; speed is its slope,
   the playback rate a player sets (the pitch moves with the tempo like a
   DJ deck without key lock). A fade plays both as they are; a beat-matched
@@ -42,9 +41,8 @@ Main Features:
   and after the mix (SHAPE_LIMIT_DB). An unlocked crossfade never sinks
   CONTINUITY_FLOOR_DB under the louder song; peak trimming lowers both
   faders together, PEAK_CEILING at most.
-* crossfade_plan: the default crossfade at the two fade points, for a pair
-  without a steady beat or without room for a beat mix: the pair's own
-  crossfade length when the planner measured one, else PLAIN_FADE_SECONDS.
+* crossfade_plan: the crossfade at the two fade points without a beat mix,
+  the planner's length or PLAIN_FADE_SECONDS.
 * vocal_shapes: competing voices keep a sustained equal-power crossfade with
   a gradual mid/high exchange and a late taper of the old singer.
 """

@@ -8,53 +8,29 @@
 
 """Beat-matched transition plan between two songs at the smart fade points.
 
-The smart fade (tasks.recording_search_manager) picks where one song should
-end and the next start; this module turns those points into the seconds where
-the page cuts and mixes the two songs. It returns numbers only: the page
-fetches the songs and does the whole fade itself.
+Turns the smart fade points (tasks.recording_search_manager) into the seconds
+where the page cuts and mixes the two songs: numbers only, the page plays them.
 
 Main Features:
-* A few seconds around each point are decoded (mono, one rate); a file
-  libsndfile cannot open goes through the PyAV loader.
-* Beats come from librosa's tracker, tempo and grid from a line fitted through
-  the beat times. The next song takes the first song's tempo in the mix
-  (stretch, half or double time too, none past MAX_LOCK_CENTS); tempos_match is
-  that rule, shared with the smart fade order, so neighbours are picked to mix.
+* Decodes a few seconds around each point (mono; PyAV when libsndfile fails).
+* Beats from librosa's tracker, tempo and grid from a line fit; the next song
+  takes the first song's tempo (half or double time too) within
+  MAX_LOCK_CENTS; tempos_match is shared with the smart fade order.
 * A lock is checked over the fewest BEAT_STEP steps reaching LOCK_SECONDS
-  (down to MIN_BEAT_MIX_SECONDS without room) to the beat nearest the fade
-  point; the mix plays its last whole bars nearest the pair's mix length.
-  No steady beat or room raises ValueError.
-* lengths: every transition counts felt beats, MIX_BEATS for a beat mix
-  and FADE_BEATS for a crossfade, the long count for sparse parts, the short
-  one when both parts are dense (density: drums under SPARSE_SHARE of the
-  sustained sound, down to DENSE_SHARE; a drumless part is sparse), kept
-  within MIN/MAX_BEAT_MIX_SECONDS and MIN_MIX_SECONDS/MAX_FADE_SECONDS. The
-  felt beat (_felt) is the tracker's, halved under FOLD_BPM when
-  FAST_ONSETS_PER_BEAT onsets fill each beat (a fast song read at half
-  speed), so a fast pair mixes in fewer seconds than a slow one. NoRoom
-  (a ValueError) carries that crossfade length to the plain crossfade;
-  without a beat it is PLAIN_FADE_SECONDS.
-* The next song enters on a section start: the beat nearest the highest peak,
-  within PHRASE_REACH_BEATS, of a Foote novelty curve (PHRASE_KERNEL_BEATS
-  checkerboard on beat-synchronous chroma, MFCC and loudness).
-* A beat lock needs tempos_match: the two songs within MAX_LOCK_CENTS of each
-  other in pitch (the page matches tempo by speed, which moves the pitch),
-  onsets lining up within MATCH_MS at MATCH_SHARE, and on both parts a committee of beat sequences (full, bass
-  and treble band onsets, plus the pulse curve) agreeing by
-  MIN_AGREEMENT_BITS of mean information gain; about half of a 50-song pop
-  similar list locks.
-* style: 'blend' (locked, bass crossing at swap_at) or 'rise' (also RISE_DB
-  louder); else 'fade', the default crossfade: the pair's fade_seconds
-  unstretched, from the beat where the equal-power mix of the two loudness
-  curves dips least when that lifts it FLOOR_GAIN_DB, never past
-  EDGE_SECONDS.
-* 'percussion_mix': drum-led parts (HPSS over PERCUSSION_BAND_HZ) on a lock,
-  or a fade's alternative of PERCUSSION_SECONDS within PERCUSSION_LOCK_CENTS
-  whose onsets line up in both halves; _aligned_entry repairs a steady offset.
-* confidence: 'high' locked, 'low' a fade from FULL_LU into a next song
-  DROP_LU lower (each against its own loudness), else 'medium'.
-* k_filters is the BS.1770 K-weighting, shared with tasks.smart_fade_levels,
-  which turns a plan into the curves a player executes.
+  (down to MIN_BEAT_MIX_SECONDS) and needs onsets within MATCH_MS at
+  MATCH_SHARE plus MIN_AGREEMENT_BITS of beat-committee agreement on both
+  parts; the mix plays its last whole bars nearest the pair's mix length.
+* lengths counts felt beats (MIX_BEATS, FADE_BEATS), fewer when both parts
+  are dense (drum share SPARSE_SHARE down to DENSE_SHARE, drumless is
+  sparse); _felt doubles a tempo under FOLD_BPM with FAST_ONSETS_PER_BEAT.
+  NoRoom carries the crossfade length; without a beat PLAIN_FADE_SECONDS.
+* The next song enters on a section start: a Foote novelty peak within
+  PHRASE_REACH_BEATS.
+* style 'blend', 'rise' (RISE_DB louder), 'percussion_mix' (drum-led parts,
+  also a fade's alternative within PERCUSSION_LOCK_CENTS) or 'fade', from the
+  beat whose mix dips least (FLOOR_GAIN_DB, EDGE_SECONDS).
+* confidence 'high' locked, 'low' a fade into a DROP_LU quieter start, else
+  'medium'; k_filters is the BS.1770 K-weighting shared with the levels.
 """
 
 import math

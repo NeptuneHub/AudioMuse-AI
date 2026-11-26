@@ -9,18 +9,15 @@
 """Beat-matched smart fade transition planned from two real audio files.
 
 Main Features:
-* Two click tracks at 120 and 122 BPM give a plan only (no audio): the measured
-  tempos, a stretch of 120/122, a lock checked over the fewest BEAT_STEP
-  beats of the first song that last LOCK_SECONDS, a mix of its last whole
-  bars nearest the pair's mix length, on its beat grid and ending at its
-  fade point, the second song entering on one of its own beats and resuming
-  exactly where the stretched part ends; style 'blend', swap_at on the
-  middle beat; a late first beat shortens the checked span by whole steps,
-  never under MIN_BEAT_MIX_SECONDS (else ValueError)
-* Lengths count felt beats: MIX_BEATS and FADE_BEATS, the short counts when
-  both parts are dense, within their limits; a song read at half speed with
-  FAST_ONSETS_PER_BEAT onsets per beat is felt at double tempo; a dense pair
-  (a sustained tone over its clicks) crossfades shorter than clicks alone
+* Click tracks at 120 and 122 BPM plan a stretch of 120/122, a lock checked
+  over the fewest BEAT_STEP beats reaching LOCK_SECONDS, a mix of its last
+  whole bars nearest the pair's mix length ending at the fade point, the
+  next song entering on its beat and resuming where the stretch ends; style
+  'blend', swap_at mid-mix; a late first beat shortens the checked span by
+  whole steps, never under MIN_BEAT_MIX_SECONDS (else NoRoom)
+* Lengths count felt beats (MIX_BEATS, FADE_BEATS), fewer for a dense pair;
+  FAST_ONSETS_PER_BEAT doubles a half-speed tempo; a tone over the clicks
+  crossfades shorter than clicks alone
 * The next song enters on a section start a few beats after its fade point,
   never more than PHRASE_REACH_BEATS away; RISE_DB louder, it rises in
 * Tempos too far apart (120 and 150 BPM) or a beat grid 150 ms off fade
