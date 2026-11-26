@@ -241,17 +241,26 @@ def test_fingerprint_index_load_registers_only_real_signature_ids_with_strings_o
     assert helper.load_fingerprint_index().ids == [current]
 
 
-def test_analysis_legacy_work_scan_keeps_a_provider_id_starting_with_fp_with_strings_off(off_db):
-    from tasks.analysis.helper import _work_sql
+def test_analysis_legacy_work_scan_keeps_a_provider_id_starting_with_fp_with_strings_off(
+    off_db, monkeypatch
+):
+    from tasks.analysis import helper
 
     current, decoy, _unsignable = _ids()
     _insert_scores(off_db, [current, decoy, "abc"])
     with off_db.cursor() as cur:
         for item_id in (current, decoy, "abc"):
             cur.execute("INSERT INTO embedding (item_id) VALUES (%s)", (item_id,))
-        _mapped_sql, legacy_sql = _work_sql(False, False)
-        cur.execute(legacy_sql + " AND s.item_id > %s ORDER BY s.item_id LIMIT %s", ("", 100))
-        assert [row[0] for row in cur.fetchall()] == ["abc", decoy]
+        _mapped_sql, legacy_sql = helper._work_sql(False, False)
+        cur.execute(legacy_sql, ())
+        assert sorted(row[0] for row in cur.fetchall()) == ["abc", decoy]
+    monkeypatch.setattr(helper, "get_db", lambda: off_db)
+    off_db.autocommit = False
+    try:
+        work_map = helper.load_server_work_map(None, False, False, chunk_size=1)
+    finally:
+        off_db.autocommit = True
+    assert sorted(work_map) == ["abc", decoy]
 
 
 def _stored_index_predicate_rows(cur, index_name):

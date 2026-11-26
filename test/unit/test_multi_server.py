@@ -788,7 +788,12 @@ class TestServerWorkMap:
 
         cur.execute.side_effect = execute
         cur.fetchall.side_effect = fetchall
+        cur.__iter__.side_effect = lambda: iter(fetchall())
         return cur, executed
+
+    @staticmethod
+    def _scan_sql(executed):
+        return [sql for sql, _params in executed if sql.startswith('SELECT')]
 
     def _patch_db(self, monkeypatch, cur):
         import tasks.analysis.helper as helper
@@ -799,6 +804,7 @@ class TestServerWorkMap:
         db_cm.__enter__.return_value = conn
         db_cm.__exit__.return_value = False
         monkeypatch.setattr(helper, 'get_db', lambda: db_cm)
+        return conn
 
     def test_mask_bits_reflect_what_each_track_already_has(self, monkeypatch):
         import tasks.analysis.helper as helper
@@ -836,7 +842,7 @@ class TestServerWorkMap:
 
         assert done == (helper.WORK_MUSICNN | helper.WORK_BASE)
         assert work_map['p1'] & done == done
-        sql = executed[0][0]
+        sql = self._scan_sql(executed)[0]
         assert 'clap_embedding' not in sql
         assert 'lyrics_embedding' not in sql
 
@@ -856,10 +862,10 @@ class TestServerWorkMap:
         assert not work_map['p-no-neural'] & helper.WORK_NEURAL
         assert not work_map['p-no-base'] & helper.WORK_BASE
         assert work_map['p-no-base'] & helper.WORK_NEURAL
-        sql = executed[0][0]
+        sql = self._scan_sql(executed)[0]
         assert sql.index('s.scale IS NOT NULL') < sql.index('e.neural_fingerprint IS NOT NULL')
         helper.load_server_work_map('srv', True, True)
-        assert 'neural_fingerprint' not in executed[-1][0]
+        assert 'neural_fingerprint' not in self._scan_sql(executed)[-1]
 
     def test_album_work_masks_is_a_bounded_per_album_query(self, monkeypatch):
         import tasks.analysis.helper as helper
@@ -916,22 +922,47 @@ class TestServerWorkMap:
         assert 'legacy-id' not in secondary_map
         assert 'p1' in secondary_map
 
-    def test_keyset_pagination_advances_past_the_last_row(self, monkeypatch):
+    def test_one_streamed_pass_planned_for_the_whole_result(self, monkeypatch):
         import tasks.analysis.helper as helper
 
-        cur, executed = self._cursor({'mapped': [
-            [('p1', True, True, True, True), ('p2', True, True, True, True)],
-            [('p3', True, True, True, True)],
-            [],
-        ]})
-        self._patch_db(monkeypatch, cur)
+        cur, executed = self._cursor({'mapped': [[
+            ('p1', True, True, True, True),
+            ('p2', True, True, True, True),
+            ('p3', True, True, True, True),
+        ]]})
+        conn = self._patch_db(monkeypatch, cur)
 
         monkeypatch.setattr(helper, '_is_default_server', lambda sid: False)
         work_map = helper.load_server_work_map('srv', True, True, chunk_size=2)
 
         assert sorted(work_map) == ['p1', 'p2', 'p3']
-        assert [params[-2] for _sql, params in executed] == ['', 'p2', 'p3']
-        assert all(params[-1] == 2 for _sql, params in executed)
+        assert executed[0] == ('SET LOCAL cursor_tuple_fraction = 1.0', None)
+        assert [params for _sql, params in executed[1:]] == [('srv',)]
+        scan = self._scan_sql(executed)[0]
+        assert 'ORDER BY' not in scan and 'LIMIT' not in scan
+        assert cur.itersize == 2
+        assert [c.kwargs.get('name') for c in conn.cursor.call_args_list] == [
+            None, 'work_map_mapped'
+        ]
+
+    def test_default_server_streams_mapped_then_legacy_in_one_transaction(self, monkeypatch):
+        import tasks.analysis.helper as helper
+
+        cur, executed = self._cursor({
+            'mapped': [[('p1', True, True, True, True)]],
+            'legacy': [[('legacy-id', True, True, True, True)]],
+        })
+        conn = self._patch_db(monkeypatch, cur)
+        monkeypatch.setattr(helper, '_is_default_server', lambda sid: True)
+        work_map = helper.load_server_work_map('srv-def', True, True)
+
+        assert sorted(work_map) == ['legacy-id', 'p1']
+        assert executed[0][0] == 'SET LOCAL cursor_tuple_fraction = 1.0'
+        assert [params for _sql, params in executed[1:]] == [('srv-def',), ()]
+        assert all('LIMIT' not in sql for sql in self._scan_sql(executed))
+        assert [c.kwargs.get('name') for c in conn.cursor.call_args_list] == [
+            None, 'work_map_mapped', 'work_map_legacy'
+        ]
 
 
 class TestSingleTranslationPoint:
