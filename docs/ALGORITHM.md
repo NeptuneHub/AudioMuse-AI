@@ -3750,9 +3750,16 @@ the end of its file and the next song starts right after.
      limits peaks to about -1 dBFS.
    - **Loudness continuity.** A crossfade of a pair without a beat lock also
      keeps the mix within 4 dB (`CONTINUITY_FLOOR_DB`) of the louder of the
-     two songs at each point, so two songs both fading leave no hole.
-     Correction is smoothed, limited, and subordinate to peak protection.
-   - **Default crossfade without a plan.** A plain crossfade over the 10
+     two songs at each point, so two songs both fading leave no hole. A song
+     counts with its full level while its fader carries the mix (above
+     equal power: the ending song until the middle, the next one from
+     there), then in proportion to its fader. Counting the ending song in
+     full to the end, a next song coming in much quieter (a quiet intro 6 to
+     19 dB under the ending song) kept the ending song loud to the last
+     second and boosted the next one up to 5.6 dB, which then dropped back
+     when the mix ended: half of 123 rendered EQ blends rose more than 3 dB
+     over the line between the two songs' levels. Correction is smoothed, limited, and subordinate to peak protection.
+   - **Default crossfade without a plan.** A plain crossfade over the 7.5
      seconds before the ending song's fade-out time, the next song from its
      fade-in time. With both excerpts buffered, the player measures their peaks
      and limits the equal-power faders to the available headroom. Incomplete

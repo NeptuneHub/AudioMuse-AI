@@ -39,7 +39,8 @@ Main Features:
   band_shifts follows each song's spectral balance (BAND_LIMIT_DB);
   fader_scale smooths K-weighted energy between the ANCHOR_SECONDS before
   and after the mix (SHAPE_LIMIT_DB). An unlocked crossfade never sinks
-  CONTINUITY_FLOOR_DB under the louder song; peak trimming lowers both
+  CONTINUITY_FLOOR_DB under the louder song while its fader carries the
+  mix; peak trimming lowers both
   faders together, PEAK_CEILING at most.
 * crossfade_plan: the crossfade at the two fade points without a beat mix,
   the planner's length or PLAIN_FADE_SECONDS.
@@ -576,8 +577,8 @@ def transition(path_out, path_in, plan, prepared=None):
     after = _span_energy(b_audio, b_begin, float(follow(seconds)), ANCHOR_SECONDS)
     scale = fader_scale(mixed, before * gain_a ** 2, after * gain_b ** 2, step)
     if style in UNLOCKED and plan.get('beat_rejection'):
-        strongest = np.maximum(_block_energy(raw_a, zero, points) * gain_a ** 2,
-                               _block_energy(raw_b, zero, points) * gain_b ** 2)
+        strongest = np.maximum(_block_energy(raw_a, zero, points) * gain_a ** 2 * np.minimum(1.0, 2.0 * fall ** 2),
+                               _block_energy(raw_b, zero, points) * gain_b ** 2 * np.minimum(1.0, 2.0 * rise ** 2))
         floor_db = 10.0 * np.log10(np.maximum(strongest, 1e-12)) + CONTINUITY_FLOOR_DB
         scale = np.maximum(scale, 10.0 ** (toward_db(mixed, floor_db, step, SHAPE_LIMIT_DB) / 20.0))
     fade_from, fade_to = fall * scale, rise * scale

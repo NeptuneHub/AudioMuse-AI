@@ -39,7 +39,8 @@ Main Features:
   crossover, correlated kicks) and a hats exchange, executable on real files
 * unlocked pairs: a drumless part gets the EQ blend, a louder next song the
   filter rise, overlapping voices the vocal handoff, else the crossfade; all
-  at native speed, equal-power faders and one bass swap for the first two
+  at native speed, equal-power faders and one bass swap for the first two;
+  into a much quieter intro the louder ending song still fades
 """
 
 import numpy as np
@@ -468,6 +469,21 @@ def test_unlocked_kinds_play_the_eq_blend_and_the_rise_shapes_at_native_speed(tm
         if kind == 'filter_rise':
             assert answer['to']['highpass_hz'][0] == levels.RISE_FROM_HZ and answer['to']['highpass_hz'][-1] <= levels.RISE_TO_HZ + 0.01
             assert answer['from']['bass_db'][-1] <= -30
+
+
+def test_an_unlocked_crossfade_into_a_much_quieter_intro_hands_over_instead_of_holding_the_loud_song(tmp_path, monkeypatch):
+    t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
+    song_out = _write(tmp_path / 'a.wav', _click_audio(120, 40.0) + (0.2 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32))
+    quiet = np.where(t < 25.0, 10.0 ** (-18.0 / 20.0), 1.0).astype(np.float32)
+    song_in = _write(tmp_path / 'b.wav', (_click_audio(150, 40.0) + (0.2 * np.sin(2 * np.pi * 330.0 * t)).astype(np.float32)) * quiet)
+    monkeypatch.setattr(levels, 'unlocked_style', lambda *args: 'fade')
+    plan = dict(levels.crossfade_plan(song_out, 30.0, song_in, 5.0), beat_rejection='tempo_gap')
+    answer = levels.transition(song_out, song_in, plan)
+    _assert_executable(plan, answer)
+    fall, rise = np.array(answer['from']['volume']), np.array(answer['to']['volume'])
+    late = int(0.75 * (fall.size - 1))
+    assert fall[late] < 10.0 ** (levels.CONTINUITY_FLOOR_DB / 20.0) and fall[late] <= _equal_power(fall.size)[0][late] + 0.01
+    assert rise.max() <= 1.0 + 1e-6
 
 
 def test_an_eq_blend_swaps_the_bass_only_when_both_songs_have_one(tmp_path, monkeypatch):
