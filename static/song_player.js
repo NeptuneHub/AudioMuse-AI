@@ -665,7 +665,8 @@
                     .finally(() => {
                         batch.active--;
                         runPlans(batch);
-                    });
+                    })
+                    .catch(error => console.error('Could not show a planned transition in the list.', error));
             }
         }
 
@@ -748,7 +749,7 @@
             const plans = pairs.map(([from, to]) => requestPlan(batch, from, to));
             Promise.all(plans).then(() => {
                 if (batch === planning && batch.token === shown && batch.window === windowKey) showSummary(batch.counts);
-            });
+            }).catch(error => console.error('Could not show the transition counts.', error));
         }
 
         function resetPlanning() {
