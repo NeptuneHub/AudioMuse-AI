@@ -28,7 +28,8 @@ Main Features:
   songs are the rendered rows (data-item-id, data-title)
 * The layout loads it on every song-list page, never on the map or clustering
   page; each such page has the options in its form and wraps its rendering
-  with arrange/show/hide; a path or an album keeps its order
+  with arrange/show/hide; a path or an album keeps its order; the wizard's
+  test forces Smart fade and sends its unsaved switches on every transition
 """
 
 import os
@@ -189,7 +190,10 @@ def test_the_demo_client_takes_its_url_from_its_script_tag():
 
 def test_the_player_plays_whole_songs_demos_or_smart_fade_as_ticked_before_the_search():
     source = _source('static', 'song_player.js')
-    assert "const nextChoice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };" in source
+    assert "const smart = NEURAL && (!!options.smartFade || (picked.smart && !picked.demo));" in source
+    assert "const nextChoice = { smart, demo: NEURAL && !smart && picked.demo && !picked.smart, seed, fades: new Map(), note: '', transitions };" in source
+    assert "const transitions = Array.isArray(options.transitions) ? options.transitions.join(',') : null;" in source
+    assert "if (typeof choice?.transitions === 'string') query.set('transitions', choice.transitions);" in source
     assert "if (choice && choice.demo) return { songs: await demos().queue(songs), beatMatch: false, stopAtEnd: true, label: 'Demo' };" in source
     assert "if (choice && choice.smart) return { songs: songs.map(withFade), beatMatch: true, stopAtEnd: false, label: 'Smart fade' };" in source
     assert "return { songs, beatMatch: false, stopAtEnd: false, label: '' };" in source

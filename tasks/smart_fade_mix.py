@@ -29,7 +29,8 @@ Main Features:
 * style 'blend', 'rise' (RISE_DB louder), 'percussion_mix' (drum-led parts,
   also a fade's alternative within PERCUSSION_LOCK_CENTS) or 'fade', from the
   beat whose mix dips least (FLOOR_GAIN_DB, EDGE_SECONDS).
-* enabled reads the wizard's SWITCHES: a lock tries percussion_mix, rise,
+* enabled reads the wizard's SWITCHES, or the set switched_on gives this
+  thread (the wizard's unsaved test): a lock tries percussion_mix, rise,
   blend; with none on, or lock=False (the API's second plan when the voice
   check drops a lock), it is planned as the fade ('switched_off'), and then
   the beat committee and onset checks are skipped.
@@ -40,6 +41,8 @@ Main Features:
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import numpy as np
 
@@ -105,6 +108,7 @@ SWITCHES = {
     'vocal_handoff': 'SMART_FADE_VOCAL_HANDOFF_ENABLED',
 }
 LOCKED_STYLES = ('percussion_mix', 'rise', 'blend')
+_switched_on = ContextVar('smart_fade_switched_on', default=None)
 
 
 class NoRoom(ValueError):
@@ -114,7 +118,19 @@ class NoRoom(ValueError):
 
 
 def enabled(style):
-    return style not in SWITCHES or bool(getattr(config, SWITCHES[style]))
+    if style not in SWITCHES:
+        return True
+    chosen = _switched_on.get()
+    return style in chosen if chosen is not None else bool(getattr(config, SWITCHES[style]))
+
+
+@contextmanager
+def switched_on(styles):
+    token = _switched_on.set(frozenset(styles))
+    try:
+        yield
+    finally:
+        _switched_on.reset(token)
 
 
 def tempos_match(tempo_out, tempo_in, limit=MAX_LOCK_CENTS, ratios=OCTAVES):

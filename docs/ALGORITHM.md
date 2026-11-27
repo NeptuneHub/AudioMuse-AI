@@ -3234,6 +3234,15 @@ next one that fits, never a relabelled one:
   voices overlap; the beat-matched kinds, the EQ blend and the filter rise
   keep their voice exchange.
 
+Under the switches, "Test the transitions" takes two songs from the usual
+search boxes and lists them; Play in the shared player plays the first, then
+the second through the transition the switches choose as they stand on the
+page, saved or not. The player sends them with each transition request
+(`transitions`, section 19.2), so nothing is stored and no other listener
+hears them; changing a switch plans the pair again. Skip to the fade jumps
+to the transition. The box needs a saved configuration with the neural
+fingerprint on.
+
 **How long a transition lasts**
 
 Every transition is counted in beats, so its length in seconds follows the
@@ -3314,6 +3323,10 @@ same way. With the neural fingerprint off both answer 503.
      always had: `from_id` (the current song), `to_id` (the next one), `out`
      (the current song's `fade_out_seconds`) and `in` (the next song's
      `fade_in_seconds`).
+   - Optional `transitions`: the kinds switched on for this one request, a
+     comma list of the type names below (`crossfade` is always on; empty
+     means only the crossfade), as the setup wizard's test sends its unsaved
+     switches. Left out, the saved switches apply.
    - Returns the transition timing and curves for the player.
      - `type`: `beat_mix`, `beat_rise`, `percussion_mix`, `eq_blend`,
        `filter_rise`, `vocal_handoff` or `crossfade` (section 19.1).
@@ -3371,7 +3384,8 @@ same way. With the neural fingerprint off both answer 503.
    ```
 
    - Errors: `400` "Give from_id, to_id, out and in (seconds)." (bad or
-     missing parameters), `400` "These two songs have no
+     missing parameters), `400` "transitions is a comma list of: ..." (an
+     unknown name in `transitions`), `400` "These two songs have no
      room for a crossfade at these points.", `404` "This song is not in the
      library.", `502` "The media server did not deliver this song." and
      `500` "The transition could not be made. Check the container logs."

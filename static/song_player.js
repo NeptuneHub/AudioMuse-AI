@@ -22,7 +22,9 @@
  * around its own rendering:
  *   rows = await AudioMusePlayer.arrange(list, rows, {seed, keepOrder}) before
  *     rendering: with Smart fade the rows come back in smart fade order with
- *     where each one starts and ends (keepOrder keeps a path or an album in its order);
+ *     where each one starts and ends (keepOrder keeps a path or an album in its order;
+ *     the setup wizard's test adds smartFade, Smart fade without the checkbox, and
+ *     transitions, the kinds its unsaved switches leave on, sent to the transition API);
  *   AudioMusePlayer.show(list) once renderSongList filled the list;
  *   AudioMusePlayer.hide(list) when a new search starts.
  * The songs played are the list's .result-item rows (data-item-id, data-title),
@@ -675,6 +677,7 @@
             let job = batch.requests.get(key);
             if (!job) {
                 const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
+                if (typeof choice?.transitions === 'string') query.set('transitions', choice.transitions);
                 job = { key, query };
                 job.promise = new Promise(resolve => { job.resolve = resolve; });
                 batch.requests.set(key, job);
@@ -1089,7 +1092,9 @@
             shown += 1;
             resetPlanning();
             const seed = options.seed && options.seed.item_id ? { item_id: String(options.seed.item_id), title: options.seed.title || 'Unknown' } : null;
-            const nextChoice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };
+            const smart = NEURAL && (!!options.smartFade || (picked.smart && !picked.demo));
+            const transitions = Array.isArray(options.transitions) ? options.transitions.join(',') : null;
+            const nextChoice = { smart, demo: NEURAL && !smart && picked.demo && !picked.smart, seed, fades: new Map(), note: '', transitions };
             choice = nextChoice;
             if (!nextChoice.smart || !rows.length) return rows;
             try {

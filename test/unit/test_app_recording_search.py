@@ -36,11 +36,11 @@ Main Features:
 * play (fingerprint off too) streams a song while it downloads, a WAV as
   bit-exact FLAC, an unreadable file as it is, then removes the copy; outside
   the library 404, a failed download 502
-* transition answers 400 for missing or bad from_id, to_id, out or in (the
-  inputs it always had; other names are refused), 404 outside the library,
-  plans from both downloads, answers the JSON in its order (type, start,
-  duration, middle, step, filters, from, to, info), removes them; a
-  pair without a steady beat gets the crossfade, 400 only without room
+* transition answers 400 for bad from_id, to_id, out or in (other names
+  refused) or an unknown kind in the optional transitions (the kinds on for
+  that call only), 404 outside the library, plans from both downloads,
+  answers the JSON in its order (type ... info), removes them; a pair
+  without a steady beat gets the crossfade, 400 only without room
 * warmup relays the manager status; with NEURAL_FINGERPRINT_ENABLED false
   every route but play answers 503 naming the flag and the page says so
 * The page gets the HTTPS port, zero when it is off, and why it did not start
@@ -937,6 +937,39 @@ def test_transition_downloads_an_identical_song_once(client, bp_mod, monkeypatch
     response = client.get('/api/recording_search/transition?from_id=42&to_id=42&out=200&in=20')
     assert response.status_code == 200 and response.get_json() == {'same': True}
     assert seen == ['42']
+
+
+def test_transition_plans_one_request_with_the_switches_it_sends_and_refuses_an_unknown_kind(client, bp_mod, monkeypatch):
+    import config
+    from tasks import smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    for flag in smart_fade_mix.SWITCHES.values():
+        monkeypatch.setattr(config, flag, True)
+    seen = []
+
+    def plan(*args):
+        seen.append({style for style in smart_fade_mix.SWITCHES if smart_fade_mix.enabled(style)})
+        return {}
+
+    def fetch(item_id, folder):
+        seen.append(item_id)
+        return os.path.join(folder, item_id), None
+
+    monkeypatch.setattr(bp_mod, '_fetch_song', fetch)
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', lambda path: path)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', plan)
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', lambda a, b, plan, prepared: {'eq_blend': smart_fade_mix.enabled('eq_blend')})
+    url = '/api/recording_search/transition?from_id=42&to_id=42&out=200&in=20'
+
+    response = client.get(url + '&transitions=eq_blend,nope')
+    assert response.status_code == 400 and 'beat_mix' in response.get_json()['error'] and seen == []
+    assert client.get(url + '&transitions=beat_mix,%20crossfade').get_json() == {'eq_blend': False}
+    assert client.get(url + '&transitions=').get_json() == {'eq_blend': False}
+    assert client.get(url + '&transitions=eq_blend').get_json() == {'eq_blend': True}
+    assert client.get(url).get_json() == {'eq_blend': True}
+    assert seen == ['42', {'blend'}, '42', set(), '42', {'eq_blend'}, '42', set(smart_fade_mix.SWITCHES)]
+    assert all(smart_fade_mix.enabled(style) for style in smart_fade_mix.SWITCHES)
 
 
 def test_transition_reuses_completed_playback_downloads(client, monkeypatch, tmp_path):

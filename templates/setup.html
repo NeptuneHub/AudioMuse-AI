@@ -154,6 +154,28 @@
     .smart-fade-needs-neural[hidden] {
         display: none;
     }
+    #smart-fade-test {
+        padding: 0.85rem 0.95rem;
+    }
+    #smart-fade-test .smart-fade-tuning-help {
+        margin-top: 0.35rem;
+    }
+    #smart-fade-test .param-group {
+        margin: 1rem 0;
+    }
+    #setup-form .song-player .btn {
+        width: auto;
+        padding: 0.75rem 1.5rem;
+        border-radius: 0.5rem;
+    }
+    #setup-form .song-player .btn-ghost {
+        background: transparent;
+        color: var(--text-sub);
+        border: 1px solid var(--border-color-darker);
+    }
+    #setup-form .song-player .btn-ghost:hover:not(:disabled) {
+        background: var(--bg-body);
+    }
     .smart-fade-tuning-help {
         margin: 1rem 0 0;
         font-size: 0.85rem;
@@ -1053,6 +1075,30 @@
                         </div>
                     </div>
                 </div>
+                <div class="advanced-section" id="smart-fade-test">
+                    <span class="ml-model-name">Test the transitions</span>
+                    {% if neural_enabled and setup_saved %}
+                    <p class="smart-fade-tuning-help">
+                        Pick two songs and press Play: the first song plays, then the second comes in with the transition the switches above choose for them, saved or not.
+                        Skip to the fade jumps to the transition.
+                    </p>
+                    <div class="param-group">
+                        <div class="autocomplete-container">
+                            <label for="smart-fade-test-first">Song 1</label>
+                            <input type="text" id="smart-fade-test-first" placeholder="Start typing..." autocomplete="off">
+                            <div id="smart-fade-test-first-results" class="autocomplete-results hidden"></div>
+                        </div>
+                        <div class="autocomplete-container">
+                            <label for="smart-fade-test-second">Song 2</label>
+                            <input type="text" id="smart-fade-test-second" placeholder="Start typing..." autocomplete="off">
+                            <div id="smart-fade-test-second-results" class="autocomplete-results hidden"></div>
+                        </div>
+                    </div>
+                    <div id="smart-fade-test-list"></div>
+                    {% else %}
+                    <p class="smart-fade-tuning-help">The test needs a saved configuration with the Neural Fingerprint model on.</p>
+                    {% endif %}
+                </div>
                 <p class="smart-fade-tuning-help">
                     Fine tuning holds the limits of the voice check that moves the mix points, the depth of the voice exchange and the size of the loudness cache.
                     The defaults suit most libraries; read the
@@ -1078,4 +1124,63 @@
 <script src="{{ url_for('static', filename='setup.js') }}"></script>
 <script src="{{ url_for('static', filename='music_servers_admin.js') }}"></script>
 <script src="{{ url_for('static', filename='menu.js') }}"></script>
+{% if neural_enabled and setup_saved %}
+<script>
+(function() {
+    var list = document.getElementById('smart-fade-test-list');
+    if (!list || !window.AudioMusePlayer) {
+        return;
+    }
+    var songs = [null, null];
+    var run = 0;
+    var timer = null;
+    var switches = document.querySelectorAll('#smart-fade-config .ml-model-row[data-transition] input[type="checkbox"][data-flag]');
+
+    function plan() {
+        var token = ++run;
+        clearTimeout(timer);
+        if (!songs[0] || !songs[1]) {
+            return;
+        }
+        var rows = songs.slice();
+        var transitions = Array.prototype.filter.call(switches, function(checkbox) { return checkbox.checked; })
+            .map(function(checkbox) { return checkbox.closest('.ml-model-row').dataset.transition; });
+        AudioMusePlayer.arrange(list, rows, { keepOrder: true, smartFade: true, transitions: transitions }).then(function() {
+            if (token !== run) {
+                return;
+            }
+            list.innerHTML = renderSongList(rows, {});
+            AudioMusePlayer.show(list);
+        }).catch(function(error) {
+            console.error('Could not prepare the smart fade test.', error);
+        });
+    }
+
+    switches.forEach(function(checkbox) {
+        checkbox.addEventListener('change', function() {
+            clearTimeout(timer);
+            timer = setTimeout(plan, 400);
+        });
+    });
+    [['smart-fade-test-first', 0], ['smart-fade-test-second', 1]].forEach(function(pair) {
+        var input = document.getElementById(pair[0]);
+        AudioMuseAutocomplete.attach({
+            input: input,
+            box: document.getElementById(pair[0] + '-results'),
+            url: "{{ url_for('ivf_bp.search_tracks_endpoint') }}",
+            onSelect: function(track) {
+                input.value = track.title || '';
+                songs[pair[1]] = track;
+                plan();
+            }
+        });
+        input.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+            }
+        });
+    });
+})();
+</script>
+{% endif %}
 {% endblock %}

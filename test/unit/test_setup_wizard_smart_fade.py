@@ -23,6 +23,9 @@ Main Features:
   smart fade
 * The other smart fade parameters sit in the panel's Fine tuning box, never in
   the advanced list, and every one has a PARAMETERS.md row
+* Its test box (saved configuration and Neural Fingerprint on) picks two songs
+  with the shared search box and plays them through the shared player with
+  the switches as they stand; its inputs have no name, so a Save never sends them
 """
 
 import os
@@ -130,3 +133,25 @@ def test_the_other_smart_fade_parameters_sit_in_the_panel_and_every_one_is_docum
         default = getattr(config, name)
         expected = str(default).lower() if isinstance(default, bool) else ('%g' % default)
         assert row.group(1) == expected, name
+
+
+def test_the_panel_tests_two_picked_songs_with_the_unsaved_switches_through_the_shared_player():
+    template = _read('templates', 'setup.html')
+    panel = _panel(template)
+    assert panel.index('class="ml-model-list"') < panel.index('id="smart-fade-test"') < panel.index('id="smart-fade-fields"')
+    box = panel[panel.index('id="smart-fade-test"'):panel.index('<div id="smart-fade-fields"></div>')]
+    assert '{% if neural_enabled and setup_saved %}' in box and 'needs a saved configuration' in box
+    for picker in ('smart-fade-test-first', 'smart-fade-test-second'):
+        assert '<input type="text" id="%s"' % picker in box
+        assert '<div id="%s-results" class="autocomplete-results hidden"></div>' % picker in box
+    assert 'name=' not in box and '<div id="smart-fade-test-list"></div>' in box
+    script = template[template.index("var list = document.getElementById('smart-fade-test-list');"):]
+    script = script[:script.index('</script>')]
+    assert template.rindex('{% if neural_enabled and setup_saved %}') < template.index(script)
+    assert 'AudioMuseAutocomplete.attach({' in script and "url_for('ivf_bp.search_tracks_endpoint')" in script
+    assert '#smart-fade-config .ml-model-row[data-transition] input[type="checkbox"][data-flag]' in script
+    assert '{ keepOrder: true, smartFade: true, transitions: transitions }' in script
+    assert 'list.innerHTML = renderSongList(rows, {});' in script and 'AudioMusePlayer.show(list);' in script
+    assert "if (event.key === 'Enter')" in script and 'fetch(' not in script
+    layout = _read('templates', 'includes', 'layout.html')
+    assert "'album_creation', 'setup'] %}" in layout
