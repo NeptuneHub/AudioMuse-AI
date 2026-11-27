@@ -10,10 +10,7 @@
 
 tasks.smart_fade_mix plans where two songs mix; transition turns that plan
 into the transition endpoint's answer, numbers only, every STEP_SECONDS of
-the mix, so any frontend just schedules them: type, start, duration,
-middle, step, filters, then from (from_id) and to (to_id): gain, speed,
-volume, high_db, mid_db, bass_db, plus to's start (its first second),
-highpass_hz and continue_from; then info.
+the mix, for any frontend to schedule (fields: app_recording_search).
 
 Main Features:
 * song_level: BS.1770 loudness and sample peak in one streaming pass; the
@@ -31,8 +28,8 @@ Main Features:
   (unlocked: held at BASS_HZ until the swap). A percussion mix swaps one
   kick (DRUM_BASS_CUT_DB) and the hats (DRUM_HIGH_CUT_DB) at a time. A
   crossfade keeps equal-power faders.
-* unlocked_style: a filter rise only for tempos within RISE_RELATED_CENTS
-  of a RISE_RATIOS relation.
+* unlocked_style skips kinds switched off (mix.enabled); a filter rise
+  needs tempos within RISE_RELATED_CENTS of a RISE_RATIOS relation.
 * swap_point: the 4-beat bar nearest the middle beat where the next
   song's bass plays (SWAP_PRESENT of its loudest bar) in SWAP_RANGE.
 * transition simulates gain, speed, filters and faders at RATE.
@@ -40,12 +37,12 @@ Main Features:
   fader_scale smooths K-weighted energy between the ANCHOR_SECONDS before
   and after the mix (SHAPE_LIMIT_DB). An unlocked crossfade never sinks
   CONTINUITY_FLOOR_DB under the louder song while its fader carries the
-  mix; peak trimming lowers both
-  faders together, PEAK_CEILING at most.
+  mix; peak trimming lowers both faders, PEAK_CEILING at most.
 * crossfade_plan: the crossfade at the two fade points without a beat mix,
   the planner's length or PLAIN_FADE_SECONDS.
 * vocal_shapes: competing voices keep a sustained equal-power crossfade with
-  a gradual mid/high exchange and a late taper of the old singer.
+  a gradual mid/high exchange and a late taper of the old singer (not on the
+  crossfade when the vocal handoff is switched off).
 """
 
 import math
@@ -278,7 +275,6 @@ def mix_shapes(style, seconds, swap, beat, times, bass_swap=True):
 
 
 def vocal_shapes(plan, seconds, points, shapes):
-    """Reduce vocal competition while retaining an audible musical overlap."""
     if plan.get('style') not in ('blend', 'rise', None, *UNLOCKED) or not (plan.get('voice') or {}).get('clash'):
         return shapes
     share = np.clip(np.asarray(points, dtype=np.float64) / seconds, 0.0, 1.0)
@@ -301,14 +297,15 @@ def vocal_shapes(plan, seconds, points, shapes):
 
 
 def unlocked_style(plan, part_a, part_b, energy_a, energy_b):
-    shares = [mix.drum_share(part, 0.0, part.size / mix.RATE) for part in (part_a, part_b)]
-    if min(share if share is not None else 0.0 for share in shares) <= DRUMLESS_SHARE:
-        return 'eq_blend'
+    if mix.enabled('eq_blend'):
+        shares = [mix.drum_share(part, 0.0, part.size / mix.RATE) for part in (part_a, part_b)]
+        if min(share if share is not None else 0.0 for share in shares) <= DRUMLESS_SHARE:
+            return 'eq_blend'
     tempo_from, tempo_to = plan.get('tempo_from'), plan.get('tempo_to')
     related = bool(tempo_from and tempo_to and mix.tempos_match(tempo_from, tempo_to, RISE_RELATED_CENTS, RISE_RATIOS))
-    if related and energy_b > 10 ** (UNLOCKED_RISE_DB / 10) * max(energy_a, 1e-10):
+    if mix.enabled('filter_rise') and related and energy_b > 10 ** (UNLOCKED_RISE_DB / 10) * max(energy_a, 1e-10):
         return 'filter_rise'
-    if (plan.get('voice') or {}).get('overlap', 0.0) >= VOCAL_HANDOFF_OVERLAP:
+    if mix.enabled('vocal_handoff') and (plan.get('voice') or {}).get('overlap', 0.0) >= VOCAL_HANDOFF_OVERLAP:
         return 'vocal_handoff'
     return 'fade'
 
@@ -514,7 +511,6 @@ def _remembered(path, source):
 
 
 def prepare_song(path):
-    """Reuse bounded, content-keyed statistics; never retain decoded song audio."""
     import soundfile
 
     source = _source(path)
@@ -549,7 +545,8 @@ def transition(path_out, path_in, plan, prepared=None):
     body = points[(points >= 0.2 * seconds) & (points <= 0.8 * seconds)]
     energy_a, energy_b = (np.mean(_block_energy(signal, zero, body)) for signal in (sa, sb))
     if style in ('blend', 'rise'):
-        style = 'rise' if energy_b >= 10 ** (mix.RISE_DB / 10) * max(energy_a, 1e-10) else 'blend'
+        louder = energy_b >= 10 ** (mix.RISE_DB / 10) * max(energy_a, 1e-10)
+        style = 'rise' if mix.enabled('rise') and (louder or not mix.enabled('blend')) else 'blend'
     elif style == 'fade':
         style = unlocked_style(plan, sa[:, zero:].mean(axis=0), sb[:, zero:].mean(axis=0), energy_a, energy_b)
     beat = plan.get('beat_seconds') or UNLOCKED_BEAT_SECONDS
@@ -558,8 +555,9 @@ def transition(path_out, path_in, plan, prepared=None):
         beat = float(np.median(np.diff(beat_times)))
     lows = [float(np.mean(_low_energy(signal, zero, body, BASS_LINE_HZ, 4))) for signal in (sa, sb)] if style == 'eq_blend' else [1.0, 1.0]
     bass_swap = min(lows) >= 10 ** (BASS_PRESENT_DB / 10) * max(lows)
-    shapes = vocal_shapes(dict(plan, style=style), seconds, points,
-                          mix_shapes(SHAPE_OF.get(style, style), seconds, swap, beat, points, bass_swap))
+    shapes = mix_shapes(SHAPE_OF.get(style, style), seconds, swap, beat, points, bass_swap)
+    if style != 'fade' or mix.enabled('vocal_handoff'):
+        shapes = vocal_shapes(dict(plan, style=style), seconds, points, shapes)
     eq = shapes['eq']
     fall, rise = shapes['from_volume'], shapes['to_volume']
     if eq is not None:

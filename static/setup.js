@@ -156,12 +156,7 @@ function createInputField(field, value) {
         if (value !== undefined && value !== null && String(value) !== '') {
             var raw = String(value).trim();
             if (field.type === 'boolean') {
-                var rl = raw.toLowerCase();
-                if (rl === '1' || rl === 'true' || rl === 'yes' || rl === 'on') {
-                    normalized = 'true';
-                } else if (rl === '0' || rl === 'false' || rl === 'no' || rl === 'off') {
-                    normalized = 'false';
-                }
+                normalized = normalizeFlagValue(raw, '');
             } else {
                 for (var oi = 0; oi < selectOptions.length; oi++) {
                     if (selectOptions[oi].toLowerCase() === raw.toLowerCase()) {
@@ -197,7 +192,8 @@ function createInputField(field, value) {
             input.appendChild(optEl);
         });
         input.value = normalized;
-        input.dataset.originalValue = field.originalValue !== undefined ? field.originalValue : normalized;
+        var original = field.originalValue !== undefined ? field.originalValue : normalized;
+        input.dataset.originalValue = field.type === 'boolean' ? normalizeFlagValue(original, original) : original;
     } else {
         if (field.inputType) {
             input.type = field.inputType;
@@ -611,6 +607,16 @@ var ADVANCED_SECTIONS = [
 var ADVANCED_OTHER_TITLE = 'Other parameters';
 
 var ML_MODEL_FLAGS = ['CLAP_ENABLED', 'LYRICS_ENABLED', 'LYRICS_ASR_ENABLE', 'NEURAL_FINGERPRINT_ENABLED'];
+var SMART_FADE_FLAGS = [
+    'SMART_FADE_BEAT_MIX_ENABLED', 'SMART_FADE_BEAT_RISE_ENABLED', 'SMART_FADE_PERCUSSION_MIX_ENABLED',
+    'SMART_FADE_EQ_BLEND_ENABLED', 'SMART_FADE_FILTER_RISE_ENABLED', 'SMART_FADE_VOCAL_HANDOFF_ENABLED'
+];
+var SMART_FADE_TUNING = [
+    'SMART_FADE_END_MARGIN_SECONDS', 'SMART_FADE_SEARCH_SECONDS', 'SMART_FADE_ENERGY_DROP_DB',
+    'SMART_FADE_RECOVER_SECONDS', 'SMART_FADE_END_RECOVER_SECONDS', 'SMART_FADE_ENTRY_LIMIT_SECONDS',
+    'SMART_FADE_VOCAL_MIX_SECONDS', 'SMART_FADE_VOCAL_DUCK_DB', 'SMART_FADE_VOCAL_TAIL_DB',
+    'SMART_FADE_LEVEL_CACHE_SIZE'
+];
 
 function normalizeFlagValue(raw, fallback) {
     var text = String(raw === undefined || raw === null ? '' : raw).trim().toLowerCase();
@@ -627,7 +633,31 @@ function modelSwitchFor(flag) {
     return document.querySelector('#ml-models-section input[type="checkbox"][data-flag="' + flag + '"]');
 }
 
+function smartFadeSwitchFor(flag) {
+    return document.querySelector('#smart-fade-config input[type="checkbox"][data-flag="' + flag + '"]');
+}
+
+function updateSmartFadeAvailability() {
+    var neural = modelSwitchFor('NEURAL_FINGERPRINT_ENABLED');
+    var neuralOn = !!(neural && neural.checked);
+    document.querySelectorAll('#smart-fade-config .ml-model-row').forEach(function(row) {
+        var checkbox = row.querySelector('input[type="checkbox"][data-flag]');
+        if (checkbox) {
+            checkbox.disabled = !neuralOn;
+        }
+        row.classList.toggle('is-locked', !neuralOn || !checkbox);
+    });
+    document.querySelectorAll('#smart-fade-fields input, #smart-fade-fields select').forEach(function(input) {
+        input.disabled = !neuralOn;
+    });
+    var note = document.getElementById('smart-fade-needs-neural');
+    if (note) {
+        note.hidden = neuralOn;
+    }
+}
+
 function updateModelSwitchDependencies() {
+    updateSmartFadeAvailability();
     var lyrics = modelSwitchFor('LYRICS_ENABLED');
     var whisper = modelSwitchFor('LYRICS_ASR_ENABLE');
     if (!lyrics || !whisper) {
@@ -639,15 +669,35 @@ function updateModelSwitchDependencies() {
 }
 
 function renderModelSwitches(fields) {
+    loadFlagSwitches(ML_MODEL_FLAGS, modelSwitchFor, fields);
+    updateModelSwitchDependencies();
+}
+
+function renderSmartFadeSwitches(fields) {
+    loadFlagSwitches(SMART_FADE_FLAGS, smartFadeSwitchFor, fields);
+    var tuning = document.getElementById('smart-fade-fields');
+    if (tuning) {
+        tuning.innerHTML = '';
+        renderAdvancedSection(tuning, 'Fine tuning', SMART_FADE_TUNING, fieldsByName(fields), {});
+    }
+    updateSmartFadeAvailability();
+}
+
+function fieldsByName(fields) {
     var byName = {};
     (fields || []).forEach(function(field) {
         if (field && field.name) {
             byName[field.name] = field;
         }
     });
-    ML_MODEL_FLAGS.forEach(function(flag) {
+    return byName;
+}
+
+function loadFlagSwitches(flags, switchFor, fields) {
+    var byName = fieldsByName(fields);
+    flags.forEach(function(flag) {
         var hidden = document.getElementById(flag);
-        var checkbox = modelSwitchFor(flag);
+        var checkbox = switchFor(flag);
         if (!hidden || !checkbox) {
             return;
         }
@@ -659,7 +709,6 @@ function renderModelSwitches(fields) {
         hidden.dataset.originalValue = current;
         checkbox.checked = current === 'true';
     });
-    updateModelSwitchDependencies();
 }
 
 var MODEL_COVERAGE_LABELS = ['No index yet', 'Just started', 'Partial', 'More than half', 'Most songs', 'Ready'];
@@ -704,6 +753,19 @@ ML_MODEL_FLAGS.forEach(function(flag) {
         }
         updateModelSwitchDependencies();
         renderModelCoverage(modelCoverageLevels);
+    });
+});
+
+SMART_FADE_FLAGS.forEach(function(flag) {
+    var checkbox = smartFadeSwitchFor(flag);
+    if (!checkbox) {
+        return;
+    }
+    checkbox.addEventListener('change', function() {
+        var hidden = document.getElementById(flag);
+        if (hidden) {
+            hidden.value = checkbox.checked ? 'true' : 'false';
+        }
     });
 });
 
@@ -752,7 +814,7 @@ function buildAdvancedFieldRow(field) {
     return createInputField(fieldConfig, field.value);
 }
 
-function renderAdvancedSection(title, items, byName, consumed) {
+function renderAdvancedSection(container, title, items, byName, consumed) {
     var body = document.createDocumentFragment();
     var count = 0;
     items.forEach(function(name) {
@@ -773,7 +835,7 @@ function renderAdvancedSection(title, items, byName, consumed) {
     summary.textContent = title + ' (' + count + ')';
     details.appendChild(summary);
     details.appendChild(body);
-    advancedFields.appendChild(details);
+    container.appendChild(details);
 }
 
 function setAllAdvancedSections(open) {
@@ -788,15 +850,10 @@ function renderAdvancedFields(fields) {
     if (!fields) {
         return;
     }
-    var byName = {};
-    fields.forEach(function(field) {
-        if (field && field.name) {
-            byName[field.name] = field;
-        }
-    });
+    var byName = fieldsByName(fields);
     var consumed = {};
     ADVANCED_SECTIONS.forEach(function(section) {
-        renderAdvancedSection(section.title, section.items, byName, consumed);
+        renderAdvancedSection(advancedFields, section.title, section.items, byName, consumed);
     });
     // Catch-all for any advanced field not claimed by a named section, in the
     // order the server returned them (alphabetical).
@@ -806,7 +863,7 @@ function renderAdvancedFields(fields) {
         return field.name;
     });
     if (leftovers.length) {
-        renderAdvancedSection(ADVANCED_OTHER_TITLE, leftovers, byName, consumed);
+        renderAdvancedSection(advancedFields, ADVANCED_OTHER_TITLE, leftovers, byName, consumed);
     }
 }
 
@@ -893,7 +950,8 @@ function loadSetupData() {
         }
         var visibleAdvancedData = Array.isArray(advancedData)
             ? advancedData.filter(function(f) {
-                return f && f.name !== 'MUSIC_LIBRARIES' && !ML_MODEL_FLAGS.includes(f.name);
+                return f && f.name !== 'MUSIC_LIBRARIES' && !ML_MODEL_FLAGS.includes(f.name) && !SMART_FADE_FLAGS.includes(f.name)
+                    && !SMART_FADE_TUNING.includes(f.name);
             })
             : advancedData;
         currentSelectedLibraries = splitLibraryList(data.music_libraries);
@@ -914,6 +972,7 @@ function loadSetupData() {
         renderServerFields(mediaServerSelect.value, basicData, secretHasValue);
         renderAdvancedFields(visibleAdvancedData);
         renderModelSwitches(advancedData);
+        renderSmartFadeSwitches(advancedData);
         renderModelCoverage(data.model_coverage);
         populateLyricsApiFields(data.lyrics_api_fields);
         populateAiPromptFields(data.ai_prompt_fields);

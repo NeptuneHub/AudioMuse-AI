@@ -822,6 +822,47 @@ def test_transition_answers_what_to_play_in_order_and_a_pair_without_a_beat_gets
     assert response.status_code == 400 and 'no audible room' in response.get_json()['error']
 
 
+def test_transition_plans_the_pair_again_without_a_lock_when_the_voice_check_drops_it(client, monkeypatch, tmp_path):
+    from tasks import commons, smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    _fake_media(monkeypatch, tmp_path, b'audio')
+    monkeypatch.setattr(commons, 'fetch_track_metadata_map', lambda ids: {i: {'title': 'Song'} for i in ids})
+    calls = []
+    outcome = {'voice': 'drops', 'unlocked': 'plans'}
+
+    def plan(path_out, out_seconds, path_in, in_seconds, lock=True):
+        calls.append(('plan', lock))
+        if not lock and outcome['unlocked'] == 'fails':
+            raise ValueError('No room for a crossfade at the fade points.')
+        return {'style': 'blend' if lock else 'fade', 'mix_at': 180.0 if lock else 184.0}
+
+    def voice(path_out, path_in, planned):
+        calls.append(('voice', planned['style'], planned['requested_end']))
+        if planned['style'] == 'blend' and outcome['voice'] == 'drops':
+            return dict(planned, style='fade', beat_rejection='audible_cue')
+        return dict(planned, beat_rejection=planned.get('beat_rejection'))
+
+    def answer(path_out, path_in, planned, prepared=None):
+        return {'type': planned['style'], 'start': planned['mix_at'], 'info': {'beat_rejection': planned['beat_rejection']}}
+
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', lambda path: path)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', plan)
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', voice)
+    monkeypatch.setattr(smart_fade_levels, 'transition', answer)
+    url = '/api/recording_search/transition?from_id=42&to_id=43&out=200&in=20'
+
+    assert client.get(url).get_json() == {'type': 'fade', 'start': 184.0, 'info': {'beat_rejection': 'audible_cue'}}
+    assert calls == [('plan', True), ('voice', 'blend', 200.0), ('plan', False), ('voice', 'fade', 200.0)]
+    calls.clear()
+    outcome['unlocked'] = 'fails'
+    assert client.get(url).get_json() == {'type': 'fade', 'start': 180.0, 'info': {'beat_rejection': 'audible_cue'}}
+    assert calls == [('plan', True), ('voice', 'blend', 200.0), ('plan', False)]
+    calls.clear()
+    outcome['voice'] = 'keeps'
+    assert client.get(url).get_json() == {'type': 'blend', 'start': 180.0, 'info': {'beat_rejection': None}}
+    assert calls == [('plan', True), ('voice', 'blend', 200.0)]
+
+
 def test_transition_prepares_both_song_levels_while_planning(client, monkeypatch, tmp_path):
     from tasks import commons, smart_fade_levels, smart_fade_mix, smart_fade_voice
 

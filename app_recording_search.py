@@ -27,7 +27,8 @@ Main Features:
   it answers with the neural
   fingerprint off too), `/api/recording_search/transition` (JSON:
   everything a player executes to mix the current song into the next, moved
-  by tasks.smart_fade_voice toward audible cues with bounded trimming and softer vocal overlap) and
+  by tasks.smart_fade_voice toward audible cues with bounded trimming and softer vocal overlap;
+  a beat lock the voice check drops is planned again without one) and
   `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
@@ -868,7 +869,10 @@ def recording_search_transition_api():
                 plan['requested_end'] = out_seconds
                 planned = perf_counter()
                 timings['plan'] = (planned - fetched) * 1000.0
+                locked = plan.get('style', 'fade') != 'fade'
                 plan = clear_voice(paths[0], paths[1], plan)
+                if locked and plan.get('style') == 'fade':
+                    plan = _planned_without_lock(paths, out_seconds, in_seconds, plan)
                 voiced = perf_counter()
                 timings['voice'] = (voiced - planned) * 1000.0
                 prepared = [future.result() for future in measured]
@@ -887,6 +891,20 @@ def recording_search_transition_api():
     timings['total'] = (perf_counter() - started) * 1000.0
     response.headers['Server-Timing'] = ', '.join(f'{name};dur={value:.2f}' for name, value in timings.items())
     return response
+
+
+def _planned_without_lock(paths, out_seconds, in_seconds, lost):
+    from tasks.smart_fade_mix import plan_transition
+    from tasks.smart_fade_voice import clear_voice
+
+    logger.info('Smart fade: the voice check dropped the beat lock, planning the pair again without one')
+    try:
+        plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds, lock=False)
+        plan['requested_end'] = out_seconds
+        return dict(clear_voice(paths[0], paths[1], plan), beat_rejection=lost.get('beat_rejection', 'audible_cue'))
+    except ValueError:
+        logger.warning('Smart fade: the pair has no plan without a lock, keeping the crossfade at the beat cues')
+        return lost
 
 
 def _send_then_release(chunks, entry):

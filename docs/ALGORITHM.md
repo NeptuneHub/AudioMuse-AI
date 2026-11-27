@@ -3202,6 +3202,38 @@ louder next song at an unrelated tempo.
      of the order endpoint (section 19.2). The EQ blend, the filter rise and
      the vocal handoff have the same length and points.
 
+**Switching transitions off**
+
+The setup wizard's Smart Fade panel (at the bottom of the page, closed until
+opened) has one switch per transition, all on by default; the default
+crossfade has none, it is always on, and with the neural fingerprint off the
+whole panel is greyed out. The switches are ordinary `app_config` rows read
+by the server for every plan, so they apply to every listener of the
+installation; the endpoints' inputs and answers stay the same and the page
+plays whatever type comes back. A transition switched off gives its pair the
+next one that fits, never a relabelled one:
+
+- A confirmed beat lock tries the percussion mix, then the beat rise (only
+  where the next song is 6 dB louder), then the beat mix. With none of them
+  on, the pair is planned as a pair without a lock, at its own speed, with
+  the crossfade's length and its fuller start, so the beat mix's 10 to 21
+  seconds never play as a long crossfade. With the beat rise off a louder
+  next song gets the beat mix; with the beat mix off a lock plays only where
+  the percussion mix or the beat rise fits, and a locked percussion mix that
+  meets two voices (which plays the beat mix when it is on) is planned again
+  as a pair without a lock. With all three off the beat
+  committee and the onset checks are skipped, but the crossfade's level
+  scan costs about as much (on 20 real pairs the planning median was 4.10
+  seconds with them on and 4.16 off for the locked pairs); the beat grid,
+  the lengths and the voice check still run, because the crossfade starts
+  on a beat and the voice check moves its cues.
+- Without a lock the order is EQ blend, filter rise, vocal handoff, default
+  crossfade, each tried only when switched on (with the EQ blend off, a pair
+  where one part has no drums can get the filter rise). With the vocal
+  handoff off, the default crossfade stays a volume crossfade even where
+  voices overlap; the beat-matched kinds, the EQ blend and the filter rise
+  keep their voice exchange.
+
 **How long a transition lasts**
 
 Every transition is counted in beats, so its length in seconds follows the
@@ -3590,8 +3622,13 @@ the end of its file and the next song starts right after.
    clash at the planned cues, the verified planned cues stay (two drum
    patterns that drift apart are the most common fault listeners hear in
    automatic transitions, 15% against 6.5% for voices over voices, ISMIR
-   2017); with a clash it becomes the pair's default crossfade (its
-   `fade_seconds`), ending on the same second. The share of time two voices overlap goes to
+   2017); with a clash the lock is dropped and the endpoint plans the pair
+   again as a pair without a lock (own speed, the crossfade's length, the
+   fuller start) and checks its voices, so a dropped lock plays what a pair
+   that never locked would: on 8 real dropped locks the deepest dip under the
+   level line from one song to the next went from 6.4 dB to 2.1 dB (mean 2.2
+   to 1.0 dB), the crossfade kept at the beat cues having sat on a quiet bar.
+   The share of time two voices overlap goes to
    the curves (`vocal_shapes`): an equal-power crossfade with up to 9 dB of
    mid exchange (half on the highs) around the middle and a late taper of
    the old singer, beat mixes keeping their own deeper cuts. A percussion
@@ -3948,6 +3985,12 @@ the end of its file and the next song starts right after.
 
 - `NEURAL_FINGERPRINT_ENABLED` (section 17.4): Smart fade needs it. Without it
   the option is not shown and the two endpoints answer 503.
+- `SMART_FADE_BEAT_MIX_ENABLED`, `SMART_FADE_BEAT_RISE_ENABLED`,
+  `SMART_FADE_PERCUSSION_MIX_ENABLED`, `SMART_FADE_EQ_BLEND_ENABLED`,
+  `SMART_FADE_FILTER_RISE_ENABLED` and `SMART_FADE_VOCAL_HANDOFF_ENABLED`
+  (all `true`): the setup wizard's Smart Fade switches, one per transition
+  ("Switching transitions off" in section 19.1). The default crossfade has
+  no switch.
 - `SMART_FADE_END_MARGIN_SECONDS` (2), `SMART_FADE_SEARCH_SECONDS` (32),
   `SMART_FADE_ENERGY_DROP_DB` (3), `SMART_FADE_RECOVER_SECONDS` (4),
   `SMART_FADE_END_RECOVER_SECONDS` (4), `SMART_FADE_ENTRY_LIMIT_SECONDS` (12),

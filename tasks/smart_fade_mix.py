@@ -29,6 +29,10 @@ Main Features:
 * style 'blend', 'rise' (RISE_DB louder), 'percussion_mix' (drum-led parts,
   also a fade's alternative within PERCUSSION_LOCK_CENTS) or 'fade', from the
   beat whose mix dips least (FLOOR_GAIN_DB, EDGE_SECONDS).
+* enabled reads the wizard's SWITCHES: a lock tries percussion_mix, rise,
+  blend; with none on, or lock=False (the API's second plan when the voice
+  check drops a lock), it is planned as the fade ('switched_off'), and then
+  the beat committee and onset checks are skipped.
 * confidence 'high' locked, 'low' a fade into a DROP_LU quieter start, else
   'medium'; k_filters is the BS.1770 K-weighting shared with the levels.
 """
@@ -39,6 +43,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+import config
 from tasks import smart_fade_cache
 
 RATE = 44100
@@ -91,12 +96,25 @@ COMMITTEE_MELS = 64
 BASS_BAND_HZ = 200.0
 TREBLE_BAND_HZ = 4000.0
 FLOOR_GAIN_DB = 3.0
+SWITCHES = {
+    'blend': 'SMART_FADE_BEAT_MIX_ENABLED',
+    'rise': 'SMART_FADE_BEAT_RISE_ENABLED',
+    'percussion_mix': 'SMART_FADE_PERCUSSION_MIX_ENABLED',
+    'eq_blend': 'SMART_FADE_EQ_BLEND_ENABLED',
+    'filter_rise': 'SMART_FADE_FILTER_RISE_ENABLED',
+    'vocal_handoff': 'SMART_FADE_VOCAL_HANDOFF_ENABLED',
+}
+LOCKED_STYLES = ('percussion_mix', 'rise', 'blend')
 
 
 class NoRoom(ValueError):
     def __init__(self, fade_seconds):
         super().__init__('No room for the mix around the fade points.')
         self.fade_seconds = fade_seconds
+
+
+def enabled(style):
+    return style not in SWITCHES or bool(getattr(config, SWITCHES[style]))
 
 
 def tempos_match(tempo_out, tempo_in, limit=MAX_LOCK_CENTS, ratios=OCTAVES):
@@ -482,6 +500,15 @@ def lengths(beat, weight):
     return span(MIX_BEATS, MIN_BEAT_MIX_SECONDS, MAX_BEAT_MIX_SECONDS), span(FADE_BEATS, MIN_MIX_SECONDS, MAX_FADE_SECONDS)
 
 
+def _locked_style(song_out, mix_at, song_in, first_in, overlap, rate):
+    if (enabled('percussion_mix') and _percussive(song_out, mix_at, overlap)
+            and _percussive(song_in, first_in, overlap * rate)):
+        return 'percussion_mix'
+    if enabled('rise') and _level(song_in, first_in, overlap * rate) - _level(song_out, mix_at, overlap) >= RISE_DB:
+        return 'rise'
+    return 'blend' if enabled('blend') else None
+
+
 def _track_region(path, start, seconds, lead=None, focus=(0.0, LOCK_SECONDS)):
     audio = _region(path, start, seconds)
     tempo, beats = _beats(audio if lead is None else audio[int(round(lead * RATE)):])
@@ -489,7 +516,7 @@ def _track_region(path, start, seconds, lead=None, focus=(0.0, LOCK_SECONDS)):
     return audio, tempo, beats, section, _feel(audio, tempo, *focus)
 
 
-def plan_transition(path_out, out_seconds, path_in, in_seconds):
+def plan_transition(path_out, out_seconds, path_in, in_seconds, lock=True):
     a_start = max(0.0, out_seconds - LOOK_SECONDS)
     b_start = max(0.0, in_seconds - PHRASE_LEAD_SECONDS)
     lead = in_seconds - b_start
@@ -520,6 +547,8 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
     mix_at = float(usable[np.argmin(np.abs(usable - (out_seconds - a_start - overlap)))])
     alternatives = []
     reason = 'tempo_gap' if not locked else None
+    if locked and not (lock and any(enabled(kind) for kind in LOCKED_STYLES)):
+        locked, reason = False, 'switched_off'
     if locked:
         for entry, (count, positions) in fits:
             duration = count * beat
@@ -540,10 +569,14 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
         played = _played_beats(beats, beat, mix_length)
         mix_at += (beats - played) * beat
         beats, overlap = played, played * beat
+        style = _locked_style(song_out, mix_at, song_in, first_in, overlap, rate)
+        if style is None:
+            locked, reason = False, 'switched_off'
     if not locked:
+        style = 'fade'
         short_rate = _stretch_rate(tempo_out, tempo_in, PERCUSSION_LOCK_CENTS)
         suitable_tempo = tempos_match(tempo_out, tempo_in, PERCUSSION_LOCK_CENTS)
-        if suitable_tempo:
+        if suitable_tempo and enabled('percussion_mix'):
             drums = _percussion_mix(song_out, song_in, beats_out, entries, out_seconds - a_start,
                                     beat, short_rate, a_start, b_start)
             if drums is not None:
@@ -557,14 +590,6 @@ def plan_transition(path_out, out_seconds, path_in, in_seconds):
         ending, starting = _levels_pair(path_out, path_in)
         mix_at = _fuller_start(ending, a_start, usable, mix_at, starting, b_start + first_in, overlap)
     resume_in = first_in + overlap * rate
-    if not locked:
-        style = 'fade'
-    elif _percussive(song_out, mix_at, overlap) and _percussive(song_in, first_in, overlap * rate):
-        style = 'percussion_mix'
-    elif _level(song_in, first_in, overlap * rate) - _level(song_out, mix_at, overlap) >= RISE_DB:
-        style = 'rise'
-    else:
-        style = 'blend'
     plan = {
         'mix_at': round(a_start + mix_at, 4),
         'mix_seconds': round(overlap, 4),
