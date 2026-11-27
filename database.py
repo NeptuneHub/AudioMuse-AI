@@ -3328,6 +3328,24 @@ def get_recent_playlist_names(server_id, limit=60):
         cur.close()
 
 
+def get_playlist_names(server_id):
+    """Names of the playlists the last clustering run created on ``server_id``."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT DISTINCT playlist_name FROM playlist WHERE server_id IS NOT DISTINCT FROM %s",
+            (server_id,),
+        )
+        return [row[0] for row in cur.fetchall() if row[0]]
+    except Exception:
+        conn.rollback()
+        logger.exception("Could not load the playlist names of the last clustering run")
+        return []
+    finally:
+        cur.close()
+
+
 def update_playlist_table(playlists, server_id):
     conn = get_db()
     cur = conn.cursor()

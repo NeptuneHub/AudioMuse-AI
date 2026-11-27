@@ -16,8 +16,8 @@ and the playlists listing exposes them with provider ids.
 
 Main Features:
 * four runs end SUCCESS with a score and a playlist count in their details
-* the playlist table holds the last run per server, names ending _automatic
-* Navidrome holds exactly the current run's automatic playlists
+* the playlist table holds the last run per server, names without the legacy _automatic suffix
+* Navidrome holds exactly the current run's playlists, each with the AudioMuse-AI comment
 * /api/playlists lists them per server with provider ids
 """
 
@@ -43,7 +43,8 @@ SMALL = {'num_clusters_min': 2, 'num_clusters_max': 4, 'gmm_n_components_min': 2
 LARGE = {'num_clusters_min': 5, 'num_clusters_max': 12, 'gmm_n_components_min': 5, 'gmm_n_components_max': 12,
          'spectral_n_clusters_min': 5, 'spectral_n_clusters_max': 12,
          'dbscan_eps_min': 0.1, 'dbscan_eps_max': 0.6, 'dbscan_min_samples_min': 3, 'dbscan_min_samples_max': 8}
-SUFFIX = '_automatic'
+LEGACY_SUFFIX = '_automatic'
+MARKER = 'Weekly mix by AudioMuse-AI'
 MAX_PLAYLISTS = BASE['top_n_clustering_playlist']
 
 
@@ -55,7 +56,8 @@ def _payload(method, stack):
 @pytest.fixture(scope='module', autouse=True)
 def _cleanup_navidrome(stack, navidrome, analyzed_library):
     yield
-    navidrome.delete_playlists_named(lambda name: name.endswith(SUFFIX))
+    for playlist in _remote_automatic_playlists(navidrome):
+        navidrome.delete_playlist(playlist['id'])
 
 
 def _run(api, payload):
@@ -75,8 +77,12 @@ def _db_playlists(db):
     return result
 
 
+def _remote_automatic_playlists(navidrome):
+    return [p for p in navidrome.playlists() if (p.get('comment') or '').startswith(MARKER)]
+
+
 def _remote_automatic(navidrome):
-    return {p['name']: p['id'] for p in navidrome.playlists() if (p.get('name') or '').endswith(SUFFIX)}
+    return {p['name']: p['id'] for p in _remote_automatic_playlists(navidrome)}
 
 
 def _assert_run(final, db, navidrome):
@@ -87,7 +93,7 @@ def _assert_run(final, db, navidrome):
     assert 1 <= created <= MAX_PLAYLISTS, details
     playlists = _db_playlists(db)
     assert len(playlists) == created, (created, list(playlists))
-    assert all(name.endswith(SUFFIX) for name in playlists), list(playlists)
+    assert not any(name.endswith(LEGACY_SUFFIX) for name in playlists), list(playlists)
     catalogue = {r[0] for r in rows(db, 'SELECT item_id FROM score')}
     for items in playlists.values():
         assert items <= catalogue

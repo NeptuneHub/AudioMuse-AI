@@ -1857,30 +1857,58 @@ class TestDispatcherValidation:
 
 
 class TestDispatcherAutomaticPlaylistDeletion:
+    MARKED = 'Weekly mix by AudioMuse-AI \u2013 refreshed 2026-11-18'
+
     @patch('tasks.mediaserver.config')
     @patch('tasks.mediaserver.jellyfin.get_all_playlists')
     @patch('tasks.mediaserver.jellyfin.delete_playlist')
-    def test_only_deletes_automatic_suffix_playlists(self, mock_delete, mock_get, mock_config):
+    def test_deletes_marked_and_legacy_suffix_playlists(self, mock_delete, mock_get, mock_config):
         from tasks.mediaserver import delete_automatic_playlists
 
         mock_config.MEDIASERVER_TYPE = 'jellyfin'
         mock_get.return_value = [
             {'Id': '1', 'Name': 'Rock_automatic'},
             {'Id': '2', 'Name': 'automatic_Rock'},
-            {'Id': '3', 'Name': 'My Favorites'},
-            {'Id': '4', 'Name': 'Jazz_automatic'},
+            {'Id': '3', 'Name': 'My Favorites', 'Description': 'Songs I like'},
+            {'Id': '4', 'Name': 'Candlelit Study Hall', 'Description': self.MARKED},
             {'Id': '5', 'Name': 'Pop_Automatic'},
+            {'Id': '6', 'Name': 'Candlelit Study Hall (2)', 'Description': self.MARKED},
         ]
         mock_delete.return_value = True
 
         delete_automatic_playlists()
 
-        assert mock_delete.call_count == 2
-        deleted_ids = [call[0][0] for call in mock_delete.call_args_list]
-        assert '1' in deleted_ids
-        assert '4' in deleted_ids
-        assert '2' not in deleted_ids
-        assert '3' not in deleted_ids
+        assert sorted(call[0][0] for call in mock_delete.call_args_list) == ['1', '4', '6']
+
+    @patch('tasks.mediaserver.config')
+    @patch('tasks.mediaserver.lyrion.get_all_playlists')
+    @patch('tasks.mediaserver.lyrion.delete_playlist')
+    def test_last_run_names_identify_playlists_without_a_description(self, mock_delete, mock_get, mock_config):
+        from tasks.mediaserver import delete_automatic_playlists
+
+        mock_config.MEDIASERVER_TYPE = 'lyrion'
+        mock_get.return_value = [
+            {'Id': '1', 'Name': 'Candlelit Study Hall'},
+            {'Id': '2', 'Name': 'My Favorites'},
+        ]
+        mock_delete.return_value = True
+
+        delete_automatic_playlists(['Candlelit Study Hall'])
+
+        assert [call[0][0] for call in mock_delete.call_args_list] == ['1']
+
+    @patch('tasks.mediaserver.config')
+    @patch('tasks.mediaserver.navidrome.get_all_playlists')
+    @patch('tasks.mediaserver.navidrome.delete_playlist')
+    def test_a_last_run_name_with_a_foreign_description_is_kept(self, mock_delete, mock_get, mock_config):
+        from tasks.mediaserver import delete_automatic_playlists
+
+        mock_config.MEDIASERVER_TYPE = 'navidrome'
+        mock_get.return_value = [{'Id': '1', 'Name': 'Candlelit Study Hall', 'Description': 'My own list'}]
+
+        delete_automatic_playlists(['Candlelit Study Hall'])
+
+        mock_delete.assert_not_called()
 
     @patch('tasks.mediaserver.config')
     @patch('tasks.mediaserver.navidrome.get_all_playlists')
@@ -1891,17 +1919,110 @@ class TestDispatcherAutomaticPlaylistDeletion:
         mock_config.MEDIASERVER_TYPE = 'navidrome'
         mock_get.return_value = [
             {'id': 'nav1', 'Name': 'Test_automatic'},
-            {'Id': 'nav2', 'Name': 'Other_automatic'},
+            {'Id': 'nav2', 'Name': 'Other', 'Description': self.MARKED},
         ]
         mock_delete.return_value = True
 
         delete_automatic_playlists()
 
-        assert mock_delete.call_count == 2
-        deleted_ids = [call[0][0] for call in mock_delete.call_args_list]
-        assert 'nav1' in deleted_ids
-        assert 'nav2' in deleted_ids
+        assert sorted(call[0][0] for call in mock_delete.call_args_list) == ['nav1', 'nav2']
 
+    def test_description_has_the_marker_and_the_date(self):
+        import datetime
+
+        from tasks.mediaserver import AUTOMATIC_PLAYLIST_MARKER, automatic_playlist_description
+
+        description = automatic_playlist_description(datetime.date(2026, 11, 18))
+
+        assert description == self.MARKED
+        assert description.startswith(AUTOMATIC_PLAYLIST_MARKER)
+
+
+class TestPlaylistDescriptionWrites:
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_navidrome_writes_the_description_as_comment(self, mock_request):
+        from tasks.mediaserver import navidrome
+
+        mock_request.side_effect = [
+            {'status': 'ok', 'playlist': {'id': 'p1', 'name': 'Mix'}},
+            {'status': 'ok'},
+        ]
+
+        result = navidrome.create_playlist('Mix', ['t1'], description='Weekly mix by AudioMuse-AI')
+
+        assert result['Id'] == 'p1'
+        update_params = mock_request.call_args_list[1][0][1]
+        assert update_params == {'playlistId': 'p1', 'public': 'true', 'comment': 'Weekly mix by AudioMuse-AI'}
+
+    @patch('tasks.mediaserver.navidrome._navidrome_request')
+    def test_navidrome_reads_the_comment_as_description(self, mock_request):
+        from tasks.mediaserver import navidrome
+
+        mock_request.return_value = {'playlists': {'playlist': [{'id': 'p1', 'name': 'Mix', 'comment': 'Weekly mix by AudioMuse-AI'}]}}
+
+        assert navidrome.get_all_playlists()[0]['Description'] == 'Weekly mix by AudioMuse-AI'
+
+    @patch('tasks.mediaserver.jellyfin.requests')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_jellyfin_writes_the_description_as_overview(self, mock_config, mock_requests):
+        from tasks.mediaserver import jellyfin
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="t"'}
+        created = MagicMock()
+        created.json.return_value = {'Id': 'new-jf', 'Name': 'Mix'}
+        updated = MagicMock()
+        mock_requests.post.side_effect = [created, updated]
+        item = MagicMock(status_code=200)
+        item.json.return_value = {'Id': 'new-jf', 'Name': 'Mix', 'Overview': None, 'Genres': []}
+        mock_requests.get.return_value = item
+
+        result = jellyfin.create_playlist('Mix', ['t1'], description='Weekly mix by AudioMuse-AI')
+
+        assert result['Description'] == 'Weekly mix by AudioMuse-AI'
+        update_call = mock_requests.post.call_args_list[1]
+        assert update_call[0][0] == 'http://jf/Items/new-jf'
+        assert update_call[1]['json'] == {'Id': 'new-jf', 'Name': 'Mix', 'Overview': 'Weekly mix by AudioMuse-AI', 'Genres': []}
+
+    @patch('tasks.mediaserver.jellyfin.requests')
+    @patch('tasks.mediaserver.jellyfin.config')
+    def test_jellyfin_keeps_the_playlist_when_the_overview_write_fails(self, mock_config, mock_requests):
+        from tasks.mediaserver import jellyfin
+
+        mock_config.JELLYFIN_URL = 'http://jf'
+        mock_config.JELLYFIN_USER_ID = 'admin-user'
+        mock_config.HEADERS = {'Authorization': 'MediaBrowser Token="t"'}
+        created = MagicMock()
+        created.json.return_value = {'Id': 'new-jf', 'Name': 'Mix'}
+        mock_requests.post.return_value = created
+        mock_requests.get.return_value.raise_for_status.side_effect = requests.exceptions.HTTPError('403')
+
+        result = jellyfin.create_playlist('Mix', ['t1'], description='Weekly mix by AudioMuse-AI')
+
+        assert result['Id'] == 'new-jf'
+        assert 'Description' not in result
+
+    @patch('tasks.mediaserver.emby.requests')
+    @patch('tasks.mediaserver.emby.config')
+    def test_emby_writes_the_description_as_overview(self, mock_config, mock_requests):
+        from tasks.mediaserver import emby
+
+        mock_config.EMBY_URL = 'http://emby'
+        mock_config.EMBY_USER_ID = 'user123'
+        mock_config.EMBY_TOKEN = 'tok'
+        mock_requests.utils.quote.side_effect = lambda value: value
+        created = MagicMock()
+        created.json.return_value = {'Id': 'new-emby', 'Name': 'Mix'}
+        mock_requests.post.side_effect = [created, MagicMock()]
+        mock_requests.get.return_value.json.return_value = {'Id': 'new-emby', 'Name': 'Mix'}
+
+        result = emby.create_playlist('Mix', ['t1'], description='Weekly mix by AudioMuse-AI')
+
+        assert result['Description'] == 'Weekly mix by AudioMuse-AI'
+        update_call = mock_requests.post.call_args_list[1]
+        assert update_call[0][0] == 'http://emby/emby/Items/new-emby'
+        assert update_call[1]['json']['Overview'] == 'Weekly mix by AudioMuse-AI'
 
 class TestLyrionJsonRpcRequest:
     @patch('tasks.mediaserver.lyrion.requests.Session')

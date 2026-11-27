@@ -1245,7 +1245,7 @@ class TestSelectDiversePlaylists:
         )
 
         assert received_avoid_names == ['Pop Heartbreak_automatic']
-        assert 'Happy Pop_automatic' in result
+        assert 'Happy Pop' in result
 
     def test_history_avoidance_is_off_by_default_so_recent_names_are_never_fetched(
         self, monkeypatch
@@ -1326,10 +1326,8 @@ class TestSelectDiversePlaylists:
             'OLLAMA', 'url', 'model', '', '', '', '', '', '', '',
         )
 
-        assert 'Happy Pop_automatic' in result
-        assert 'Happy Pop (2)_automatic' in result
-        assert result['Happy Pop_automatic'] == [('song-1', 'Song 1', 'Artist')]
-        assert result['Happy Pop (2)_automatic'] == [('song-2', 'Song 2', 'Artist')]
+        assert result['Happy Pop'] == [('song-1', 'Song 1', 'Artist')]
+        assert result['Happy Pop (2)'] == [('song-2', 'Song 2', 'Artist')]
 
     def test_limit_zero_returns_the_original_result(self):
         from tasks.clustering_postprocessing import select_diverse_playlists_with_genre_coverage

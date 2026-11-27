@@ -950,7 +950,7 @@ def _create_playlist_batched(playlist_name, item_ids):
         return None
 
 
-def create_playlist(base_name, item_ids):
+def create_playlist(base_name, item_ids, description=None):
     return _create_playlist_batched(base_name, item_ids)
 
 

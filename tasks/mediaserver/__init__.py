@@ -19,6 +19,7 @@ Main Features:
   live in http.py and helper.py.
 """
 
+import datetime
 import logging
 import os
 from importlib import import_module
@@ -34,6 +35,9 @@ _PROVIDER_NAMES = ('jellyfin', 'navidrome', 'lyrion', 'emby', 'plex')
 _warned_unsupported = set()
 
 _PLAYLIST_NAME_REQUIRED = "Playlist name is required."
+
+AUTOMATIC_PLAYLIST_MARKER = "Weekly mix by AudioMuse-AI"
+LEGACY_AUTOMATIC_SUFFIX = '_automatic'
 _TRACK_IDS_REQUIRED = "Track IDs are required."
 
 _PUBLIC_SERVER_API = (
@@ -102,8 +106,42 @@ def delete_playlists_by_suffix(suffix):
     logger.info(f"Finished deletion. Deleted {deleted_count} playlists.")
 
 
-def delete_automatic_playlists():
-    delete_playlists_by_suffix('_automatic')
+def automatic_playlist_description(today=None):
+    today = today or datetime.date.today()
+    return f"{AUTOMATIC_PLAYLIST_MARKER} \u2013 refreshed {today.isoformat()}"
+
+
+def _is_automatic_playlist(playlist, last_run_names):
+    name = playlist.get('Name') or ''
+    description = playlist.get('Description') or ''
+    if description.startswith(AUTOMATIC_PLAYLIST_MARKER):
+        return True
+    if name.endswith(LEGACY_AUTOMATIC_SUFFIX):
+        return True
+    return not description and name in last_run_names
+
+
+def delete_automatic_playlists(last_run_names=()):
+    """Delete the playlists created by clustering on the active server.
+
+    A clustering playlist has a description that starts with ``AUTOMATIC_PLAYLIST_MARKER``. A playlist from before the description has a name that ends in ``LEGACY_AUTOMATIC_SUFFIX``. Lyrion stores no description, and a description write can fail on the other servers, so a playlist without a description is also deleted when its name is in ``last_run_names``, the names the previous clustering run recorded for this server.
+    """
+    last_run_names = set(last_run_names or ())
+    deleted_count = 0
+    provider = _provider()
+    if provider is not None:
+        for p in provider.get_all_playlists():
+            if not _is_automatic_playlist(p, last_run_names):
+                continue
+            playlist_id = p.get('Id') or p.get('id')
+            try:
+                if provider.delete_playlist(playlist_id):
+                    deleted_count += 1
+            except Exception:
+                logger.exception(
+                    f"Failed to delete playlist {playlist_id}; continuing with the remaining playlists."
+                )
+    logger.info(f"Deleted {deleted_count} automatic playlists.")
 
 
 def get_recent_albums(limit):
@@ -318,7 +356,7 @@ def _to_server_ids(item_ids):
     return translated
 
 
-def create_playlist(base_name, item_ids):
+def create_playlist(base_name, item_ids, description=None):
     if not base_name:
         raise ValueError(_PLAYLIST_NAME_REQUIRED)
     if not item_ids:
@@ -327,6 +365,8 @@ def create_playlist(base_name, item_ids):
     provider = _provider()
     if provider is None or not item_ids:
         return None
+    if description:
+        return provider.create_playlist(base_name, item_ids, description=description)
     return provider.create_playlist(base_name, item_ids)
 
 

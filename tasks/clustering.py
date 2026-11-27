@@ -104,6 +104,7 @@ from database import (
     prune_playlist_rows_for_missing_servers,
     get_child_tasks_from_db,
     get_recent_playlist_names,
+    get_playlist_names,
     main_task_start_lock,
 )
 
@@ -111,6 +112,7 @@ from sanitization import sanitize_for_json
 
 from .mediaserver import (
     PlaylistIdTranslationError,
+    automatic_playlist_description,
     create_playlist,
     delete_automatic_playlists,
 )
@@ -1306,13 +1308,16 @@ def _cluster_one_server_impl(
             f"creating {len(final_playlists_with_details)} playlists on {server_name}"
         )
         report(f"Creating {len(final_playlists_with_details)} playlists on this server...", 96)
+        description = automatic_playlist_description()
         with registry.bind(target_server):
             if CLUSTERING_CLEANING:
-                delete_automatic_playlists()
+                delete_automatic_playlists(
+                    get_playlist_names(target_server['server_id'] if target_server else None)
+                )
             for name, songs_with_details in final_playlists_with_details.items():
                 item_ids = [item_id for item_id, _, _ in songs_with_details]
                 try:
-                    create_playlist(name, item_ids)
+                    create_playlist(name, item_ids, description=description)
                 except PlaylistIdTranslationError:
                     logger.exception(
                         "PLAYLIST CREATION ABORTED on server '%s': the id "
@@ -1735,8 +1740,7 @@ def _name_and_prepare_playlists(
         assigned_names.add(final_name)
         used_playlist_names.append(final_name)
 
-        base_name = f"{final_name}_automatic"
-        shuffled = _shuffle_playlist_songs(songs, base_name)
-        _assign_playlist_chunks(shuffled, max_songs, base_name, final_playlists)
+        shuffled = _shuffle_playlist_songs(songs, final_name)
+        _assign_playlist_chunks(shuffled, max_songs, final_name, final_playlists)
 
     return final_playlists

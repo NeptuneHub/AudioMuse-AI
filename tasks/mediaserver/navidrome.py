@@ -609,7 +609,7 @@ def _add_to_playlist(playlist_id, item_ids, user_creds=None):
     return True
 
 
-def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
+def _create_playlist_batched(playlist_name, item_ids, user_creds=None, description=None):
     user_creds = context.active_creds(user_creds)
     if not item_ids:
         item_ids = []
@@ -646,13 +646,16 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
         f"Created Navidrome playlist '{playlist_name}' (ID: {new_playlist_id}) with the first {len(ids_for_creation)} songs."
     )
 
+    update_params = {"playlistId": new_playlist_id, "public": "true"}
+    if description:
+        update_params["comment"] = description
     update_response = _navidrome_request(
-        "updatePlaylist",
-        {"playlistId": new_playlist_id, "public": "true"},
-        method='post',
-        user_creds=user_creds,
+        "updatePlaylist", update_params, method='post', user_creds=user_creds
     )
-    if not (update_response and update_response.get("status") == "ok"):
+    if update_response and update_response.get("status") == "ok":
+        if description:
+            new_playlist['comment'] = description
+    else:
         logger.error(
             f"Failed to set playlist '{playlist_name}' public after creation via updatePlaylist."
         )
@@ -684,15 +687,15 @@ def _create_playlist_batched(playlist_name, item_ids, user_creds=None):
     return new_playlist
 
 
-def create_playlist(base_name, item_ids):
-    return _create_playlist_batched(base_name, item_ids, user_creds=None)
+def create_playlist(base_name, item_ids, description=None):
+    return _create_playlist_batched(base_name, item_ids, user_creds=None, description=description)
 
 
 def get_all_playlists():
     response = _navidrome_request("getPlaylists")
     if response and "playlists" in response and "playlist" in response["playlists"]:
         return [
-            {**p, 'Id': p.get('id'), 'Name': p.get('name')}
+            {**p, 'Id': p.get('id'), 'Name': p.get('name'), 'Description': p.get('comment') or ''}
             for p in response["playlists"]["playlist"]
         ]
     return []
