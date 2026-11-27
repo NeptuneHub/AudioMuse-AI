@@ -1387,6 +1387,17 @@ SMART_FADE_VOCAL_MIX_SECONDS = float(os.environ.get("SMART_FADE_VOCAL_MIX_SECOND
 SMART_FADE_VOCAL_DUCK_DB = float(os.environ.get("SMART_FADE_VOCAL_DUCK_DB", "6"))
 # Extra outgoing mids reduction late in a vocal clash; highs and fader use half.
 SMART_FADE_VOCAL_TAIL_DB = float(os.environ.get("SMART_FADE_VOCAL_TAIL_DB", "6"))
+# Transitions smart fade may choose (setup wizard, Smart Fade). The default crossfade is
+# always on. A transition switched off gives its pair the next one that fits: a lock tries
+# the percussion mix, the beat rise, then the beat mix; without one (or with all three
+# off) the pair plays at its own speed as an EQ blend, filter rise, vocal handoff or the
+# crossfade. With the vocal handoff off the crossfade never filters the voices.
+SMART_FADE_BEAT_MIX_ENABLED = os.environ.get("SMART_FADE_BEAT_MIX_ENABLED", "true").lower() == "true"
+SMART_FADE_BEAT_RISE_ENABLED = os.environ.get("SMART_FADE_BEAT_RISE_ENABLED", "true").lower() == "true"
+SMART_FADE_PERCUSSION_MIX_ENABLED = os.environ.get("SMART_FADE_PERCUSSION_MIX_ENABLED", "true").lower() == "true"
+SMART_FADE_EQ_BLEND_ENABLED = os.environ.get("SMART_FADE_EQ_BLEND_ENABLED", "true").lower() == "true"
+SMART_FADE_FILTER_RISE_ENABLED = os.environ.get("SMART_FADE_FILTER_RISE_ENABLED", "true").lower() == "true"
+SMART_FADE_VOCAL_HANDOFF_ENABLED = os.environ.get("SMART_FADE_VOCAL_HANDOFF_ENABLED", "true").lower() == "true"
 
 # --- Song demo ---
 # Seconds of each song the song player plays when Demo is ticked, around its chorus

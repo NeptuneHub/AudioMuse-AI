@@ -18,10 +18,12 @@ Main Features:
   few bars, but never turn it into a sequential handoff or delayed entrance.
 * Keep beat locks when cue shifts preserve their grids and the onsets still
   line up. Moved cues that lose the lock give back the verified original
-  cues when no voices clash there, else the default MIN_MIX_SECONDS
-  crossfade ending at the same second. Pass the amount of vocal competition
+  cues when no voices clash there, else the pair's crossfade (the plan's
+  fade_seconds) ending at the same second. Pass the amount of vocal competition
   to smart_fade_levels for a modest, gradual EQ exchange.
-* A percussion mix alternative wins when no voice overlaps another there.
+* A percussion mix alternative wins when no voice overlaps another there;
+  a locked one with voices over each other plays the beat mix, or with the
+  beat mix switched off (mix.enabled) the crossfade ending on that second.
 * Recover a few skipped seconds with a local pass, preserving fade length,
   audible energy, vocal balance and each source's half-bar grid.
 * Restore early endings toward the requested cue with a separate bounded pass.
@@ -277,7 +279,6 @@ def _energy_cost(heard, points, weights):
 
 
 def _recover(ending, starting, plan):
-    """Keep more source audio without spending the fade's duration or energy."""
     budget = max(0.0, config.SMART_FADE_RECOVER_SECONDS)
     if not budget or ending['spans'] is None or starting['spans'] is None:
         return plan
@@ -328,7 +329,6 @@ def _recover(ending, starting, plan):
 
 
 def _later_ending(ending, starting, plan):
-    """Restore a few ending seconds without altering the approved vocal envelope."""
     budget = max(0.0, config.SMART_FADE_END_RECOVER_SECONDS)
     requested = plan.get('requested_end')
     seconds = plan['mix_seconds']
@@ -442,7 +442,7 @@ def _moved(path_out, path_in, plan):
     if locked and any(abs(value - anchor - round((value - anchor) / step) * step) > 0.001
                       for value, anchor, step in ((at, plan['mix_at'], step_out), (entry, plan['in_at'], step_in))):
         locked = False
-        shorter = min(seconds, mix.MIN_MIX_SECONDS, incoming_end - entry)
+        shorter = min(seconds, plan.get('fade_seconds', mix.MIN_MIX_SECONDS), incoming_end - entry)
         at, seconds = at + seconds - shorter, shorter
         source_seconds = seconds
     simultaneous = _activity(ending, at + seconds * share) & _activity(starting, entry + source_seconds * share)
@@ -461,16 +461,24 @@ def _moved(path_out, path_in, plan):
         rate = (moved['resume_at'] - moved['in_at']) / duration
         if not mix._in_step(ending['samples'], moved['mix_at'] - ending['at'], starting['samples'],
                             moved['in_at'] - starting['at'], duration, rate, moved['beat_seconds'], VAD_RATE):
-            shorter = min(duration, mix.MIN_MIX_SECONDS, incoming_end - moved['in_at'])
-            moved.update(mix._handoff('fade', moved['mix_at'] + duration - shorter, moved['in_at'], shorter))
-            moved['confidence'] = 'medium'
+            moved = _crossfade_instead(moved, incoming_end)
     if moved['style'] == 'fade' and plan['style'] != 'fade':
         moved = _kept_lock(ending, starting, plan, moved)
     if moved['style'] == 'percussion_mix' and moved['voice']['clash']:
-        moved['style'] = 'blend'
+        if mix.enabled('blend'):
+            moved['style'] = 'blend'
+        else:
+            moved = dict(_crossfade_instead(moved, incoming_end), beat_rejection='switched_off')
     logger.info("Smart crossfade at %.2f s for %.2f s, incoming cue %.2f s, audible tail %.2f s, vocal competition %.2f",
                 moved['mix_at'], seconds, moved['in_at'], moved['voice']['end_margin'], moved['voice']['overlap'])
     return moved
+
+
+def _crossfade_instead(moved, incoming_end):
+    duration = moved['mix_seconds']
+    shorter = min(duration, moved.get('fade_seconds', mix.MIN_MIX_SECONDS), incoming_end - moved['in_at'])
+    return dict(moved, **mix._handoff('fade', moved['mix_at'] + duration - shorter, moved['in_at'], shorter),
+                confidence='medium')
 
 
 def _kept_lock(ending, starting, plan, moved):

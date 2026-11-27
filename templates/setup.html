@@ -132,7 +132,8 @@
     }
     #advanced-config summary,
     #lyrics-api-config summary,
-    #ai-prompt-config summary {
+    #ai-prompt-config summary,
+    #smart-fade-config summary {
         cursor: pointer;
     }
     #lyrics-api-config {
@@ -140,6 +141,23 @@
     }
     #ai-prompt-config {
         margin-top: 1.5rem;
+    }
+    #smart-fade-config {
+        margin-top: 1.5rem;
+    }
+    .smart-fade-needs-neural {
+        margin: 1rem 0 0;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text-muted, #666);
+    }
+    .smart-fade-needs-neural[hidden] {
+        display: none;
+    }
+    .smart-fade-tuning-help {
+        margin: 1rem 0 0;
+        font-size: 0.85rem;
+        color: var(--text-muted, #666);
     }
     .ai-prompt-toolbar {
         display: flex;
@@ -392,7 +410,8 @@
         }
         #advanced-config > summary,
         #lyrics-api-config > summary,
-        #ai-prompt-config > summary {
+        #ai-prompt-config > summary,
+        #smart-fade-config > summary {
             padding: 0.55rem 0;
         }
         .ml-model-state,
@@ -774,6 +793,7 @@
                             <ul>
                                 <li><strong>Search by Recording:</strong> record about 20 seconds with the phone, or upload a clip, and it tells you which song it is and where in the song you are. It works through room noise and a poor microphone.</li>
                                 <li><strong>Search by Song:</strong> pick a song from your library and it lists the other versions of it first (copies, remasters, compilation editions), then the closest candidates.</li>
+                                <li><strong>Smart fade:</strong> the option of the song lists that orders the songs so each one flows into the next and mixes them while they play. Without this model it is not offered; its transitions are chosen under Smart Fade at the bottom of this page.</li>
                             </ul>
                         </div>
                         <div class="ml-model-switch">
@@ -922,6 +942,124 @@
                     <p id="ai-prompt-preview-status" class="inline-feedback" style="display:none; margin:0 0 0.75rem;"></p>
                     <ol id="ai-prompt-preview-titles" class="ai-prompt-titles" style="display:none;"></ol>
                 </div>
+            </details>
+
+            <details id="smart-fade-config">
+                <summary>Smart Fade</summary>
+                <div class="notice" style="margin-top: 1rem;">
+                    Smart fade, ticked on a song list before the search, mixes each song into the next with one of the transitions below, chosen from what the audio of the two songs allows.
+                    The default crossfade is always on. Switch off a transition you do not want: its songs then get the next transition that fits them, down to the default crossfade.
+                    The beat-matched transitions sound the most like a DJ when they work but are the most likely to miss the beat; the default crossfade and the EQ blend work on almost every pair.
+                    These switches apply to everyone who uses this AudioMuse-AI.
+                </div>
+                <p id="smart-fade-needs-neural" class="smart-fade-needs-neural" hidden>Smart fade needs the Neural Fingerprint model. Turn it on under Machine Learning Models to use these transitions.</p>
+                <div class="ml-model-list">
+                    <div class="ml-model-row is-locked" data-transition="crossfade">
+                        <div class="ml-model-info">
+                            <span class="ml-model-name">Default crossfade</span>
+                            <small class="ml-model-role">One song goes down while the next comes up, each at its own speed. It plays wherever no other transition fits.</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch" title="The default crossfade is always on">
+                                <input type="checkbox" id="smart-fade-crossfade" checked disabled>
+                                <span class="toggle-slider"></span>
+                                <span class="sr-only">The default crossfade is always on</span>
+                            </label>
+                            <span class="ml-model-state">Always on</span>
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-transition="beat_mix">
+                        <div class="ml-model-info">
+                            <label for="smart-fade-beat-mix" class="ml-model-name">Beat-matched mix with a bass swap</label>
+                            <small class="ml-model-role">Both songs play on the same beat for a few bars and the two bass lines swap on the beat, like a DJ mix. Only where the beats of both songs surely line up; the speed and pitch of the songs move slightly.</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="smart-fade-beat-mix" data-flag="SMART_FADE_BEAT_MIX_ENABLED">
+                                <span class="toggle-slider"></span>
+                                <span class="sr-only">Beat-matched mix on or off</span>
+                            </label>
+                            <input type="hidden" id="SMART_FADE_BEAT_MIX_ENABLED" name="SMART_FADE_BEAT_MIX_ENABLED" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-transition="beat_rise">
+                        <div class="ml-model-info">
+                            <label for="smart-fade-beat-rise" class="ml-model-name">Beat-matched rise</label>
+                            <small class="ml-model-role">The beat-matched mix for a next song that comes in clearly louder: it enters from the treble down, its bass last. Off, those songs get the beat-matched mix.</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="smart-fade-beat-rise" data-flag="SMART_FADE_BEAT_RISE_ENABLED">
+                                <span class="toggle-slider"></span>
+                                <span class="sr-only">Beat-matched rise on or off</span>
+                            </label>
+                            <input type="hidden" id="SMART_FADE_BEAT_RISE_ENABLED" name="SMART_FADE_BEAT_RISE_ENABLED" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-transition="percussion_mix">
+                        <div class="ml-model-info">
+                            <label for="smart-fade-percussion-mix" class="ml-model-name">Beat-matched percussion mix</label>
+                            <small class="ml-model-role">Where both songs play mostly drums (drum intros, outros and breaks), on the same beat: the two kick drums swap so only one plays at a time.</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="smart-fade-percussion-mix" data-flag="SMART_FADE_PERCUSSION_MIX_ENABLED">
+                                <span class="toggle-slider"></span>
+                                <span class="sr-only">Beat-matched percussion mix on or off</span>
+                            </label>
+                            <input type="hidden" id="SMART_FADE_PERCUSSION_MIX_ENABLED" name="SMART_FADE_PERCUSSION_MIX_ENABLED" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-transition="eq_blend">
+                        <div class="ml-model-info">
+                            <label for="smart-fade-eq-blend" class="ml-model-name">EQ blend</label>
+                            <small class="ml-model-role">Where one of the two songs has no drums, so no beats can clash: the bass lines swap in one move while the highs and mids cross over.</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="smart-fade-eq-blend" data-flag="SMART_FADE_EQ_BLEND_ENABLED">
+                                <span class="toggle-slider"></span>
+                                <span class="sr-only">EQ blend on or off</span>
+                            </label>
+                            <input type="hidden" id="SMART_FADE_EQ_BLEND_ENABLED" name="SMART_FADE_EQ_BLEND_ENABLED" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-transition="filter_rise">
+                        <div class="ml-model-info">
+                            <label for="smart-fade-filter-rise" class="ml-model-name">Filter rise</label>
+                            <small class="ml-model-role">A louder next song at a related tempo comes in through a filter that opens from the treble down, so only one bass plays at a time.</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="smart-fade-filter-rise" data-flag="SMART_FADE_FILTER_RISE_ENABLED">
+                                <span class="toggle-slider"></span>
+                                <span class="sr-only">Filter rise on or off</span>
+                            </label>
+                            <input type="hidden" id="SMART_FADE_FILTER_RISE_ENABLED" name="SMART_FADE_FILTER_RISE_ENABLED" value="true">
+                        </div>
+                    </div>
+                    <div class="ml-model-row" data-transition="vocal_handoff">
+                        <div class="ml-model-info">
+                            <label for="smart-fade-vocal-handoff" class="ml-model-name">Vocal handoff</label>
+                            <small class="ml-model-role">Where both songs sing at the same time, the voice moves from one singer to the other so the two are never loud together. Off, the default crossfade never filters the voices.</small>
+                        </div>
+                        <div class="ml-model-switch">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="smart-fade-vocal-handoff" data-flag="SMART_FADE_VOCAL_HANDOFF_ENABLED">
+                                <span class="toggle-slider"></span>
+                                <span class="sr-only">Vocal handoff on or off</span>
+                            </label>
+                            <input type="hidden" id="SMART_FADE_VOCAL_HANDOFF_ENABLED" name="SMART_FADE_VOCAL_HANDOFF_ENABLED" value="true">
+                        </div>
+                    </div>
+                </div>
+                <p class="smart-fade-tuning-help">
+                    Fine tuning holds the limits of the voice check that moves the mix points, the depth of the voice exchange and the size of the loudness cache.
+                    The defaults suit most libraries; read the
+                    <a href="https://github.com/NeptuneHub/AudioMuse-AI/blob/main/docs/PARAMETERS.md" target="_blank" rel="noopener noreferrer">PARAMETERS documentation</a>
+                    before changing them.
+                </p>
+                <div id="smart-fade-fields"></div>
             </details>
 
             <div style="margin-top: 2rem;"></div>

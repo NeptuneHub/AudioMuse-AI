@@ -23,6 +23,8 @@ Main Features:
 * No model name carries a tooltip any more; the list under the model explains it
 * The flags are no longer listed in ADVANCED_SECTIONS nor rendered as leftovers
 * The Whisper switch is locked whenever the GTE Lyrics switch is off
+* A boolean advanced field saved as 'True' counts as unchanged, so Save sends only
+  what the user changed
 """
 
 import os
@@ -165,3 +167,13 @@ def test_neural_fingerprint_ships_off_in_config_and_the_wizard_agrees_until_a_sa
     assert "normalizeFlagValue(hidden.defaultValue, 'true')" in render
     assert 'normalizeFlagValue(field.default, shipped)' in render
     assert 'normalizeFlagValue(field.value, fallback)' in render
+
+
+def test_an_untouched_boolean_advanced_field_is_not_sent_again_whatever_the_case_of_its_saved_value():
+    source = _setup_js()
+    field = source[source.index('function createInputField'):source.index('function normalizeFlagValue')]
+    assert "normalized = normalizeFlagValue(raw, '')" in field
+    assert ("input.dataset.originalValue = field.type === 'boolean' ? normalizeFlagValue(original, original) : original"
+            in field)
+    collect = source[source.index('function collectConfigFromForm'):source.index('function testConnection')]
+    assert 'if (original !== undefined && value === original)' in collect

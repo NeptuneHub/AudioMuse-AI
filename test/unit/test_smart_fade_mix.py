@@ -9,17 +9,19 @@
 """Beat-matched smart fade transition planned from two real audio files.
 
 Main Features:
-* Two click tracks at 120 and 122 BPM give a plan only (no audio): the measured
-  tempos, a stretch of 120/122, a mix of the fewest BEAT_STEP beats of the
-  first song that last MIX_SECONDS, on its beat grid and ending at its fade
-  point, the second song entering on one of its own beats and resuming
-  exactly where the stretched part ends; style 'blend', swap_at on the middle
-  beat; a late first beat shortens the mix by whole steps, never under
-  MIN_MIX_SECONDS (else ValueError)
+* Click tracks at 120 and 122 BPM plan a stretch of 120/122, a lock checked
+  over the fewest BEAT_STEP beats reaching LOCK_SECONDS, a mix of its last
+  whole bars nearest the pair's mix length ending at the fade point, the
+  next song entering on its beat and resuming where the stretch ends; style
+  'blend', swap_at mid-mix; a late first beat shortens the checked span by
+  whole steps, never under MIN_BEAT_MIX_SECONDS (else NoRoom)
+* Lengths count felt beats (MIX_BEATS, FADE_BEATS), fewer for a dense pair;
+  FAST_ONSETS_PER_BEAT doubles a half-speed tempo; a tone over the clicks
+  crossfades shorter than clicks alone
 * The next song enters on a section start a few beats after its fade point,
   never more than PHRASE_REACH_BEATS away; RISE_DB louder, it rises in
 * Tempos too far apart (120 and 150 BPM) or a beat grid 150 ms off fade
-  unstretched over MIN_MIX_SECONDS of whole beats, swap_at in the middle;
+  unstretched over the whole beats reaching fade_seconds, swap_at in the middle;
   tempos_match (60 cents, half or double time) is one rule on numbers and arrays; the onset check takes
   clicks on the beat (stretched too) and refuses them 100 ms off
 * A tempo between the tracker's frames is measured to a fraction of a BPM;
@@ -48,11 +50,24 @@ import threading
 from tasks import smart_fade_mix as mix
 
 _REAL_PERCUSSIVE = mix._percussive
+_LENGTHS = []
 
 
 @pytest.fixture(autouse=True)
 def _not_drum_led(monkeypatch):
     monkeypatch.setattr(mix, '_percussive', lambda *args, **kwargs: False)
+
+
+@pytest.fixture(autouse=True)
+def _pair_lengths(monkeypatch):
+    real = mix.lengths
+    _LENGTHS.clear()
+
+    def spy(beat, weight):
+        _LENGTHS.append(real(beat, weight))
+        return _LENGTHS[-1]
+
+    monkeypatch.setattr(mix, 'lengths', spy)
 
 
 def _click_audio(bpm, seconds, first=0.0, level=0.8):
@@ -73,12 +88,28 @@ def _clicks(path, bpm, seconds, first=0.0, level=0.8):
     return str(path)
 
 
-def _assert_mix_length(plan):
+def _assert_mix_length(plan, checked=None):
     beats = round(plan['mix_seconds'] / plan['beat_seconds'])
-    assert beats % mix.BEAT_STEP == 0
-    assert plan['mix_seconds'] >= mix.MIX_SECONDS - 0.01
-    assert (beats - mix.BEAT_STEP) * plan['beat_seconds'] < mix.MIX_SECONDS
+    target = _LENGTHS[-1][0]
+    assert beats % mix.BAR_BEATS == 0
+    if checked is not None and checked < target:
+        assert plan['mix_seconds'] == pytest.approx(checked, abs=0.002)
+    else:
+        assert abs(plan['mix_seconds'] - target) <= mix.BAR_BEATS * plan['beat_seconds'] / 2 + 0.01
+    assert plan['fade_seconds'] == pytest.approx(_LENGTHS[-1][1], abs=1e-4)
     assert plan['swap_at'] == pytest.approx(plan['mix_at'] + beats // 2 * plan['beat_seconds'], abs=0.002)
+
+
+def _checked_spans(monkeypatch):
+    spans = []
+    aligned = mix._aligned_entry
+
+    def spy(song_out, at, song_in, entry, seconds, *args, **kwargs):
+        spans.append((at, seconds))
+        return aligned(song_out, at, song_in, entry, seconds, *args, **kwargs)
+
+    monkeypatch.setattr(mix, '_aligned_entry', spy)
+    return spans
 
 
 def test_two_click_tracks_mix_on_the_beat_at_the_first_tempo(tmp_path):
@@ -86,7 +117,8 @@ def test_two_click_tracks_mix_on_the_beat_at_the_first_tempo(tmp_path):
     song_in = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     assert sorted(plan) == [
-        'beat_seconds', 'confidence', 'in_at', 'mix_at', 'mix_seconds', 'resume_at', 'stretch', 'style', 'swap_at', 'tempo_from', 'tempo_to',
+        'beat_seconds', 'confidence', 'fade_seconds', 'in_at', 'mix_at', 'mix_seconds', 'resume_at', 'stretch', 'style', 'swap_at',
+        'tempo_from', 'tempo_to',
     ]
     assert plan['confidence'] == 'high'
     assert plan['style'] == 'blend'
@@ -115,27 +147,34 @@ def test_both_regions_are_tracked_in_parallel(tmp_path, monkeypatch):
     assert mix.plan_transition(paths[0], 30.0, paths[1], 5.0)['style'] == 'blend'
 
 
-def test_the_mix_is_the_fewest_beat_steps_that_reach_the_mix_length(tmp_path, monkeypatch):
-    monkeypatch.setattr(mix, 'MIX_SECONDS', 9.0)
+def test_the_lock_is_checked_over_whole_beat_steps_and_the_mix_plays_its_last_bars(tmp_path, monkeypatch):
+    spans = _checked_spans(monkeypatch)
+    monkeypatch.setattr(mix, 'lengths', lambda beat, weight: (7.4, mix.MIN_MIX_SECONDS))
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     song_in = _clicks(tmp_path / 'b.wav', 120, 40.0, first=0.1)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
-    assert plan['mix_seconds'] == pytest.approx(24 * plan['beat_seconds'], abs=0.002)
-    _assert_mix_length(plan)
+    at, seconds = spans[0]
+    assert seconds == pytest.approx(32 * plan['beat_seconds'], abs=0.002) and seconds >= mix.LOCK_SECONDS
+    assert plan['mix_seconds'] == pytest.approx(16 * plan['beat_seconds'], abs=0.002)
+    assert plan['mix_at'] + plan['mix_seconds'] == pytest.approx(30.0 - mix.LOOK_SECONDS + at + seconds, abs=0.002)
     assert plan['mix_at'] + plan['mix_seconds'] == pytest.approx(30.0, abs=0.2)
+    assert plan['resume_at'] - plan['in_at'] == pytest.approx(plan['mix_seconds'] * plan['stretch'], abs=0.002)
 
 
-def test_a_late_first_beat_shortens_the_mix_by_whole_steps_down_to_the_minimum(tmp_path):
+def test_a_late_first_beat_shortens_the_checked_span_by_whole_steps_down_to_the_minimum(tmp_path, monkeypatch):
+    spans = _checked_spans(monkeypatch)
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     song_in = _clicks(tmp_path / 'b.wav', 120, 45.0, first=14.0)
     plan = mix.plan_transition(song_out, 30.0, song_in, 0.0)
-    beats = round(plan['mix_seconds'] / plan['beat_seconds'])
+    checked = round(spans[0][1] / plan['beat_seconds'])
     assert plan['in_at'] == pytest.approx(14.0, abs=0.05)
-    assert beats % mix.BEAT_STEP == 0 and mix.MIN_BEAT_MIX_SECONDS <= plan['mix_seconds'] < mix.MIX_SECONDS
+    assert checked % mix.BEAT_STEP == 0 and mix.MIN_BEAT_MIX_SECONDS <= spans[0][1] < mix.LOCK_SECONDS
+    _assert_mix_length(plan, spans[0][1])
     assert plan['resume_at'] <= mix.LOOK_SECONDS + 2.0
     late = _clicks(tmp_path / 'c.wav', 120, 45.0, first=19.0)
-    with pytest.raises(ValueError):
+    with pytest.raises(mix.NoRoom) as caught:
         mix.plan_transition(song_out, 30.0, late, 0.0)
+    assert caught.value.fade_seconds == pytest.approx(_LENGTHS[-1][1], abs=1e-4)
 
 
 def test_the_next_song_enters_on_a_nearby_section_start(tmp_path):
@@ -148,9 +187,9 @@ def test_the_next_song_enters_on_a_nearby_section_start(tmp_path):
     soundfile.write(tmp_path / 'c.wav', np.stack([audio, audio], axis=1), rate)
     plan = mix.plan_transition(song_out, 30.0, str(tmp_path / 'c.wav'), 5.0)
     assert plan['in_at'] == pytest.approx(7.5, abs=0.5 + 0.01)
+    _assert_mix_length(plan)
     plain = mix.plan_transition(song_out, 30.0, _clicks(tmp_path / 'd.wav', 120, 45.0), 5.0)
     assert abs(plain['in_at'] - 5.0) <= mix.PHRASE_REACH_BEATS * 0.5 + 0.01
-    _assert_mix_length(plan)
 
 
 def test_a_clearly_louder_next_song_rises_in(tmp_path):
@@ -165,7 +204,8 @@ def test_a_clearly_louder_next_song_rises_in(tmp_path):
 def _assert_short_fade(plan):
     beats = round(plan['mix_seconds'] / plan['beat_seconds'])
     assert plan['style'] == 'fade' and plan['stretch'] == 1.0
-    assert beats == np.ceil(mix.MIN_MIX_SECONDS / plan['beat_seconds'] - 1e-6)
+    assert plan['fade_seconds'] == pytest.approx(_LENGTHS[-1][1], abs=1e-4)
+    assert beats == np.ceil(plan['fade_seconds'] / plan['beat_seconds'] - 1e-3)
     assert plan['swap_at'] == pytest.approx(plan['mix_at'] + beats // 2 * plan['beat_seconds'], abs=0.002)
     assert plan['resume_at'] - plan['in_at'] == pytest.approx(plan['mix_seconds'], abs=0.002)
     assert plan['mix_at'] + plan['mix_seconds'] == pytest.approx(30.0, abs=0.3)
@@ -232,6 +272,50 @@ def test_the_percussion_mix_accepts_tempos_up_to_its_own_wider_limit():
     assert mix.tempos_match(120.0, 125.0, mix.PERCUSSION_LOCK_CENTS)
     assert mix.tempos_match(120.0, 62.5, mix.PERCUSSION_LOCK_CENTS)
     assert not mix.tempos_match(120.0, 127.0, mix.PERCUSSION_LOCK_CENTS)
+
+
+def test_lengths_count_felt_beats_fewer_for_a_dense_pair_within_their_limits():
+    pop, rock, fast, slow = 60.0 / 104, 60.0 / 115, 60.0 / 170, 60.0 / 70
+    assert mix.lengths(pop, 0.0) == pytest.approx((32 * pop, mix.MAX_FADE_SECONDS))
+    assert mix.lengths(rock, 1.0) == pytest.approx((24 * rock, 13 * rock))
+    assert mix.lengths(fast, 0.0) == pytest.approx((32 * fast, 18 * fast))
+    assert mix.lengths(fast, 1.0) == pytest.approx((mix.MIN_BEAT_MIX_SECONDS, mix.MIN_MIX_SECONDS))
+    assert mix.lengths(slow, 0.0) == pytest.approx((mix.MAX_BEAT_MIX_SECONDS, mix.MAX_FADE_SECONDS))
+    middle = mix.lengths(rock, 0.5)
+    assert mix.lengths(rock, 1.0)[0] < middle[0] < mix.lengths(rock, 0.0)[0]
+
+
+def test_density_needs_both_parts_dense_and_counts_a_drumless_part_as_sparse():
+    assert mix.density((0.2, 0.25)) == 1.0 and mix.density((mix.DENSE_SHARE, mix.DENSE_SHARE)) == 1.0
+    assert mix.density((0.8, 0.25)) == 0.0 and mix.density((mix.SPARSE_SHARE, 0.2)) == 0.0
+    assert mix.density((0.05, 0.25)) == 0.0 and mix.density((None, 0.25)) == 0.0
+    assert mix.density((0.425, 0.2)) == pytest.approx(0.5)
+
+
+def test_a_song_read_at_half_speed_is_felt_at_its_real_pace():
+    filled = _click_audio(360, 12.0)
+    assert mix._felt(filled, 80.0) == pytest.approx(60.0 / 160)
+    assert mix._felt(_click_audio(160, 12.0), 80.0) == pytest.approx(60.0 / 80)
+    assert mix._felt(filled, mix.FOLD_BPM) == pytest.approx(60.0 / mix.FOLD_BPM)
+    assert mix._feel(filled, 80.0, 11.5, 5.0) == (60.0 / 80, None)
+
+
+def test_a_dense_pair_crossfades_in_fewer_seconds_than_clicks_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(mix, '_felt', lambda audio, tempo: 0.5)
+    t = np.arange(int(40.0 * mix.RATE)) / mix.RATE
+    tone_out = (0.3 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    tone_in = (0.3 * np.sin(2 * np.pi * 330.0 * t)).astype(np.float32)
+    shares = [mix.drum_share(_click_audio(bpm, 20.0, level=0.48) + tone[:20 * mix.RATE], 0.0, 15.0)
+              for bpm, tone in ((120, tone_out), (150, tone_in))]
+    assert all(mix.DRUMLESS_SHARE < share <= mix.DENSE_SHARE for share in shares)
+    dense = mix.plan_transition(_write(tmp_path / 'a.wav', _click_audio(120, 40.0, level=0.48) + tone_out), 30.0,
+                                _write(tmp_path / 'b.wav', _click_audio(150, 40.0, level=0.48) + tone_in), 5.0)
+    _assert_short_fade(dense)
+    sparse = mix.plan_transition(_clicks(tmp_path / 'c.wav', 120, 40.0), 30.0, _clicks(tmp_path / 'd.wav', 150, 40.0), 5.0)
+    _assert_short_fade(sparse)
+    assert dense['fade_seconds'] == pytest.approx(mix.FADE_BEATS[1] * 0.5)
+    assert sparse['fade_seconds'] == pytest.approx(mix.FADE_BEATS[0] * 0.5)
+    assert dense['mix_seconds'] < sparse['mix_seconds']
 
 
 def test_a_tempo_between_the_tracker_frames_is_measured_finely(tmp_path):
