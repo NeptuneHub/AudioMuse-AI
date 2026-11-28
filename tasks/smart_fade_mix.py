@@ -35,17 +35,14 @@ Main Features:
 * style 'blend', 'rise' (RISE_DB louder), 'percussion_mix' (drum-led parts,
   also a fade's alternative within PERCUSSION_LOCK_CENTS) or 'fade', from the
   beat whose mix dips least (FLOOR_GAIN_DB, EDGE_SECONDS).
-* enabled reads the wizard's SWITCHES, or the set switched_on gives this
-  thread (the wizard's unsaved test): a lock tries percussion_mix, rise,
-  blend; with none on, or lock=False (the API's second plan when the voice
-  check drops a lock), it is planned as the fade ('switched_off'), and then
-  the onset checks are skipped.
+* enabled reads the wizard's SWITCHES or this thread's switched_on set (the
+  wizard's test): a lock tries percussion_mix, rise, blend; with none on, or
+  lock=False (the API's replan when the voice check drops a lock), it is the
+  fade ('switched_off') without onset checks.
 * confidence 'high' locked, 'low' a fade into a DROP_LU quieter start, else
   'medium'; k_filters is the BS.1770 K-weighting shared with the levels.
-* Speed without other numbers: the two windows and both songs' energy
-  curves (_levels, cached) are read at once; drum_share's harmonic/percussive
-  split is librosa.effects.hpss with its two HPSS_KERNEL median filters cut
-  into row and column chunks over HPSS_THREADS threads (same output).
+* The windows and both energy curves (_levels) are read at once; _hpss is
+  librosa's, its median filters split over HPSS_THREADS threads (same output).
 """
 
 import math

@@ -17,33 +17,33 @@ Main Features:
   whole steps, never under MIN_BEAT_MIX_SECONDS (else NoRoom)
 * Lengths count felt beats (MIX_BEATS, FADE_BEATS), fewer for a dense pair;
   FAST_ONSETS_PER_BEAT doubles a half-speed tempo; a tone over the clicks
-  crossfades shorter than clicks alone
+  crossfades shorter
 * The next song enters on a section start a few beats after its fade point,
   never more than PHRASE_REACH_BEATS away; RISE_DB louder, it rises in
-* Tempos too far apart (120 and 150 BPM) or a beat grid 150 ms off fade
-  unstretched over the whole beats reaching fade_seconds, swap_at in the middle;
-  tempos_match (60 cents, half or double time) is one rule on numbers and arrays; the onset check takes
-  clicks on the beat (stretched too) and refuses them 100 ms off
+* Tempos too far apart (120 and 150 BPM) or a grid 150 ms off fade unstretched
+  over the whole beats reaching fade_seconds, swap_at mid-mix; tempos_match
+  (60 cents, half or double time) takes numbers and arrays; the onset check
+  takes clicks on the beat (stretched too), not 100 ms off
 * A tempo between the tracker's frames is measured to a fraction of a BPM;
   songs without a beat raise ValueError
 * Tempos over MAX_LOCK_CENTS apart (120 and 125 BPM, 70 cents) crossfade even
   when their beats lock; a double-time song within it (244 BPM) still mixes
-* The beat model is replaced by smart_fade_click_events (conftest): a lock
-  starts on a downbeat of the ending song and enters on a downbeat of the
-  next one even when the order's points sit on other beats; an unknown bar
-  position, three beats a bar or an unsteady beat is the fade ('bar_phase',
-  'beat_tracking'); entry_bar is the next song's own bar
+* smart_fade_click_events (conftest) stands in for the beat model: a lock
+  starts on the ending song's downbeat and enters on the next one's even when
+  the order's points sit on other beats; an unknown bar, three beats a bar or
+  an unsteady beat is the fade ('bar_phase', 'beat_tracking'); entry_bar is
+  the next song's own bar
 * A default crossfade over a quiet ending into a quiet intro starts on an
   earlier beat dipping FLOOR_GAIN_DB less, within the last EDGE_SECONDS
 * A full-scale 997 Hz tone measures -3.01 LUFS; a fade from full level into
   a quieter next song is 'low' ('medium' steady, 'high' locked)
 * A real AAC .m4a, which libsndfile cannot open, plans like a WAV
-* The two windows and both energy curves are read at once; the threaded
-  harmonic/percussive split equals librosa.effects.hpss for any thread count
+* The windows and both energy curves are read at once; _hpss equals
+  librosa.effects.hpss for any thread count
 * Without a full lock, drum-led parts whose beats line up carry one
-  'percussion_mix' alternative of up to PERCUSSION_SECONDS; a tone is not
-  drum-led and gets none, clicks over a sub-bass are (the bass is left out); a locked pair of drum-led parts is a
-  'percussion_mix' too (the other tests treat click tracks as full songs)
+  'percussion_mix' alternative of up to PERCUSSION_SECONDS; a tone gets none,
+  clicks over a sub-bass do (bass left out); a locked drum-led pair is a
+  'percussion_mix' too (other tests treat click tracks as full songs)
 """
 
 import numpy as np

@@ -22,16 +22,14 @@ Main Features:
   server's ids and the echoed id goes through provider_echo_id
 * by_track ignores a smart_fade field; static/song_player.js reorders through
   the smart_fade endpoint and plays the decoded songs on one device-rate clock
-  started in the Play click (Safari); the playing row seeks up to its fade;
-  sources start on whole samples, then a fresh source plays on as decoded; a
-  song the browser cannot load is announced and skipped
-* With Smart fade every song plays at the gain the transition gives; without
-  a beat lock it is the one "Default crossfade"; only the playing song's
-  transition is planned, the next row's icon says how its song comes in; the
-  page only executes the answer (gains, speeds, volumes, filters),
-  computing none of it, and uses none of the old names; a beat mix's two
-  pieces are resampled along its speeds by the page (warpPiece) and play at
-  rate 1, the browser's playbackRate only when that fails
+  made in the Play click (Safari); the playing row seeks up to its fade;
+  sources start on whole samples, then a fresh one plays on as decoded; a
+  song the browser cannot load is skipped with a notice
+* With Smart fade every song plays at its transition's gain; without a beat
+  lock it is the one "Default crossfade"; only the playing song's transition
+  is planned, the next row's icon says how its song comes in; the page only
+  executes the answer and uses none of the old names; a beat mix's pieces are
+  resampled along its speeds (warpPiece) to play at rate 1 (else playbackRate)
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
@@ -39,8 +37,8 @@ Main Features:
   bit-exact FLAC, an unreadable file as it is, then removes the copy; outside
   the library 404, a failed download 502
 * transition answers 400 for bad from_id, to_id, out or in (other names
-  refused) or an unknown kind in the optional transitions (the kinds on for
-  that call only), 404 outside the library, plans from both downloads,
+  refused) or an unknown kind in the optional transitions (for that call),
+  404 outside the library, plans from both downloads,
   answers the JSON in its order (type ... info), removes them; a pair
   without a steady beat gets the crossfade, 400 only without room
 * warmup relays the manager status; with NEURAL_FINGERPRINT_ENABLED false
