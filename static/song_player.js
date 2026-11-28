@@ -22,7 +22,9 @@
  * around its own rendering:
  *   rows = await AudioMusePlayer.arrange(list, rows, {seed, keepOrder}) before
  *     rendering: with Smart fade the rows come back in smart fade order with
- *     where each one starts and ends (keepOrder keeps a path or an album in its order);
+ *     where each one starts and ends (keepOrder keeps a path or an album in its order;
+ *     the setup wizard's test adds smartFade, Smart fade without the checkbox, and
+ *     transitions, the kinds its unsaved switches leave on, sent to the transition API);
  *   AudioMusePlayer.show(list) once renderSongList filled the list;
  *   AudioMusePlayer.hide(list) when a new search starts.
  * The songs played are the list's .result-item rows (data-item-id, data-title),
@@ -32,9 +34,14 @@
  * fade-out, mixed into the next by the transition API, which the page only
  * executes, nothing is computed here: each song plays at its gain (the same
  * loudness for all); from start, for duration, both songs play their own
- * audio at their speed lists (playbackRate: in a beat mix the tempo glides
- * like a DJ deck without key lock, no time-stretch artifacts; a crossfade
- * stays at 1), their faders follow their volume lists (already shaped to a
+ * audio at their speed lists (in a beat mix the tempo glides like a DJ deck
+ * without key lock, no time-stretch artifacts; a crossfade stays at 1). For a
+ * beat mix the page resamples the two mix pieces itself along those speed
+ * lists (warpPiece: a Kaiser-windowed sinc of WARP_ZEROS zero crossings a
+ * side, in WARP_SLICE slices so the page stays responsive) and plays them at
+ * rate 1, because browsers resample a playbackRate with linear interpolation,
+ * which softens the highs; if that fails the pieces play at playbackRate as
+ * before. Their faders follow their volume lists (already shaped to a
  * steady level and clip-safe) and their high shelf, mid peak and low shelf
  * (or the next song's high-pass) follow high_db, mid_db, bass_db and
  * highpass_hz, flat on every source until a mix; the next song then plays on alone. The first
@@ -104,6 +111,12 @@
     const JOIN_LEAD_SECONDS = 5;
     const COMMIT_LEAD_SECONDS = 5;
     const GAIN_GLIDE_SECONDS = 0.3;
+    const WARP_ZEROS = 16;
+    const WARP_PHASES = 512;
+    const WARP_BETA = 8.6;
+    const WARP_CUTOFF = 0.97;
+    const WARP_SLICE = 32768;
+    const WARP_EXTRA_SECONDS = 0.1;
     const TRANSITION_REQUESTS = 2;
     const TRANSITION_LOOKAHEAD = 10;
     const settings = document.currentScript ? document.currentScript.dataset : {};
@@ -251,6 +264,93 @@
 
     function follow(param, values, from, length) {
         if (values) param.setValueCurveAtTime(Float32Array.from(values), from, length);
+    }
+
+    function besselI0(x) {
+        let sum = 1;
+        let term = 1;
+        for (let k = 1; k < 40 && term > 1e-12 * sum; k++) {
+            term *= (x / (2 * k)) ** 2;
+            sum += term;
+        }
+        return sum;
+    }
+
+    function warpTable(cutoff) {
+        const taps = 2 * WARP_ZEROS;
+        const table = new Float32Array((WARP_PHASES + 1) * taps);
+        const norm = besselI0(WARP_BETA);
+        for (let p = 0; p <= WARP_PHASES; p++) {
+            let total = 0;
+            for (let j = 0; j < taps; j++) {
+                const x = j - WARP_ZEROS + 1 - p / WARP_PHASES;
+                const ratio = x / WARP_ZEROS;
+                const window = Math.abs(ratio) >= 1 ? 0 : besselI0(WARP_BETA * Math.sqrt(1 - ratio * ratio)) / norm;
+                const value = (Math.abs(x) < 1e-9 ? cutoff : Math.sin(Math.PI * cutoff * x) / (Math.PI * x)) * window;
+                table[p * taps + j] = value;
+                total += value;
+            }
+            for (let j = 0; j < taps; j++) table[p * taps + j] /= total;
+        }
+        return table;
+    }
+
+    function nextTurn() {
+        return new Promise(resolve => {
+            const channel = new MessageChannel();
+            channel.port1.onmessage = () => resolve();
+            channel.port2.postMessage(0);
+        });
+    }
+
+    function warpReads(second, speed, span, count, rate) {
+        const step = span / (speed.length - 1);
+        const reached = new Float64Array(speed.length);
+        for (let k = 1; k < speed.length; k++) reached[k] = reached[k - 1] + (speed[k - 1] + speed[k]) / 2 * step;
+        const reads = new Float64Array(count);
+        for (let n = 0; n < count; n++) {
+            const t = n / rate;
+            const k = Math.min(speed.length - 1, Math.floor(t / step));
+            const u = t - k * step;
+            const slope = k < speed.length - 1 ? (speed[k + 1] - speed[k]) / step : 0;
+            reads[n] = second + reached[k] + speed[k] * u + slope * u * u / 2;
+        }
+        return reads;
+    }
+
+    async function warpPiece(piece, second, speed, span) {
+        const rate = audioCtx.sampleRate;
+        const source = piece.buffer;
+        const count = Math.round((span + WARP_EXTRA_SECONDS) * rate);
+        const reads = warpReads(second - piece.start, speed, span, count, rate);
+        const table = warpTable(WARP_CUTOFF * Math.min(1, 1 / Math.max(...speed)));
+        const taps = 2 * WARP_ZEROS;
+        const out = audioCtx.createBuffer(source.numberOfChannels, count, rate);
+        for (let c = 0; c < source.numberOfChannels; c++) {
+            const input = source.getChannelData(c);
+            const output = out.getChannelData(c);
+            for (let from = 0; from < count; from += WARP_SLICE) {
+                const until = Math.min(count, from + WARP_SLICE);
+                for (let n = from; n < until; n++) {
+                    const at = reads[n] * source.sampleRate;
+                    const base = Math.floor(at);
+                    const row = Math.round((at - base) * WARP_PHASES) * taps;
+                    const first = base - WARP_ZEROS + 1;
+                    let sum = 0;
+                    if (first >= 0 && first + taps <= input.length) {
+                        for (let j = 0; j < taps; j++) sum += input[first + j] * table[row + j];
+                    } else {
+                        for (let j = 0; j < taps; j++) {
+                            const k = first + j;
+                            if (k >= 0 && k < input.length) sum += input[k] * table[row + j];
+                        }
+                    }
+                    output[n] = sum;
+                }
+                await nextTurn();
+            }
+        }
+        return { key: 'warped', start: second, buffer: out, end: second + count / rate, last: true, until: second + count / rate };
     }
 
     function validPlan(plan) {
@@ -675,6 +775,7 @@
             let job = batch.requests.get(key);
             if (!job) {
                 const query = new URLSearchParams({ from_id: from.item_id, to_id: to.item_id, out: from.end, in: to.start });
+                if (typeof choice?.transitions === 'string') query.set('transitions', choice.transitions);
                 job = { key, query };
                 job.promise = new Promise(resolve => { job.resolve = resolve; });
                 batch.requests.set(key, job);
@@ -860,7 +961,7 @@
                             node.mid.frequency.value = mix.filters.mid_hz;
                             node.mid.Q.value = mix.filters.mid_q;
                             node.high.frequency.value = mix.filters.high_hz;
-                            follow(source.playbackRate, side.speed, state.handoverAt, span);
+                            if (!state.pieces.warped) follow(source.playbackRate, side.speed, state.handoverAt, span);
                             follow(node.gain.gain, side.volume, state.handoverAt, span);
                             follow(node.high.gain, side.high_db, state.handoverAt, span);
                             follow(node.mid.gain, side.mid_db, state.handoverAt, span);
@@ -952,7 +1053,17 @@
                     pieceAround(next, mix.to.start, mix.to.continue_from),
                     pieceAt(next, mix.to.continue_from)
                 ]);
-                return { from, to };
+                if ([mix.from.speed, mix.to.speed].every(speed => speed.every(value => value === 1))) return { from, to };
+                try {
+                    return {
+                        from: await warpPiece(from, mix.start, mix.from.speed, mix.duration),
+                        to: await warpPiece(to, mix.to.start, mix.to.speed, mix.duration),
+                        warped: true
+                    };
+                } catch (error) {
+                    console.error('Could not resample the beat-matched mix; the browser plays it at its speed instead.', error);
+                    return { from, to };
+                }
             } catch (error) {
                 console.error('Could not load the pieces of the beat-matched mix; crossfading into the next song instead.', error);
                 return null;
@@ -1089,7 +1200,9 @@
             shown += 1;
             resetPlanning();
             const seed = options.seed && options.seed.item_id ? { item_id: String(options.seed.item_id), title: options.seed.title || 'Unknown' } : null;
-            const nextChoice = { smart: NEURAL && picked.smart && !picked.demo, demo: NEURAL && picked.demo && !picked.smart, seed, fades: new Map(), note: '' };
+            const smart = NEURAL && (!!options.smartFade || (picked.smart && !picked.demo));
+            const transitions = Array.isArray(options.transitions) ? options.transitions.join(',') : null;
+            const nextChoice = { smart, demo: NEURAL && !smart && picked.demo && !picked.smart, seed, fades: new Map(), note: '', transitions };
             choice = nextChoice;
             if (!nextChoice.smart || !rows.length) return rows;
             try {

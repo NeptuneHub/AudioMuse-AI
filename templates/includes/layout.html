@@ -130,8 +130,9 @@
     <script src="{{ url_for('static', filename='error_display.js') }}?v={{ app_version }}"></script>
     <script src="{{ url_for('static', filename='autocomplete.js') }}?v={{ app_version }}" data-page-size="{{ search_page_size }}" data-min-chars="{{ search_min_chars }}"></script>
     {# The one song player (static/song_player.js) and its demo client, on every
-       page that answers a list of songs; never on the map or the clustering page. #}
-    {% if active in ['similarity', 'path', 'hyperbolic', 'clap_search', 'lyrics_search', 'sonic_fingerprint', 'recording_search', 'alchemy', 'album_creation'] %}
+       page that answers a list of songs and on the setup wizard (its smart fade
+       test); never on the map or the clustering page. #}
+    {% if active in ['similarity', 'path', 'hyperbolic', 'clap_search', 'lyrics_search', 'sonic_fingerprint', 'recording_search', 'alchemy', 'album_creation', 'setup'] %}
     {% set player_urls = song_player or {} %}
     <script src="{{ url_for('static', filename='song_demo.js') }}?v={{ app_version }}" data-url="{{ player_urls.get('demo', '') }}"></script>
     <script src="{{ url_for('static', filename='song_player.js') }}?v={{ app_version }}" data-play-url="{{ player_urls.get('play', '') }}" data-smart-fade-url="{{ player_urls.get('smart_fade', '') }}" data-transition-url="{{ player_urls.get('transition', '') }}" data-neural="{{ 'true' if neural_enabled else 'false' }}"></script>

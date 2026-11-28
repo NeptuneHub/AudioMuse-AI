@@ -45,6 +45,7 @@ REQUIRED = [
     "model/musicnn_prediction.onnx",
     "model/neural_fingerprint.onnx",
     "model/neural_fingerprint_pq.npz",
+    "model/beat_this_small.onnx",
     "model/clap_text_model.onnx",
     "model/model_epoch_36.onnx",
     "model/model_epoch_36.onnx.data",
@@ -129,7 +130,7 @@ def assemble():
     repo = _env("GITHUB_REPOSITORY")
     MODEL.mkdir(parents=True, exist_ok=True)
 
-    print(f"==> musicnn + neural fingerprint + CLAP text models (from {model_release})")
+    print(f"==> musicnn + neural fingerprint + beat tracker + CLAP text models (from {model_release})")
     _gh_download(
         model_release,
         repo,
@@ -139,6 +140,7 @@ def assemble():
             "musicnn_prediction.onnx",
             "neural_fingerprint.onnx",
             "neural_fingerprint_pq.npz",
+            "beat_this_small.onnx",
             "clap_text_model.onnx",
         ],
     )

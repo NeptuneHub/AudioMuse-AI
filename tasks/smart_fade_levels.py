@@ -28,8 +28,9 @@ Main Features:
   (unlocked: held at BASS_HZ until the swap). A percussion mix swaps one
   kick (DRUM_BASS_CUT_DB) and the hats (DRUM_HIGH_CUT_DB) at a time. A
   crossfade keeps equal-power faders.
-* unlocked_style skips kinds switched off (mix.enabled); a filter rise
-  needs tempos within RISE_RELATED_CENTS of a RISE_RATIOS relation.
+* unlocked_style skips kinds switched off (mix.enabled), measuring both
+  parts' drum share at once; a filter rise needs tempos within
+  RISE_RELATED_CENTS of a RISE_RATIOS relation.
 * swap_point: the 4-beat bar nearest the middle beat where the next
   song's bass plays (SWAP_PRESENT of its loudest bar) in SWAP_RANGE.
 * transition simulates gain, speed, filters and faders at RATE.
@@ -46,6 +47,7 @@ Main Features:
 """
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -298,7 +300,8 @@ def vocal_shapes(plan, seconds, points, shapes):
 
 def unlocked_style(plan, part_a, part_b, energy_a, energy_b):
     if mix.enabled('eq_blend'):
-        shares = [mix.drum_share(part, 0.0, part.size / mix.RATE) for part in (part_a, part_b)]
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-drums') as pool:
+            shares = list(pool.map(lambda part: mix.drum_share(part, 0.0, part.size / mix.RATE), (part_a, part_b)))
         if min(share if share is not None else 0.0 for share in shares) <= DRUMLESS_SHARE:
             return 'eq_blend'
     tempo_from, tempo_to = plan.get('tempo_from'), plan.get('tempo_to')

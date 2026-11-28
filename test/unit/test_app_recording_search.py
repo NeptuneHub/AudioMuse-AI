@@ -22,25 +22,25 @@ Main Features:
   server's ids and the echoed id goes through provider_echo_id
 * by_track ignores a smart_fade field; static/song_player.js reorders through
   the smart_fade endpoint and plays the decoded songs on one device-rate clock
-  started in the Play click (Safari); the playing row seeks up to its fade;
-  sources start on whole samples, then a fresh source plays on as decoded; a
-  song the browser cannot load is announced and skipped
-* With Smart fade every song plays at the gain the transition gives; without
-  a beat lock it is the one "Default crossfade"; only the playing song's
-  transition is planned, the next row's icon says how its song comes in; the
-  page only executes the answer (gains, speeds, volumes, filters),
-  computing none of it, and uses none of the old names
+  made in the Play click (Safari); the playing row seeks up to its fade;
+  sources start on whole samples, then a fresh one plays on as decoded; a
+  song the browser cannot load is skipped with a notice
+* With Smart fade every song plays at its transition's gain; without a beat
+  lock it is the one "Default crossfade"; only the playing song's transition
+  is planned, the next row's icon says how its song comes in; the page only
+  executes the answer and uses none of the old names; a beat mix's pieces are
+  resampled along its speeds (warpPiece) to play at rate 1 (else playbackRate)
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
 * play (fingerprint off too) streams a song while it downloads, a WAV as
   bit-exact FLAC, an unreadable file as it is, then removes the copy; outside
   the library 404, a failed download 502
-* transition answers 400 for missing or bad from_id, to_id, out or in (the
-  inputs it always had; other names are refused), 404 outside the library,
-  plans from both downloads, answers the JSON in its order (type, start,
-  duration, middle, step, filters, from, to, info), removes them; a
-  pair without a steady beat gets the crossfade, 400 only without room
+* transition answers 400 for bad from_id, to_id, out or in (other names
+  refused) or an unknown kind in the optional transitions (for that call),
+  404 outside the library, plans from both downloads,
+  answers the JSON in its order (type ... info), removes them; a pair
+  without a steady beat gets the crossfade, 400 only without room
 * warmup relays the manager status; with NEURAL_FINGERPRINT_ENABLED false
   every route but play answers 503 naming the flag and the page says so
 * The page gets the HTTPS port, zero when it is off, and why it did not start
@@ -555,9 +555,16 @@ def test_only_the_next_ten_pairs_are_requested_and_only_confirmed_plans_get_badg
 def test_a_beat_matched_mix_plays_both_songs_at_the_api_speeds_without_time_stretching():
     source = _repo_file('static', 'song_player.js')
     mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('showTransition(playQueue[index + 1], mix)')]
-    assert 'follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
+    assert 'if (!state.pieces.warped) follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
     assert 'const played = mix.to.continue_from - mix.to.start;' in mix
     assert 'at: t => mix.to.start + played * Math.min(1, Math.max(0, (t - state.handoverAt) / span))' in mix
+    pieces = source[source.index('async function mixPieces('):source.index('async function prepareNext(')]
+    assert 'if ([mix.from.speed, mix.to.speed].every(speed => speed.every(value => value === 1))) return { from, to };' in pieces
+    assert 'from: await warpPiece(from, mix.start, mix.from.speed, mix.duration),' in pieces
+    assert 'to: await warpPiece(to, mix.to.start, mix.to.speed, mix.duration),' in pieces
+    assert 'warped: true' in pieces and 'return { from, to };' in pieces[pieces.index('catch (error)'):]
+    warp = source[source.index('async function warpPiece('):source.index('function create(')]
+    assert 'await nextTurn();' in warp and 'for (let j = 0; j < taps; j++) sum += input[first + j] * table[row + j];' in warp
     for gone in ('stretchSegment', 'similarity', 'WSOLA', 'mix.lead', 'mix.buffer', 'mix.follow', 'position', 'function along('):
         assert gone not in source, gone
 
@@ -937,6 +944,39 @@ def test_transition_downloads_an_identical_song_once(client, bp_mod, monkeypatch
     response = client.get('/api/recording_search/transition?from_id=42&to_id=42&out=200&in=20')
     assert response.status_code == 200 and response.get_json() == {'same': True}
     assert seen == ['42']
+
+
+def test_transition_plans_one_request_with_the_switches_it_sends_and_refuses_an_unknown_kind(client, bp_mod, monkeypatch):
+    import config
+    from tasks import smart_fade_levels, smart_fade_mix, smart_fade_voice
+
+    for flag in smart_fade_mix.SWITCHES.values():
+        monkeypatch.setattr(config, flag, True)
+    seen = []
+
+    def plan(*args):
+        seen.append({style for style in smart_fade_mix.SWITCHES if smart_fade_mix.enabled(style)})
+        return {}
+
+    def fetch(item_id, folder):
+        seen.append(item_id)
+        return os.path.join(folder, item_id), None
+
+    monkeypatch.setattr(bp_mod, '_fetch_song', fetch)
+    monkeypatch.setattr(smart_fade_levels, 'prepare_song', lambda path: path)
+    monkeypatch.setattr(smart_fade_mix, 'plan_transition', plan)
+    monkeypatch.setattr(smart_fade_voice, 'clear_voice', lambda a, b, plan: plan)
+    monkeypatch.setattr(smart_fade_levels, 'transition', lambda a, b, plan, prepared: {'eq_blend': smart_fade_mix.enabled('eq_blend')})
+    url = '/api/recording_search/transition?from_id=42&to_id=42&out=200&in=20'
+
+    response = client.get(url + '&transitions=eq_blend,nope')
+    assert response.status_code == 400 and 'beat_mix' in response.get_json()['error'] and seen == []
+    assert client.get(url + '&transitions=beat_mix,%20crossfade').get_json() == {'eq_blend': False}
+    assert client.get(url + '&transitions=').get_json() == {'eq_blend': False}
+    assert client.get(url + '&transitions=eq_blend').get_json() == {'eq_blend': True}
+    assert client.get(url).get_json() == {'eq_blend': True}
+    assert seen == ['42', {'blend'}, '42', set(), '42', {'eq_blend'}, '42', set(smart_fade_mix.SWITCHES)]
+    assert all(smart_fade_mix.enabled(style) for style in smart_fade_mix.SWITCHES)
 
 
 def test_transition_reuses_completed_playback_downloads(client, monkeypatch, tmp_path):

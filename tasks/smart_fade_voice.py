@@ -25,7 +25,9 @@ Main Features:
   a locked one with voices over each other plays the beat mix, or with the
   beat mix switched off (mix.enabled) the crossfade ending on that second.
 * Recover a few skipped seconds with a local pass, preserving fade length,
-  audible energy, vocal balance and each source's half-bar grid.
+  audible energy, vocal balance and each source's whole-bar grid (the next
+  song's own bar, entry_bar). A beat mix whose final cues are not whole bars
+  from the planned downbeats plays the crossfade ('bar_phase').
 * Restore early endings toward the requested cue with a separate bounded pass.
   Keep the incoming cue and approved vocal taper; reject fading energy and
   increased competition in the later half, retaining a small audible tail.
@@ -33,6 +35,8 @@ Main Features:
   The ending song is read only up to TAIL_READ_SECONDS past the planned end.
 * Skip only singing patches contained in an already proven vocal union;
   refine uncovered patches and their neighbours at the original resolution.
+* MusiCNN and Silero hear each read at once; MusiCNN runs PREDICT_PATCHES
+  patches a call (on Linux many patches a call run slower, same scores).
 """
 
 import logging
@@ -56,12 +60,14 @@ FFT_SIZE = 512
 PATCH_FRAMES = 187
 PATCH_HOP_FRAMES = 31
 PATCH_SECONDS = ((PATCH_FRAMES - 1) * MEL_HOP + FFT_SIZE) / VAD_RATE
+PREDICT_PATCHES = 2
 SILERO_THRESHOLD = 0.5
 SILERO_NEG_THRESHOLD = 0.35
 MIN_VOICE_MS = 300
 MIN_GAP_MS = 500
 VOICE_PAD_MS = 200
 BAR_BEATS = 4
+BAR_SLACK_SECONDS = 0.01
 FREE_STEP_SECONDS = 0.5
 SILENT_DBFS = -50.0
 FRAME_SECONDS = 0.1
@@ -118,9 +124,11 @@ def _predict(patches):
     if not len(patches):
         return np.zeros(0)
     embedding, prediction, tags = _musicnn()
-    features = embedding.run([EMBEDDING_OUTPUT], {EMBEDDING_INPUT: patches})[0]
-    logits = prediction.run([PREDICTION_OUTPUT], {PREDICTION_INPUT: features})[0]
-    return (1.0 / (1.0 + np.exp(-logits[:, tags]))).max(axis=1)
+    logits = []
+    for k in range(0, len(patches), PREDICT_PATCHES):
+        features = embedding.run([EMBEDDING_OUTPUT], {EMBEDDING_INPUT: patches[k:k + PREDICT_PATCHES]})[0]
+        logits.append(prediction.run([PREDICTION_OUTPUT], {PREDICTION_INPUT: features})[0])
+    return (1.0 / (1.0 + np.exp(-np.concatenate(logits)[:, tags]))).max(axis=1)
 
 
 def vocal_scores(audio):
@@ -183,10 +191,9 @@ def warmup():
         burst = 0.1 * np.sin(2 * np.pi * 1000 * np.arange(int(0.03 * mix.RATE)) / mix.RATE)
         for at in np.arange(0, audio.size, mix.RATE // 2):
             audio[at:at + burst.size] = burst
-        mix._beats(audio)
+        mix._events(audio)
         _pin_blas_single_thread()
-        mix._phrase_entry(audio, 4.0)
-        mix._agreement(audio)
+        mix._phrase_entry(audio, np.arange(0.0, 12.0, 0.5), 4.0)
         logger.info('Smart fade models and musical analysis warmed up')
     except Exception:
         logger.warning('Smart fade warmup failed; the next transition will retry', exc_info=True)
@@ -205,9 +212,11 @@ def voiced_spans(audio):
     """Every voice in audio, as (start, end) seconds: what MusiCNN or Silero hears."""
     audio = np.ascontiguousarray(audio, dtype=np.float32)
     spans, failures = [], []
-    for detector in (sung_spans, spoken_spans):
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-voices') as pool:
+        running = [(detector, pool.submit(detector, audio)) for detector in (sung_spans, spoken_spans)]
+    for detector, future in running:
         try:
-            spans += detector(audio)
+            spans += future.result()
         except Exception as exc:
             failures.append(exc)
             logger.warning("The %s voice detector failed for a smart fade transition: %s", detector.__name__, exc)
@@ -231,7 +240,19 @@ def _steps(plan):
     if not beat or plan['style'] == 'fade':
         return FREE_STEP_SECONDS, FREE_STEP_SECONDS
     beats = max(1, int(round(plan['mix_seconds'] / beat)))
-    return BAR_BEATS * plan['mix_seconds'] / beats, BAR_BEATS * (plan['resume_at'] - plan['in_at']) / beats
+    step_in = BAR_BEATS * (plan['resume_at'] - plan['in_at']) / beats
+    bar_in = plan.get('entry_bar')
+    if bar_in and step_in > 0:
+        step_in *= max(1, round(bar_in / step_in))
+    return BAR_BEATS * plan['mix_seconds'] / beats, step_in
+
+
+def _whole_bars(plan, moved):
+    if plan['style'] == 'fade' or moved['style'] == 'fade' or not plan.get('beat_seconds'):
+        return True
+    step_out, step_in = _steps(plan)
+    return all(abs(delta / step - round(delta / step)) * step <= BAR_SLACK_SECONDS
+               for delta, step in ((moved['mix_at'] - plan['mix_at'], step_out), (moved['in_at'] - plan['in_at'], step_in)))
 
 
 def _heard(path, start, seconds):
@@ -285,9 +306,6 @@ def _recover(ending, starting, plan):
     seconds = plan['mix_seconds']
     source_seconds = plan['resume_at'] - plan['in_at']
     step_out, step_in = _steps(plan)
-    if plan['style'] != 'fade' and plan.get('beat_seconds'):
-        step_out /= 2.0
-        step_in /= 2.0
     audible_end = ending['at'] + ending['bounds'][1]
     margin = min(max(0.0, config.SMART_FADE_END_MARGIN_SECONDS), audible_end / 10.0)
     room_out = max(0.0, min(budget, audible_end - margin - seconds - plan['mix_at']))
@@ -340,8 +358,6 @@ def _later_ending(ending, starting, plan):
     tail = max(min(margin, RECOVERY_MIN_TAIL_SECONDS), margin - budget)
     room = max(0.0, min(budget, requested - finish, audible_end - tail - finish))
     step = _steps(plan)[0]
-    if plan['style'] != 'fade' and plan.get('beat_seconds'):
-        step /= 2.0
     share = np.linspace(0.0, 1.0, 81)
     weights = np.maximum(0.05, np.cos(np.pi / 2 * share) ** 2)
     central = np.sin(np.pi * share) ** 2
@@ -469,6 +485,8 @@ def _moved(path_out, path_in, plan):
             moved['style'] = 'blend'
         else:
             moved = dict(_crossfade_instead(moved, incoming_end), beat_rejection='switched_off')
+    if not _whole_bars(plan, moved):
+        moved = dict(_crossfade_instead(moved, incoming_end), beat_rejection='bar_phase')
     logger.info("Smart crossfade at %.2f s for %.2f s, incoming cue %.2f s, audible tail %.2f s, vocal competition %.2f",
                 moved['mix_at'], seconds, moved['in_at'], moved['voice']['end_margin'], moved['voice']['overlap'])
     return moved

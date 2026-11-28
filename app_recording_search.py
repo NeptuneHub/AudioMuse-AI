@@ -28,7 +28,8 @@ Main Features:
   fingerprint off too), `/api/recording_search/transition` (JSON:
   everything a player executes to mix the current song into the next, moved
   by tasks.smart_fade_voice toward audible cues with bounded trimming and softer vocal overlap;
-  a beat lock the voice check drops is planned again without one) and
+  a beat lock the voice check drops is planned again without one; optional
+  transitions switches kinds for one call) and
   `/api/recording_search/warmup`.
 * The upload is handed to the manager as a stream, never read into memory
   here; a Content-Length past RECORDING_SEARCH_MAX_UPLOAD_MB answers 413 before
@@ -650,6 +651,16 @@ def recording_search_transition_api():
         schema:
           type: number
         description: Where the next song should start, in seconds (its fade_in_seconds from the smart fade order).
+      - in: query
+        name: transitions
+        required: false
+        schema:
+          type: string
+        description: |
+          Optional, for a test such as the setup wizard's: the transitions
+          switched on for this request only, as a comma list of the type
+          names below (crossfade is always on; empty = only the crossfade).
+          Left out, the switches saved in the setup wizard apply.
     responses:
       200:
         description: |
@@ -825,8 +836,8 @@ def recording_search_transition_api():
         description: The media server did not deliver a song.
     """
     started = perf_counter()
-    from tasks.smart_fade_levels import crossfade_plan, prepare_song, transition
-    from tasks.smart_fade_mix import plan_transition
+    from tasks.smart_fade_levels import TYPES, crossfade_plan, prepare_song, transition
+    from tasks.smart_fade_mix import plan_transition, switched_on
     from tasks.smart_fade_voice import clear_voice
 
     if disabled := _disabled_response():
@@ -840,6 +851,13 @@ def recording_search_transition_api():
         out_seconds = in_seconds = float('nan')
     if not (from_id and to_id and math.isfinite(out_seconds) and math.isfinite(in_seconds)) or min(out_seconds, in_seconds) < 0:
         return json_error(ERR_INVALID_REQUEST, 'Give from_id, to_id, out and in (seconds).')
+    switches = contextlib.nullcontext()
+    if (chosen := request.args.get('transitions')) is not None:
+        styles = {name: style for style, name in TYPES.items()}
+        names = {name.strip() for name in chosen.split(',') if name.strip()}
+        if not names <= styles.keys():
+            return json_error(ERR_INVALID_REQUEST, f'transitions is a comma list of: {", ".join(styles)}.')
+        switches = switched_on({styles[name] for name in names})
     folder = tempfile.mkdtemp(prefix='audiomuse_mix_')
     marked = perf_counter()
     timings = {'setup': (marked - started) * 1000.0}
@@ -859,7 +877,7 @@ def recording_search_transition_api():
         fetched = perf_counter()
         timings['fetch'] = (fetched - marked) * 1000.0
         try:
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-levels') as pool:
+            with switches, ThreadPoolExecutor(max_workers=2, thread_name_prefix='smart-fade-levels') as pool:
                 measured = [pool.submit(prepare_song, path) for path in paths]
                 try:
                     plan = plan_transition(paths[0], out_seconds, paths[1], in_seconds)

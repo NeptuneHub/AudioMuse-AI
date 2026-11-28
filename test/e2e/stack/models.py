@@ -37,6 +37,7 @@ MODEL_FILES = {
     'CLAP_SAE_MODEL_PATH': 'dclap_sae_k20_d1024_best_decoder.onnx',
     'NEURAL_FINGERPRINT_MODEL_PATH': 'neural_fingerprint.onnx',
     'NEURAL_FINGERPRINT_CODEBOOK_PATH': 'neural_fingerprint_pq.npz',
+    'BEAT_THIS_MODEL_PATH': 'beat_this_small.onnx',
     'LYRICS_GTE_ONNX_PATH': 'gte-multilingual-base-int8.onnx',
     'SILERO_VAD_ONNX_PATH': 'silero_vad.onnx',
 }

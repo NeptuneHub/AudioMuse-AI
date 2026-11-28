@@ -81,6 +81,7 @@ def build_child_env(paths, role, database_url, postgres, extra):
             ),
             "NEURAL_FINGERPRINT_MODEL_PATH": os.path.join(model_dir, "neural_fingerprint.onnx"),
             "NEURAL_FINGERPRINT_CODEBOOK_PATH": os.path.join(model_dir, "neural_fingerprint_pq.npz"),
+            "BEAT_THIS_MODEL_PATH": os.path.join(model_dir, "beat_this_small.onnx"),
             "LYRICS_MODEL_DIR": model_dir,
             "LYRICS_WHISPER_MODEL_DIR": os.path.join(model_dir, "whisper-small-onnx"),
             "SILERO_VAD_ONNX_PATH": os.path.join(model_dir, "silero_vad.onnx"),

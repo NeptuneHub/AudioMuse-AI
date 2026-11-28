@@ -3084,8 +3084,10 @@ louder next song at an unrelated tempo.
    - Label: `Beat-matched mix with a bass swap into <next song> (X to Y BPM)`
    - When: a confirmed beat lock: the tempos are within 3.5% (or half or
      double time), so the two songs end up at most 60 cents apart in pitch,
-     the two songs' drum hits line up within 30 ms, and on both songs
-     several beat trackers agree on where the beats are (section 19.3).
+     the two songs' drum hits line up within 30 ms, both beats are steady,
+     and both songs' bar positions are known: the mix starts on a downbeat
+     of the ending song and the next song enters on one of its own, so bar
+     meets bar (section 19.3).
    - How it sounds: both songs play together for the whole bars nearest
      the pair's mix length (24 to 32 felt beats, 10 to 21 seconds, see "How
      long a transition lasts" below), the last bars of the span the beat
@@ -3221,18 +3223,25 @@ next one that fits, never a relabelled one:
   next song gets the beat mix; with the beat mix off a lock plays only where
   the percussion mix or the beat rise fits, and a locked percussion mix that
   meets two voices (which plays the beat mix when it is on) is planned again
-  as a pair without a lock. With all three off the beat
-  committee and the onset checks are skipped, but the crossfade's level
-  scan costs about as much (on 20 real pairs the planning median was 4.10
-  seconds with them on and 4.16 off for the locked pairs); the beat grid,
-  the lengths and the voice check still run, because the crossfade starts
-  on a beat and the voice check moves its cues.
+  as a pair without a lock. With all three off the onset checks are
+  skipped, but the crossfade's level scan costs about as much; the beat
+  model, the lengths and the voice check still run, because the crossfade
+  starts on a beat and the voice check moves its cues.
 - Without a lock the order is EQ blend, filter rise, vocal handoff, default
   crossfade, each tried only when switched on (with the EQ blend off, a pair
   where one part has no drums can get the filter rise). With the vocal
   handoff off, the default crossfade stays a volume crossfade even where
   voices overlap; the beat-matched kinds, the EQ blend and the filter rise
   keep their voice exchange.
+
+Under the switches, "Test the transitions" takes two songs from the usual
+search boxes and lists them; Play in the shared player plays the first, then
+the second through the transition the switches choose as they stand on the
+page, saved or not. The player sends them with each transition request
+(`transitions`, section 19.2), so nothing is stored and no other listener
+hears them; changing a switch plans the pair again. Skip to the fade jumps
+to the transition. The box needs a saved configuration with the neural
+fingerprint on.
 
 **How long a transition lasts**
 
@@ -3314,6 +3323,10 @@ same way. With the neural fingerprint off both answer 503.
      always had: `from_id` (the current song), `to_id` (the next one), `out`
      (the current song's `fade_out_seconds`) and `in` (the next song's
      `fade_in_seconds`).
+   - Optional `transitions`: the kinds switched on for this one request, a
+     comma list of the type names below (`crossfade` is always on; empty
+     means only the crossfade), as the setup wizard's test sends its unsaved
+     switches. Left out, the saved switches apply.
    - Returns the transition timing and curves for the player.
      - `type`: `beat_mix`, `beat_rise`, `percussion_mix`, `eq_blend`,
        `filter_rise`, `vocal_handoff` or `crossfade` (section 19.1).
@@ -3371,7 +3384,8 @@ same way. With the neural fingerprint off both answer 503.
    ```
 
    - Errors: `400` "Give from_id, to_id, out and in (seconds)." (bad or
-     missing parameters), `400` "These two songs have no
+     missing parameters), `400` "transitions is a comma list of: ..." (an
+     unknown name in `transitions`), `400` "These two songs have no
      room for a crossfade at these points.", `404` "This song is not in the
      library.", `502` "The media server did not deliver this song." and
      `500` "The transition could not be made. Check the container logs."
@@ -3468,21 +3482,23 @@ the end of its file and the next song starts right after.
    tempo-matchable share by 3 to 4 points. A 200-song call answers in 0.27 to
    0.32 s.
 2. **Beat match** (`tasks/smart_fade_mix.py`, `plan_transition`). Both songs
-   are downloaded from the media server and only two regions are decoded
+   are downloaded from the media server and only two windows are decoded
    (mono, 44.1 kHz): the 26 seconds before the ending song's fade-out time
-   plus 2 after it, and from 8 seconds before the next song's fade-in time to
-   28 seconds after it. A file libsndfile cannot open (an AAC `.m4a`; librosa
+   plus 2 after it, and from 4 seconds before the next song's fade-in time,
+   29.8 seconds in all (the beat model's 30-second input). A file libsndfile cannot open (an AAC `.m4a`; librosa
    1.0 no longer falls back to another decoder) goes through the analysis's
    PyAV loader instead: before, every such pair answered 500 and played the
    default crossfade without a plan, 14 of 86 transition calls in one evening
    of listening.
-   librosa's beat tracker, the one the analysis uses,
-   finds the beats in each (the next song's tempo only after its fade-in
-   time); the tempo and the beat grid come from a line fitted through the beat
-   times (a median beat gap is quantised to the tracker's 11.6 ms frames, off
-   by up to 2%, and on real stretched pairs that left the beats drifting a
-   median 110 ms apart over the mix, 35 ms with the fit). Fewer than 4 beats
-   in either region raise `ValueError`. The stretch is the ending song's tempo
+   A beat and downbeat tracker (`tasks/smart_fade_beats.py`: the small model
+   of a tracker from ISMIR 2024, MIT code and weights, `beat_this_small.onnx`
+   from the model release, one onnxruntime call per window) finds the beats and
+   downbeats of each window. A line fitted through the beats of the span
+   where the mix can happen (numbered by whole periods, Huber weights) gives
+   the local tempo; its residual (at most 40 ms) and coverage (80% of the
+   grid) say whether the beat is steady, and the downbeats in that span give
+   the bar position (four beats a bar on 75% of them, else unknown). Fewer
+   than 4 beats in either window, or a missing model, raise `ValueError`. The stretch is the ending song's tempo
    over the next one's, half or double time allowed; past 60 cents (3.5%) the
    next song is not stretched (`tempos_match`, the same rule the order uses on
    the stored tempo). The next song enters on its first beat after its fade-in time, or
@@ -3542,16 +3558,28 @@ the end of its file and the next song starts right after.
    no drums for 8 seconds) and the best offset alone (a coin flip between
    16th-note peaks).
 
-   **Confirmed beat lock** (`_agreement`). Passing the check above is not
-   enough to mix: the beats of both parts must also be trusted. A committee
-   of four beat sequences is computed on each part (librosa's tracker on
-   full-band, bass-band under 200 Hz and treble-band over 4 kHz onsets, plus
-   its predominant-pulse curve), and their mean pairwise information gain (a
-   40-bin beat error histogram, both directions, the lower kept) must reach
-   1 bit (on 48 songs listeners rated the beats 2.4 of 5 at 1 bit and 3.7 at
-   1.5 bits, ISMIR 2012; beat tracking errors were also the main reason
-   curators rated beat-aligned transitions bad, 15% "beats do not align",
-   ISMIR 2017). A pair that fails any check gets the `fade` plan, which the
+   **Confirmed beat lock**. Passing the check above is not enough to mix:
+   the beats of both parts must be steady (the fitted line's residual and
+   coverage, step 2) and both bar positions known. The mix then starts on a
+   downbeat of the ending song and the next song enters on a downbeat of its
+   own (the first after its fade-in time, or its section start snapped to a
+   downbeat), so bar meets bar. Before, the start was the ending song's beat
+   nearest the fade point and the entry its first beat, any beat of the bar,
+   and the onset check (half a beat either way) cannot see a whole-beat
+   shift: a one-beat offset ("1-2-3-4" against "_-1-2-3-4") passed as a
+   lock. Beat tracking errors were the main reason curators rated
+   beat-aligned transitions bad, 15% "beats do not align" (ISMIR 2017). An
+   unknown bar position plays the default crossfade (`bar_phase`). On the
+   same 335 real transitions (8 genres of Similar Song lists and 20 pairs
+   rated by ear), with the bar positions read afterwards by the tracker's
+   ten-times larger model: before, 9 of 27 readable beat mixes put the two
+   songs on the same beat of the bar (33%, about the one in four of chance;
+   the offsets spread 9, 7, 6 and 5 over the four beats); after, 46 of 48,
+   all of them beat 1 on beat 1, the other two half a bar apart. Beat mixes
+   went from 37 to 52 of 335 (11.0% to 15.5%): the local tempo of the fitted
+   beats almost ended the refusals for onsets out of line (44 to 1), while
+   35 pairs are refused for an unknown bar position. The planning stage got
+   faster (median 2.42 to 2.18 s, pair by pair 0.33 s less). A pair that fails any check gets the `fade` plan, which the
    page plays as the default crossfade. The thresholds aim at about half
    crossfades and half beat-matched mixes on a 50-song similar list: the
    first strict version (a 5% stretch, the drum-hit share at 80% and
@@ -3562,8 +3590,8 @@ the end of its file and the next song starts right after.
    off; the earlier beat check found the audibly flammed mixes at 0.65 or
    less), so 60% is the lowest share kept. With the order's tempo weight at
    0.5, an 8% stretch, 60% and 1 bit, the three lists get 22, 22 and 26
-   beat-matched mixes of 50 (28, 28 and 24 crossfades). The committee adds
-   about 0.3 s per part, and only for pairs whose tempos already match.
+   beat-matched mixes of 50 (28, 28 and 24 crossfades), measured with the
+   beat committee the model has since replaced.
 
    **Where the default crossfade starts** (`_fuller_start`). A crossfade laid
    where the ending song is already inside its own fade-out while the next
@@ -3617,7 +3645,12 @@ the end of its file and the next song starts right after.
    `SMART_FADE_ENTRY_LIMIT_SECONDS`, to the pair that costs least for weak
    or silent audio, two voices at once and distance from the planned cues; a
    beat mix moves in whole bars only, and a few skipped seconds are given
-   back afterwards when energy and voices allow it. A moved beat mix is
+   back afterwards when energy and voices allow it, also in whole bars (the
+   two passes moved one song by half a bar before, two beats against the
+   other song, which broke a correct bar alignment; the next song moves by
+   its own bar, `entry_bar`, so a half-time song keeps its longer bar). A
+   beat mix whose final cues are not whole bars from the planned downbeats
+   plays the crossfade (`bar_phase`). A moved beat mix is
    checked again (step 3): when its hits no longer line up and no voices
    clash at the planned cues, the verified planned cues stay (two drum
    patterns that drift apart are the most common fault listeners hear in
@@ -3682,7 +3715,25 @@ the end of its file and the next song starts right after.
      The speeds, joined by straight lines as Web Audio plays them, land
      within 2 ms of the time map; after the mix the next song goes on from a
      fresh source at `continue_from`, blended in over 23 ms, so the
-     hand-over has no click. The server's simulation resamples the same way,
+     hand-over has no click. The page does not let the browser apply that
+     playback rate: browsers resample a `playbackRate` with linear
+     interpolation, which on a recorded page took -1.2 dB at 8 to 12 kHz,
+     -2.2 dB at 12 to 16 kHz and -3.6 dB above 16 kHz off a beat mix (Chrome
+     and Safari; the spec leaves the method open). Instead `warpPiece` in
+     `static/song_player.js` resamples the two mix pieces along the same
+     speed curve with a Kaiser-windowed sinc (16 zero crossings a side, 512
+     table phases, cutoff 0.97 of Nyquist over the top speed) and plays them
+     at rate 1. On a 16-second glide of test tones from 1 to 18 kHz it is
+     within 0.001 dB up to 14 kHz and 0.09 dB at 18 kHz (error -46 dB at
+     44.1 kHz, -62 dB at 48 kHz), where Chromium's own playback rate lost
+     4.1 dB at 10 kHz and 8.4 dB at 14 kHz; it takes 60 to 80 ms per channel
+     on a desktop, in slices so the page stays responsive, and if it fails
+     the pieces play at their playback rate as before. Recorded on the real
+     page (Chromium, 48 kHz), 4 beat mixes matched an 8 times oversampled
+     render of their plans within 0.04 dB in every band up to 16 kHz and
+     0.25 dB above, where the browser's own playback rate gave -1.1 to
+     -1.3 dB at 8 to 12 kHz, -2.1 to -2.4 dB at 12 to 16 kHz and -3.4 to
+     -4.3 dB above; no clipped sample. The server's simulation resamples the same way,
      so it now hears exactly what the page plays.
      Before, the page time-stretched both songs with WSOLA (46 ms frames
      re-joined every 23 ms, pitch kept). On dense, loud rock it added a
@@ -3866,6 +3917,20 @@ the end of its file and the next song starts right after.
      bit for bit, or in Chromium off
      by less than -185 dBFS on under 1% of near-silent samples (its rounding
      of the start time), with 0.00 dB change at 15 kHz.
+   - **Answer time.** The stages wait on each other (plan, voice check,
+     answer), so the speed comes from work inside each stage running at once,
+     in threads only (the same code on Linux, Windows and macOS): the two
+     windows and both songs' energy curves are read together; the drum share's
+     harmonic/percussive split runs its two median filters in 4 threads, in
+     row and column pieces (the same numbers as librosa, to the last bit); the
+     answer measures both parts' drum share at once; MusiCNN and the speech
+     detector hear each read together, MusiCNN 2 patches a call (on Linux one
+     call of 96 patches took 0.78 s, 2 at a time 0.43 s, and two songs at once
+     1.38 against 0.76 s; on Windows two songs at once took 4% longer). On the test server, 9 transitions between 10 songs took a median
+     2.4 s (mean 2.7 s; before 5.1 and 5.6 s): plan 1.5 to 0.8 s, voice check
+     1.7 to 0.9 s, answer 1.5 to 0.5 s, every answer the same to the last
+     digit. A pair whose voice check drops the lock and plans again takes
+     about twice as long (5.3 s, before 9.7 s).
 7. **Measured and not kept.**
    - **A loop of the ending song** (some streaming players repeat a bar to
      stretch a short ending; Apple Music's AutoMix "repeats sections where
@@ -3979,12 +4044,45 @@ the end of its file and the next song starts right after.
    - **Other beat fixes, measured without gain**: forcing the tracker to the
      stored tempo, snapping the mix to a bar by onset strength, and moving the
      fade points to the nearest stretch where the tracker looks steady (worse:
-     the tracker looks steady even on weak beats).
+     the tracker looks steady even on weak beats). The bar snap scored beat
+     drift in milliseconds, which cannot see a whole-beat bar error; the
+     downbeats of section 19.3 replace it.
+   - **Ending the ending song's mix on its own section boundary** (a novelty
+     peak within 8 beats of the fade point). Its fade point sits a median 10
+     seconds from an annotated boundary (60 Harmonix songs), and within 8
+     beats of it the novelty curve of an even passage only has noise peaks: a
+     plain click track moved its mix end by 4 seconds.
+   - **A prominence threshold on the section start** (a novelty peak of at
+     least half a standard deviation, then at other values). The best peak of
+     a plain click track stood 3.1 to 3.4 standard deviations above the
+     curve, the section starts of 12 real next songs 3.5 to 5.6: no threshold
+     tells them apart, so the entry stays on the largest novelty in reach.
+   - **The beat model in 8-bit weights**: 12% faster (646 against 733 ms a
+     window), but it moved the downbeats of 2 of 8 real windows (19 of 21 and
+     12 of 13 matched) and its graph does not load in onnxruntime 1.19, the
+     legacy image's.
+   - **A 30 ms steadiness limit**: on 20 real pairs it refused three songs of
+     150 to 210 BPM whose fitted beats sat 33 to 37 ms off the line while
+     their onsets passed the 30 ms check; the limit is 40 ms.
+   - **A voice check on 30 seconds a song only** (the 30 s before the ending
+     song's fade point and the next song's first 30 s, instead of about 100 s
+     and 25 to 40 s): it changed all 9 transitions of a 10-song test. The end
+     of the shorter read looked like the end of the song, so the ending song
+     stopped 4 to 28 s before its fade point (median 20 s, before within
+     5.4 s of it), a beat mix was lost and four of five vocal handoffs became
+     crossfades, for 0.3 s less. The beat tracker, the drum share and the onset checks already read
+     only the two 30-second windows; the gain and the energy curve need the
+     whole song, so a song keeps one gain as the ending and as the next song.
 
 ### 19.4. Environment Variable Configuration
 
 - `NEURAL_FINGERPRINT_ENABLED` (section 17.4): Smart fade needs it. Without it
   the option is not shown and the two endpoints answer 503.
+- `BEAT_THIS_MODEL_PATH` (`/app/model/beat_this_small.onnx`, downloaded from
+  the model release like the other models; MIT, see LICENSE):
+  the beat and downbeat tracker of the transition API. Set from the
+  environment only, never stored in the database; without the file every
+  pair plays the default crossfade.
 - `SMART_FADE_BEAT_MIX_ENABLED`, `SMART_FADE_BEAT_RISE_ENABLED`,
   `SMART_FADE_PERCUSSION_MIX_ENABLED`, `SMART_FADE_EQ_BLEND_ENABLED`,
   `SMART_FADE_FILTER_RISE_ENABLED` and `SMART_FADE_VOCAL_HANDOFF_ENABLED`
@@ -4006,8 +4104,10 @@ the end of its file and the next song starts right after.
   `FOLD_BPM` 100, `FAST_ONSETS_PER_BEAT` 3.9,
   `PERCUSSION_SECONDS` 8 to 12, `PERCUSSION_LOCK_CENTS` 90,
   `MAX_LOCK_CENTS` 60, `RISE_DB` 6, `MATCH_MS` 30, `MATCH_SHARE` 0.6,
-  `EDGE_SECONDS` 30, `FULL_LU` 0, `DROP_LU` 2, `MIN_AGREEMENT_BITS` 1.0,
-  `FLOOR_GAIN_DB` 3), of
+  `EDGE_SECONDS` 30, `FULL_LU` 0, `DROP_LU` 2, `PHRASE_LEAD_SECONDS` 4,
+  `FLOOR_GAIN_DB` 3), of `tasks/smart_fade_beats.py` (`STEADY_SECONDS`
+  0.04, `MIN_COVERAGE` 0.8, `BAR_AGREEMENT` 0.75, `BAR_TOLERANCE` 0.02,
+  `THREADS` 4), of
   `tasks/recording_search_manager.py` (`_FADE_TEMPO_PENALTY` 0.5,
   `_FADE_INTENSITY_WEIGHT` 0.04, `_FADE_SOUND_WEIGHT` 0.1, `_FADE_WEAK_WEIGHT`
   1) and of `static/song_player.js` (`SMART_CROSSFADE_SECONDS` 7.5,

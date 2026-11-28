@@ -37,7 +37,8 @@ Main Features:
   the fade points, its tempos null
 * percussion_mix: equal-power faders, one kick at a time (amplitude
   crossover, correlated kicks) and a hats exchange, executable on real files
-* unlocked pairs: a drumless part gets the EQ blend, a louder next song the
+* unlocked pairs: a drumless part gets the EQ blend (both parts' drum share
+  measured at once), a louder next song the
   filter rise, overlapping voices the vocal handoff, else the crossfade; all
   at native speed, equal-power faders and one bass swap for the first two;
   into a much quieter intro the louder ending song still fades
@@ -51,11 +52,13 @@ import threading
 
 from tasks import smart_fade_levels as levels
 from tasks import smart_fade_mix as mix
+from test.unit.conftest import smart_fade_click_events
 
 
 @pytest.fixture(autouse=True)
-def fresh_level_cache():
+def fresh_level_cache(monkeypatch):
     levels.clear_level_cache()
+    monkeypatch.setattr(mix, '_events', smart_fade_click_events)
     yield
     levels.clear_level_cache()
 
@@ -423,6 +426,18 @@ def test_unlocked_pairs_get_the_transition_their_parts_allow():
     assert levels.unlocked_style({'voice': {'overlap': 0.2}}, drums, drums, 1.0, 1.0) == 'fade'
 
 
+def test_both_parts_drum_shares_are_measured_at_once(monkeypatch):
+    ready = threading.Barrier(2)
+
+    def share(part, start, seconds, sample_rate=mix.RATE):
+        ready.wait(timeout=3)
+        return float(part[0])
+
+    monkeypatch.setattr(mix, 'drum_share', share)
+    with mix.switched_on({'eq_blend'}):
+        assert levels.unlocked_style({}, np.full(10, 0.9), np.full(10, 0.05), 1.0, 1.0) == 'eq_blend'
+
+
 def test_the_eq_blend_and_the_filter_rise_cross_equal_power_and_swap_the_bass_once():
     points = np.linspace(0.0, 10.0, 1001)
     for style in ('eq_blend', 'filter_rise'):
@@ -515,8 +530,9 @@ def test_a_beat_mix_and_a_crossfade_give_every_list_a_player_executes_in_order(t
     assert answer['from']['bass_db'][-1] == levels.BASS_CUT_DB and answer['to']['bass_db'][0] == levels.BASS_CUT_DB
     assert answer['from']['high_db'][-1] == levels.HIGH_CUT_DB and answer['to']['high_db'][0] == levels.HIGH_CUT_DB
     far = _write(tmp_path / 'c.wav', _click_audio(150, 40.0))
-    fade = mix.plan_transition(song_out, 30.0, far, 5.0)
-    flat = levels.transition(song_out, far, fade)
+    with mix.switched_on(set()):
+        fade = mix.plan_transition(song_out, 30.0, far, 5.0)
+        flat = levels.transition(song_out, far, fade)
     _assert_executable(fade, flat)
     assert flat['type'] == 'crossfade' and flat['to']['highpass_hz'] is None
     assert all(set(flat[song][key]) == {0.0} for song in ('from', 'to') for key in ('high_db', 'mid_db', 'bass_db'))
