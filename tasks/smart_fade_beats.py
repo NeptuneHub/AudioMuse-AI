@@ -72,6 +72,7 @@ BAR_AGREEMENT = 0.75
 BAR_TOLERANCE = 0.02
 HUBER = 1.345
 FIT_PASSES = 3
+NO_STEADY_BEAT = 'No steady beat to match.'
 
 _session = None
 _lock = threading.Lock()
@@ -97,8 +98,8 @@ def _model():
                 _session = ort.InferenceSession(config.BEAT_THIS_MODEL_PATH, sess_options=options,
                                                 providers=['CPUExecutionProvider'])
             except Exception as exc:
-                logger.error('Smart fade beat model %s could not be loaded; transitions play the default crossfade',
-                             config.BEAT_THIS_MODEL_PATH, exc_info=True)
+                logger.exception('Smart fade beat model %s could not be loaded; transitions play the default crossfade',
+                                 config.BEAT_THIS_MODEL_PATH)
                 raise BeatModelError('The beat model could not be loaded.') from exc
         return _session
 
@@ -137,7 +138,7 @@ def logits(audio, rate):
     except BeatModelError:
         raise
     except Exception as exc:
-        logger.error('Smart fade beat model failed on a window; this transition plays the default crossfade', exc_info=True)
+        logger.exception('Smart fade beat model failed on a window; this transition plays the default crossfade')
         raise BeatModelError('The beat model failed.') from exc
     return beat[0, BORDER:BORDER + spect.shape[0]], downbeat[0, BORDER:BORDER + spect.shape[0]]
 
@@ -181,7 +182,6 @@ def _numbered(beats, period):
 
 
 def _huber_line(index, times):
-    weights = np.ones_like(times)
     period, first = np.polyfit(index, times, 1)
     for _ in range(FIT_PASSES):
         residual = times - (first + period * index)
@@ -195,7 +195,7 @@ def _huber_line(index, times):
 def rhythm(beats, downbeats, span=None):
     beats = np.sort(np.asarray(beats, dtype=np.float64))
     if beats.size < MIN_BEATS:
-        raise ValueError('No steady beat to match.')
+        raise ValueError(NO_STEADY_BEAT)
     low, high = span if span is not None else (-np.inf, np.inf)
     period = float(np.median(np.diff(beats)))
     for _ in range(2):
@@ -204,10 +204,10 @@ def rhythm(beats, downbeats, span=None):
         if inside.sum() < MIN_FIT_BEATS:
             inside = np.ones_like(inside)
         if kept[inside].size < MIN_BEATS:
-            raise ValueError('No steady beat to match.')
+            raise ValueError(NO_STEADY_BEAT)
         period, first, residual = _huber_line(index[inside], kept[inside])
         if period <= 0:
-            raise ValueError('No steady beat to match.')
+            raise ValueError(NO_STEADY_BEAT)
     count = int(index[-1]) + 1
     grid = first + period * np.arange(count)
     seen = index[inside]
