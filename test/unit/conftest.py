@@ -15,6 +15,9 @@ and a terminal-summary hook that prints the import-architecture report.
 Main Features:
 * Forces spawn over fork on Windows and loads modules by file path.
 * Restores config values touched by tests and reports import architecture.
+* smart_fade_click_events stands in for the smart fade beat model on click
+  tracks: beats at the 1 kHz clicks, downbeats at the louder ones, or every
+  fourth click from the first when none is louder.
 """
 
 import sys as _sys
@@ -49,6 +52,28 @@ def _import_module(mod_name: str, relative_path: str):
 @pytest.fixture(scope='session')
 def mcp_server_mod():
     return _import_module('tasks.mcp_helper', 'tasks/mcp_helper.py')
+
+
+def smart_fade_click_events(audio, rate=44100):
+    import numpy as np
+    from scipy.signal import butter, sosfilt
+
+    band = np.abs(sosfilt(butter(4, (700.0, 1500.0), btype='bandpass', fs=rate, output='sos'), np.asarray(audio, dtype=np.float64)))
+    top = float(band.max()) if band.size else 0.0
+    if top <= 1e-4:
+        return {'beats': np.zeros(0), 'downbeats': np.zeros(0), 'strength': 0.0}
+    loud = band > 0.2 * top
+    starts, last = [], -rate
+    for at in np.flatnonzero(loud[1:] & ~loud[:-1]) + 1:
+        if at - last > 0.08 * rate:
+            starts.append(at)
+            last = at
+    starts = np.asarray(starts)
+    peaks = np.array([band[at:at + int(0.03 * rate)].max() for at in starts])
+    beats = starts / rate
+    accented = peaks >= 0.9 * peaks.max()
+    downbeats = beats[::4] if accented.all() else beats[accented]
+    return {'beats': beats, 'downbeats': downbeats, 'strength': 1.0}
 
 
 def make_dict_row(mapping: dict):

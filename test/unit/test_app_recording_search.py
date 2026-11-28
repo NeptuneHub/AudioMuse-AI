@@ -29,7 +29,9 @@ Main Features:
   a beat lock it is the one "Default crossfade"; only the playing song's
   transition is planned, the next row's icon says how its song comes in; the
   page only executes the answer (gains, speeds, volumes, filters),
-  computing none of it, and uses none of the old names
+  computing none of it, and uses none of the old names; a beat mix's two
+  pieces are resampled along its speeds by the page (warpPiece) and play at
+  rate 1, the browser's playbackRate only when that fails
 * The smart_fade endpoint answers 400 without a list, resolves the ids, returns
   the manager's order (keep_order only on JSON true) under the ids as sent,
   null times without a fingerprint, never a canonical id
@@ -555,9 +557,16 @@ def test_only_the_next_ten_pairs_are_requested_and_only_confirmed_plans_get_badg
 def test_a_beat_matched_mix_plays_both_songs_at_the_api_speeds_without_time_stretching():
     source = _repo_file('static', 'song_player.js')
     mix = source[source.index('} else if (mix && state.pieces && at(mix.start) > now + 0.1) {'):source.index('showTransition(playQueue[index + 1], mix)')]
-    assert 'follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
+    assert 'if (!state.pieces.warped) follow(source.playbackRate, side.speed, state.handoverAt, span);' in mix
     assert 'const played = mix.to.continue_from - mix.to.start;' in mix
     assert 'at: t => mix.to.start + played * Math.min(1, Math.max(0, (t - state.handoverAt) / span))' in mix
+    pieces = source[source.index('async function mixPieces('):source.index('async function prepareNext(')]
+    assert 'if ([mix.from.speed, mix.to.speed].every(speed => speed.every(value => value === 1))) return { from, to };' in pieces
+    assert 'from: await warpPiece(from, mix.start, mix.from.speed, mix.duration),' in pieces
+    assert 'to: await warpPiece(to, mix.to.start, mix.to.speed, mix.duration),' in pieces
+    assert 'warped: true' in pieces and 'return { from, to };' in pieces[pieces.index('catch (error)'):]
+    warp = source[source.index('async function warpPiece('):source.index('function create(')]
+    assert 'await nextTurn();' in warp and 'for (let j = 0; j < taps; j++) sum += input[first + j] * table[row + j];' in warp
     for gone in ('stretchSegment', 'similarity', 'WSOLA', 'mix.lead', 'mix.buffer', 'mix.follow', 'position', 'function along('):
         assert gone not in source, gone
 

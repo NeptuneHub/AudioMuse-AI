@@ -254,6 +254,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
     'CLAP_SAE_ENCODER_PATH',
     'CLAP_SAE_MODEL_PATH',
     'CLAP_SAE_CONCEPTS_PATH',
+    'BEAT_THIS_MODEL_PATH',
     'LYRICS_MODEL_DIR',
     'LYRICS_WHISPER_MODEL_DIR',
     'LYRICS_DEFAULT_TOPIC_EMBEDDING_CACHE_DIR',
@@ -335,7 +336,7 @@ SETUP_BOOTSTRAP_EXCLUDED_KEYS = {
 }
 
 # --- General Constants (Read from Environment Variables where applicable) ---
-APP_VERSION = "v3.7.5"
+APP_VERSION = "v3.7.6"
 MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", "0.5"))
 MAX_SONGS_PER_CLUSTER = int(os.environ.get("MAX_SONGS_PER_CLUSTER", "0"))
 MAX_SONGS_PER_ARTIST = int(os.getenv("MAX_SONGS_PER_ARTIST", "3")) # Max songs per artist in similarity results and clustering
@@ -1398,6 +1399,12 @@ SMART_FADE_PERCUSSION_MIX_ENABLED = os.environ.get("SMART_FADE_PERCUSSION_MIX_EN
 SMART_FADE_EQ_BLEND_ENABLED = os.environ.get("SMART_FADE_EQ_BLEND_ENABLED", "true").lower() == "true"
 SMART_FADE_FILTER_RISE_ENABLED = os.environ.get("SMART_FADE_FILTER_RISE_ENABLED", "true").lower() == "true"
 SMART_FADE_VOCAL_HANDOFF_ENABLED = os.environ.get("SMART_FADE_VOCAL_HANDOFF_ENABLED", "true").lower() == "true"
+# Beat and downbeat tracker the smart fade transition uses on its two 30-second
+# windows (Beat This! small, ISMIR 2024, code and weights under the MIT licence;
+# exported by scripts/onnx_export/export_beat_this_to_onnx.py), downloaded from
+# the model release like the other models.
+# Without it a pair has no known bar position and plays the default crossfade.
+BEAT_THIS_MODEL_PATH = os.environ.get("BEAT_THIS_MODEL_PATH", "/app/model/beat_this_small.onnx")
 
 # --- Song demo ---
 # Seconds of each song the song player plays when Demo is ticked, around its chorus

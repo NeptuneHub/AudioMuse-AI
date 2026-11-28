@@ -11,8 +11,9 @@
 Main Features:
 * Every switch ships on and maps one transition; the crossfade has none
 * All beat-matched kinds off: a click-track lock is planned at its own speed
-  over the crossfade length ('switched_off'), with no beat committee, onset
-  or drum check; lock=False plans the same pair the same way
+  over the crossfade length ('switched_off'), with no onset or drum check
+  (smart_fade_click_events from conftest stands in for the beat model);
+  lock=False plans the same pair the same way
 * Beat mix off: a lock plays only where the rise (6 dB louder) or the
   percussion mix fits; rise off: a louder next song gets the beat mix;
   percussion off: drum-led parts get the beat mix and no alternative
@@ -37,6 +38,7 @@ import config
 from tasks import smart_fade_levels as levels
 from tasks import smart_fade_mix as mix
 from tasks import smart_fade_voice as voice
+from test.unit.conftest import smart_fade_click_events
 
 KINDS = {
     'blend': 'SMART_FADE_BEAT_MIX_ENABLED',
@@ -58,6 +60,7 @@ def _every_kind_on_and_no_drum_led_part(monkeypatch):
     for flag in KINDS.values():
         monkeypatch.setattr(config, flag, True)
     monkeypatch.setattr(mix, '_percussive', lambda *args, **kwargs: False)
+    monkeypatch.setattr(mix, '_events', smart_fade_click_events)
     levels.clear_level_cache()
     yield
     levels.clear_level_cache()
@@ -109,7 +112,7 @@ def test_with_every_beat_matched_kind_off_a_lock_is_planned_at_its_own_speed_wit
     locked = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     assert locked['style'] == 'blend' and locked['stretch'] != 1.0
     _switch(monkeypatch, blend=False, rise=False, percussion_mix=False)
-    for name in ('_agreement', '_aligned_entry', '_percussive', '_percussion_mix'):
+    for name in ('_aligned_entry', '_percussive', '_percussion_mix'):
         monkeypatch.setattr(mix, name, _never)
 
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
@@ -126,8 +129,7 @@ def test_with_every_beat_matched_kind_off_a_lock_is_planned_at_its_own_speed_wit
 def test_a_plan_without_a_lock_is_the_one_every_beat_kind_switched_off_gives(tmp_path, monkeypatch):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     song_in = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2)
-    for name in ('_agreement', '_aligned_entry'):
-        monkeypatch.setattr(mix, name, _never)
+    monkeypatch.setattr(mix, '_aligned_entry', _never)
 
     again = mix.plan_transition(song_out, 30.0, song_in, 5.0, lock=False)
     _switch(monkeypatch, blend=False, rise=False, percussion_mix=False)

@@ -12,9 +12,12 @@ Main Features:
 * Energy and vocal competition guide a joint, bounded cue search.
 * Continuous vocals keep a real crossfade with moderate incoming trimming.
 * Musical grids survive cue changes; missing detectors impose no veto.
-* Local recovery keeps up to four more source seconds without shortening fades.
+* Local recovery keeps up to four more source seconds without shortening fades,
+  moving a beat mix only by whole bars (the next song by its own entry_bar);
+  final cues off that grid are caught.
 * Ending-only recovery restores early cues while preserving the approved vocal taper.
-* MusiCNN covers short regions and edge patches; Silero complements it.
+* MusiCNN covers short regions and edge patches; Silero complements it, both
+  hearing one read at once; MusiCNN runs PREDICT_PATCHES patches a call, in order.
 * A percussion mix alternative wins only where no voices overlap; a locked
   percussion mix with competing voices is a beat mix (it gets the vocal EQ).
 * A beat mix whose moved cues lose the beat keeps its verified cues when no voices
@@ -248,10 +251,39 @@ def test_recovery_preserves_each_source_grid_at_different_tempos(monkeypatch):
     starting = _inspection(0.0, 40.0, [])
     moved = voice._recover(ending, starting, plan)
     a, b = moved['mix_at'] - plan['mix_at'], plan['in_at'] - moved['in_at']
-    assert a / 1.0 == pytest.approx(round(a / 1.0))
-    assert b / 0.95 == pytest.approx(round(b / 0.95), abs=1e-4)
+    assert a / 2.0 == pytest.approx(round(a / 2.0))
+    assert b / 1.9 == pytest.approx(round(b / 1.9), abs=1e-4)
     assert 3.0 <= a + b <= 4.0001
     assert moved['resume_at'] - moved['in_at'] == pytest.approx(15.2)
+
+
+def test_recovery_and_later_ending_move_a_beat_mix_only_by_whole_bars(monkeypatch):
+    monkeypatch.setattr(voice.config, 'SMART_FADE_RECOVER_SECONDS', 3.0, raising=False)
+    monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 3.0, raising=False)
+    plan = dict(PLAN, requested_end=125.0, voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
+    ending = _inspection(0.0, 140.0, [])
+    starting = _inspection(0.0, 40.0, [])
+    moved = voice._recover(ending, starting, plan)
+    for delta in (moved['mix_at'] - plan['mix_at'], plan['in_at'] - moved['in_at']):
+        assert delta % 2.0 == pytest.approx(0.0, abs=1e-6)
+    later = voice._later_ending(ending, starting, plan)
+    assert (later['mix_at'] - plan['mix_at']) % 2.0 == pytest.approx(0.0, abs=1e-6)
+    assert later['mix_at'] == 102.0
+
+
+def test_a_half_time_next_song_moves_its_cue_by_its_own_bar():
+    plan = dict(PLAN, entry_bar=4.0)
+    assert voice._steps(plan) == (2.0, 4.0)
+    assert voice._steps(dict(PLAN, entry_bar=2.0)) == (2.0, 2.0)
+    assert voice._steps(dict(PLAN, entry_bar=1.0)) == (2.0, 2.0)
+
+
+def test_final_cues_off_the_whole_bar_grid_are_caught():
+    plan = dict(PLAN, entry_bar=2.0)
+    assert voice._whole_bars(plan, dict(plan, mix_at=104.0, in_at=6.0))
+    assert not voice._whole_bars(plan, dict(plan, mix_at=101.0))
+    assert not voice._whole_bars(plan, dict(plan, in_at=7.0))
+    assert voice._whole_bars(plan, dict(plan, mix_at=101.0, style='fade'))
 
 
 def test_recovery_stops_at_leading_silence_and_the_outgoing_tail_margin(monkeypatch):
@@ -316,8 +348,10 @@ def test_later_ending_stops_at_the_original_requested_endpoint_on_the_beat_grid(
     monkeypatch.setattr(voice.config, 'SMART_FADE_END_RECOVER_SECONDS', 4.0, raising=False)
     plan = dict(PLAN, requested_end=117.3, voice={'clash': False, 'overlap': 0.0, 'end_margin': 24.0})
     moved = voice._later_ending(_inspection(0.0, 140.0, []), _inspection(0.0, 40.0, []), plan)
-    assert moved['mix_at'] == 101.0
+    assert moved['mix_at'] == 100.0
     assert moved['mix_at'] + moved['mix_seconds'] <= plan['requested_end']
+    moved = voice._later_ending(_inspection(0.0, 140.0, []), _inspection(0.0, 40.0, []), dict(plan, requested_end=118.3))
+    assert moved['mix_at'] == 102.0
 
 
 def test_later_ending_preserves_a_small_audible_tail_even_with_a_large_budget(monkeypatch):
@@ -389,6 +423,36 @@ def test_sung_patches_and_silero_form_a_union_and_one_failed_detector_is_tolerat
         voice.voiced_spans(np.zeros(1))
 
 
+def test_musicnn_and_silero_hear_one_read_at_once(monkeypatch):
+    ready = threading.Barrier(2)
+
+    def detector(spans):
+        def heard(audio):
+            ready.wait(timeout=3)
+            return spans
+        return heard
+
+    monkeypatch.setattr(voice, 'sung_spans', detector([(1.0, 2.0)]))
+    monkeypatch.setattr(voice, 'spoken_spans', detector([(0.5, 0.8)]))
+    assert voice.voiced_spans(np.zeros(voice.VAD_RATE, dtype=np.float32)) == [(0.5, 0.8), (1.0, 2.0)]
+
+
+def test_musicnn_runs_a_few_patches_a_call_and_keeps_their_order(monkeypatch):
+    sizes = []
+
+    def embed(names, feed):
+        batch = next(iter(feed.values()))
+        sizes.append(len(batch))
+        return [batch[:, 0, :1]]
+
+    prediction = SimpleNamespace(run=lambda names, feed: [next(iter(feed.values()))])
+    monkeypatch.setattr(voice, '_musicnn', lambda: (SimpleNamespace(run=embed), prediction, [0]))
+    patches = np.arange(7, dtype=np.float32)[:, None, None] * np.ones((1, voice.PATCH_FRAMES, 96), dtype=np.float32)
+    scores = voice._predict(patches)
+    assert max(sizes) <= voice.PREDICT_PATCHES and sum(sizes) == 7
+    assert scores == pytest.approx(1.0 / (1.0 + np.exp(-np.arange(7.0))))
+
+
 def test_adaptive_patch_skipping_preserves_the_full_resolution_mask():
     rng = np.random.default_rng(42)
     for count in (1, 2, 5, 7, 19, 60, 121):
@@ -438,13 +502,12 @@ def test_warmup_initializes_detectors_and_the_beat_tracker_without_library_audio
 
     calls = []
     monkeypatch.setattr(voice, 'voiced_spans', lambda audio: calls.append(('voice', len(audio))))
-    monkeypatch.setattr(voice.mix, '_beats', lambda audio: calls.append(('beats', len(audio))))
+    monkeypatch.setattr(voice.mix, '_events', lambda audio: calls.append(('beats', len(audio))))
     monkeypatch.setattr(paged_ivf, '_pin_blas_single_thread', lambda: calls.append(('blas', 1)))
-    monkeypatch.setattr(voice.mix, '_phrase_entry', lambda audio, at: calls.append(('phrase', at)))
-    monkeypatch.setattr(voice.mix, '_agreement', lambda audio: calls.append(('agreement', len(audio))))
+    monkeypatch.setattr(voice.mix, '_phrase_entry', lambda audio, grid, at: calls.append(('phrase', at)))
     voice.warmup()
     assert calls == [('voice', (voice.PATCH_FRAMES - 1) * voice.MEL_HOP + voice.FFT_SIZE), ('beats', 12 * voice.mix.RATE),
-                     ('blas', 1), ('phrase', 4.0), ('agreement', 12 * voice.mix.RATE)]
+                     ('blas', 1), ('phrase', 4.0)]
 
 
 def test_model_initialization_is_shared_and_keeps_the_existing_cpu_budget(monkeypatch):

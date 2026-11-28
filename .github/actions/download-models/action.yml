@@ -23,7 +23,7 @@ runs:
           ${{ inputs.models-dir }}
           ${{ inputs.hf-cache-dir }}
         # Bump the trailing -rN to invalidate by hand; the release tags are immutable.
-        key: models-v4.0.0-model-v5.0.0-model-dclap-v1-sae-v1-r2
+        key: models-v4.0.0-model-v5.0.0-model-dclap-v1-sae-v1-r3
 
     - name: Download on a cache miss
       if: steps.cache.outputs.cache-hit != 'true'
@@ -57,6 +57,8 @@ runs:
         echo "Downloading neural fingerprint encoder and codebook..."
         fetch "${neural_url}/neural_fingerprint.onnx" -o "$MODELS_DIR/neural_fingerprint.onnx"
         fetch "${neural_url}/neural_fingerprint_pq.npz" -o "$MODELS_DIR/neural_fingerprint_pq.npz"
+        echo "Downloading the smart fade beat tracker..."
+        fetch "${neural_url}/beat_this_small.onnx" -o "$MODELS_DIR/beat_this_small.onnx"
         echo "Downloading huggingface_models.tar.gz (roberta-base tokenizer for the CLAP analyzer)..."
         fetch "${base_url}/huggingface_models.tar.gz" -o /tmp/huggingface_models.tar.gz
         tar -xzf /tmp/huggingface_models.tar.gz -C "$HF_CACHE_DIR"
@@ -99,6 +101,7 @@ runs:
         echo "LYRICS_GTE_TOKENIZER_DIR=${GITHUB_WORKSPACE}/${MODELS_DIR}/gte-multilingual-base" >> "$GITHUB_ENV"
         echo "NEURAL_FINGERPRINT_MODEL_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/neural_fingerprint.onnx" >> "$GITHUB_ENV"
         echo "NEURAL_FINGERPRINT_CODEBOOK_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/neural_fingerprint_pq.npz" >> "$GITHUB_ENV"
+        echo "BEAT_THIS_MODEL_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/beat_this_small.onnx" >> "$GITHUB_ENV"
         echo "LYRICS_WHISPER_MODEL_DIR=${GITHUB_WORKSPACE}/${MODELS_DIR}/whisper-small-onnx" >> "$GITHUB_ENV"
         echo "SILERO_VAD_ONNX_PATH=${GITHUB_WORKSPACE}/${MODELS_DIR}/silero_vad.onnx" >> "$GITHUB_ENV"
         echo "Models in ${MODELS_DIR}:"

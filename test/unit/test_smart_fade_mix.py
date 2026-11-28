@@ -28,14 +28,18 @@ Main Features:
   songs without a beat raise ValueError
 * Tempos over MAX_LOCK_CENTS apart (120 and 125 BPM, 70 cents) crossfade even
   when their beats lock; a double-time song within it (244 BPM) still mixes
-* Beat agreement (information gain) is full for the same beats, high for half
-  of them, low for random ones; a click track's committee agrees, noise's
-  does not; under MIN_AGREEMENT_BITS the plan is the fade
+* The beat model is replaced by smart_fade_click_events (conftest): a lock
+  starts on a downbeat of the ending song and enters on a downbeat of the
+  next one even when the order's points sit on other beats; an unknown bar
+  position, three beats a bar or an unsteady beat is the fade ('bar_phase',
+  'beat_tracking'); entry_bar is the next song's own bar
 * A default crossfade over a quiet ending into a quiet intro starts on an
   earlier beat dipping FLOOR_GAIN_DB less, within the last EDGE_SECONDS
 * A full-scale 997 Hz tone measures -3.01 LUFS; a fade from full level into
   a quieter next song is 'low' ('medium' steady, 'high' locked)
 * A real AAC .m4a, which libsndfile cannot open, plans like a WAV
+* The two windows and both energy curves are read at once; the threaded
+  harmonic/percussive split equals librosa.effects.hpss for any thread count
 * Without a full lock, drum-led parts whose beats line up carry one
   'percussion_mix' alternative of up to PERCUSSION_SECONDS; a tone is not
   drum-led and gets none, clicks over a sub-bass are (the bass is left out); a locked pair of drum-led parts is a
@@ -47,7 +51,9 @@ import pytest
 import soundfile
 import threading
 
+from tasks import smart_fade_cache
 from tasks import smart_fade_mix as mix
+from test.unit.conftest import smart_fade_click_events
 
 _REAL_PERCUSSIVE = mix._percussive
 _LENGTHS = []
@@ -56,6 +62,14 @@ _LENGTHS = []
 @pytest.fixture(autouse=True)
 def _not_drum_led(monkeypatch):
     monkeypatch.setattr(mix, '_percussive', lambda *args, **kwargs: False)
+
+
+@pytest.fixture(autouse=True)
+def _clicks_are_the_beats(monkeypatch):
+    smart_fade_cache.clear()
+    monkeypatch.setattr(mix, '_events', smart_fade_click_events)
+    yield
+    smart_fade_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -70,20 +84,27 @@ def _pair_lengths(monkeypatch):
     monkeypatch.setattr(mix, 'lengths', spy)
 
 
-def _click_audio(bpm, seconds, first=0.0, level=0.8):
+def _click_audio(bpm, seconds, first=0.0, level=0.8, accent=None, bar=4):
     rate = mix.RATE
     audio = np.zeros(int(seconds * rate), dtype=np.float32)
-    burst = (level * np.sin(2 * np.pi * 1000 * np.arange(int(0.03 * rate)) / rate)).astype(np.float32)
-    beat = first
+    burst = (np.sin(2 * np.pi * 1000 * np.arange(int(0.03 * rate)) / rate)).astype(np.float32)
+    beat, count = first, 0
     while beat + 0.03 < seconds:
         start = int(beat * rate)
-        audio[start:start + burst.size] += burst
+        loud = accent is None or (count - accent) % bar == 0
+        audio[start:start + burst.size] += (level if loud else 0.6 * level) * burst
         beat += 60.0 / bpm
+        count += 1
     return audio
 
 
-def _clicks(path, bpm, seconds, first=0.0, level=0.8):
-    audio = _click_audio(bpm, seconds, first, level)
+def _accented(bpm, seconds, first, accent, bar=4):
+    beat = 60.0 / bpm
+    return np.array([first + k * beat for k in range(int((seconds - first) / beat) + 1) if (k - accent) % bar == 0])
+
+
+def _clicks(path, bpm, seconds, first=0.0, level=0.8, accent=None, bar=4):
+    audio = _click_audio(bpm, seconds, first, level, accent, bar)
     soundfile.write(path, np.stack([audio, audio], axis=1), mix.RATE)
     return str(path)
 
@@ -117,8 +138,8 @@ def test_two_click_tracks_mix_on_the_beat_at_the_first_tempo(tmp_path):
     song_in = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     assert sorted(plan) == [
-        'beat_seconds', 'confidence', 'fade_seconds', 'in_at', 'mix_at', 'mix_seconds', 'resume_at', 'stretch', 'style', 'swap_at',
-        'tempo_from', 'tempo_to',
+        'beat_seconds', 'confidence', 'entry_bar', 'fade_seconds', 'in_at', 'mix_at', 'mix_seconds', 'resume_at', 'stretch', 'style',
+        'swap_at', 'tempo_from', 'tempo_to',
     ]
     assert plan['confidence'] == 'high'
     assert plan['style'] == 'blend'
@@ -145,6 +166,37 @@ def test_both_regions_are_tracked_in_parallel(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mix, '_track_region', together)
     assert mix.plan_transition(paths[0], 30.0, paths[1], 5.0)['style'] == 'blend'
+
+
+def test_both_energy_curves_are_read_with_the_two_windows(tmp_path, monkeypatch):
+    paths = [_clicks(tmp_path / name, bpm, 40.0) for name, bpm in (('a.wav', 120), ('b.wav', 150))]
+    ready = threading.Barrier(4)
+    track, levels = mix._track_region, mix._levels
+
+    def tracked(*args):
+        ready.wait(timeout=3)
+        return track(*args)
+
+    def measured(path):
+        ready.wait(timeout=3)
+        return levels(path)
+
+    monkeypatch.setattr(mix, '_track_region', tracked)
+    monkeypatch.setattr(mix, '_levels', measured)
+    plan = mix.plan_transition(paths[0], 30.0, paths[1], 5.0)
+    assert plan['style'] == 'fade' and plan['beat_rejection'] == 'tempo_gap'
+
+
+@pytest.mark.parametrize('threads', [1, 3, mix.HPSS_THREADS])
+def test_the_threaded_harmonic_percussive_split_gives_librosas_numbers(monkeypatch, threads):
+    import librosa
+
+    monkeypatch.setattr(mix, 'HPSS_THREADS', threads)
+    size = int(4.3 * mix.RATE)
+    tone = 0.1 * np.sin(2 * np.pi * 220.0 * np.arange(size) / mix.RATE)
+    audio = (_click_audio(123, 4.3) + tone + 0.01 * np.random.default_rng(7).standard_normal(size)).astype(np.float32)
+    for mine, theirs in zip(mix._hpss(audio), librosa.effects.hpss(audio)):
+        assert mine.dtype == theirs.dtype and np.array_equal(mine, theirs)
 
 
 def test_the_lock_is_checked_over_whole_beat_steps_and_the_mix_plays_its_last_bars(tmp_path, monkeypatch):
@@ -218,21 +270,23 @@ def test_tempos_too_far_apart_fade_unstretched_over_the_short_mix(tmp_path):
     assert plan['beat_seconds'] == pytest.approx(0.5, abs=0.01)
     _assert_short_fade(plan)
     beats_in = plan['in_at'] * 150 / 60
-    assert plan['in_at'] >= 5.0 and abs(beats_in - round(beats_in)) <= 0.08
+    assert abs(plan['in_at'] - 5.0) <= mix.PHRASE_REACH_BEATS * 0.4 + 0.01 and abs(beats_in - round(beats_in)) <= 0.08
 
 
 def test_a_beat_grid_that_misses_the_beats_fades_instead_of_matching(tmp_path, monkeypatch):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     song_in = _clicks(tmp_path / 'b.wav', 120, 40.0, first=0.1)
-    tracked = mix._beats
-    def off_grid(audio):
-        tempo, grid = tracked(audio)
-        incoming = np.flatnonzero(np.abs(audio) > 0.01)[0] > 0.05 * mix.RATE
-        return tempo, grid + (0.15 if incoming else 0.0)
 
-    monkeypatch.setattr(mix, '_phrase_entry', lambda audio, target: None)
+    def off_grid(audio):
+        found = smart_fade_click_events(audio)
+        incoming = np.flatnonzero(np.abs(audio) > 0.01)[0] > 0.05 * mix.RATE
+        shift = 0.15 if incoming else 0.0
+        return dict(found, beats=found['beats'] + shift, downbeats=found['downbeats'] + shift)
+
+    monkeypatch.setattr(mix, '_phrase_entry', lambda audio, grid, target: None)
     assert mix.plan_transition(song_out, 30.0, song_in, 5.0)['style'] == 'blend'
-    monkeypatch.setattr(mix, '_beats', off_grid)
+    smart_fade_cache.clear()
+    monkeypatch.setattr(mix, '_events', off_grid)
     plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
     assert plan['tempo_from'] == pytest.approx(plan['tempo_to'], abs=1.0)
     _assert_short_fade(plan)
@@ -334,25 +388,70 @@ def test_songs_without_a_beat_raise_value_error(tmp_path):
         mix.plan_transition(str(silent), 30.0, str(silent), 5.0)
 
 
-def test_beat_agreement_is_full_for_the_same_beats_and_low_for_random_ones():
-    steady = np.arange(0.0, 20.0, 0.5)
-    assert mix._error_bits(steady, steady) == pytest.approx(np.log2(mix.AGREEMENT_BINS))
-    assert mix._error_bits(steady, steady[::2]) > 4.0
-    scattered = np.sort(np.random.default_rng(3).uniform(0.0, 20.0, steady.size))
-    assert min(mix._error_bits(steady, scattered), mix._error_bits(scattered, steady)) < mix.MIN_AGREEMENT_BITS
-    assert mix._agreement(_click_audio(120, 28.0)) >= mix.MIN_AGREEMENT_BITS
-    noise = np.random.default_rng(4).standard_normal(int(28.0 * mix.RATE)).astype(np.float32) * 0.1
-    assert mix._agreement(noise) < mix.MIN_AGREEMENT_BITS
+def _on(times, at, slack=0.006):
+    return bool(np.min(np.abs(np.asarray(times) - at)) <= slack)
 
 
-def test_only_a_confirmed_beat_lock_mixes_everything_else_is_the_crossfade_plan(tmp_path, monkeypatch):
+def test_a_lock_starts_on_a_downbeat_and_enters_on_the_next_songs_own_downbeat(tmp_path):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0, accent=1)
+    song_in = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2, accent=2)
+    plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
+    beats = round(plan['mix_seconds'] / plan['beat_seconds'])
+    assert plan['style'] == 'blend' and beats % mix.BAR_BEATS == 0
+    assert not _on(_accented(120, 40.0, 0.0, 1), 30.0 - beats * 0.5)
+    assert _on(_accented(120, 40.0, 0.0, 1), plan['mix_at'])
+    assert _on(_accented(122, 40.0, 0.2, 2), plan['in_at'])
+    assert plan['entry_bar'] == pytest.approx(mix.BAR_BEATS * 60.0 / 122, abs=0.01)
+
+
+@pytest.mark.parametrize('accent', [0, 1, 2, 3])
+def test_every_bar_shift_of_the_next_song_still_meets_downbeat_on_downbeat(tmp_path, accent):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0, accent=0)
+    song_in = _clicks(tmp_path / 'b.wav', 120, 40.0, first=0.1, accent=accent)
+    plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
+    assert plan['style'] == 'blend'
+    assert _on(_accented(120, 40.0, 0.0, 0), plan['mix_at'])
+    assert _on(_accented(120, 40.0, 0.1, accent), plan['in_at'])
+
+
+def test_an_unknown_bar_position_on_either_song_plays_the_crossfade(tmp_path, monkeypatch):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    song_in = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2)
+    assert mix.plan_transition(song_out, 30.0, song_in, 5.0)['style'] == 'blend'
+    smart_fade_cache.clear()
+    monkeypatch.setattr(mix, '_events', lambda audio: dict(smart_fade_click_events(audio), downbeats=np.zeros(0)))
+    plan = mix.plan_transition(song_out, 30.0, song_in, 5.0)
+    _assert_short_fade(plan)
+    assert plan['beat_rejection'] == 'bar_phase' and plan['confidence'] != 'high' and 'alternatives' not in plan
+
+
+def test_three_beats_a_bar_never_lock_with_four(tmp_path):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0, accent=0)
+    waltz = _clicks(tmp_path / 'b.wav', 122, 40.0, first=0.2, accent=0, bar=3)
+    plan = mix.plan_transition(song_out, 30.0, waltz, 5.0)
+    assert plan['style'] == 'fade' and plan['beat_rejection'] == 'bar_phase'
+
+
+def test_an_unsteady_beat_does_not_lock(tmp_path, monkeypatch):
     song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
     near = _clicks(tmp_path / 'c.wav', 122, 40.0, first=0.2)
-    assert mix.plan_transition(song_out, 30.0, near, 5.0)['style'] == 'blend'
-    monkeypatch.setattr(mix, '_agreement', lambda audio: mix.MIN_AGREEMENT_BITS - 0.1)
+    jitter = np.random.default_rng(5).uniform(-0.09, 0.09, 200)
+
+    def unsteady(audio):
+        found = smart_fade_click_events(audio)
+        return dict(found, beats=found['beats'] + jitter[:found['beats'].size])
+
+    monkeypatch.setattr(mix, '_events', unsteady)
     plan = mix.plan_transition(song_out, 30.0, near, 5.0)
     _assert_short_fade(plan)
-    assert plan['confidence'] != 'high'
+    assert plan['beat_rejection'] == 'beat_tracking' and plan['confidence'] != 'high'
+
+
+def test_a_half_time_next_song_counts_its_own_longer_bar(tmp_path):
+    song_out = _clicks(tmp_path / 'a.wav', 120, 40.0)
+    half = _clicks(tmp_path / 'b.wav', 60.5, 40.0, first=0.2)
+    plan = mix.plan_transition(song_out, 30.0, half, 5.0)
+    assert plan['style'] == 'blend' and plan['entry_bar'] == pytest.approx(mix.BAR_BEATS * 60.0 / 60.5, abs=0.02)
 
 
 def test_tempos_more_than_60_cents_apart_crossfade_even_when_their_beats_lock(tmp_path):

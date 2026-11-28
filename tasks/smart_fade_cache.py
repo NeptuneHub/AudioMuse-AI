@@ -10,6 +10,9 @@
 
 Main Features:
 * Reuse measurements across temporary downloads, invalidating changed content.
+  A file's digest is read once per path, size and modification time
+  (DIGEST_MEMORY of them), so the several measurements of one transition
+  hash each download once.
 * Separate measurement profiles and keep at most SMART_FADE_LEVEL_CACHE_SIZE
   completed entries; zero disables reuse. Never store audio or open files.
 * Share an in-flight calculation between threads, release waiters on failures,
@@ -17,6 +20,7 @@ Main Features:
 """
 
 import hashlib
+import os
 import threading
 from collections import OrderedDict
 from concurrent.futures import Future
@@ -24,20 +28,38 @@ from concurrent.futures import Future
 import config
 
 _cache = OrderedDict()
+_digests = OrderedDict()
 _lock = threading.Lock()
+DIGEST_MEMORY = 32
 
 
 def clear():
     with _lock:
         _cache.clear()
+        _digests.clear()
 
 
-def _key(path, profile):
+def _digest(path):
+    status = os.stat(path)
+    identity = (os.path.abspath(path), status.st_size, status.st_mtime_ns)
+    with _lock:
+        known = _digests.get(identity)
+        if known is not None:
+            _digests.move_to_end(identity)
+            return known
     digest = hashlib.sha256()
     with open(path, 'rb') as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b''):
             digest.update(block)
-    return digest.digest(), profile
+    with _lock:
+        _digests[identity] = digest.digest()
+        while len(_digests) > DIGEST_MEMORY:
+            _digests.popitem(last=False)
+    return digest.digest()
+
+
+def _key(path, profile):
+    return _digest(path), profile
 
 
 def remember(path, profile, measure):

@@ -668,6 +668,10 @@ the following terms:
    - License: MIT
    - Official Project: https://huggingface.co/FacebookAI/roberta-base
 
+10. BEAT THIS! SMALL MODEL (ONNX export, smart fade beat and downbeat tracking):
+   - License: MIT (code and model weights)
+   - Official Project: https://github.com/CPJKU/beat_this
+
 To maintain a clear distinction between the open-source code and the 
 model weights, all machine learning models are treated as distinct assets. 
 While these models are pre-embedded within our containerized releases and 
